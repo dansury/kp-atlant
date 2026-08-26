@@ -1,0 +1,49 @@
+# Deny access to sensitive dirs and files
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # App internals — never served directly
+    RewriteRule ^lib/ - [F,L]
+    RewriteRule ^data/ - [F,L]
+    RewriteRule ^storage/ - [F,L]
+    RewriteRule ^cron/ - [F,L]
+    RewriteRule ^templates/ - [F,L]
+    RewriteRule ^specs/ - [F,L]
+    RewriteRule ^vendor/ - [F,L]
+
+    # Project/dev metadata — not part of the app, shouldn't be public
+    RewriteRule ^\.specify/ - [F,L]
+    RewriteRule ^graphify-out/ - [F,L]
+    RewriteRule ^reference/ - [F,L]
+    RewriteRule ^\.git(/|$) - [F,L]
+
+    # Config and deploy secrets
+    RewriteRule ^config\.php$ - [F,L]
+    RewriteRule ^config\.example\.php$ - [F,L]
+    RewriteRule ^composer\.(json|lock)$ - [F,L]
+    RewriteRule ^pull-config\.php$ - [F,L]
+    RewriteRule ^\.gitignore$ - [F,L]
+    RewriteRule ^claude\.md$ - [F,L]
+    RewriteRule ^spec\.md$ - [F,L]
+    RewriteRule \.md$ - [F,L]
+
+    # SPA: route the bare root explicitly — REQUEST_FILENAME for "/" is a
+    # directory, so it passes the "!-d" check below and would 403 (no root
+    # index file, Options -Indexes) instead of reaching the app.
+    RewriteRule ^$ public/index.php [L]
+
+    # SPA: route non-file, non-dir requests to public/index.php
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(?!public/)(.*)$ public/$1 [L]
+</IfModule>
+
+# Disable directory listings
+Options -Indexes
+
+# PHP settings
+<IfModule mod_php.c>
+    php_value upload_max_filesize 10M
+    php_value post_max_size 12M
+    php_value max_execution_time 60
+</IfModule>

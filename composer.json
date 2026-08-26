@@ -1,0 +1,13 @@
+{
+    "name": "atlant-armour/kp-automation",
+    "description": "Commercial proposal automation for Atlant Armour",
+    "type": "project",
+    "require": {
+        "php": ">=8.1",
+        "mpdf/mpdf": "^8.2",
+        "phpmailer/phpmailer": "^6.9"
+    },
+    "config": {
+        "optimize-autoloader": true
+    }
+}

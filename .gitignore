@@ -1,0 +1,9 @@
+config.php
+data/kp.db
+data/kp.db-wal
+data/kp.db-shm
+data/kp/
+data/tmp/
+storage/signatures/*
+!storage/signatures/.gitkeep
+.DS_Store
