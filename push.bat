@@ -25,10 +25,15 @@ if "%MSG%"=="" set MSG=update %date% %time%
 git commit -m "%MSG%"
 echo.
 
-echo [4/4] Push to GitHub...
+echo [4/5] Sync with remote...
 echo ----------------------------------------
 git remote remove origin 2>nul
 git remote add origin https://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@github.com/dansury/kp-atlant.git
+git pull origin main --rebase --allow-unrelated-histories 2>nul
+echo.
+
+echo [5/5] Push to GitHub...
+echo ----------------------------------------
 git push -u origin main
 echo.
 
