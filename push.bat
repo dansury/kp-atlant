@@ -27,7 +27,8 @@ echo.
 
 echo [4/4] Push to GitHub...
 echo ----------------------------------------
-git remote set-url origin https://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@github.com/dansury/kp-atlant.git
+git remote remove origin 2>nul
+git remote add origin https://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@github.com/dansury/kp-atlant.git
 git push -u origin main
 echo.
 
