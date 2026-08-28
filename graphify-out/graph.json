@@ -3,164 +3,1091 @@
     "project": "Atlant Armour КП Automation",
     "extracted": "2026-08-25",
     "mode": "deep",
-    "source_files": 5,
-    "node_count": 48,
-    "edge_count": 82,
-    "communities": 6
+    "source_files": 6,
+    "node_count": 62,
+    "edge_count": 106,
+    "communities": 6,
+    "updated": "2026-08-28"
   },
   "nodes": [
-    {"id": "doc:spec-index", "label": "spec.md", "type": "document", "community": 0, "description": "Navigation index mapping modules to spec files"},
-    {"id": "doc:main-spec", "label": "001-kp-automation/spec.md", "type": "document", "community": 0, "description": "Core feature specification — user stories, requirements, entities, success criteria"},
-    {"id": "doc:claude-md", "label": "claude.md", "type": "document", "community": 0, "description": "Project rules — stack, workflow, LLM integration, language policy"},
-    {"id": "doc:constitution", "label": "constitution.md", "type": "document", "community": 0, "description": "8 non-negotiable principles governing the system"},
-    {"id": "doc:tov", "label": "tov.md", "type": "document", "community": 0, "description": "Tone of Voice guidelines — brand positioning, audience, style rules"},
-
-    {"id": "us:1", "label": "US1: Auto КП from Email", "type": "user_story", "community": 1, "priority": "P1", "description": "IMAP → parse → MoySklad lookup → PDF → notify → send"},
-    {"id": "us:2", "label": "US2: Manual Paste", "type": "user_story", "community": 1, "priority": "P1", "description": "Manager pastes request text → same pipeline as email"},
-    {"id": "us:3", "label": "US3: Accounts & CRM", "type": "user_story", "community": 2, "priority": "P2", "description": "Manager logins, counterparty history, deal tracking"},
-    {"id": "us:4", "label": "US4: Self-Learning", "type": "user_story", "community": 3, "priority": "P2", "description": "Correction pairs → few-shot examples → improving drafts over time"},
-    {"id": "us:5", "label": "US5: MoySklad Order", "type": "user_story", "community": 4, "priority": "P2", "description": "One-click order creation in MoySklad from confirmed КП"},
-    {"id": "us:6", "label": "US6: Follow-up Emails", "type": "user_story", "community": 5, "priority": "P3", "description": "Auto-suggest follow-up for stale deals (30+ days, no order)"},
-    {"id": "us:7", "label": "US7: Deal Evaluation", "type": "user_story", "community": 4, "priority": "P3", "description": "Show deal status from MoySklad data (orders, shipments, payments)"},
-
-    {"id": "comp:email-receiver", "label": "Email Receiver", "type": "component", "community": 1, "description": "IMAP client polling smtp.spaceweb.ru:465 SSL for incoming requests"},
-    {"id": "comp:request-parser", "label": "Request Parser", "type": "component", "community": 1, "description": "LLM-powered extraction of items, quantities, org name, contact from text"},
-    {"id": "comp:moysklad-api", "label": "MoySklad Integration", "type": "component", "community": 4, "description": "JSON API 1.2 wrapper — product search (fuzzy), prices, stock, counterparties, orders"},
-    {"id": "comp:pdf-gen", "label": "PDF Generator", "type": "component", "community": 1, "description": "Branded PDF — logo, legal entity, item table, totals, conditions, signature"},
-    {"id": "comp:crm", "label": "CRM Module", "type": "component", "community": 2, "description": "Counterparty cards, correspondence history, deal status tracking"},
-    {"id": "comp:knowledge-base", "label": "Knowledge Base", "type": "component", "community": 3, "description": "Correction storage + few-shot retrieval for LLM prompt enrichment"},
-    {"id": "comp:notifier", "label": "Notification System", "type": "component", "community": 1, "description": "Browser push + fallback email (24h timeout) to atlant.armour@yandex.ru"},
-    {"id": "comp:email-sender", "label": "Email Sender", "type": "component", "community": 1, "description": "SMTP client sending КП with PDF attachment from info@atlant-armour.ru"},
-    {"id": "comp:web-ui", "label": "Web Interface", "type": "component", "community": 2, "description": "Responsive SPA — request queue, КП editor, PDF preview, settings"},
-    {"id": "comp:auth", "label": "Auth & Accounts", "type": "component", "community": 2, "description": "Manager login/password, session, role-based request pool"},
-    {"id": "comp:followup-engine", "label": "Follow-up Engine", "type": "component", "community": 5, "description": "Cron-driven check: stale deals → generate follow-up email draft"},
-    {"id": "comp:llm-wrapper", "label": "LLM Wrapper (NeuroPro)", "type": "component", "community": 3, "description": "Dual-provider wrapper: OpenRouter + Yandex FM, fallback chain, retry, json-mode"},
-
-    {"id": "ext:moysklad", "label": "МойСклад API", "type": "external", "community": 4, "description": "JSON API 1.2 — products, counterparties, orders, shipments, payments"},
-    {"id": "ext:openrouter", "label": "OpenRouter", "type": "external", "community": 3, "description": "LLM provider — primary in fallback chain"},
-    {"id": "ext:yandex-fm", "label": "Yandex FM", "type": "external", "community": 3, "description": "LLM provider — secondary in fallback chain"},
-    {"id": "ext:smtp", "label": "SMTP spaceweb.ru", "type": "external", "community": 1, "description": "smtp.spaceweb.ru:465 SSL (also 25/2525 STARTTLS)"},
-    {"id": "ext:imap", "label": "IMAP spaceweb.ru", "type": "external", "community": 1, "description": "smtp.spaceweb.ru:465 SSL for incoming mail"},
-
-    {"id": "ent:request", "label": "Request", "type": "entity", "community": 1, "description": "Incoming КП request — source, text, parsed items, counterparty, processing status"},
-    {"id": "ent:counterparty", "label": "Counterparty", "type": "entity", "community": 2, "description": "Organization/person — INN, name, contact, MoySklad link"},
-    {"id": "ent:proposal", "label": "Proposal (КП)", "type": "entity", "community": 1, "description": "Commercial proposal — items, totals, text, PDF file, status (draft/sent/ordered)"},
-    {"id": "ent:proposal-item", "label": "ProposalItem", "type": "entity", "community": 1, "description": "Table row — product from MoySklad, qty, price, VAT, sum"},
-    {"id": "ent:manager", "label": "Manager", "type": "entity", "community": 2, "description": "System user — login, email, MoySklad binding"},
-    {"id": "ent:correspondence", "label": "Correspondence", "type": "entity", "community": 2, "description": "Email chain per request — incoming + outgoing + internal notes"},
-    {"id": "ent:correction", "label": "Correction", "type": "entity", "community": 3, "description": "Pair: auto-text → manager-text with context (request type, counterparty, products)"},
-    {"id": "ent:email-rules", "label": "EmailRules", "type": "entity", "community": 5, "description": "EMAILRULES.md — editable ToV and email marketing rules for follow-ups"},
-    {"id": "ent:legal-entity", "label": "LegalEntity", "type": "entity", "community": 1, "description": "IP/OOO, INN, OGRN, address, signatory, city — configurable from UI"},
-
-    {"id": "principle:1", "label": "I. Manager Approval", "type": "principle", "community": 0, "description": "Nothing leaves without explicit manager confirmation"},
-    {"id": "principle:2", "label": "II. MoySklad = Truth", "type": "principle", "community": 4, "description": "Prices, stock, specs — only from MoySklad API"},
-    {"id": "principle:3", "label": "III. ToV Compliance", "type": "principle", "community": 5, "description": "All generated text follows Atlant Armour ToV rules"},
-    {"id": "principle:4", "label": "IV. Knowledge Growth", "type": "principle", "community": 3, "description": "Every correction feeds the knowledge base"},
-    {"id": "principle:5", "label": "V. Credential Security", "type": "principle", "community": 0, "description": "API keys, SMTP passwords — server-side only, never in frontend/logs/git"},
-    {"id": "principle:6", "label": "VI. Branded PDF", "type": "principle", "community": 1, "description": "КП always has logo, legal entity, table, conditions, signature"},
-    {"id": "principle:7", "label": "VII. Simple Stack", "type": "principle", "community": 0, "description": "PHP + SQLite + vanilla JS, shared hosting, no Docker"},
-    {"id": "principle:8", "label": "VIII. Configurable Entity", "type": "principle", "community": 0, "description": "Legal entity details changeable from settings UI"}
+    {
+      "id": "doc:spec-index",
+      "label": "spec.md",
+      "type": "document",
+      "community": 0,
+      "description": "Navigation index mapping modules to spec files"
+    },
+    {
+      "id": "doc:main-spec",
+      "label": "001-kp-automation/spec.md",
+      "type": "document",
+      "community": 0,
+      "description": "Core feature specification — user stories, requirements, entities, success criteria"
+    },
+    {
+      "id": "doc:claude-md",
+      "label": "claude.md",
+      "type": "document",
+      "community": 0,
+      "description": "Project rules — stack, workflow, LLM integration, language policy"
+    },
+    {
+      "id": "doc:constitution",
+      "label": "constitution.md",
+      "type": "document",
+      "community": 0,
+      "description": "8 non-negotiable principles governing the system"
+    },
+    {
+      "id": "doc:tov",
+      "label": "tov.md",
+      "type": "document",
+      "community": 0,
+      "description": "Tone of Voice guidelines — brand positioning, audience, style rules"
+    },
+    {
+      "id": "us:1",
+      "label": "US1: Auto КП from Email",
+      "type": "user_story",
+      "community": 1,
+      "priority": "P1",
+      "description": "IMAP → parse → MoySklad lookup → PDF → notify → send"
+    },
+    {
+      "id": "us:2",
+      "label": "US2: Manual Paste",
+      "type": "user_story",
+      "community": 1,
+      "priority": "P1",
+      "description": "Manager pastes request text → same pipeline as email"
+    },
+    {
+      "id": "us:3",
+      "label": "US3: Accounts & CRM",
+      "type": "user_story",
+      "community": 2,
+      "priority": "P2",
+      "description": "Manager logins, counterparty history, deal tracking"
+    },
+    {
+      "id": "us:4",
+      "label": "US4: Self-Learning",
+      "type": "user_story",
+      "community": 3,
+      "priority": "P2",
+      "description": "Correction pairs → few-shot examples → improving drafts over time"
+    },
+    {
+      "id": "us:5",
+      "label": "US5: MoySklad Order",
+      "type": "user_story",
+      "community": 4,
+      "priority": "P2",
+      "description": "One-click order creation in MoySklad from confirmed КП"
+    },
+    {
+      "id": "us:6",
+      "label": "US6: Follow-up Emails",
+      "type": "user_story",
+      "community": 5,
+      "priority": "P3",
+      "description": "Auto-suggest follow-up for stale deals (30+ days, no order)"
+    },
+    {
+      "id": "us:7",
+      "label": "US7: Deal Evaluation",
+      "type": "user_story",
+      "community": 4,
+      "priority": "P3",
+      "description": "Show deal status from MoySklad data (orders, shipments, payments)"
+    },
+    {
+      "id": "comp:email-receiver",
+      "label": "Email Receiver",
+      "type": "component",
+      "community": 1,
+      "description": "IMAP client polling smtp.spaceweb.ru:465 SSL for incoming requests"
+    },
+    {
+      "id": "comp:request-parser",
+      "label": "Request Parser",
+      "type": "component",
+      "community": 1,
+      "description": "LLM-powered extraction of items, quantities, org name, contact from text"
+    },
+    {
+      "id": "comp:moysklad-api",
+      "label": "MoySklad Integration",
+      "type": "component",
+      "community": 4,
+      "description": "JSON API 1.2 wrapper — product search (fuzzy), prices, stock, counterparties, orders"
+    },
+    {
+      "id": "comp:pdf-gen",
+      "label": "PDF Generator",
+      "type": "component",
+      "community": 1,
+      "description": "Branded PDF — logo, legal entity, item table, totals, conditions, signature"
+    },
+    {
+      "id": "comp:crm",
+      "label": "CRM Module",
+      "type": "component",
+      "community": 2,
+      "description": "Counterparty cards, correspondence history, deal status tracking"
+    },
+    {
+      "id": "comp:knowledge-base",
+      "label": "Knowledge Base",
+      "type": "component",
+      "community": 3,
+      "description": "Correction storage + few-shot retrieval for LLM prompt enrichment"
+    },
+    {
+      "id": "comp:notifier",
+      "label": "Notification System",
+      "type": "component",
+      "community": 1,
+      "description": "Browser push + fallback email (24h timeout) to atlant.armour@yandex.ru"
+    },
+    {
+      "id": "comp:email-sender",
+      "label": "Email Sender",
+      "type": "component",
+      "community": 1,
+      "description": "SMTP client sending КП with PDF attachment from info@atlant-armour.ru"
+    },
+    {
+      "id": "comp:web-ui",
+      "label": "Web Interface",
+      "type": "component",
+      "community": 2,
+      "description": "Responsive SPA — request queue, КП editor, PDF preview, settings"
+    },
+    {
+      "id": "comp:auth",
+      "label": "Auth & Accounts",
+      "type": "component",
+      "community": 2,
+      "description": "Manager login/password, session, role-based request pool"
+    },
+    {
+      "id": "comp:followup-engine",
+      "label": "Follow-up Engine",
+      "type": "component",
+      "community": 5,
+      "description": "Cron-driven check: stale deals → generate follow-up email draft"
+    },
+    {
+      "id": "comp:llm-wrapper",
+      "label": "LLM Wrapper (NeuroPro)",
+      "type": "component",
+      "community": 3,
+      "description": "Dual-provider wrapper: OpenRouter + Yandex FM, fallback chain, retry, json-mode"
+    },
+    {
+      "id": "ext:moysklad",
+      "label": "МойСклад API",
+      "type": "external",
+      "community": 4,
+      "description": "JSON API 1.2 — products, counterparties, orders, shipments, payments"
+    },
+    {
+      "id": "ext:openrouter",
+      "label": "OpenRouter",
+      "type": "external",
+      "community": 3,
+      "description": "LLM provider — primary in fallback chain"
+    },
+    {
+      "id": "ext:yandex-fm",
+      "label": "Yandex FM",
+      "type": "external",
+      "community": 3,
+      "description": "LLM provider — secondary in fallback chain"
+    },
+    {
+      "id": "ext:smtp",
+      "label": "SMTP spaceweb.ru",
+      "type": "external",
+      "community": 1,
+      "description": "smtp.spaceweb.ru:465 SSL (also 25/2525 STARTTLS)"
+    },
+    {
+      "id": "ext:imap",
+      "label": "IMAP spaceweb.ru",
+      "type": "external",
+      "community": 1,
+      "description": "smtp.spaceweb.ru:465 SSL for incoming mail"
+    },
+    {
+      "id": "ent:request",
+      "label": "Request",
+      "type": "entity",
+      "community": 1,
+      "description": "Incoming КП request — source, text, parsed items, counterparty, processing status"
+    },
+    {
+      "id": "ent:counterparty",
+      "label": "Counterparty",
+      "type": "entity",
+      "community": 2,
+      "description": "Organization/person — INN, name, contact, MoySklad link"
+    },
+    {
+      "id": "ent:proposal",
+      "label": "Proposal (КП)",
+      "type": "entity",
+      "community": 1,
+      "description": "Commercial proposal — items, totals, text, PDF file, status (draft/sent/ordered)"
+    },
+    {
+      "id": "ent:proposal-item",
+      "label": "ProposalItem",
+      "type": "entity",
+      "community": 1,
+      "description": "Table row — product from MoySklad, qty, price, VAT, sum"
+    },
+    {
+      "id": "ent:manager",
+      "label": "Manager",
+      "type": "entity",
+      "community": 2,
+      "description": "System user — login, email, MoySklad binding"
+    },
+    {
+      "id": "ent:correspondence",
+      "label": "Correspondence",
+      "type": "entity",
+      "community": 2,
+      "description": "Email chain per request — incoming + outgoing + internal notes"
+    },
+    {
+      "id": "ent:correction",
+      "label": "Correction",
+      "type": "entity",
+      "community": 3,
+      "description": "Pair: auto-text → manager-text with context (request type, counterparty, products)"
+    },
+    {
+      "id": "ent:email-rules",
+      "label": "EmailRules",
+      "type": "entity",
+      "community": 5,
+      "description": "EMAILRULES.md — editable ToV and email marketing rules for follow-ups"
+    },
+    {
+      "id": "ent:legal-entity",
+      "label": "LegalEntity",
+      "type": "entity",
+      "community": 1,
+      "description": "IP/OOO, INN, OGRN, address, signatory, city — configurable from UI"
+    },
+    {
+      "id": "principle:1",
+      "label": "I. Manager Approval",
+      "type": "principle",
+      "community": 0,
+      "description": "Nothing leaves without explicit manager confirmation"
+    },
+    {
+      "id": "principle:2",
+      "label": "II. MoySklad = Truth",
+      "type": "principle",
+      "community": 4,
+      "description": "Prices, stock, specs — only from MoySklad API"
+    },
+    {
+      "id": "principle:3",
+      "label": "III. ToV Compliance",
+      "type": "principle",
+      "community": 5,
+      "description": "All generated text follows Atlant Armour ToV rules"
+    },
+    {
+      "id": "principle:4",
+      "label": "IV. Knowledge Growth",
+      "type": "principle",
+      "community": 3,
+      "description": "Every correction feeds the knowledge base"
+    },
+    {
+      "id": "principle:5",
+      "label": "V. Credential Security",
+      "type": "principle",
+      "community": 0,
+      "description": "API keys, SMTP passwords — server-side only, never in frontend/logs/git"
+    },
+    {
+      "id": "principle:6",
+      "label": "VI. Branded PDF",
+      "type": "principle",
+      "community": 1,
+      "description": "КП always has logo, legal entity, table, conditions, signature"
+    },
+    {
+      "id": "principle:7",
+      "label": "VII. Simple Stack",
+      "type": "principle",
+      "community": 0,
+      "description": "PHP + SQLite + vanilla JS, shared hosting, no Docker"
+    },
+    {
+      "id": "principle:8",
+      "label": "VIII. Configurable Entity",
+      "type": "principle",
+      "community": 0,
+      "description": "Legal entity details changeable from settings UI"
+    },
+    {
+      "id": "doc:spec-002",
+      "label": "specs/002-orders-crm-chat/spec.md",
+      "type": "document",
+      "community": 0,
+      "description": "Module 002 spec — orders from email, invoice sync, company chat, unanswered highlighting"
+    },
+    {
+      "id": "us:us8",
+      "label": "US8 — Письмо-заказ и кнопка «Создать заказ»",
+      "type": "user_story",
+      "community": 4,
+      "description": "Classify incoming mail as order, create MoySklad order in one click, open it in a new tab"
+    },
+    {
+      "id": "us:us9",
+      "label": "US9 — Возврат счёта и правок из МойСклад",
+      "type": "user_story",
+      "community": 4,
+      "description": "Order edits and issued invoices flow back into the company card; one-click invoice send"
+    },
+    {
+      "id": "us:us10",
+      "label": "US10 — Чат компании и заметки",
+      "type": "user_story",
+      "community": 2,
+      "description": "Single feed per company glued by INN, all contacts, internal notes for colleagues"
+    },
+    {
+      "id": "us:us11",
+      "label": "US11 — Подсветка неотвеченных",
+      "type": "user_story",
+      "community": 2,
+      "description": "Cards whose last event is inbound are highlighted with the age of the silence"
+    },
+    {
+      "id": "comp:attachments",
+      "label": "Attachment Extractor",
+      "type": "component",
+      "community": 1,
+      "description": "lib/attachments.php — stores email attachments, extracts text from PDF/DOCX/XLSX, OCR for scans"
+    },
+    {
+      "id": "comp:crm-chat",
+      "label": "Company Chat & Identity",
+      "type": "component",
+      "community": 2,
+      "description": "lib/crm.php — INN→domain→name glue, unified feed, contacts, notes, answer state, merge/split"
+    },
+    {
+      "id": "comp:mssync",
+      "label": "MoySklad Sync",
+      "type": "component",
+      "community": 4,
+      "description": "lib/sync.php — order/invoice projection, invoice printform cache, webhook registration"
+    },
+    {
+      "id": "comp:webhook",
+      "label": "Webhook Receiver",
+      "type": "component",
+      "community": 4,
+      "description": "public/api/moysklad_hook.php — customerorder and invoiceout events, secret-protected"
+    },
+    {
+      "id": "ext:yandex-vision",
+      "label": "Yandex Vision OCR",
+      "type": "external",
+      "community": 1,
+      "description": "OCR API for scanned attachments; toggleable in settings"
+    },
+    {
+      "id": "ext:pdfparser",
+      "label": "smalot/pdfparser",
+      "type": "external",
+      "community": 1,
+      "description": "Vendored PDF text-layer extractor under lib/pdfparser (PSR-0, LGPL)"
+    },
+    {
+      "id": "entity:attachment",
+      "label": "Attachment",
+      "type": "entity",
+      "community": 1,
+      "description": "Stored email file with extracted text and extraction status"
+    },
+    {
+      "id": "entity:order",
+      "label": "Order",
+      "type": "entity",
+      "community": 4,
+      "description": "Local projection of a MoySklad customer order"
+    },
+    {
+      "id": "entity:invoice",
+      "label": "Invoice",
+      "type": "entity",
+      "community": 4,
+      "description": "Local projection of a MoySklad customer invoice with cached printform"
+    },
+    {
+      "id": "entity:contact",
+      "label": "Contact",
+      "type": "entity",
+      "community": 2,
+      "description": "Person at a company — name, email, phone, message counters"
+    },
+    {
+      "id": "entity:chat-event",
+      "label": "ChatEvent",
+      "type": "entity",
+      "community": 2,
+      "description": "Unified feed row: inbound, outbound, note or system event"
+    }
   ],
   "edges": [
-    {"source": "doc:spec-index", "target": "doc:main-spec", "label": "indexes", "type": "REFERENCES"},
-    {"source": "doc:spec-index", "target": "doc:constitution", "label": "points to", "type": "REFERENCES"},
-    {"source": "doc:main-spec", "target": "doc:tov", "label": "references ToV", "type": "REFERENCES"},
-    {"source": "doc:main-spec", "target": "doc:constitution", "label": "governed by", "type": "REFERENCES"},
-    {"source": "doc:claude-md", "target": "doc:spec-index", "label": "workflow: read first", "type": "REFERENCES"},
-
-    {"source": "us:1", "target": "comp:email-receiver", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:1", "target": "comp:request-parser", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:1", "target": "comp:moysklad-api", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:1", "target": "comp:pdf-gen", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:1", "target": "comp:notifier", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:1", "target": "comp:email-sender", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:1", "target": "comp:web-ui", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:1", "target": "comp:llm-wrapper", "label": "uses", "type": "DEPENDS_ON"},
-
-    {"source": "us:2", "target": "comp:request-parser", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:2", "target": "comp:moysklad-api", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:2", "target": "comp:pdf-gen", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:2", "target": "comp:web-ui", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:2", "target": "comp:llm-wrapper", "label": "uses", "type": "DEPENDS_ON"},
-
-    {"source": "us:3", "target": "comp:auth", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:3", "target": "comp:crm", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:3", "target": "comp:web-ui", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:3", "target": "comp:moysklad-api", "label": "uses", "type": "DEPENDS_ON"},
-
-    {"source": "us:4", "target": "comp:knowledge-base", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:4", "target": "comp:llm-wrapper", "label": "uses", "type": "DEPENDS_ON"},
-
-    {"source": "us:5", "target": "comp:moysklad-api", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:5", "target": "comp:crm", "label": "uses", "type": "DEPENDS_ON"},
-
-    {"source": "us:6", "target": "comp:followup-engine", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:6", "target": "comp:moysklad-api", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:6", "target": "comp:llm-wrapper", "label": "uses", "type": "DEPENDS_ON"},
-    {"source": "us:6", "target": "comp:email-sender", "label": "uses", "type": "DEPENDS_ON"},
-
-    {"source": "us:7", "target": "comp:moysklad-api", "label": "uses", "type": "DEPENDS_ON"},
-
-    {"source": "comp:email-receiver", "target": "ext:imap", "label": "connects", "type": "INTEGRATES"},
-    {"source": "comp:email-sender", "target": "ext:smtp", "label": "connects", "type": "INTEGRATES"},
-    {"source": "comp:moysklad-api", "target": "ext:moysklad", "label": "connects", "type": "INTEGRATES"},
-    {"source": "comp:llm-wrapper", "target": "ext:openrouter", "label": "primary", "type": "INTEGRATES"},
-    {"source": "comp:llm-wrapper", "target": "ext:yandex-fm", "label": "fallback", "type": "INTEGRATES"},
-
-    {"source": "comp:request-parser", "target": "comp:llm-wrapper", "label": "calls", "type": "DEPENDS_ON"},
-    {"source": "comp:followup-engine", "target": "comp:llm-wrapper", "label": "calls", "type": "DEPENDS_ON"},
-    {"source": "comp:knowledge-base", "target": "comp:llm-wrapper", "label": "enriches prompt", "type": "DEPENDS_ON"},
-    {"source": "comp:pdf-gen", "target": "ent:legal-entity", "label": "reads config", "type": "DEPENDS_ON"},
-    {"source": "comp:crm", "target": "comp:moysklad-api", "label": "syncs counterparties", "type": "DEPENDS_ON"},
-    {"source": "comp:followup-engine", "target": "ent:email-rules", "label": "reads rules", "type": "DEPENDS_ON"},
-
-    {"source": "ent:request", "target": "ent:counterparty", "label": "from", "type": "RELATES"},
-    {"source": "ent:request", "target": "ent:proposal", "label": "produces", "type": "RELATES"},
-    {"source": "ent:proposal", "target": "ent:proposal-item", "label": "contains", "type": "RELATES"},
-    {"source": "ent:proposal", "target": "ent:counterparty", "label": "addressed to", "type": "RELATES"},
-    {"source": "ent:proposal", "target": "ent:legal-entity", "label": "issued by", "type": "RELATES"},
-    {"source": "ent:manager", "target": "ent:request", "label": "handles", "type": "RELATES"},
-    {"source": "ent:manager", "target": "ent:proposal", "label": "approves", "type": "RELATES"},
-    {"source": "ent:manager", "target": "ent:correction", "label": "creates", "type": "RELATES"},
-    {"source": "ent:correspondence", "target": "ent:request", "label": "belongs to", "type": "RELATES"},
-    {"source": "ent:correspondence", "target": "ent:counterparty", "label": "with", "type": "RELATES"},
-    {"source": "ent:correction", "target": "comp:knowledge-base", "label": "stored in", "type": "RELATES"},
-
-    {"source": "principle:1", "target": "comp:web-ui", "label": "enforces approval in", "type": "CONSTRAINS"},
-    {"source": "principle:1", "target": "comp:email-sender", "label": "blocks auto-send", "type": "CONSTRAINS"},
-    {"source": "principle:2", "target": "comp:moysklad-api", "label": "mandates source", "type": "CONSTRAINS"},
-    {"source": "principle:3", "target": "comp:llm-wrapper", "label": "governs output", "type": "CONSTRAINS"},
-    {"source": "principle:3", "target": "doc:tov", "label": "references", "type": "CONSTRAINS"},
-    {"source": "principle:3", "target": "comp:followup-engine", "label": "governs output", "type": "CONSTRAINS"},
-    {"source": "principle:4", "target": "comp:knowledge-base", "label": "mandates growth", "type": "CONSTRAINS"},
-    {"source": "principle:5", "target": "comp:auth", "label": "governs storage", "type": "CONSTRAINS"},
-    {"source": "principle:6", "target": "comp:pdf-gen", "label": "mandates brand", "type": "CONSTRAINS"},
-    {"source": "principle:7", "target": "doc:claude-md", "label": "codified in", "type": "CONSTRAINS"},
-    {"source": "principle:8", "target": "ent:legal-entity", "label": "mandates config", "type": "CONSTRAINS"},
-
-    {"source": "us:1", "target": "ent:request", "label": "creates", "type": "PRODUCES"},
-    {"source": "us:1", "target": "ent:proposal", "label": "produces", "type": "PRODUCES"},
-    {"source": "us:2", "target": "ent:request", "label": "creates", "type": "PRODUCES"},
-    {"source": "us:2", "target": "ent:proposal", "label": "produces", "type": "PRODUCES"},
-    {"source": "us:3", "target": "ent:correspondence", "label": "tracks", "type": "PRODUCES"},
-    {"source": "us:4", "target": "ent:correction", "label": "generates", "type": "PRODUCES"},
-    {"source": "us:5", "target": "ext:moysklad", "label": "creates order in", "type": "PRODUCES"},
-
-    {"source": "doc:main-spec", "target": "us:1", "label": "defines", "type": "DEFINES"},
-    {"source": "doc:main-spec", "target": "us:2", "label": "defines", "type": "DEFINES"},
-    {"source": "doc:main-spec", "target": "us:3", "label": "defines", "type": "DEFINES"},
-    {"source": "doc:main-spec", "target": "us:4", "label": "defines", "type": "DEFINES"},
-    {"source": "doc:main-spec", "target": "us:5", "label": "defines", "type": "DEFINES"},
-    {"source": "doc:main-spec", "target": "us:6", "label": "defines", "type": "DEFINES"},
-    {"source": "doc:main-spec", "target": "us:7", "label": "defines", "type": "DEFINES"},
-
-    {"source": "doc:constitution", "target": "principle:1", "label": "declares", "type": "DEFINES"},
-    {"source": "doc:constitution", "target": "principle:2", "label": "declares", "type": "DEFINES"},
-    {"source": "doc:constitution", "target": "principle:3", "label": "declares", "type": "DEFINES"},
-    {"source": "doc:constitution", "target": "principle:4", "label": "declares", "type": "DEFINES"},
-    {"source": "doc:constitution", "target": "principle:5", "label": "declares", "type": "DEFINES"},
-    {"source": "doc:constitution", "target": "principle:6", "label": "declares", "type": "DEFINES"},
-    {"source": "doc:constitution", "target": "principle:7", "label": "declares", "type": "DEFINES"},
-    {"source": "doc:constitution", "target": "principle:8", "label": "declares", "type": "DEFINES"}
+    {
+      "source": "doc:spec-index",
+      "target": "doc:main-spec",
+      "label": "indexes",
+      "type": "REFERENCES"
+    },
+    {
+      "source": "doc:spec-index",
+      "target": "doc:constitution",
+      "label": "points to",
+      "type": "REFERENCES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "doc:tov",
+      "label": "references ToV",
+      "type": "REFERENCES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "doc:constitution",
+      "label": "governed by",
+      "type": "REFERENCES"
+    },
+    {
+      "source": "doc:claude-md",
+      "target": "doc:spec-index",
+      "label": "workflow: read first",
+      "type": "REFERENCES"
+    },
+    {
+      "source": "us:1",
+      "target": "comp:email-receiver",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:1",
+      "target": "comp:request-parser",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:1",
+      "target": "comp:moysklad-api",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:1",
+      "target": "comp:pdf-gen",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:1",
+      "target": "comp:notifier",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:1",
+      "target": "comp:email-sender",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:1",
+      "target": "comp:web-ui",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:1",
+      "target": "comp:llm-wrapper",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:2",
+      "target": "comp:request-parser",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:2",
+      "target": "comp:moysklad-api",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:2",
+      "target": "comp:pdf-gen",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:2",
+      "target": "comp:web-ui",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:2",
+      "target": "comp:llm-wrapper",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:3",
+      "target": "comp:auth",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:3",
+      "target": "comp:crm",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:3",
+      "target": "comp:web-ui",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:3",
+      "target": "comp:moysklad-api",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:4",
+      "target": "comp:knowledge-base",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:4",
+      "target": "comp:llm-wrapper",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:5",
+      "target": "comp:moysklad-api",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:5",
+      "target": "comp:crm",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:6",
+      "target": "comp:followup-engine",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:6",
+      "target": "comp:moysklad-api",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:6",
+      "target": "comp:llm-wrapper",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:6",
+      "target": "comp:email-sender",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:7",
+      "target": "comp:moysklad-api",
+      "label": "uses",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "comp:email-receiver",
+      "target": "ext:imap",
+      "label": "connects",
+      "type": "INTEGRATES"
+    },
+    {
+      "source": "comp:email-sender",
+      "target": "ext:smtp",
+      "label": "connects",
+      "type": "INTEGRATES"
+    },
+    {
+      "source": "comp:moysklad-api",
+      "target": "ext:moysklad",
+      "label": "connects",
+      "type": "INTEGRATES"
+    },
+    {
+      "source": "comp:llm-wrapper",
+      "target": "ext:openrouter",
+      "label": "primary",
+      "type": "INTEGRATES"
+    },
+    {
+      "source": "comp:llm-wrapper",
+      "target": "ext:yandex-fm",
+      "label": "fallback",
+      "type": "INTEGRATES"
+    },
+    {
+      "source": "comp:request-parser",
+      "target": "comp:llm-wrapper",
+      "label": "calls",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "comp:followup-engine",
+      "target": "comp:llm-wrapper",
+      "label": "calls",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "comp:knowledge-base",
+      "target": "comp:llm-wrapper",
+      "label": "enriches prompt",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "comp:pdf-gen",
+      "target": "ent:legal-entity",
+      "label": "reads config",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "comp:crm",
+      "target": "comp:moysklad-api",
+      "label": "syncs counterparties",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "comp:followup-engine",
+      "target": "ent:email-rules",
+      "label": "reads rules",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "ent:request",
+      "target": "ent:counterparty",
+      "label": "from",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:request",
+      "target": "ent:proposal",
+      "label": "produces",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:proposal",
+      "target": "ent:proposal-item",
+      "label": "contains",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:proposal",
+      "target": "ent:counterparty",
+      "label": "addressed to",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:proposal",
+      "target": "ent:legal-entity",
+      "label": "issued by",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:manager",
+      "target": "ent:request",
+      "label": "handles",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:manager",
+      "target": "ent:proposal",
+      "label": "approves",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:manager",
+      "target": "ent:correction",
+      "label": "creates",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:correspondence",
+      "target": "ent:request",
+      "label": "belongs to",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:correspondence",
+      "target": "ent:counterparty",
+      "label": "with",
+      "type": "RELATES"
+    },
+    {
+      "source": "ent:correction",
+      "target": "comp:knowledge-base",
+      "label": "stored in",
+      "type": "RELATES"
+    },
+    {
+      "source": "principle:1",
+      "target": "comp:web-ui",
+      "label": "enforces approval in",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:1",
+      "target": "comp:email-sender",
+      "label": "blocks auto-send",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:2",
+      "target": "comp:moysklad-api",
+      "label": "mandates source",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:3",
+      "target": "comp:llm-wrapper",
+      "label": "governs output",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:3",
+      "target": "doc:tov",
+      "label": "references",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:3",
+      "target": "comp:followup-engine",
+      "label": "governs output",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:4",
+      "target": "comp:knowledge-base",
+      "label": "mandates growth",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:5",
+      "target": "comp:auth",
+      "label": "governs storage",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:6",
+      "target": "comp:pdf-gen",
+      "label": "mandates brand",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:7",
+      "target": "doc:claude-md",
+      "label": "codified in",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "principle:8",
+      "target": "ent:legal-entity",
+      "label": "mandates config",
+      "type": "CONSTRAINS"
+    },
+    {
+      "source": "us:1",
+      "target": "ent:request",
+      "label": "creates",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "us:1",
+      "target": "ent:proposal",
+      "label": "produces",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "us:2",
+      "target": "ent:request",
+      "label": "creates",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "us:2",
+      "target": "ent:proposal",
+      "label": "produces",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "us:3",
+      "target": "ent:correspondence",
+      "label": "tracks",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "us:4",
+      "target": "ent:correction",
+      "label": "generates",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "us:5",
+      "target": "ext:moysklad",
+      "label": "creates order in",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "us:1",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "us:2",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "us:3",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "us:4",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "us:5",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "us:6",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:main-spec",
+      "target": "us:7",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:constitution",
+      "target": "principle:1",
+      "label": "declares",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:constitution",
+      "target": "principle:2",
+      "label": "declares",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:constitution",
+      "target": "principle:3",
+      "label": "declares",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:constitution",
+      "target": "principle:4",
+      "label": "declares",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:constitution",
+      "target": "principle:5",
+      "label": "declares",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:constitution",
+      "target": "principle:6",
+      "label": "declares",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:constitution",
+      "target": "principle:7",
+      "label": "declares",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:constitution",
+      "target": "principle:8",
+      "label": "declares",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:spec-index",
+      "target": "doc:spec-002",
+      "label": "indexes",
+      "type": "REFERENCES"
+    },
+    {
+      "source": "doc:spec-002",
+      "target": "doc:main-spec",
+      "label": "extends",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "doc:spec-002",
+      "target": "us:us8",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:spec-002",
+      "target": "us:us9",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:spec-002",
+      "target": "us:us10",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "doc:spec-002",
+      "target": "us:us11",
+      "label": "defines",
+      "type": "DEFINES"
+    },
+    {
+      "source": "us:us8",
+      "target": "comp:attachments",
+      "label": "needs attachment text",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:us8",
+      "target": "comp:mssync",
+      "label": "creates order via",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:us9",
+      "target": "comp:mssync",
+      "label": "pulls invoices via",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:us9",
+      "target": "comp:webhook",
+      "label": "refreshed by",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "us:us10",
+      "target": "comp:crm-chat",
+      "label": "implemented by",
+      "type": "IMPLEMENTED_BY"
+    },
+    {
+      "source": "us:us11",
+      "target": "comp:crm-chat",
+      "label": "answer state from",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "source": "comp:attachments",
+      "target": "ext:pdfparser",
+      "label": "extracts PDF text with",
+      "type": "USES"
+    },
+    {
+      "source": "comp:attachments",
+      "target": "ext:yandex-vision",
+      "label": "OCRs scans with",
+      "type": "USES"
+    },
+    {
+      "source": "comp:attachments",
+      "target": "entity:attachment",
+      "label": "produces",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "comp:mssync",
+      "target": "entity:order",
+      "label": "maintains",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "comp:mssync",
+      "target": "entity:invoice",
+      "label": "maintains",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "comp:crm-chat",
+      "target": "entity:contact",
+      "label": "maintains",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "comp:crm-chat",
+      "target": "entity:chat-event",
+      "label": "maintains",
+      "type": "PRODUCES"
+    },
+    {
+      "source": "comp:webhook",
+      "target": "comp:mssync",
+      "label": "delegates to",
+      "type": "DEPENDS_ON"
+    }
   ]
 }

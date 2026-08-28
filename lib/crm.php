@@ -1,0 +1,290 @@
+<?php
+/**
+ * CRM: company identity (INN → email domain → name), unified chat feed,
+ * contacts, internal notes, unanswered tracking. Module 002 (FR-033..FR-038).
+ */
+class Crm {
+
+    /**
+     * Find or create the company card for an incoming message.
+     * $hints: inn, name, email, contact_person, phone
+     * Match order (C-012): INN → corporate email domain → normalized name.
+     */
+    public static function resolveCounterparty(array $hints): ?int {
+        $inn    = self::cleanInn($hints['inn'] ?? '');
+        $name   = trim((string)($hints['name'] ?? ''));
+        $email  = trim((string)($hints['email'] ?? ''));
+        $domain = self::corporateDomain($email);
+
+        $found = null;
+
+        if ($inn) {
+            $found = Db::one("SELECT id FROM counterparties WHERE inn = ? AND merged_into_id IS NULL", [$inn]);
+        }
+        if (!$found && $domain) {
+            $found = Db::one("SELECT id FROM counterparties WHERE email_domain = ? AND merged_into_id IS NULL", [$domain]);
+        }
+        if (!$found && $name !== '') {
+            $norm = normalizeCompanyName($name);
+            if ($norm !== '') {
+                $found = Db::one("SELECT id FROM counterparties WHERE name_normalized = ? AND merged_into_id IS NULL", [$norm]);
+            }
+        }
+
+        if ($found) {
+            $id = self::rootId((int)$found['id']);
+            // Enrich the card with anything new we learned
+            $fields = [];
+            $cp = Db::one("SELECT * FROM counterparties WHERE id=?", [$id]);
+            if ($inn && empty($cp['inn'])) $fields['inn'] = $inn;
+            if ($domain && empty($cp['email_domain'])) $fields['email_domain'] = $domain;
+            if ($email && empty($cp['contact_email'])) $fields['contact_email'] = $email;
+            if ($name !== '' && empty($cp['name_normalized'])) $fields['name_normalized'] = normalizeCompanyName($cp['name']);
+            if ($fields) {
+                $fields['updated_at'] = date('Y-m-d H:i:s');
+                Db::update('counterparties', $fields, 'id=?', [$id]);
+            }
+            return $id;
+        }
+
+        if ($name === '' && $email === '') return null;
+
+        return Db::insert('counterparties', [
+            'name'            => $name !== '' ? $name : $email,
+            'name_normalized' => normalizeCompanyName($name !== '' ? $name : $email),
+            'inn'             => $inn ?: null,
+            'email_domain'    => $domain,
+            'contact_person'  => $hints['contact_person'] ?? null,
+            'contact_email'   => $email ?: null,
+            'contact_phone'   => $hints['phone'] ?? null,
+        ]);
+    }
+
+    // Follow the merge chain to the surviving card
+    public static function rootId(int $id): int {
+        $guard = 0;
+        while ($guard++ < 10) {
+            $row = Db::one("SELECT merged_into_id FROM counterparties WHERE id=?", [$id]);
+            if (!$row || empty($row['merged_into_id'])) return $id;
+            $id = (int)$row['merged_into_id'];
+        }
+        return $id;
+    }
+
+    // Record a contact person of the company (FR-035)
+    public static function upsertContact(int $counterpartyId, ?string $name, ?string $email, ?string $phone = null): void {
+        $email = $email ? mb_strtolower(trim($email)) : null;
+        if (!$email) return;
+
+        $existing = Db::one("SELECT id, name FROM contacts WHERE counterparty_id=? AND email=?", [$counterpartyId, $email]);
+        if ($existing) {
+            $fields = ['last_seen_at' => date('Y-m-d H:i:s')];
+            if ($name && empty($existing['name'])) $fields['name'] = $name;
+            if ($phone) $fields['phone'] = $phone;
+            Db::update('contacts', $fields, 'id=?', [$existing['id']]);
+            Db::q("UPDATE contacts SET messages_count = messages_count + 1 WHERE id=?", [$existing['id']]);
+            return;
+        }
+        Db::insert('contacts', [
+            'counterparty_id' => $counterpartyId,
+            'name'            => $name ?: null,
+            'email'           => $email,
+            'phone'           => $phone ?: null,
+            'messages_count'  => 1,
+        ]);
+    }
+
+    /**
+     * Append an event to the company feed and keep answer tracking current.
+     * $direction: in | out | note. $opts: request_id, subject, email_from, email_to,
+     * manager_id, event_type (system events), meta (array).
+     */
+    public static function logEvent(?int $counterpartyId, string $direction, string $body, array $opts = []): int {
+        $id = Db::insert('correspondence', [
+            'request_id'      => $opts['request_id'] ?? null,
+            'counterparty_id' => $counterpartyId,
+            'direction'       => $direction,
+            'subject'         => $opts['subject'] ?? null,
+            'body'            => $body,
+            'email_from'      => $opts['email_from'] ?? null,
+            'email_to'        => $opts['email_to'] ?? null,
+            'manager_id'      => $opts['manager_id'] ?? null,
+            'event_type'      => $opts['event_type'] ?? null,
+            'meta_json'       => isset($opts['meta']) ? json_encode($opts['meta'], JSON_UNESCAPED_UNICODE) : null,
+        ]);
+
+        if ($counterpartyId) {
+            // Notes are not answers (FR-038); system events are not either
+            $now = date('Y-m-d H:i:s');
+            if ($direction === 'in') {
+                Db::update('counterparties', ['last_inbound_at' => $now], 'id=?', [$counterpartyId]);
+            } elseif ($direction === 'out') {
+                Db::update('counterparties', ['last_outbound_at' => $now], 'id=?', [$counterpartyId]);
+            }
+        }
+        return $id;
+    }
+
+    // Unified chat feed for a company (FR-033)
+    public static function chat(int $counterpartyId, int $limit = 50, int $offset = 0): array {
+        $rows = Db::all(
+            "SELECT c.id, c.direction, c.event_type, c.subject, c.body, c.email_from, c.email_to,
+                    c.request_id, c.created_at, c.meta_json, m.name as manager_name
+             FROM correspondence c
+             LEFT JOIN managers m ON c.manager_id = m.id
+             WHERE c.counterparty_id = ?
+             ORDER BY c.created_at DESC, c.id DESC
+             LIMIT ? OFFSET ?",
+            [$counterpartyId, $limit, $offset]
+        );
+
+        $ids = array_column($rows, 'id');
+        $attachments = [];
+        if ($ids) {
+            $in = implode(',', array_fill(0, count($ids), '?'));
+            foreach (Db::all("SELECT id, correspondence_id, filename, size, extract_status FROM attachments WHERE correspondence_id IN ($in)", $ids) as $a) {
+                $attachments[$a['correspondence_id']][] = $a;
+            }
+        }
+
+        foreach ($rows as &$r) {
+            $r['attachments'] = $attachments[$r['id']] ?? [];
+            $r['meta'] = $r['meta_json'] ? json_decode($r['meta_json'], true) : null;
+            unset($r['meta_json']);
+        }
+        unset($r);
+
+        return array_reverse($rows); // oldest first, chat style
+    }
+
+    public static function chatCount(int $counterpartyId): int {
+        return (int)Db::val("SELECT COUNT(*) FROM correspondence WHERE counterparty_id=?", [$counterpartyId]);
+    }
+
+    public static function contacts(int $counterpartyId): array {
+        return Db::all(
+            "SELECT id, name, email, phone, messages_count, first_seen_at, last_seen_at
+             FROM contacts WHERE counterparty_id=? ORDER BY last_seen_at DESC",
+            [$counterpartyId]
+        );
+    }
+
+    // Email to prefill when sending an invoice: latest contact of the company
+    public static function primaryEmail(int $counterpartyId): ?string {
+        $c = Db::one("SELECT email FROM contacts WHERE counterparty_id=? ORDER BY last_seen_at DESC LIMIT 1", [$counterpartyId]);
+        if ($c && $c['email']) return $c['email'];
+        $cp = Db::one("SELECT contact_email FROM counterparties WHERE id=?", [$counterpartyId]);
+        return $cp['contact_email'] ?? null;
+    }
+
+    /**
+     * Unanswered state (FR-038): last event is inbound with no outbound after it.
+     * Returns ['unanswered' => bool, 'hours' => int, 'level' => 'none|warn|critical'].
+     */
+    public static function answerState(?string $lastInbound, ?string $lastOutbound): array {
+        if (!$lastInbound) return ['unanswered' => false, 'hours' => 0, 'level' => 'none'];
+        if ($lastOutbound && strtotime($lastOutbound) >= strtotime($lastInbound)) {
+            return ['unanswered' => false, 'hours' => 0, 'level' => 'none'];
+        }
+        $hours = (int)floor((time() - strtotime($lastInbound)) / 3600);
+        static $critical = null;
+        if ($critical === null) {
+            $critical = (int)(Db::val("SELECT value FROM settings WHERE key='unanswered_critical_h'") ?: 24);
+        }
+        return [
+            'unanswered' => true,
+            'hours'      => $hours,
+            'level'      => $hours >= $critical ? 'critical' : 'warn',
+        ];
+    }
+
+    // Merge two company cards (FR-037). Everything moves to $targetId.
+    public static function merge(int $sourceId, int $targetId): void {
+        if ($sourceId === $targetId) throw new RuntimeException('Нельзя объединить карточку с самой собой');
+        $source = Db::one("SELECT * FROM counterparties WHERE id=?", [$sourceId]);
+        $target = Db::one("SELECT * FROM counterparties WHERE id=?", [$targetId]);
+        if (!$source || !$target) throw new RuntimeException('Карточка не найдена');
+
+        Db::begin();
+        try {
+            foreach (['requests', 'proposals', 'correspondence', 'attachments', 'orders', 'invoices', 'followups'] as $t) {
+                Db::q("UPDATE $t SET counterparty_id=? WHERE counterparty_id=?", [$targetId, $sourceId]);
+            }
+            // Contacts: skip duplicates by email, then move the rest
+            Db::q("DELETE FROM contacts WHERE counterparty_id=? AND email IN (SELECT email FROM contacts WHERE counterparty_id=?)", [$sourceId, $targetId]);
+            Db::q("UPDATE contacts SET counterparty_id=? WHERE counterparty_id=?", [$targetId, $sourceId]);
+
+            $fields = ['merged_into_id' => $targetId, 'updated_at' => date('Y-m-d H:i:s')];
+            Db::update('counterparties', $fields, 'id=?', [$sourceId]);
+
+            // Target inherits missing identity fields
+            $inherit = [];
+            foreach (['inn', 'email_domain', 'contact_email', 'contact_phone', 'contact_person', 'moysklad_id'] as $f) {
+                if (empty($target[$f]) && !empty($source[$f])) $inherit[$f] = $source[$f];
+            }
+            if ($inherit) Db::update('counterparties', $inherit, 'id=?', [$targetId]);
+
+            self::recalcAnswerState($targetId);
+            Db::commit();
+        } catch (Throwable $e) {
+            Db::rollback();
+            throw $e;
+        }
+    }
+
+    // Split one contact out into its own company card (FR-037)
+    public static function splitContact(int $counterpartyId, string $email): int {
+        $email = mb_strtolower(trim($email));
+        $contact = Db::one("SELECT * FROM contacts WHERE counterparty_id=? AND email=?", [$counterpartyId, $email]);
+        if (!$contact) throw new RuntimeException('Контакт не найден в этой карточке');
+        $source = Db::one("SELECT * FROM counterparties WHERE id=?", [$counterpartyId]);
+
+        Db::begin();
+        try {
+            $newId = Db::insert('counterparties', [
+                'name'            => $contact['name'] ?: $email,
+                'name_normalized' => normalizeCompanyName($contact['name'] ?: $email),
+                'contact_person'  => $contact['name'],
+                'contact_email'   => $email,
+                'contact_phone'   => $contact['phone'],
+                'notes'           => 'Отделено от карточки «' . $source['name'] . '»',
+            ]);
+
+            Db::q("UPDATE contacts SET counterparty_id=? WHERE id=?", [$newId, $contact['id']]);
+            Db::q("UPDATE correspondence SET counterparty_id=? WHERE counterparty_id=? AND lower(email_from)=?", [$newId, $counterpartyId, $email]);
+            Db::q("UPDATE requests SET counterparty_id=? WHERE counterparty_id=? AND lower(email_from)=?", [$newId, $counterpartyId, $email]);
+
+            self::recalcAnswerState($counterpartyId);
+            self::recalcAnswerState($newId);
+            Db::commit();
+            return $newId;
+        } catch (Throwable $e) {
+            Db::rollback();
+            throw $e;
+        }
+    }
+
+    // Recompute last inbound/outbound timestamps from the feed
+    public static function recalcAnswerState(int $counterpartyId): void {
+        $in  = Db::val("SELECT MAX(created_at) FROM correspondence WHERE counterparty_id=? AND direction='in'", [$counterpartyId]);
+        $out = Db::val("SELECT MAX(created_at) FROM correspondence WHERE counterparty_id=? AND direction='out'", [$counterpartyId]);
+        Db::update('counterparties', [
+            'last_inbound_at'  => $in ?: null,
+            'last_outbound_at' => $out ?: null,
+        ], 'id=?', [$counterpartyId]);
+    }
+
+    // Corporate domain of an email, or null for public providers (C-012)
+    public static function corporateDomain(string $email): ?string {
+        if (!$email || !str_contains($email, '@')) return null;
+        $domain = mb_strtolower(trim(explode('@', $email)[1]));
+        if ($domain === '' || in_array($domain, publicEmailDomains(), true)) return null;
+        return $domain;
+    }
+
+    // INN is 10 (org) or 12 (individual) digits
+    public static function cleanInn(string $inn): ?string {
+        $digits = preg_replace('/\D+/', '', $inn);
+        return preg_match('/^\d{10}$|^\d{12}$/', (string)$digits) ? $digits : null;
+    }
+}

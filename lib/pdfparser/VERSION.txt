@@ -1,0 +1,1 @@
+v2.12.0 (LGPL-3.0) vendored from github.com/smalot/pdfparser — PSR-0 autoloaded by lib/attachments.php

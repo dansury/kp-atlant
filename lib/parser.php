@@ -5,24 +5,54 @@
  */
 class RequestParser {
 
-    // Parse request text into structured data
-    public static function parse(string $text): array {
+    /**
+     * Parse request text into structured data and classify its type (C-009).
+     * $attachmentText — text extracted from email attachments (FR-022).
+     */
+    public static function parse(string $text, string $attachmentText = ''): array {
         $system = <<<PROMPT
-You parse commercial requests for tactical equipment. Extract structured data from Russian text.
+You parse incoming B2B messages for a tactical equipment supplier. Input is Russian.
 Return JSON with fields:
+- request_type: "order" | "kp_request"
+- type_confidence: number 0..1
+- type_reason: short Russian phrase explaining the classification
 - org_name: organization name (string or null)
+- inn: INN of the client organization, digits only (string or null)
 - contact_person: contact name (string or null)
 - contact_email: email if present (string or null)
+- contact_phone: phone if present (string or null)
 - delivery_terms: delivery conditions if mentioned (string or null)
 - items: array of {name: string, qty: int, raw_text: string}
 
-Rules:
+Classification rules:
+- "order" = the client is placing an order or confirming a purchase: "просим отгрузить",
+  "заявка на поставку", "подтверждаем заказ", "просим выставить счёт", "оплатим по счёту",
+  signed КП / спецификация / заявка attached, client requisites given for invoicing.
+- "kp_request" = the client is asking for a quote: "просим выставить КП", "прошу рассчитать
+  стоимость", "интересует цена", "пришлите коммерческое предложение".
+- If both readings fit, prefer "kp_request" and lower type_confidence.
+
+Extraction rules:
+- Text after "--- Вложение: <name> ---" comes from an attached file; treat it as part of the request.
+- Positions may appear ONLY in an attachment (спецификация, заявка) — extract them there.
 - Normalize product names: expand abbreviations (бж=бронежилет, ИРП=индивидуальный рацион питания)
 - qty defaults to 1 if not specified
 - raw_text = original text fragment for this item
+- Do NOT take the supplier's own INN (Atlant Armour / ИП Сурков) as the client INN
 - If no items found, return empty items array
 PROMPT;
-        return LLM::chatJson($system, $text);
+
+        $user = $text;
+        if (trim($attachmentText) !== '') {
+            $user .= "\n\n===== ТЕКСТ ВЛОЖЕНИЙ =====\n" . $attachmentText;
+        }
+
+        $parsed = LLM::chatJson($system, $user);
+
+        // Normalize the type so the rest of the system can rely on it
+        $type = ($parsed['request_type'] ?? '') === 'order' ? 'order' : 'kp_request';
+        $parsed['request_type'] = $type;
+        return $parsed;
     }
 
     // Generate cover letter for KP

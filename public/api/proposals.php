@@ -9,6 +9,7 @@ require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/pdf.php';
 require_once ROOT . '/lib/email.php';
 require_once ROOT . '/lib/notifier.php';
+require_once ROOT . '/lib/crm.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -208,17 +209,17 @@ switch ($action) {
         $sender = new EmailSender($cfg);
         $sender->send($to, $subject, $htmlBody, $proposal['pdf_path'], basename($proposal['pdf_path']));
 
-        // Save correspondence
-        Db::insert('correspondence', [
+        // Feed entry — an outbound message clears the unanswered highlight (FR-038)
+        $manager = currentManager();
+        Crm::logEvent($proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null, 'out', $body, [
             'request_id' => $proposal['request_id'],
-            'counterparty_id' => $proposal['counterparty_id'],
-            'direction' => 'out',
-            'subject' => $subject,
-            'body' => $body,
-            'email_to' => $to,
-            'has_attachment' => 1,
-            'attachment_path' => $proposal['pdf_path'],
+            'subject'    => $subject,
+            'email_to'   => $to,
+            'manager_id' => $manager['id'] ?? null,
+            'event_type' => 'kp_sent',
+            'meta'       => ['proposal_id' => (int)$id, 'pdf' => basename($proposal['pdf_path'])],
         ]);
+        Db::q("UPDATE correspondence SET has_attachment=1, attachment_path=? WHERE id=(SELECT MAX(id) FROM correspondence)", [$proposal['pdf_path']]);
 
         $now = date('Y-m-d H:i:s');
         Db::update('proposals', ['status' => 'sent', 'sent_at' => $now, 'updated_at' => $now], 'id=?', [$id]);

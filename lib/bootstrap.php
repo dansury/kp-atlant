@@ -32,6 +32,9 @@ if (!Db::hasTable('managers')) {
     initSchema();
 }
 
+// Apply incremental migrations (module 002 and later)
+runMigrations();
+
 function initSchema(): void {
     $sql = <<<'SQL'
     CREATE TABLE IF NOT EXISTS managers (
@@ -232,6 +235,166 @@ SQL;
 
     // Seed defaults
     seedDefaults();
+}
+
+// Incremental schema migrations. Safe to run on every request (cheap checks).
+function runMigrations(): void {
+    $current = (int)(Db::val("SELECT value FROM settings WHERE key='schema_version'") ?: 1);
+
+    // v2 — module 002: orders, invoices, attachments, contacts, company chat
+    if ($current < 2) {
+        // Request type: KP request vs order (FR-023, FR-024)
+        Db::ensureColumn('requests', 'type', 'TEXT', "'kp_request'");
+        Db::ensureColumn('requests', 'type_source', 'TEXT', "'llm'");
+
+        // Company merge keys and answer tracking (FR-034, FR-038)
+        Db::ensureColumn('counterparties', 'email_domain', 'TEXT');
+        Db::ensureColumn('counterparties', 'name_normalized', 'TEXT');
+        Db::ensureColumn('counterparties', 'merged_into_id', 'INTEGER');
+        Db::ensureColumn('counterparties', 'last_inbound_at', 'TEXT');
+        Db::ensureColumn('counterparties', 'last_outbound_at', 'TEXT');
+
+        // Chat feed: note author and system events (FR-033, FR-036)
+        Db::ensureColumn('correspondence', 'manager_id', 'INTEGER');
+        Db::ensureColumn('correspondence', 'event_type', 'TEXT');
+        Db::ensureColumn('correspondence', 'meta_json', 'TEXT');
+
+        $sql = <<<'SQL'
+        CREATE TABLE IF NOT EXISTS contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+            name TEXT,
+            email TEXT,
+            phone TEXT,
+            first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            messages_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_cp_email ON contacts(counterparty_id, email);
+
+        CREATE TABLE IF NOT EXISTS attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            correspondence_id INTEGER REFERENCES correspondence(id),
+            request_id INTEGER REFERENCES requests(id),
+            counterparty_id INTEGER REFERENCES counterparties(id),
+            filename TEXT NOT NULL,
+            path TEXT NOT NULL,
+            mime TEXT,
+            size INTEGER,
+            extracted_text TEXT,
+            extract_status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(extract_status IN ('pending','ok','ocr','empty','skipped','failed')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_attach_request ON attachments(request_id);
+        CREATE INDEX IF NOT EXISTS idx_attach_corr ON attachments(correspondence_id);
+
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER REFERENCES requests(id),
+            proposal_id INTEGER REFERENCES proposals(id),
+            counterparty_id INTEGER REFERENCES counterparties(id),
+            manager_id INTEGER REFERENCES managers(id),
+            moysklad_id TEXT NOT NULL UNIQUE,
+            name TEXT,
+            moment TEXT,
+            sum REAL DEFAULT 0,
+            state_name TEXT,
+            description TEXT,
+            positions_json TEXT,
+            moysklad_updated_at TEXT,
+            synced_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_orders_cp ON orders(counterparty_id);
+        CREATE INDEX IF NOT EXISTS idx_orders_request ON orders(request_id);
+
+        CREATE TABLE IF NOT EXISTS invoices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER REFERENCES orders(id),
+            counterparty_id INTEGER REFERENCES counterparties(id),
+            moysklad_id TEXT NOT NULL UNIQUE,
+            name TEXT,
+            moment TEXT,
+            sum REAL DEFAULT 0,
+            payed_sum REAL DEFAULT 0,
+            state_name TEXT,
+            pdf_path TEXT,
+            moysklad_updated_at TEXT,
+            synced_at TEXT,
+            sent_at TEXT,
+            sent_to TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_invoices_cp ON invoices(counterparty_id);
+        CREATE INDEX IF NOT EXISTS idx_invoices_order ON invoices(order_id);
+
+        CREATE TABLE IF NOT EXISTS webhook_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT,
+            action TEXT,
+            moysklad_id TEXT,
+            payload TEXT,
+            result TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+SQL;
+        Db::pdo()->exec($sql);
+
+        // Webhook secret + module defaults
+        $defaults = [
+            'moysklad_webhook_secret' => bin2hex(random_bytes(16)),
+            'ocr_enabled'             => '1',
+            'ocr_max_pages'           => '3',
+            'attachment_max_mb'       => '10',
+            'unanswered_critical_h'   => '24',
+            'invoice_email_subject'   => 'Счёт на оплату от Atlant Armour',
+        ];
+        foreach ($defaults as $k => $v) {
+            Db::q("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [$k, $v]);
+        }
+
+        // Backfill merge keys for existing counterparties
+        foreach (Db::all("SELECT id, name, contact_email FROM counterparties") as $cp) {
+            $domain = null;
+            if (!empty($cp['contact_email']) && str_contains($cp['contact_email'], '@')) {
+                $domain = mb_strtolower(trim(explode('@', $cp['contact_email'])[1]));
+                if (in_array($domain, publicEmailDomains(), true)) $domain = null;
+            }
+            Db::update('counterparties', [
+                'email_domain'    => $domain,
+                'name_normalized' => normalizeCompanyName($cp['name']),
+            ], 'id=?', [$cp['id']]);
+        }
+
+        // Storage folders for attachments and invoice printforms
+        foreach ([ROOT . '/storage/attachments', ROOT . '/storage/invoices'] as $dir) {
+            if (!is_dir($dir)) @mkdir($dir, 0755, true);
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '2')");
+        $current = 2;
+    }
+}
+
+// Public mail providers never used to merge companies (C-012)
+function publicEmailDomains(): array {
+    return [
+        'mail.ru','inbox.ru','bk.ru','list.ru','internet.ru',
+        'yandex.ru','ya.ru','yandex.com',
+        'gmail.com','googlemail.com','outlook.com','hotmail.com','live.com',
+        'rambler.ru','icloud.com','me.com','proton.me','protonmail.com',
+        'bcc.ru','vk.com','sberbank.ru',
+    ];
+}
+
+// Normalize company name for matching: drop legal form, quotes, case
+function normalizeCompanyName(string $name): string {
+    $n = mb_strtolower($name);
+    $n = preg_replace('/["\x{00AB}\x{00BB}\x{2018}\x{2019}\x{201C}\x{201D}\x{0027}]/u', '', $n);
+    $n = preg_replace('/\b(ооо|оао|зао|пао|ао|ип|нко|фгуп|гуп|мбу|гбу|ано|нао)\b/u', '', $n);
+    $n = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $n);
+    return trim(preg_replace('/\s+/u', ' ', $n));
 }
 
 function seedDefaults(): void {
