@@ -23,6 +23,11 @@
     RewriteRule ^composer\.(json|lock)$ - [F,L]
     RewriteRule ^pull-config\.php$ - [F,L]
     RewriteRule ^\.gitignore$ - [F,L]
+
+    # Maintenance / CLI scripts — never reachable over HTTP
+    RewriteRule ^create_manager\.php$ - [F,L]
+    RewriteRule ^reset_admin\.php$ - [F,L]
+    RewriteRule ^_to_delete/ - [F,L]
     RewriteRule ^claude\.md$ - [F,L]
     RewriteRule ^spec\.md$ - [F,L]
     RewriteRule \.md$ - [F,L]

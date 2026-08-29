@@ -12,36 +12,36 @@ return [
     // --- Managers (seeded on first run) ---
     // Each entry: login => [password, display name, email, is_admin]
     'MANAGERS' => [
-         'admin' => ['lika1231', 'Яна', 'atlant.armour@yandex.ru', true],
-		 'petr' => ['petratlant', 'Петр', 'atlant.armour@yandex.ru', false],
+         'admin' => ['CHANGE_ME', 'Имя менеджера', 'mail@example.com', true],
+		 // 'petr' => ['CHANGE_ME', 'Пётр', 'mail@example.com', false],
         // 'ivanov' => ['pass123', 'Иванов И.И.', 'ivanov@example.com', false],
     ],
 
     // --- LLM ---
     'LLM_PROVIDER_PRIORITY' => 'yandex',
     'LLM_TIMEOUT_SEC'       => 30,
-    'OPENROUTER_API_KEY'    => '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',
+    'OPENROUTER_API_KEY'    => '',
     'OPENROUTER_MODEL'      => 'google/gemini-2.5-flash',
-    'YANDEX_API_KEY'        => 'AQVNwk7Wd67tHzOR-p2FKXfuzImMUeqeGt-yqGsq',
-    'YANDEX_FOLDER_ID'      => 'b1gevvro8frl0d208mon',
+    'YANDEX_API_KEY'        => '',
+    'YANDEX_FOLDER_ID'      => '',
     'YANDEX_MODEL'          => 'yandexgpt/latest',
 
     // --- МойСклад ---
-    'MOYSKLAD_TOKEN'  => '2fd26cc39566866db3b0d33adfa66d189b9b8c56',
-    'MOYSKLAD_ORG_ID' => '1b3d3013-eb2f-11f0-0a80-13a900844344',
+    'MOYSKLAD_TOKEN'  => '',
+    'MOYSKLAD_ORG_ID' => '',
 
      // IMAP (incoming email)
     'IMAP_HOST'     => 'smtp.spaceweb.ru',
     'IMAP_PORT'     => 993,
     'IMAP_USER'     => 'info@atlant-armour.ru',
-    'IMAP_PASSWORD' => 'Volokolamskoe73',
+    'IMAP_PASSWORD' => '',
     'IMAP_ENCRYPTION' => 'ssl',
 
     // SMTP (outgoing email)
     'SMTP_HOST'       => 'smtp.spaceweb.ru',
     'SMTP_PORT'       => 465,
     'SMTP_USER'       => 'info@atlant-armour.ru',
-    'SMTP_PASSWORD'   => 'Volokolamskoe73',
+    'SMTP_PASSWORD'   => '',
     'SMTP_ENCRYPTION' => 'ssl',
     'SMTP_FROM_NAME'  => 'Atlant Armour',
     'SMTP_FROM_EMAIL' => 'info@atlant-armour.ru',

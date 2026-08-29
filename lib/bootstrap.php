@@ -21,6 +21,9 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/llm.php';
 require_once __DIR__ . '/auth.php';
 
+// Start the session once, before anything can emit output
+startSession();
+
 // Init DB
 Db::init($cfg['DB_PATH'] ?? ROOT . '/data/kp.db');
 
@@ -34,6 +37,9 @@ if (!Db::hasTable('managers')) {
 
 // Apply incremental migrations (module 002 and later)
 runMigrations();
+
+// Keep managers in sync with config.php (password edits take effect)
+syncManagersFromConfig($cfg);
 
 function initSchema(): void {
     $sql = <<<'SQL'
@@ -239,6 +245,8 @@ SQL;
 
 // Incremental schema migrations. Safe to run on every request (cheap checks).
 function runMigrations(): void {
+    // Older DBs may predate the settings table
+    Db::q("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     $current = (int)(Db::val("SELECT value FROM settings WHERE key='schema_version'") ?: 1);
 
     // v2 — module 002: orders, invoices, attachments, contacts, company chat
@@ -467,17 +475,66 @@ MD;
     }
 }
 
+// Sync managers from config.php into the DB. config.php is the single source
+// of truth for logins/passwords: an edit there takes effect on the next
+// request. A per-login fingerprint keeps this cheap (no bcrypt when unchanged).
+function syncManagersFromConfig(array $cfg): void {
+    $managers = $cfg['MANAGERS'] ?? [];
+    if (!$managers) return;
+
+    foreach ($managers as $login => $info) {
+        $login = trim((string)$login);
+        if ($login === '') continue;
+
+        $pass    = (string)($info[0] ?? '');
+        $name    = $info[1] ?? $login;
+        $email   = $info[2] ?? null;
+        $isAdmin = !empty($info[3]) ? 1 : 0;
+        if ($pass === '') continue;
+
+        $fpKey = 'manager_fp_' . $login;
+        $fp    = hash('sha256', serialize([$pass, $name, $email, $isAdmin]));
+        $row   = Db::one("SELECT id FROM managers WHERE login=?", [$login]);
+
+        // Nothing changed and the row still exists -> skip
+        if ($row && Db::val("SELECT value FROM settings WHERE key=?", [$fpKey]) === $fp) continue;
+
+        $data = [
+            'password_hash' => Auth::hashPassword($pass),
+            'name'          => $name,
+            'email'         => $email,
+            'is_admin'      => $isAdmin,
+        ];
+        if ($row) {
+            Db::update('managers', $data, 'id=?', [$row['id']]);
+        } else {
+            Db::insert('managers', $data + ['login' => $login]);
+        }
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [$fpKey, $fp]);
+    }
+}
+
+// Start the PHP session with consistent cookie flags. Safe to call repeatedly.
+function startSession(): void {
+    if (PHP_SAPI === 'cli') return;                       // cron/CLI has no session
+    if (session_status() === PHP_SESSION_ACTIVE) return;
+    if (headers_sent()) return;
+    $https = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+        || (strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https')
+        || ((int)($_SERVER['SERVER_PORT'] ?? 0) === 443);
+    session_set_cookie_params([
+        'lifetime' => $GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400,
+        'path'     => '/',
+        'httponly' => true,
+        'secure'   => $https,   // must be false on plain HTTP, or the cookie is dropped
+        'samesite' => 'Lax',    // Strict drops the cookie on external return links
+    ]);
+    session_start();
+}
+
 // Auth helper: get current manager from session
 function currentManager(): ?array {
-    if (session_status() !== PHP_SESSION_ACTIVE) {
-        session_set_cookie_params([
-            'lifetime' => $GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400,
-            'httponly' => true,
-            'secure' => true,
-            'samesite' => 'Strict',
-        ]);
-        session_start();
-    }
+    startSession();
     $id = $_SESSION['manager_id'] ?? null;
     if (!$id) return null;
     return Db::one("SELECT id, login, name, email, is_admin, moysklad_uid FROM managers WHERE id=?", [$id]);

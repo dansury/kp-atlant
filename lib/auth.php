@@ -6,11 +6,14 @@ class Auth {
 
     // Verify login credentials
     public static function login(string $login, string $password): ?array {
-        $manager = Db::one("SELECT * FROM managers WHERE login=?", [$login]);
+        $manager = Db::one("SELECT * FROM managers WHERE login=?", [trim($login)]);
         if (!$manager) return null;
         if (!password_verify($password, $manager['password_hash'])) return null;
 
-        session_regenerate_id(true);
+        // The session must be running before $_SESSION is written, otherwise
+        // the login is silently lost and the user bounces back to the form.
+        startSession();
+        if (session_status() === PHP_SESSION_ACTIVE) session_regenerate_id(true);
         $_SESSION['manager_id'] = $manager['id'];
 
         return [
@@ -22,6 +25,7 @@ class Auth {
 
     // Logout
     public static function logout(): void {
+        startSession();
         $_SESSION = [];
         if (ini_get('session.use_cookies')) {
             $p = session_get_cookie_params();
