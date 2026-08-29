@@ -36,6 +36,13 @@ switch ($action) {
         $start = microtime(true);
         $count = MoySklad::refreshProductCache();
         $elapsed = round(microtime(true) - $start, 2);
+        // 0 products is not success — surface why the API returned nothing
+        if ($count === 0) {
+            $h = MoySklad::lastHttp();
+            jsonError('Каталог не загружен: МойСклад вернул HTTP ' . $h['code']
+                . ($h['body'] !== '' ? ' — ' . $h['body'] : '')
+                . '. Проверьте MOYSKLAD_TOKEN в config.php на сервере.', 400);
+        }
         jsonOk(['count' => $count, 'elapsed_sec' => $elapsed]);
 
     default:

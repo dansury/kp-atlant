@@ -867,7 +867,8 @@ const App = {
             const yes = v => v ? '<span class="ok">есть</span>' : '<span class="no">нет</span>';
             card.innerHTML = `
                 <div class="card__title">Интеграция с МойСклад</div>
-                ${d.error ? `<p class="no">${this.esc(d.error)}</p>` : ''}
+                ${d.ms_error ? `<p class="no">${this.esc(d.ms_error)}</p>` : ''}
+                ${d.diag ? `<p class="muted">Токен в config.php на сервере: длина ${d.diag.token_len}, конец «…${this.esc(d.diag.token_tail)}»${Object.entries(d.diag.probes || {}).map(([k, v]) => ` · ${k}: HTTP ${v.code}`).join('')}</p>` : ''}
                 <p>Товары: ${yes(p.products)} · Контрагенты: ${yes(p.counterparties)} · Заказы: ${yes(p.orders_write)}
                    · Счета: ${yes(p.invoices)} · Вебхуки: ${yes(p.webhooks)}</p>
                 <p class="muted">Адрес вебхука: <code>${this.esc(d.webhook_url)}</code></p>

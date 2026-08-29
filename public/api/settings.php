@@ -111,7 +111,9 @@ switch ($action) {
 
         jsonData([
             'permissions'  => $perms,
-            'error'        => $error,
+            // NOT 'error': the JS api() helper treats a top-level `error` as a failed request
+            'ms_error'     => $error,
+            'diag'         => MoySklad::getDiagnostics(),
             'webhook_url'  => $appUrl . '/api/moysklad_hook.php?secret=' . $secret,
             'webhooks'     => $hooks,
             'app_url_ok'   => str_starts_with($appUrl, 'https://'),

@@ -7,6 +7,9 @@ class MoySklad {
     private static string $token = '';
     private static string $base = 'https://api.moysklad.ru/api/remap/1.2';
     private static array $permissions = [];
+    // Last HTTP response, for diagnostics
+    private static array $lastHttp = ['code' => 0, 'body' => '', 'path' => ''];
+    private static array $diag = [];
 
     public static function init(string $token): void {
         self::$token = $token;
@@ -17,13 +20,17 @@ class MoySklad {
         $perms = ['products' => false, 'counterparties' => false, 'orders_read' => false,
                   'orders_write' => false, 'stock' => false, 'invoices' => false, 'webhooks' => false];
 
+        self::$diag = [];
+
         // Products — required
         $r = self::get('/entity/product?limit=1');
         $perms['products'] = ($r !== null);
+        self::$diag['products'] = self::$lastHttp;
 
         // Counterparties — required
         $r = self::get('/entity/counterparty?limit=1');
         $perms['counterparties'] = ($r !== null);
+        self::$diag['counterparties'] = self::$lastHttp;
 
         // Orders read
         $r = self::get('/entity/customerorder?limit=1');
@@ -45,7 +52,21 @@ class MoySklad {
         $perms['orders_write'] = $perms['orders_read']; // assume if read works
 
         if (!$perms['products'] || !$perms['counterparties']) {
-            throw new MoySkladException('MoySklad: no access to products or counterparties. Check API token.');
+            $codes = [];
+            foreach (self::$diag as $name => $d) $codes[] = $name . '=HTTP ' . $d['code'];
+            $code = (int)(self::$diag['products']['code'] ?? 0);
+            $hint = match (true) {
+                $code === 401 => 'токен неверный, отозван или не тот скопирован',
+                $code === 403 => 'у сотрудника, чей токен используется, нет прав на товары/контрагентов',
+                $code === 0   => 'запрос до api.moysklad.ru не дошёл (сеть/файрвол хостинга)',
+                default       => 'см. ответ API',
+            };
+            $body = trim((string)(self::$diag['products']['body'] ?? ''));
+            throw new MoySkladException(
+                'МойСклад: нет доступа к товарам или контрагентам (' . implode(', ', $codes) . '). '
+                . 'Вероятная причина: ' . $hint . '.'
+                . ($body !== '' ? ' Ответ API: ' . $body : '')
+            );
         }
 
         self::$permissions = $perms;
@@ -54,6 +75,20 @@ class MoySklad {
 
     public static function getPermissions(): array {
         return self::$permissions;
+    }
+
+    // Diagnostics for the settings page: HTTP codes and MoySklad error text
+    public static function getDiagnostics(): array {
+        $t = self::$token;
+        return [
+            'token_len'  => strlen($t),
+            'token_tail' => $t === '' ? '' : substr($t, -4),
+            'probes'     => self::$diag,
+        ];
+    }
+
+    public static function lastHttp(): array {
+        return self::$lastHttp;
     }
 
     // Search products by name
@@ -436,9 +471,18 @@ class MoySklad {
             }
 
             $resp = curl_exec($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlErr = curl_error($ch);
             curl_close($ch);
 
+            // Keep the last response for diagnostics
+            self::$lastHttp = [
+                'code' => $code,
+                'body' => $curlErr !== '' ? ('curl: ' . $curlErr) : substr((string)$resp, 0, 500),
+                'path' => $path,
+            ];
+
+            if ($code === 401) return null; // invalid or revoked token
             if ($code === 403) return null; // permission denied — not an error to retry
             if ($code === 404) return null;
             if ($code >= 200 && $code < 300) return json_decode($resp, true);
