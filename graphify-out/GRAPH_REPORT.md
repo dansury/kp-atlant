@@ -102,29 +102,3 @@ The graph confirms the spec is well-structured and ready for the next pipeline s
    - MoySklad wrapper needs a caching + retry layer given its god-node status.
 
 3. **`/tasks`** → **`/implement`** — Implementation order follows community boundaries naturally.
-
----
-
-## Update 2026-08-28 — Module 002 (Orders, Invoice Sync & Company Chat)
-
-**Added**: 16 nodes, 20 edges. Graph now covers `specs/002-orders-crm-chat/spec.md` and US8–US11.
-
-### New components
-
-| Node | File | Role |
-|---|---|---|
-| Attachment Extractor | `lib/attachments.php` | Stores email attachments, extracts text from PDF/DOCX/XLSX/TXT, falls back to OCR for scans |
-| Company Chat & Identity | `lib/crm.php` | Glues companies by ИНН → корпоративный домен → название, unified feed, contacts, notes, answer state, merge/split |
-| MoySklad Sync | `lib/sync.php` | Local projection of orders and invoices, invoice printform cache, webhook registration |
-| Webhook Receiver | `public/api/moysklad_hook.php` | `customerorder` / `invoiceout` events, protected by a URL secret |
-
-### New externals
-
-- **smalot/pdfparser** — vendored under `lib/pdfparser/` (PSR-0, LGPL-3.0), autoloaded by `lib/attachments.php` rather than composer, so the shared host needs no `composer install`.
-- **Yandex Vision OCR** — reuses the existing `YANDEX_API_KEY` / `YANDEX_FOLDER_ID`; toggleable in settings.
-
-### Shifts in the graph
-
-- **MoySklad Integration remains the god node** and gets heavier: US8, US9 and the webhook receiver all hang off it. The mitigation is unchanged in shape but wider in scope — every new MoySklad-dependent feature degrades gracefully (FR-039): no webhook rights → pull on card open plus cron; no invoice rights → the invoice block simply stays empty.
-- **Counterparty grew into the hub of community 2.** It now owns contacts, the chat feed, merge links and answer state. `Crm::rootId()` is the single place that resolves merged cards — any new query against `counterparties` must go through it or it will read a tombstone.
-- **New coupling: Attachment Extractor → Request Parser.** Attachment text is now part of the LLM parse input, so a broken extractor silently degrades classification quality rather than failing loudly. Watch `extract_status` in the attachments table.

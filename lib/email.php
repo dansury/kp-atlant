@@ -31,7 +31,7 @@ class EmailReader {
         $messages = [];
         foreach ($ids as $id) {
             $header = imap_headerinfo($this->imap, $id);
-            [$body, $attachments] = $this->getBodyAndAttachments($id);
+            $body = $this->getBody($id);
             $messages[] = [
                 'uid' => imap_uid($this->imap, $id),
                 'message_id' => $header->message_id ?? '',
@@ -40,112 +40,33 @@ class EmailReader {
                 'subject' => $this->decodeMime($header->subject ?? ''),
                 'date' => date('Y-m-d H:i:s', strtotime($header->date)),
                 'body' => $body,
-                'attachments' => $attachments,
             ];
             imap_setflag_full($this->imap, (string)$id, '\\Seen');
         }
         return $messages;
     }
 
-    // Extract text body + attachments (FR-021)
-    private function getBodyAndAttachments(int $id): array {
+    // Extract plain text body
+    private function getBody(int $id): string {
         $struct = imap_fetchstructure($this->imap, $id);
-        $text = '';
-        $html = '';
-        $attachments = [];
-
-        if (empty($struct->parts)) {
-            $raw = imap_fetchbody($this->imap, $id, '1');
-            if (trim($raw) === '') $raw = imap_body($this->imap, $id);
-            $text = $this->toUtf8(
-                $this->decodeBody($raw, $struct->encoding ?? 0),
-                $this->partCharset($struct)
-            );
-        } else {
-            $this->walkParts($id, $struct->parts, '', $text, $html, $attachments);
+        // Simple text message
+        if ($struct->type === 0) {
+            $body = imap_fetchbody($this->imap, $id, '1');
+            return $this->decodeBody($body, $struct->encoding);
         }
-
-        // Fall back to HTML part when there is no text/plain
-        if (trim($text) === '' && $html !== '') {
-            $text = trim(html_entity_decode(
-                strip_tags(preg_replace('#<br[^>]*>|</p>#i', "\n", $html)),
-                ENT_QUOTES | ENT_HTML5,
-                'UTF-8'
-            ));
-        }
-
-        return [$text, $attachments];
-    }
-
-    // Recursive MIME walk: collects text, html and attachment parts
-    private function walkParts(int $id, array $parts, string $prefix, string &$text, string &$html, array &$attachments): void {
-        foreach ($parts as $i => $part) {
-            $section = $prefix === '' ? (string)($i + 1) : $prefix . '.' . ($i + 1);
-            $filename = $this->partFilename($part);
-            $disposition = strtolower($part->disposition ?? '');
-            $isAttachment = $filename !== '' || $disposition === 'attachment';
-
-            if (!empty($part->parts) && !$isAttachment) {
-                $this->walkParts($id, $part->parts, $section, $text, $html, $attachments);
-                continue;
-            }
-
-            if ($isAttachment) {
-                // Skip oversized attachments — the mailbox is not a file server
-                if (($part->bytes ?? 0) > 25 * 1024 * 1024) continue;
-                $raw = imap_fetchbody($this->imap, $id, $section);
-                $attachments[] = [
-                    'filename' => $filename !== '' ? $filename : "part-$section",
-                    'content'  => $this->decodeBody($raw, $part->encoding ?? 0),
-                    'mime'     => $this->partMime($part),
-                ];
-                continue;
-            }
-
-            if (($part->type ?? 1) !== 0) continue; // not text
-            $raw = imap_fetchbody($this->imap, $id, $section);
-            $decoded = $this->toUtf8($this->decodeBody($raw, $part->encoding ?? 0), $this->partCharset($part));
-            $subtype = strtoupper($part->subtype ?? '');
-            if ($subtype === 'PLAIN') {
-                $text .= ($text !== '' ? "\n" : '') . $decoded;
-            } elseif ($subtype === 'HTML') {
-                $html .= $decoded;
-            }
-        }
-    }
-
-    // Attachment filename from dparameters/parameters, MIME-decoded
-    private function partFilename(object $part): string {
-        foreach (['dparameters', 'parameters'] as $bag) {
-            foreach ($part->$bag ?? [] as $p) {
-                if (in_array(strtolower($p->attribute), ['filename', 'name'], true) && $p->value !== '') {
-                    return $this->decodeMime($p->value);
+        // Multipart — find text/plain
+        if ($struct->type === 1 && !empty($struct->parts)) {
+            foreach ($struct->parts as $i => $part) {
+                if ($part->subtype === 'PLAIN') {
+                    $body = imap_fetchbody($this->imap, $id, (string)($i + 1));
+                    return $this->decodeBody($body, $part->encoding);
                 }
             }
+            // Fallback: first part
+            $body = imap_fetchbody($this->imap, $id, '1');
+            return $this->decodeBody($body, $struct->parts[0]->encoding ?? 0);
         }
-        return '';
-    }
-
-    private function partCharset(object $part): string {
-        foreach ($part->parameters ?? [] as $p) {
-            if (strtolower($p->attribute) === 'charset') return $p->value;
-        }
-        return 'UTF-8';
-    }
-
-    private function partMime(object $part): string {
-        $types = ['text', 'multipart', 'message', 'application', 'audio', 'image', 'video', 'other'];
-        $type = $types[$part->type ?? 7] ?? 'application';
-        return $type . '/' . strtolower($part->subtype ?? 'octet-stream');
-    }
-
-    private function toUtf8(string $s, string $charset): string {
-        $charset = strtoupper(trim($charset));
-        if ($charset === '' || $charset === 'UTF-8' || $charset === 'US-ASCII') {
-            return mb_check_encoding($s, 'UTF-8') ? $s : mb_convert_encoding($s, 'UTF-8', 'Windows-1251');
-        }
-        $converted = @mb_convert_encoding($s, 'UTF-8', $charset);
-        return $converted !== false ? $converted : $s;
+        return imap_fetchbody($this->imap, $id, '1');
     }
 
     private function decodeBody(string $body, int $encoding): string {

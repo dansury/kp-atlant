@@ -6,8 +6,4 @@ data/kp/
 data/tmp/
 storage/signatures/*
 !storage/signatures/.gitkeep
-storage/attachments/*
-!storage/attachments/.gitkeep
-storage/invoices/*
-!storage/invoices/.gitkeep
 .DS_Store
