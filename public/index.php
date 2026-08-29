@@ -2,11 +2,6 @@
 /**
  * SPA entry point.
  */
-// Cache-bust assets so managers never run a stale build after a deploy
-$assetVer = max(
-    @filemtime(__DIR__ . '/assets/js/app.js') ?: 0,
-    @filemtime(__DIR__ . '/assets/css/app.css') ?: 0
-);
 ?>
 <!DOCTYPE html>
 <html lang="ru">
@@ -14,7 +9,7 @@ $assetVer = max(
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Atlant Armour — КП</title>
-    <link rel="stylesheet" href="/assets/css/app.css?v=<?= $assetVer ?>">
+    <link rel="stylesheet" href="/assets/css/app.css">
 </head>
 <body>
     <header class="header">
@@ -29,6 +24,6 @@ $assetVer = max(
 
     <div class="toast-container" id="toasts"></div>
 
-    <script src="/assets/js/app.js?v=<?= $assetVer ?>"></script>
+    <script src="/assets/js/app.js"></script>
 </body>
 </html>

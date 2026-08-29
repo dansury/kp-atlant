@@ -21,6 +21,9 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/llm.php';
 require_once __DIR__ . '/auth.php';
 
+// Start session (single place; cookie flags depend on scheme)
+startSession();
+
 // Init DB
 Db::init($cfg['DB_PATH'] ?? ROOT . '/data/kp.db');
 
@@ -32,8 +35,8 @@ if (!Db::hasTable('managers')) {
     initSchema();
 }
 
-// Apply incremental migrations (module 002 and later)
-runMigrations();
+// Keep managers in sync with config.php (password edits take effect)
+syncManagersFromConfig($cfg);
 
 function initSchema(): void {
     $sql = <<<'SQL'
@@ -237,166 +240,6 @@ SQL;
     seedDefaults();
 }
 
-// Incremental schema migrations. Safe to run on every request (cheap checks).
-function runMigrations(): void {
-    $current = (int)(Db::val("SELECT value FROM settings WHERE key='schema_version'") ?: 1);
-
-    // v2 — module 002: orders, invoices, attachments, contacts, company chat
-    if ($current < 2) {
-        // Request type: KP request vs order (FR-023, FR-024)
-        Db::ensureColumn('requests', 'type', 'TEXT', "'kp_request'");
-        Db::ensureColumn('requests', 'type_source', 'TEXT', "'llm'");
-
-        // Company merge keys and answer tracking (FR-034, FR-038)
-        Db::ensureColumn('counterparties', 'email_domain', 'TEXT');
-        Db::ensureColumn('counterparties', 'name_normalized', 'TEXT');
-        Db::ensureColumn('counterparties', 'merged_into_id', 'INTEGER');
-        Db::ensureColumn('counterparties', 'last_inbound_at', 'TEXT');
-        Db::ensureColumn('counterparties', 'last_outbound_at', 'TEXT');
-
-        // Chat feed: note author and system events (FR-033, FR-036)
-        Db::ensureColumn('correspondence', 'manager_id', 'INTEGER');
-        Db::ensureColumn('correspondence', 'event_type', 'TEXT');
-        Db::ensureColumn('correspondence', 'meta_json', 'TEXT');
-
-        $sql = <<<'SQL'
-        CREATE TABLE IF NOT EXISTS contacts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
-            name TEXT,
-            email TEXT,
-            phone TEXT,
-            first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-            messages_count INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_cp_email ON contacts(counterparty_id, email);
-
-        CREATE TABLE IF NOT EXISTS attachments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            correspondence_id INTEGER REFERENCES correspondence(id),
-            request_id INTEGER REFERENCES requests(id),
-            counterparty_id INTEGER REFERENCES counterparties(id),
-            filename TEXT NOT NULL,
-            path TEXT NOT NULL,
-            mime TEXT,
-            size INTEGER,
-            extracted_text TEXT,
-            extract_status TEXT NOT NULL DEFAULT 'pending'
-                CHECK(extract_status IN ('pending','ok','ocr','empty','skipped','failed')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_attach_request ON attachments(request_id);
-        CREATE INDEX IF NOT EXISTS idx_attach_corr ON attachments(correspondence_id);
-
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            request_id INTEGER REFERENCES requests(id),
-            proposal_id INTEGER REFERENCES proposals(id),
-            counterparty_id INTEGER REFERENCES counterparties(id),
-            manager_id INTEGER REFERENCES managers(id),
-            moysklad_id TEXT NOT NULL UNIQUE,
-            name TEXT,
-            moment TEXT,
-            sum REAL DEFAULT 0,
-            state_name TEXT,
-            description TEXT,
-            positions_json TEXT,
-            moysklad_updated_at TEXT,
-            synced_at TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_orders_cp ON orders(counterparty_id);
-        CREATE INDEX IF NOT EXISTS idx_orders_request ON orders(request_id);
-
-        CREATE TABLE IF NOT EXISTS invoices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id INTEGER REFERENCES orders(id),
-            counterparty_id INTEGER REFERENCES counterparties(id),
-            moysklad_id TEXT NOT NULL UNIQUE,
-            name TEXT,
-            moment TEXT,
-            sum REAL DEFAULT 0,
-            payed_sum REAL DEFAULT 0,
-            state_name TEXT,
-            pdf_path TEXT,
-            moysklad_updated_at TEXT,
-            synced_at TEXT,
-            sent_at TEXT,
-            sent_to TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_invoices_cp ON invoices(counterparty_id);
-        CREATE INDEX IF NOT EXISTS idx_invoices_order ON invoices(order_id);
-
-        CREATE TABLE IF NOT EXISTS webhook_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entity_type TEXT,
-            action TEXT,
-            moysklad_id TEXT,
-            payload TEXT,
-            result TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-SQL;
-        Db::pdo()->exec($sql);
-
-        // Webhook secret + module defaults
-        $defaults = [
-            'moysklad_webhook_secret' => bin2hex(random_bytes(16)),
-            'ocr_enabled'             => '1',
-            'ocr_max_pages'           => '3',
-            'attachment_max_mb'       => '10',
-            'unanswered_critical_h'   => '24',
-            'invoice_email_subject'   => 'Счёт на оплату от Atlant Armour',
-        ];
-        foreach ($defaults as $k => $v) {
-            Db::q("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [$k, $v]);
-        }
-
-        // Backfill merge keys for existing counterparties
-        foreach (Db::all("SELECT id, name, contact_email FROM counterparties") as $cp) {
-            $domain = null;
-            if (!empty($cp['contact_email']) && str_contains($cp['contact_email'], '@')) {
-                $domain = mb_strtolower(trim(explode('@', $cp['contact_email'])[1]));
-                if (in_array($domain, publicEmailDomains(), true)) $domain = null;
-            }
-            Db::update('counterparties', [
-                'email_domain'    => $domain,
-                'name_normalized' => normalizeCompanyName($cp['name']),
-            ], 'id=?', [$cp['id']]);
-        }
-
-        // Storage folders for attachments and invoice printforms
-        foreach ([ROOT . '/storage/attachments', ROOT . '/storage/invoices'] as $dir) {
-            if (!is_dir($dir)) @mkdir($dir, 0755, true);
-        }
-
-        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '2')");
-        $current = 2;
-    }
-}
-
-// Public mail providers never used to merge companies (C-012)
-function publicEmailDomains(): array {
-    return [
-        'mail.ru','inbox.ru','bk.ru','list.ru','internet.ru',
-        'yandex.ru','ya.ru','yandex.com',
-        'gmail.com','googlemail.com','outlook.com','hotmail.com','live.com',
-        'rambler.ru','icloud.com','me.com','proton.me','protonmail.com',
-        'bcc.ru','vk.com','sberbank.ru',
-    ];
-}
-
-// Normalize company name for matching: drop legal form, quotes, case
-function normalizeCompanyName(string $name): string {
-    $n = mb_strtolower($name);
-    $n = preg_replace('/["\x{00AB}\x{00BB}\x{2018}\x{2019}\x{201C}\x{201D}\x{0027}]/u', '', $n);
-    $n = preg_replace('/\b(ооо|оао|зао|пао|ао|ип|нко|фгуп|гуп|мбу|гбу|ано|нао)\b/u', '', $n);
-    $n = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $n);
-    return trim(preg_replace('/\s+/u', ' ', $n));
-}
-
 function seedDefaults(): void {
     // Default legal entity (ИП Сурков К.А.)
     if (!Db::val("SELECT COUNT(*) FROM legal_entities")) {
@@ -450,34 +293,71 @@ function seedDefaults(): void {
 MD;
         Db::insert('email_rules', ['content' => $rules]);
     }
+}
 
-    // Seed managers from config
-    global $cfg;
-    if (!empty($cfg['MANAGERS'])) {
-        foreach ($cfg['MANAGERS'] as $login => $info) {
-            if (Db::one("SELECT id FROM managers WHERE login=?", [$login])) continue;
-            Db::insert('managers', [
-                'login'         => $login,
-                'password_hash' => Auth::hashPassword($info[0]),
-                'name'          => $info[1],
-                'email'         => $info[2] ?? null,
-                'is_admin'      => !empty($info[3]) ? 1 : 0,
-            ]);
+// Sync managers from config.php into the DB. config.php is the single
+// source of truth for logins/passwords: any edit there takes effect on the
+// next request. A per-login fingerprint in settings keeps this cheap
+// (no bcrypt work when nothing changed).
+function syncManagersFromConfig(array $cfg): void {
+    $managers = $cfg['MANAGERS'] ?? [];
+    if (!$managers) return;
+
+    // settings table may be missing on older DBs
+    Db::q("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+
+    foreach ($managers as $login => $info) {
+        $login = trim((string)$login);
+        if ($login === '') continue;
+
+        $pass    = (string)($info[0] ?? '');
+        $name    = $info[1] ?? $login;
+        $email   = $info[2] ?? null;
+        $isAdmin = !empty($info[3]) ? 1 : 0;
+        if ($pass === '') continue;
+
+        $fpKey = 'manager_fp_' . $login;
+        $fp    = hash('sha256', serialize([$pass, $name, $email, $isAdmin]));
+        $row   = Db::one("SELECT id FROM managers WHERE login=?", [$login]);
+
+        // Nothing changed and the row still exists -> skip
+        if ($row && Db::val("SELECT value FROM settings WHERE key=?", [$fpKey]) === $fp) continue;
+
+        $data = [
+            'password_hash' => Auth::hashPassword($pass),
+            'name'          => $name,
+            'email'         => $email,
+            'is_admin'      => $isAdmin,
+        ];
+        if ($row) {
+            Db::update('managers', $data, 'id=?', [$row['id']]);
+        } else {
+            Db::insert('managers', $data + ['login' => $login]);
         }
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [$fpKey, $fp]);
     }
+}
+
+// Start the PHP session with consistent cookie flags.
+function startSession(): void {
+    if (PHP_SAPI === 'cli') return;              // cron/CLI has no session
+    if (session_status() === PHP_SESSION_ACTIVE) return;
+    if (headers_sent()) return;
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    session_set_cookie_params([
+        'lifetime' => $GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400,
+        'path'     => '/',
+        'httponly' => true,
+        'secure'   => $https,   // false on plain HTTP, otherwise no cookie is stored
+        'samesite' => 'Lax',
+    ]);
+    session_start();
 }
 
 // Auth helper: get current manager from session
 function currentManager(): ?array {
-    if (session_status() !== PHP_SESSION_ACTIVE) {
-        session_set_cookie_params([
-            'lifetime' => $GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400,
-            'httponly' => true,
-            'secure' => true,
-            'samesite' => 'Strict',
-        ]);
-        session_start();
-    }
+    startSession();
     $id = $_SESSION['manager_id'] ?? null;
     if (!$id) return null;
     return Db::one("SELECT id, login, name, email, is_admin, moysklad_uid FROM managers WHERE id=?", [$id]);

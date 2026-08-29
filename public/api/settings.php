@@ -67,8 +67,7 @@ switch ($action) {
     case 'general':
         $manager = requireAuth();
         if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-            $keys = ['default_conditions_text','default_execution_days','default_validity_days','default_vat_rate',
-                     'ocr_enabled','ocr_max_pages','attachment_max_mb','unanswered_critical_h','invoice_email_subject'];
+            $keys = ['default_conditions_text','default_execution_days','default_validity_days','default_vat_rate'];
             $settings = [];
             foreach ($keys as $k) {
                 $settings[$k] = Db::val("SELECT value FROM settings WHERE key=?", [$k]) ?: '';
@@ -81,54 +80,6 @@ switch ($action) {
             Db::q("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [$k, $v]);
         }
         jsonOk();
-
-    // MoySklad integration status and webhooks (FR-029, FR-039)
-    case 'moysklad':
-        requireAuth();
-        require_once ROOT . '/lib/sync.php';
-        MsSync::init();
-
-        $perms = [];
-        $error = null;
-        try {
-            $perms = MoySklad::checkPermissions();
-        } catch (Throwable $e) {
-            $error = $e->getMessage();
-        }
-
-        $secret = (string)Db::val("SELECT value FROM settings WHERE key='moysklad_webhook_secret'");
-        $appUrl = rtrim($cfg['APP_URL'] ?? '', '/');
-        $hooks = [];
-        if (!empty($perms['webhooks'])) {
-            try {
-                foreach (MoySklad::listWebhooks() as $w) {
-                    if (str_contains($w['url'], $secret)) $hooks[] = $w;
-                }
-            } catch (Throwable $e) {
-                $error = $error ?? $e->getMessage();
-            }
-        }
-
-        jsonData([
-            'permissions'  => $perms,
-            'error'        => $error,
-            'webhook_url'  => $appUrl . '/api/moysklad_hook.php?secret=' . $secret,
-            'webhooks'     => $hooks,
-            'app_url_ok'   => str_starts_with($appUrl, 'https://'),
-            'last_webhook' => Db::one("SELECT entity_type, action, result, created_at FROM webhook_log ORDER BY id DESC LIMIT 1"),
-        ]);
-
-    case 'webhooks_register':
-        requireAuth();
-        require_once ROOT . '/lib/sync.php';
-        $res = MsSync::ensureWebhooks();
-        if (empty($res['ok'])) jsonError($res['error'] ?? 'Не удалось зарегистрировать вебхуки', 400);
-        jsonOk($res);
-
-    case 'webhooks_remove':
-        requireAuth();
-        require_once ROOT . '/lib/sync.php';
-        jsonOk(['removed' => MsSync::removeWebhooks()]);
 
     default:
         jsonError('Unknown action', 400);

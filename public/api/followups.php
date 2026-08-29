@@ -3,7 +3,6 @@
  * API: Follow-ups — list, get, update, send, dismiss (US6).
  */
 require_once __DIR__ . '/../../lib/bootstrap.php';
-require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/email.php';
 
 $action = $_GET['action'] ?? '';
@@ -65,13 +64,13 @@ switch ($action) {
         $now = date('Y-m-d H:i:s');
         Db::update('followups', ['status' => 'sent', 'sent_at' => $now], 'id=?', [$id]);
 
-        // Feed entry — clears the unanswered highlight (FR-038)
-        $manager = currentManager();
-        Crm::logEvent($f['counterparty_id'] ? (int)$f['counterparty_id'] : null, 'out', $text, [
-            'subject'    => $subject,
-            'email_to'   => $to,
-            'manager_id' => $manager['id'] ?? null,
-            'event_type' => 'followup_sent',
+        // Save correspondence
+        Db::insert('correspondence', [
+            'counterparty_id' => $f['counterparty_id'],
+            'direction' => 'out',
+            'subject' => $subject,
+            'body' => $text,
+            'email_to' => $to,
         ]);
         jsonOk(['sent_at' => $now]);
 
