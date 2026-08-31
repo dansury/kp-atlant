@@ -186,6 +186,8 @@ function initSchema(): void {
         city TEXT NOT NULL DEFAULT 'г. Москва',
         address TEXT,
         signatory_name TEXT,
+        phone TEXT,
+        email TEXT,
         signature_path TEXT,
         logo_path TEXT,
         stamp_path TEXT,
@@ -383,6 +385,81 @@ SQL;
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '2')");
         $current = 2;
     }
+
+    // v3 — module 003: product cards, photos and upsell in the KP
+    if ($current < 3) {
+        // Contact block in the KP header (FR-041)
+        Db::ensureColumn('legal_entities', 'phone', 'TEXT');
+        Db::ensureColumn('legal_entities', 'email', 'TEXT');
+
+        // Rich product content pulled from MoySklad and cached (FR-040, FR-042)
+        Db::ensureColumn('products_cache', 'images_json', 'TEXT');
+        Db::ensureColumn('products_cache', 'images_synced_at', 'TEXT');
+        Db::ensureColumn('products_cache', 'specs_text', 'TEXT');
+        Db::ensureColumn('products_cache', 'included_text', 'TEXT');
+        Db::ensureColumn('products_cache', 'is_addon', 'INTEGER', '0');
+
+        // Per-item card: description, specs, kit contents, photos (FR-040, FR-042, FR-045)
+        Db::ensureColumn('proposal_items', 'description_text', 'TEXT');
+        Db::ensureColumn('proposal_items', 'specs_text', 'TEXT');
+        Db::ensureColumn('proposal_items', 'included_text', 'TEXT');
+        Db::ensureColumn('proposal_items', 'images_json', 'TEXT');
+        Db::ensureColumn('proposal_items', 'show_images', 'INTEGER', '1');
+        Db::ensureColumn('proposal_items', 'price_from', 'INTEGER', '0');
+        Db::ensureColumn('proposal_items', 'qty_from', 'INTEGER', '0');
+
+        // Document-level blocks (FR-043, FR-044)
+        Db::ensureColumn('proposals', 'warranty_text', 'TEXT');
+        Db::ensureColumn('proposals', 'images_note', 'TEXT');
+        Db::ensureColumn('proposals', 'show_images', 'INTEGER', '1');
+        Db::ensureColumn('proposals', 'show_upsell', 'INTEGER', '1');
+        Db::ensureColumn('proposals', 'upsell_intro', 'TEXT');
+        Db::ensureColumn('proposals', 'upsell_note', 'TEXT');
+
+        // Upsell rows: modules the client can add now or later (FR-044)
+        $sql = <<<'SQL'
+        CREATE TABLE IF NOT EXISTS proposal_addons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proposal_id INTEGER NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL DEFAULT 0,
+            product_name TEXT NOT NULL,
+            moysklad_product_id TEXT,
+            unit TEXT NOT NULL DEFAULT 'шт.',
+            price REAL NOT NULL DEFAULT 0,
+            notes TEXT,
+            is_selected INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_addons_proposal ON proposal_addons(proposal_id);
+SQL;
+        Db::pdo()->exec($sql);
+
+        $defaults = [
+            // Sample KP wording — editable per proposal in the UI
+            'kp_images_note'   => 'Изображения продукции приведены для примера и могут отличаться от финального изделия, т.к. производитель постоянно дорабатывает продукцию, а финальные требования согласовываются с заказчиком.',
+            'kp_upsell_intro'  => 'Изделие допускает доукомплектование модулями в любой момент — сразу или в будущем, по мере необходимости:',
+            'kp_upsell_note'   => 'Изображение полной комплектации, которую можно доукомплектовать в будущем при необходимости:',
+            'default_warranty_text' => 'Поставщик несёт гарантию в течение года эксплуатации, а также обеспечивает обслуживание своей продукции в течение всего срока эксплуатации.',
+            // MoySklad folder whose products are offered as upsell modules
+            'addon_category'   => 'Модули для бронежилетов',
+            'kp_show_images'   => '1',
+            'kp_show_upsell'   => '1',
+            'kp_max_images_per_item' => '5',
+        ];
+        foreach ($defaults as $k => $v) {
+            Db::q("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [$k, $v]);
+        }
+
+        // Flag cached products that belong to the addon folder
+        $addonCategory = Db::val("SELECT value FROM settings WHERE key='addon_category'") ?: '';
+        if ($addonCategory !== '') {
+            Db::q("UPDATE products_cache SET is_addon=1 WHERE category=?", [$addonCategory]);
+        }
+
+        if (!is_dir(ROOT . '/storage/product_images')) @mkdir(ROOT . '/storage/product_images', 0755, true);
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '3')");
+        $current = 3;
+    }
 }
 
 // Public mail providers never used to merge companies (C-012)
@@ -415,6 +492,9 @@ function seedDefaults(): void {
             'inn' => '773135420168',
             'ogrnip' => '320774600452996',
             'city' => 'г. Москва',
+            'address' => 'Проезд Березовой рощи, 12',
+            'phone' => '+7 977 152-73-67',
+            'email' => 'atlantarmourmed@gmail.com',
             'signatory_name' => 'Сурков Кирилл Александрович',
         ]);
     }

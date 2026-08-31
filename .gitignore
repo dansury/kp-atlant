@@ -10,4 +10,6 @@ storage/attachments/*
 !storage/attachments/.gitkeep
 storage/invoices/*
 !storage/invoices/.gitkeep
+storage/product_images/*
+!storage/product_images/.gitkeep
 .DS_Store

@@ -4,6 +4,8 @@
  */
 use Mpdf\Mpdf;
 
+require_once __DIR__ . '/kp_content.php';
+
 class PdfGenerator {
 
     // Generate PDF for a proposal, return file path
@@ -15,11 +17,24 @@ class PdfGenerator {
         $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1");
         if (!$legal) throw new RuntimeException('No active legal entity configured');
 
-        // Calc totals
+        $maxImages = (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
+        $addons = Db::all(
+            "SELECT * FROM proposal_addons WHERE proposal_id=? AND is_selected=1 ORDER BY position",
+            [$proposalId]
+        );
+
+        // Calc totals. A single "от" price makes the whole total a floor,
+        // the way the reference KP prints "Итого: от 40 000 руб".
         $total = 0;
+        $totalIsFrom = false;
         foreach ($items as &$item) {
             $item['sum'] = $item['price'] * $item['quantity'];
             $total += $item['sum'];
+            if (!empty($item['price_from'])) $totalIsFrom = true;
+            // Photos are embedded as data URIs — mPDF cannot read storage/ paths
+            $item['gallery'] = !empty($item['show_images'])
+                ? KpContent::imagesForPdf($item['images_json'] ?? null, $maxImages)
+                : [];
         }
         unset($item);
 
@@ -36,6 +51,31 @@ class PdfGenerator {
         $conditionsText = $proposal['conditions_text']
             ?: Db::val("SELECT value FROM settings WHERE key='default_conditions_text'")
             ?: 'Стоимость включает расходы на упаковку, маркировку, хранение, погрузку и страхование грузов.';
+
+        // Blocks introduced with the product-card layout. Proposal value wins,
+        // then the editable default in settings.
+        $warrantyText = $proposal['warranty_text']
+            ?: Db::val("SELECT value FROM settings WHERE key='default_warranty_text'") ?: '';
+        $imagesNote = $proposal['images_note']
+            ?: Db::val("SELECT value FROM settings WHERE key='kp_images_note'") ?: '';
+        $upsellIntro = $proposal['upsell_intro']
+            ?: Db::val("SELECT value FROM settings WHERE key='kp_upsell_intro'") ?: '';
+        $upsellNote = $proposal['upsell_note']
+            ?: Db::val("SELECT value FROM settings WHERE key='kp_upsell_note'") ?: '';
+
+        // "Full kit" photos under the upsell table come from the addon products
+        $upsellGallery = [];
+        if ((bool)($proposal['show_images'] ?? 1)) {
+            foreach ($addons as $addon) {
+                if (empty($addon['moysklad_product_id'])) continue;
+                $cached = Db::val("SELECT images_json FROM products_cache WHERE moysklad_id=?",
+                    [$addon['moysklad_product_id']]);
+                foreach (KpContent::imagesForPdf($cached ?: null, 1) as $img) {
+                    $upsellGallery[] = $img;
+                }
+                if (count($upsellGallery) >= 2) break;   // two photos, as in the sample
+            }
+        }
 
         // Logo path (base64 for mPDF)
         $logo = '';
@@ -71,6 +111,15 @@ class PdfGenerator {
             'validityDays' => $proposal['validity_days'] ?? 14,
             'date' => date('d.m.Y') . 'г.',
             'signaturePath' => $signaturePath,
+            'totalIsFrom' => $totalIsFrom,
+            'showImages' => (bool)($proposal['show_images'] ?? 1),
+            'imagesNote' => $imagesNote,
+            'warrantyText' => $warrantyText,
+            'showUpsell' => (bool)($proposal['show_upsell'] ?? 1) && $addons,
+            'upsellIntro' => $upsellIntro,
+            'upsellNote' => $upsellNote,
+            'upsellGallery' => $upsellGallery,
+            'addons' => $addons,
         ];
 
         extract($templateVars);

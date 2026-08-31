@@ -116,22 +116,28 @@ class MoySklad {
             $data = self::get("/entity/product?limit=$limit&offset=$offset&expand=salePrices");
             if (!$data || empty($data['rows'])) break;
 
+            // Products in this MoySklad folder are offered as upsell modules
+            $addonCategory = Db::val("SELECT value FROM settings WHERE key='addon_category'") ?: '';
+
             foreach ($data['rows'] as $p) {
                 $mapped = self::mapProduct($p);
                 $normalized = mb_strtolower(preg_replace('/[\s\-\"\'«»()]+/', ' ', $mapped['name']));
+                $category = $mapped['category'] ?? '';
+                $isAddon = ($addonCategory !== '' && $category === $addonCategory) ? 1 : 0;
 
-                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, price, stock, reserved, unit, description, category, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, price, stock, reserved, unit, description, category, is_addon, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                     ON CONFLICT(moysklad_id) DO UPDATE SET
                         name=excluded.name, name_normalized=excluded.name_normalized,
                         article=excluded.article, price=excluded.price,
                         stock=excluded.stock, reserved=excluded.reserved,
                         unit=excluded.unit, description=excluded.description,
-                        category=excluded.category, updated_at=datetime('now')", [
+                        category=excluded.category, is_addon=excluded.is_addon,
+                        updated_at=datetime('now')", [
                     $mapped['id'], $mapped['name'], $normalized,
                     $mapped['article'], $mapped['price'],
                     $mapped['stock'], $mapped['reserved'],
-                    $mapped['unit'], $mapped['description'], $mapped['category'] ?? '',
+                    $mapped['unit'], $mapped['description'], $category, $isAddon,
                 ]);
                 $count++;
             }
@@ -140,6 +146,77 @@ class MoySklad {
         } while (count($data['rows']) === $limit);
 
         return $count;
+    }
+
+    // Product images (FR-040). Downloads up to $limit images into
+    // storage/product_images/ and returns local file paths. MoySklad serves
+    // image binaries from a signed downloadHref that still needs the token.
+    public static function fetchProductImages(string $productId, int $limit = 6): array {
+        $data = self::get("/entity/product/$productId/images?limit=$limit");
+        if (!$data || empty($data['rows'])) return [];
+
+        $dir = ROOT . '/storage/product_images';
+        if (!is_dir($dir)) @mkdir($dir, 0755, true);
+
+        $paths = [];
+        foreach ($data['rows'] as $i => $row) {
+            // Prefer the full image; miniature is a fallback for huge originals
+            $href = $row['meta']['downloadHref'] ?? $row['miniature']['downloadHref'] ?? '';
+            if (!$href) continue;
+
+            $binary = self::download($href);
+            if ($binary === null) continue;
+
+            $ext = strtolower(pathinfo($row['filename'] ?? '', PATHINFO_EXTENSION)) ?: 'jpg';
+            if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp'], true)) $ext = 'jpg';
+
+            $path = "$dir/$productId-$i.$ext";
+            if (file_put_contents($path, $binary) === false) continue;
+            $paths[] = $path;
+        }
+
+        // Cache the result so the KP generator never waits on the API twice
+        Db::q("UPDATE products_cache SET images_json=?, images_synced_at=datetime('now') WHERE moysklad_id=?",
+            [json_encode($paths, JSON_UNESCAPED_UNICODE), $productId]);
+
+        return $paths;
+    }
+
+    // Cached images for a product; fetches on first use or after $ttlDays.
+    public static function productImages(string $productId, int $ttlDays = 30): array {
+        $row = Db::one("SELECT images_json, images_synced_at FROM products_cache WHERE moysklad_id=?", [$productId]);
+        if ($row && !empty($row['images_synced_at'])) {
+            $age = time() - strtotime($row['images_synced_at']);
+            if ($age < $ttlDays * 86400) {
+                $paths = json_decode($row['images_json'] ?: '[]', true) ?: [];
+                // A cached path is only good while the file is still on disk
+                $paths = array_values(array_filter($paths, 'file_exists'));
+                if ($paths) return $paths;
+            }
+        }
+        try {
+            return self::fetchProductImages($productId);
+        } catch (MoySkladException $e) {
+            return [];   // images are decoration — never block PDF generation
+        }
+    }
+
+    // Authenticated binary GET against an absolute MoySklad href
+    private static function download(string $href): ?string {
+        $ch = curl_init($href);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . self::$token,
+                'Accept: */*',
+            ],
+        ]);
+        $body = curl_exec($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return ($code >= 200 && $code < 300 && $body !== false && $body !== '') ? (string)$body : null;
     }
 
     // Search counterparties
