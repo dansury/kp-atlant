@@ -19,7 +19,7 @@ switch ($action) {
         if (!$entity) jsonError('No legal entity configured');
 
         $fields = [];
-        foreach (['entity_type','full_name','short_name','inn','ogrnip','ogrn','city','address','signatory_name','bank_details'] as $f) {
+        foreach (['entity_type','full_name','short_name','inn','ogrnip','ogrn','city','address','signatory_name','bank_details','phone','email'] as $f) {
             if (array_key_exists($f, $input)) $fields[$f] = $input[$f];
         }
         if ($fields) Db::update('legal_entities', $fields, 'id=?', [$entity['id']]);
@@ -68,7 +68,9 @@ switch ($action) {
         $manager = requireAuth();
         if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $keys = ['default_conditions_text','default_execution_days','default_validity_days','default_vat_rate',
-                     'ocr_enabled','ocr_max_pages','attachment_max_mb','unanswered_critical_h','invoice_email_subject'];
+                     'ocr_enabled','ocr_max_pages','attachment_max_mb','unanswered_critical_h','invoice_email_subject',
+                     'default_warranty_text','kp_images_note','kp_upsell_intro','kp_upsell_note',
+                     'addon_category','kp_show_images','kp_show_upsell','kp_max_images_per_item'];
             $settings = [];
             foreach ($keys as $k) {
                 $settings[$k] = Db::val("SELECT value FROM settings WHERE key=?", [$k]) ?: '';

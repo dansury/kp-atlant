@@ -30,6 +30,27 @@
     .signature .sign-name { font-size: 10pt; margin-top: 5px; }
     .stock-warning { color: #c00; font-size: 9pt; }
     .note { font-size: 9pt; color: #666; }
+
+    /* Product card: description, photo gallery, specs, kit contents */
+    .card { margin: 18px 0 10px; }
+    .card__name { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
+    .card__desc { font-size: 10pt; text-align: justify; }
+    .card__subtitle { font-size: 10pt; font-weight: bold; margin: 12px 0 4px; }
+    .card__list { font-size: 10pt; margin: 0; }
+    .gallery { margin: 10px 0; text-align: center; }
+    .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; }
+    .disclaimer { font-size: 8.5pt; color: #666; font-style: italic; margin-top: 8px; }
+    .warranty { margin-top: 15px; font-size: 10pt; }
+
+    /* Upsell block */
+    .upsell { margin-top: 25px; padding-top: 12px; border-top: 1px solid #ccc; }
+    .upsell__title { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
+    .upsell__intro { font-size: 10pt; margin-bottom: 8px; }
+    table.addons { width: 100%; border-collapse: collapse; margin: 8px 0; }
+    table.addons th { background: #666; color: #fff; font-size: 9pt; padding: 5px 8px; text-align: center; }
+    table.addons td { border: 1px solid #ccc; padding: 4px 8px; font-size: 10pt; }
+    table.addons td.price { text-align: right; white-space: nowrap; }
+    table.addons td.unit { text-align: center; width: 60px; }
 </style>
 </head>
 <body>
@@ -47,7 +68,13 @@
     <?php elseif ($legal['ogrn']): ?>
     <div>ОГРН <?= htmlspecialchars($legal['ogrn']) ?></div>
     <?php endif; ?>
-    <div><?= htmlspecialchars($legal['city']) ?></div>
+    <div><?= htmlspecialchars(trim(($legal['city'] ?? '') . ', ' . ($legal['address'] ?? ''), ', ')) ?></div>
+    <?php if (!empty($legal['phone'])): ?>
+    <div><?= htmlspecialchars($legal['phone']) ?></div>
+    <?php endif; ?>
+    <?php if (!empty($legal['email'])): ?>
+    <div><?= htmlspecialchars($legal['email']) ?></div>
+    <?php endif; ?>
 </div>
 
 <div style="clear:both"></div>
@@ -88,19 +115,59 @@
         <?php endif; ?>
     </td>
     <td class="qty"><?= htmlspecialchars($item['unit']) ?></td>
-    <td class="qty"><?= $item['quantity'] ?></td>
-    <td class="price"><?= number_format($item['price'], 2, ',', ' ') ?> руб.</td>
-    <td class="sum"><?= number_format($item['price'] * $item['quantity'], 2, ',', ' ') ?> руб.</td>
+    <td class="qty"><?= !empty($item['qty_from']) ? 'от ' . $item['quantity'] : $item['quantity'] ?></td>
+    <td class="price"><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['price'], 2, ',', ' ') ?> руб.</td>
+    <td class="sum"><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['price'] * $item['quantity'], 2, ',', ' ') ?> руб.</td>
 </tr>
 <?php endforeach; ?>
 </tbody>
 </table>
 
 <!-- Total -->
-<div class="total-row">Итого: <?= number_format($total, 2, ',', ' ') ?> руб.</div>
+<div class="total-row">Итого: <?= $totalIsFrom ? 'от ' : '' ?><?= number_format($total, 2, ',', ' ') ?> руб.</div>
 <?php if ($showVatTotal): ?>
 <div class="vat-row">в т.ч. НДС <?= $vatRate ?>%: <?= number_format($vatAmount, 2, ',', ' ') ?> руб.</div>
 <?php endif; ?>
+
+<!-- Product cards: description, photos, specs, kit contents -->
+<?php foreach ($items as $i => $item): ?>
+<?php
+    $hasCard = !empty($item['description_text']) || !empty($item['specs_text'])
+            || !empty($item['included_text']) || !empty($item['gallery']);
+?>
+<?php if ($hasCard): ?>
+<div class="card">
+    <?php if (count($items) > 1): ?>
+    <div class="card__name"><?= $i + 1 ?>. <?= htmlspecialchars($item['product_name']) ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($item['description_text'])): ?>
+    <div class="card__desc"><?= nl2br(htmlspecialchars($item['description_text'])) ?></div>
+    <?php endif; ?>
+
+    <?php if ($showImages && !empty($item['gallery'])): ?>
+    <div class="gallery">
+        <?php foreach ($item['gallery'] as $img): ?>
+        <img src="<?= $img ?>" alt="<?= htmlspecialchars($item['product_name']) ?>">
+        <?php endforeach; ?>
+    </div>
+    <?php if (!empty($imagesNote)): ?>
+    <div class="disclaimer">* <?= htmlspecialchars($imagesNote) ?></div>
+    <?php endif; ?>
+    <?php endif; ?>
+
+    <?php if (!empty($item['specs_text'])): ?>
+    <div class="card__subtitle">Характеристики:</div>
+    <div class="card__list"><?= nl2br(htmlspecialchars($item['specs_text'])) ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($item['included_text'])): ?>
+    <div class="card__subtitle">Комплектация:</div>
+    <div class="card__list"><?= nl2br(htmlspecialchars($item['included_text'])) ?></div>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
+<?php endforeach; ?>
 
 <!-- Post-table block (optional) -->
 <?php if (!empty($postTableText)): ?>
@@ -111,6 +178,11 @@
 <div class="conditions">
     <?= nl2br(htmlspecialchars($conditionsText)) ?>
 </div>
+
+<!-- Warranty and service -->
+<?php if (!empty($warrantyText)): ?>
+<div class="warranty"><?= nl2br(htmlspecialchars($warrantyText)) ?></div>
+<?php endif; ?>
 
 <!-- Execution terms -->
 <div class="terms">
@@ -134,6 +206,48 @@
         <div class="sign-name"><?= htmlspecialchars($legal['signatory_name'] ?? '') ?></div>
     </div>
 </div>
+
+<!-- Upsell: modules the client can add now or later -->
+<?php if ($showUpsell && $addons): ?>
+<div class="upsell">
+    <div class="upsell__title">Дополнительные модули и доукомплектование</div>
+    <?php if (!empty($upsellIntro)): ?>
+    <div class="upsell__intro"><?= nl2br(htmlspecialchars($upsellIntro)) ?></div>
+    <?php endif; ?>
+
+    <table class="addons">
+    <thead>
+    <tr><th>№</th><th>Модуль</th><th>Ед.изм.</th><th>Цена за ед., в т.ч. НДС <?= $vatRate ?>%</th></tr>
+    </thead>
+    <tbody>
+    <?php foreach ($addons as $j => $addon): ?>
+    <tr>
+        <td class="unit"><?= $j + 1 ?></td>
+        <td>
+            <?= htmlspecialchars($addon['product_name']) ?>
+            <?php if (!empty($addon['notes'])): ?>
+            <br><span class="stock-warning"><?= htmlspecialchars($addon['notes']) ?></span>
+            <?php endif; ?>
+        </td>
+        <td class="unit"><?= htmlspecialchars($addon['unit']) ?></td>
+        <td class="price"><?= $addon['price'] > 0 ? number_format($addon['price'], 2, ',', ' ') . ' руб.' : 'по запросу' ?></td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+    </table>
+
+    <?php if ($upsellGallery): ?>
+    <?php if (!empty($upsellNote)): ?>
+    <div class="upsell__intro"><?= htmlspecialchars($upsellNote) ?></div>
+    <?php endif; ?>
+    <div class="gallery">
+        <?php foreach ($upsellGallery as $img): ?>
+        <img src="<?= $img ?>" alt="Полная комплектация">
+        <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
 
 </body>
 </html>

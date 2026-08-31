@@ -444,12 +444,18 @@ const App = {
 
     // Proposal editor
     async pageProposal(id) {
-        // Fetch proposal data via a simple endpoint
         const proposal = await this.api(`proposals.php?action=get&id=${id}`).catch(() => null);
-        // For now, show the PDF preview + editor
+        if (!proposal) {
+            document.getElementById('app').innerHTML = `<div class="card">КП #${id} не найдено</div>`;
+            return;
+        }
+        this.proposal = proposal;
+        const items = proposal.items || [];
+        const addons = proposal.addons || [];
+
         document.getElementById('app').innerHTML = `
             <div class="flex flex--between" style="margin-bottom:16px">
-                <h2>КП #${id}</h2>
+                <h2>КП #${this.esc(proposal.number) || id}</h2>
                 <div class="flex">
                     <button class="btn btn--outline" onclick="App.refreshPreview(${id})">Обновить PDF</button>
                     <button class="btn btn--primary" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
@@ -460,30 +466,73 @@ const App = {
                     <div class="card">
                         <div class="card__title">Сопроводительное письмо</div>
                         <div class="form-group">
-                            <textarea id="coverLetter" rows="6" placeholder="Текст сопроводительного письма..."></textarea>
+                            <textarea id="coverLetter" rows="6" placeholder="Текст сопроводительного письма...">${this.esc(proposal.cover_letter_final || proposal.cover_letter || '')}</textarea>
                         </div>
                     </div>
+
+                    <div class="card">
+                        <div class="card__title">Карточки товаров</div>
+                        <div class="note" style="margin-bottom:8px">Описание, характеристики, комплектация и фото подтягиваются из МойСклад. Правки здесь попадают в PDF.</div>
+                        ${items.map(it => this.itemCardEditor(it)).join('')}
+                        <button class="btn btn--outline btn--block" onclick="App.refreshImages(${id})">Перезагрузить фото из МойСклад</button>
+                    </div>
+
+                    <div class="card">
+                        <div class="card__title">Доукомплектование (апселл)</div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="showUpsell" ${proposal.show_upsell != 0 ? 'checked' : ''}> Показывать блок в КП</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Вступительный текст</label>
+                            <textarea id="upsellIntro" rows="2">${this.esc(proposal.upsell_intro || '')}</textarea>
+                        </div>
+                        <div id="addonRows">${addons.map((a, i) => this.addonRow(a, i)).join('')}</div>
+                        <div class="flex">
+                            <button class="btn btn--outline" onclick="App.addAddonRow()">+ Модуль</button>
+                            <button class="btn btn--outline" onclick="App.suggestAddons(${id})">Подобрать из каталога</button>
+                        </div>
+                        <div class="form-group" style="margin-top:8px">
+                            <label>Подпись под фото полной комплектации</label>
+                            <textarea id="upsellNote" rows="2">${this.esc(proposal.upsell_note || '')}</textarea>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card__title">Текст перед таблицей</div>
-                        <textarea id="preTable" rows="3" placeholder="Условия отгрузки, самовывоз..."></textarea>
+                        <textarea id="preTable" rows="3" placeholder="Условия отгрузки, самовывоз...">${this.esc(proposal.pre_table_text || '')}</textarea>
                     </div>
                     <div class="card">
                         <div class="card__title">Текст после таблицы</div>
-                        <textarea id="postTable" rows="3" placeholder="Комплектация, дополнительные условия..."></textarea>
+                        <textarea id="postTable" rows="3" placeholder="Дополнительные условия...">${this.esc(proposal.post_table_text || '')}</textarea>
                     </div>
+                    <div class="card">
+                        <div class="card__title">Гарантия и обслуживание</div>
+                        <textarea id="warrantyText" rows="2">${this.esc(proposal.warranty_text || '')}</textarea>
+                    </div>
+                    <div class="card">
+                        <div class="card__title">Фотографии</div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="showImages" ${proposal.show_images != 0 ? 'checked' : ''}> Включать фото продукции в КП</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Оговорка под фото</label>
+                            <textarea id="imagesNote" rows="2">${this.esc(proposal.images_note || '')}</textarea>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="grid grid--3">
                             <div class="form-group">
                                 <label>НДС %</label>
-                                <select id="vatRate"><option value="5">5%</option><option value="0">0%</option><option value="20">20%</option></select>
+                                <select id="vatRate">${[5,0,20].map(v => `<option value="${v}" ${proposal.vat_rate == v ? 'selected' : ''}>${v}%</option>`).join('')}</select>
                             </div>
                             <div class="form-group">
                                 <label>Срок исполнения</label>
-                                <select id="execDays"><option value="10">10 дней</option><option value="30" selected>30 дней</option></select>
+                                <select id="execDays">${[10,30,60,90].map(v => `<option value="${v}" ${proposal.execution_days == v ? 'selected' : ''}>${v} дней</option>`).join('')}</select>
                             </div>
                             <div class="form-group">
                                 <label>Показать НДС</label>
-                                <select id="showVat"><option value="0">Нет</option><option value="1">Да</option></select>
+                                <select id="showVat"><option value="0">Нет</option><option value="1" ${proposal.show_vat_total == 1 ? 'selected' : ''}>Да</option></select>
                             </div>
                         </div>
                         <button class="btn btn--outline btn--block" onclick="App.saveProposal(${id})">Сохранить изменения</button>
@@ -500,7 +549,7 @@ const App = {
                 <div class="grid grid--2">
                     <div class="form-group">
                         <label>Email получателя</label>
-                        <input type="email" id="sendTo" placeholder="client@company.ru">
+                        <input type="email" id="sendTo" placeholder="client@company.ru" value="${this.esc(proposal.email_from || proposal.contact_email || '')}">
                     </div>
                     <div class="form-group">
                         <label>Тема письма</label>
@@ -512,17 +561,121 @@ const App = {
         `;
     },
 
+    // One product card in the editor: texts, photo count, "от" price flags
+    itemCardEditor(it) {
+        const photos = (() => { try { return JSON.parse(it.images_json || '[]').length; } catch (e) { return 0; } })();
+        return `
+            <div class="item-card" data-item-id="${it.id}" style="border:1px solid #ddd;border-radius:6px;padding:10px;margin-bottom:10px">
+                <div class="flex flex--between">
+                    <strong>${this.esc(it.product_name)}</strong>
+                    <span class="note">${photos} фото</span>
+                </div>
+                <div class="form-group">
+                    <label>Описание</label>
+                    <textarea rows="3" data-field="description_text">${this.esc(it.description_text || '')}</textarea>
+                </div>
+                <div class="form-group">
+                    <label>Характеристики</label>
+                    <textarea rows="4" data-field="specs_text">${this.esc(it.specs_text || '')}</textarea>
+                </div>
+                <div class="form-group">
+                    <label>Комплектация</label>
+                    <textarea rows="2" data-field="included_text">${this.esc(it.included_text || '')}</textarea>
+                </div>
+                <div class="flex">
+                    <label><input type="checkbox" data-field="show_images" ${it.show_images != 0 ? 'checked' : ''}> Фото</label>
+                    <label><input type="checkbox" data-field="price_from" ${it.price_from == 1 ? 'checked' : ''}> Цена «от»</label>
+                    <label><input type="checkbox" data-field="qty_from" ${it.qty_from == 1 ? 'checked' : ''}> Кол-во «от»</label>
+                </div>
+            </div>`;
+    },
+
+    // One upsell row in the editor
+    addonRow(a, i) {
+        return `
+            <div class="addon-row flex" data-addon style="gap:6px;margin-bottom:6px">
+                <input type="checkbox" data-field="is_selected" ${a.is_selected != 0 ? 'checked' : ''} title="Включить в КП">
+                <input type="text" data-field="product_name" value="${this.esc(a.product_name || '')}" placeholder="Название модуля" style="flex:3">
+                <input type="text" data-field="unit" value="${this.esc(a.unit || 'шт.')}" style="flex:1">
+                <input type="number" step="0.01" data-field="price" value="${a.price || 0}" placeholder="Цена" style="flex:1">
+                <input type="hidden" data-field="moysklad_product_id" value="${this.esc(a.moysklad_product_id || '')}">
+                <button class="btn btn--outline" onclick="this.closest('.addon-row').remove()">×</button>
+            </div>`;
+    },
+
+    addAddonRow(a = {}) {
+        const box = document.getElementById('addonRows');
+        if (!box) return;
+        box.insertAdjacentHTML('beforeend', this.addonRow({unit: 'шт.', price: 0, is_selected: 1, ...a}, box.children.length));
+    },
+
+    // Pull addon candidates from the MoySklad module folder
+    async suggestAddons(id) {
+        try {
+            const res = await this.api(`proposals.php?action=addons_suggest&id=${id}`);
+            const existing = new Set([...document.querySelectorAll('[data-addon] [data-field="moysklad_product_id"]')].map(i => i.value));
+            let added = 0;
+            (res.items || []).forEach(p => {
+                if (existing.has(p.moysklad_id)) return;
+                this.addAddonRow({
+                    product_name: p.name, unit: p.unit || 'шт.', price: p.price,
+                    moysklad_product_id: p.moysklad_id, is_selected: 1,
+                });
+                added++;
+            });
+            this.toast(added ? `Добавлено модулей: ${added}` : 'Новых модулей не найдено', added ? 'success' : 'info');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // Re-download product photos from MoySklad and rebuild the PDF
+    async refreshImages(id) {
+        try {
+            this.toast('Загружаем фото из МойСклад...', 'info');
+            const res = await this.api(`proposals.php?action=refresh_images&id=${id}`, {method: 'POST'});
+            this.toast(`Позиций с фото: ${res.items_with_photos}`, 'success');
+            this.pageProposal(id);
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // Collect the editor state into an update payload
+    collectProposal() {
+        const items = [...document.querySelectorAll('.item-card')].map(card => {
+            const out = {id: parseInt(card.dataset.itemId)};
+            card.querySelectorAll('[data-field]').forEach(el => {
+                out[el.dataset.field] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
+            });
+            return out;
+        });
+        const addons = [...document.querySelectorAll('[data-addon]')].map(row => {
+            const out = {};
+            row.querySelectorAll('[data-field]').forEach(el => {
+                out[el.dataset.field] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
+            });
+            out.price = parseFloat(out.price) || 0;
+            return out;
+        }).filter(a => (a.product_name || '').trim() !== '');
+
+        return {
+            cover_letter_final: document.getElementById('coverLetter').value,
+            pre_table_text: document.getElementById('preTable').value,
+            post_table_text: document.getElementById('postTable').value,
+            warranty_text: document.getElementById('warrantyText').value,
+            images_note: document.getElementById('imagesNote').value,
+            upsell_intro: document.getElementById('upsellIntro').value,
+            upsell_note: document.getElementById('upsellNote').value,
+            show_images: document.getElementById('showImages').checked ? 1 : 0,
+            show_upsell: document.getElementById('showUpsell').checked ? 1 : 0,
+            vat_rate: parseInt(document.getElementById('vatRate').value),
+            execution_days: parseInt(document.getElementById('execDays').value),
+            show_vat_total: parseInt(document.getElementById('showVat').value),
+            items, addons,
+        };
+    },
+
     // Save proposal edits
     async saveProposal(id) {
         try {
-            await this.api(`proposals.php?action=update&id=${id}`, {method: 'PUT', body: {
-                cover_letter_final: document.getElementById('coverLetter').value,
-                pre_table_text: document.getElementById('preTable').value,
-                post_table_text: document.getElementById('postTable').value,
-                vat_rate: parseInt(document.getElementById('vatRate').value),
-                execution_days: parseInt(document.getElementById('execDays').value),
-                show_vat_total: parseInt(document.getElementById('showVat').value),
-            }});
+            await this.api(`proposals.php?action=update&id=${id}`, {method: 'PUT', body: this.collectProposal()});
             this.toast('Сохранено', 'success');
             this.refreshPreview(id);
         } catch (err) { this.toast(err.message, 'error'); }

@@ -7,6 +7,7 @@ require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/moysklad.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/pdf.php';
+require_once ROOT . '/lib/kp_content.php';
 require_once ROOT . '/lib/email.php';
 require_once ROOT . '/lib/notifier.php';
 require_once ROOT . '/lib/crm.php';
@@ -24,6 +25,7 @@ switch ($action) {
                               WHERE p.id=?", [$id]);
         if (!$proposal) jsonError('Not found', 404);
         $proposal['items'] = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$id]);
+        $proposal['addons'] = Db::all("SELECT * FROM proposal_addons WHERE proposal_id=? ORDER BY position", [$id]);
         jsonData($proposal);
 
     case 'generate':
@@ -92,6 +94,12 @@ switch ($action) {
         $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections);
         Db::update('proposals', ['cover_letter' => $coverLetter], 'id=?', [$proposalId]);
 
+        // Pull descriptions, specs and photos for the product cards (FR-040, FR-042)
+        KpContent::enrichItems($proposalId);
+
+        // Pre-fill the upsell table with modules from the addon folder (FR-044)
+        KpContent::seedAddons($proposalId);
+
         // Generate PDF draft
         PdfGenerator::generate($proposalId);
 
@@ -105,6 +113,7 @@ switch ($action) {
             'id' => $proposalId,
             'status' => $proposal['status'],
             'items' => $items,
+            'addons' => Db::all("SELECT * FROM proposal_addons WHERE proposal_id=? ORDER BY position", [$proposalId]),
             'cover_letter' => $coverLetter,
             'pdf_preview_url' => "/api/proposals.php?action=preview&id=$proposalId",
         ]);
@@ -119,7 +128,8 @@ switch ($action) {
 
         // Update proposal fields
         $fields = [];
-        foreach (['pre_table_text', 'post_table_text', 'intro_text', 'conditions_text', 'execution_days', 'validity_days', 'vat_rate', 'show_vat_total'] as $f) {
+        foreach (['pre_table_text', 'post_table_text', 'intro_text', 'conditions_text', 'execution_days', 'validity_days', 'vat_rate', 'show_vat_total',
+                  'warranty_text', 'images_note', 'show_images', 'show_upsell', 'upsell_intro', 'upsell_note'] as $f) {
             if (array_key_exists($f, $input)) $fields[$f] = $input[$f];
         }
         if (array_key_exists('cover_letter_final', $input)) {
@@ -135,11 +145,17 @@ switch ($action) {
             foreach ($input['items'] as $itemData) {
                 $itemId = $itemData['id'] ?? 0;
                 $upd = [];
-                foreach (['quantity', 'price', 'product_name', 'is_confirmed', 'notes', 'vat_rate', 'moysklad_product_id'] as $f) {
+                foreach (['quantity', 'price', 'product_name', 'is_confirmed', 'notes', 'vat_rate', 'moysklad_product_id',
+                          'description_text', 'specs_text', 'included_text', 'show_images', 'price_from', 'qty_from'] as $f) {
                     if (array_key_exists($f, $itemData)) $upd[$f] = $itemData[$f];
                 }
                 if ($upd) Db::update('proposal_items', $upd, 'id=? AND proposal_id=?', [$itemId, $id]);
             }
+        }
+
+        // Upsell rows are replaced wholesale — the editor always sends the full list
+        if (array_key_exists('addons', $input) && is_array($input['addons'])) {
+            KpContent::setAddons($id, $input['addons']);
         }
 
         // Regenerate PDF
@@ -226,6 +242,26 @@ switch ($action) {
         Db::update('requests', ['status' => 'sent', 'updated_at' => $now], 'id=?', [$proposal['request_id']]);
 
         jsonOk(['sent_at' => $now]);
+
+    case 'addons_suggest':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM proposals WHERE id=?", [$id])) jsonError('Not found', 404);
+        jsonData(['items' => KpContent::suggestAddons($id)]);
+
+    case 'refresh_images':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM proposals WHERE id=?", [$id])) jsonError('Not found', 404);
+        MoySklad::init($cfg['MOYSKLAD_TOKEN'] ?? '');
+        // Drop the cached photos so enrichItems re-fetches them from MoySklad
+        Db::q("UPDATE proposal_items SET images_json=NULL WHERE proposal_id=?", [$id]);
+        Db::q("UPDATE products_cache SET images_synced_at=NULL WHERE moysklad_id IN
+               (SELECT moysklad_product_id FROM proposal_items WHERE proposal_id=? AND moysklad_product_id IS NOT NULL)", [$id]);
+        KpContent::enrichItems($id);
+        PdfGenerator::generate($id);
+        $withPhotos = (int)Db::val("SELECT COUNT(*) FROM proposal_items WHERE proposal_id=? AND images_json IS NOT NULL AND images_json != '[]'", [$id]);
+        jsonOk(['items_with_photos' => $withPhotos]);
 
     default:
         jsonError('Unknown action', 400);
