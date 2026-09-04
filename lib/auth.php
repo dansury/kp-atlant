@@ -8,13 +8,18 @@ class Auth {
     public static function login(string $login, string $password): ?array {
         $manager = Db::one("SELECT * FROM managers WHERE login=?", [trim($login)]);
         if (!$manager) return null;
-        if (!password_verify($password, $manager['password_hash'])) return null;
+        if (isset($manager['is_active']) && !$manager['is_active']) return null;
+        if (!password_verify($password, $manager['password_hash'])) {
+            Logger::warning('auth', 'Неверный пароль при входе', ['login' => trim($login)]);
+            return null;
+        }
 
         // The session must be running before $_SESSION is written, otherwise
         // the login is silently lost and the user bounces back to the form.
         startSession();
         if (session_status() === PHP_SESSION_ACTIVE) session_regenerate_id(true);
         $_SESSION['manager_id'] = $manager['id'];
+        Logger::info('auth', 'Вход в систему: ' . $manager['login'], ['manager_id' => $manager['id']]);
 
         return [
             'id' => $manager['id'],

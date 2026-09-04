@@ -31,7 +31,7 @@ foreach ($rows as $cp) {
         $totalOrders += $res['orders'];
         $totalInvoices += $res['invoices'];
     } catch (Throwable $e) {
-        error_log("MoySklad sync failed for counterparty #{$cp['id']}: " . $e->getMessage());
+        Logger::exception('moysklad', $e, ['counterparty_id' => $cp['id']]);
     }
 }
 

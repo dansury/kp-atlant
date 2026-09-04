@@ -8,46 +8,136 @@ use PHPMailer\PHPMailer\SMTP;
 class EmailReader {
     private $imap;
     private array $cfg;
+    private string $folder = 'INBOX';
 
     public function __construct(array $cfg) {
         $this->cfg = $cfg;
     }
 
-    // Connect to IMAP
-    public function connect(): void {
-        $host = $this->cfg['IMAP_HOST'];
-        $port = $this->cfg['IMAP_PORT'] ?? 993;
-        $enc = $this->cfg['IMAP_ENCRYPTION'] ?? 'ssl';
-        $mailbox = "{" . $host . ":" . $port . "/imap/" . $enc . "}INBOX";
-        $this->imap = imap_open($mailbox, $this->cfg['IMAP_USER'], $this->cfg['IMAP_PASSWORD']);
+    public static function available(): bool {
+        return function_exists('imap_open');
+    }
+
+    // Connect to IMAP. $folder is the mailbox to open (INBOX, Sent, ...)
+    public function connect(string $folder = 'INBOX'): void {
+        if (!self::available()) throw new RuntimeException('Расширение PHP imap не установлено на сервере');
+        $this->folder = $folder;
+        $this->imap = @imap_open($this->mailboxRef($folder), (string)$this->cfg['IMAP_USER'], (string)$this->cfg['IMAP_PASSWORD'], 0, 1);
         if (!$this->imap) throw new RuntimeException('IMAP connect failed: ' . imap_last_error());
     }
 
-    // Fetch unseen messages
+    private function mailboxRef(string $folder): string {
+        $host = $this->cfg['IMAP_HOST'] ?? '';
+        $port = $this->cfg['IMAP_PORT'] ?? 993;
+        $enc  = $this->cfg['IMAP_ENCRYPTION'] ?? 'ssl';
+        $flags = match ($enc) {
+            'tls'   => '/imap/tls',
+            'notls' => '/imap/notls',
+            default => '/imap/ssl',
+        };
+        // Self-signed certificates are common on shared hosting; the connection stays encrypted
+        if ($enc !== 'notls') $flags .= '/novalidate-cert';
+        return '{' . $host . ':' . $port . $flags . '}' . $folder;
+    }
+
+    /** Folder names of the account — the admin picks INBOX / Sent from a real list. */
+    public function folders(): array {
+        $prefix = $this->mailboxRef('');
+        $list = @imap_list($this->imap, $prefix, '*') ?: [];
+        return array_map(fn($f) => str_replace($prefix, '', $f), $list);
+    }
+
+    public function messageCount(): int {
+        $info = @imap_check($this->imap);
+        return $info ? (int)$info->Nmsgs : 0;
+    }
+
+    /**
+     * Everything newer than $sinceUid, oldest first — the archive syncs by UID and
+     * never touches the \Seen flag, so the manager's own mail client is unaffected.
+     */
+    public function fetchSince(int $sinceUid, int $limit = 50): array {
+        $from = $sinceUid + 1;
+        $overviews = @imap_fetch_overview($this->imap, "$from:*", FT_UID) ?: [];
+        $out = [];
+        foreach ($overviews as $ov) {
+            $uid = (int)($ov->uid ?? 0);
+            if ($uid <= $sinceUid) continue;   // IMAP answers "*" with the last message even when nothing is newer
+            $out[] = $uid;
+        }
+        sort($out);
+        $out = array_slice($out, 0, max(1, $limit));
+
+        $messages = [];
+        foreach ($out as $uid) {
+            $msg = $this->fetchUid($uid);
+            if ($msg) $messages[] = $msg;
+        }
+        return $messages;
+    }
+
+    /** One message by UID, with body and attachments. */
+    public function fetchUid(int $uid): ?array {
+        $no = @imap_msgno($this->imap, $uid);
+        if (!$no) return null;
+        $header = @imap_headerinfo($this->imap, $no);
+        if (!$header) return null;
+        [$text, $html, $attachments] = $this->getBodyAndAttachments($no);
+
+        return [
+            'uid'         => $uid,
+            'folder'      => $this->folder,
+            'message_id'  => trim((string)($header->message_id ?? '')),
+            'in_reply_to' => trim((string)($header->in_reply_to ?? '')),
+            'from'        => $this->addr($header->from[0] ?? null),
+            'from_name'   => $this->decodeMime($header->from[0]->personal ?? ''),
+            'to'          => $this->addrList($header->to ?? []),
+            'cc'          => $this->addrList($header->cc ?? []),
+            'subject'     => $this->decodeMime($header->subject ?? ''),
+            'date'        => date('Y-m-d H:i:s', strtotime($header->date ?? 'now') ?: time()),
+            'seen'        => ($header->Unseen ?? 'U') !== 'U',
+            'size'        => (int)($header->Size ?? 0),
+            'body'        => $text,
+            'body_html'   => $html,
+            'attachments' => $attachments,
+        ];
+    }
+
+    // Unseen messages of the open folder (kept for callers that only want new mail)
     public function fetchUnseen(): array {
         $ids = imap_search($this->imap, 'UNSEEN');
         if (!$ids) return [];
 
         $messages = [];
         foreach ($ids as $id) {
-            $header = imap_headerinfo($this->imap, $id);
-            [$body, $attachments] = $this->getBodyAndAttachments($id);
-            $messages[] = [
-                'uid' => imap_uid($this->imap, $id),
-                'message_id' => $header->message_id ?? '',
-                'from' => $header->from[0]->mailbox . '@' . $header->from[0]->host,
-                'from_name' => $this->decodeMime($header->from[0]->personal ?? ''),
-                'subject' => $this->decodeMime($header->subject ?? ''),
-                'date' => date('Y-m-d H:i:s', strtotime($header->date)),
-                'body' => $body,
-                'attachments' => $attachments,
-            ];
+            $uid = imap_uid($this->imap, $id);
+            $msg = $this->fetchUid((int)$uid);
+            if ($msg) $messages[] = $msg;
             imap_setflag_full($this->imap, (string)$id, '\\Seen');
         }
         return $messages;
     }
 
-    // Extract text body + attachments (FR-021)
+    /** Put a copy of an outgoing message into the Sent folder, like a mail client does. */
+    public function appendSent(string $rawMessage, string $folder): bool {
+        return (bool)@imap_append($this->imap, $this->mailboxRef($folder), $rawMessage, "\\Seen");
+    }
+
+    private function addr(?object $a): string {
+        if (!$a || empty($a->mailbox) || empty($a->host)) return '';
+        return $a->mailbox . '@' . $a->host;
+    }
+
+    private function addrList(array $list): string {
+        $out = [];
+        foreach ($list as $a) {
+            $mail = $this->addr($a);
+            if ($mail !== '') $out[] = $mail;
+        }
+        return implode(', ', $out);
+    }
+
+    // Extract text body, html body and attachments (FR-021)
     private function getBodyAndAttachments(int $id): array {
         $struct = imap_fetchstructure($this->imap, $id);
         $text = '';
@@ -57,10 +147,8 @@ class EmailReader {
         if (empty($struct->parts)) {
             $raw = imap_fetchbody($this->imap, $id, '1');
             if (trim($raw) === '') $raw = imap_body($this->imap, $id);
-            $text = $this->toUtf8(
-                $this->decodeBody($raw, $struct->encoding ?? 0),
-                $this->partCharset($struct)
-            );
+            $decoded = $this->toUtf8($this->decodeBody($raw, $struct->encoding ?? 0), $this->partCharset($struct));
+            if (strtoupper($struct->subtype ?? 'PLAIN') === 'HTML') $html = $decoded; else $text = $decoded;
         } else {
             $this->walkParts($id, $struct->parts, '', $text, $html, $attachments);
         }
@@ -74,7 +162,7 @@ class EmailReader {
             ));
         }
 
-        return [$text, $attachments];
+        return [$text, $html, $attachments];
     }
 
     // Recursive MIME walk: collects text, html and attachment parts
@@ -172,60 +260,77 @@ class EmailReader {
 
 class EmailSender {
     private array $cfg;
+    public ?string $lastRawMessage = null;   // MIME source of the last message, for IMAP APPEND
 
     public function __construct(array $cfg) {
         $this->cfg = $cfg;
     }
 
-    // Send email with optional PDF attachment
-    public function send(string $to, string $subject, string $htmlBody, ?string $attachPath = null, ?string $attachName = null): void {
-        $mail = new PHPMailer(true);
-        $mail->isSMTP();
-        $mail->Host = $this->cfg['SMTP_HOST'];
-        $mail->Port = $this->cfg['SMTP_PORT'] ?? 465;
-        $mail->SMTPAuth = true;
-        $mail->Username = $this->cfg['SMTP_USER'];
-        $mail->Password = $this->cfg['SMTP_PASSWORD'];
-        $mail->SMTPSecure = $this->cfg['SMTP_ENCRYPTION'] ?? 'ssl';
-        $mail->CharSet = 'UTF-8';
-
-        $mail->setFrom(
-            $this->cfg['SMTP_FROM_EMAIL'] ?? $this->cfg['SMTP_USER'],
-            $this->cfg['SMTP_FROM_NAME'] ?? 'Atlant Armour'
-        );
+    // Send email with optional attachments. $attachments: [[path, name], ...]
+    public function send(string $to, string $subject, string $htmlBody, ?string $attachPath = null, ?string $attachName = null, array $opts = []): void {
+        $mail = $this->prepare();
         $mail->addAddress($to);
+        foreach ((array)($opts['cc'] ?? []) as $cc) {
+            if (trim((string)$cc) !== '') $mail->addCC(trim((string)$cc));
+        }
+        if (!empty($opts['reply_to_message_id'])) {
+            $mail->addCustomHeader('In-Reply-To', $opts['reply_to_message_id']);
+            $mail->addCustomHeader('References', $opts['reply_to_message_id']);
+        }
         $mail->Subject = $subject;
         $mail->isHTML(true);
         $mail->Body = $htmlBody;
-        $mail->AltBody = strip_tags($htmlBody);
+        $mail->AltBody = $opts['text'] ?? strip_tags($htmlBody);
 
         if ($attachPath && file_exists($attachPath)) {
             $mail->addAttachment($attachPath, $attachName ?? basename($attachPath));
         }
+        foreach ((array)($opts['attachments'] ?? []) as $a) {
+            $path = is_array($a) ? ($a['path'] ?? '') : $a;
+            if ($path && file_exists($path)) $mail->addAttachment($path, is_array($a) ? ($a['name'] ?? basename($path)) : basename($path));
+        }
 
         $mail->send();
+        $this->lastRawMessage = $mail->getSentMIMEMessage();
     }
 
     // Send plain text notification
     public function sendNotification(string $to, string $subject, string $text): void {
-        $mail = new PHPMailer(true);
-        $mail->isSMTP();
-        $mail->Host = $this->cfg['SMTP_HOST'];
-        $mail->Port = $this->cfg['SMTP_PORT'] ?? 465;
-        $mail->SMTPAuth = true;
-        $mail->Username = $this->cfg['SMTP_USER'];
-        $mail->Password = $this->cfg['SMTP_PASSWORD'];
-        $mail->SMTPSecure = $this->cfg['SMTP_ENCRYPTION'] ?? 'ssl';
-        $mail->CharSet = 'UTF-8';
-
-        $mail->setFrom(
-            $this->cfg['SMTP_FROM_EMAIL'] ?? $this->cfg['SMTP_USER'],
-            $this->cfg['SMTP_FROM_NAME'] ?? 'Atlant Armour КП'
-        );
+        $mail = $this->prepare();
         $mail->addAddress($to);
         $mail->Subject = $subject;
         $mail->Body = $text;
-
         $mail->send();
+        $this->lastRawMessage = $mail->getSentMIMEMessage();
+    }
+
+    /** Connect and authenticate without sending anything — the «проверить почту» button. */
+    public function testConnection(): array {
+        $mail = $this->prepare();
+        $mail->SMTPDebug = SMTP::DEBUG_OFF;
+        if (!$mail->smtpConnect()) throw new RuntimeException('SMTP: не удалось подключиться — ' . $mail->ErrorInfo);
+        $mail->smtpClose();
+        return ['host' => $mail->Host, 'port' => $mail->Port, 'user' => $mail->Username];
+    }
+
+    private function prepare(): PHPMailer {
+        $mail = new PHPMailer(true);
+        $mail->isSMTP();
+        $mail->Host = $this->cfg['SMTP_HOST'] ?? '';
+        $mail->Port = (int)($this->cfg['SMTP_PORT'] ?? 465);
+        $mail->SMTPAuth = ($this->cfg['SMTP_USER'] ?? '') !== '';
+        $mail->Username = $this->cfg['SMTP_USER'] ?? '';
+        $mail->Password = $this->cfg['SMTP_PASSWORD'] ?? '';
+        $secure = $this->cfg['SMTP_ENCRYPTION'] ?? 'ssl';
+        $mail->SMTPSecure = $secure === '' ? false : $secure;
+        $mail->SMTPAutoTLS = $secure !== '';
+        $mail->Timeout = (int)($this->cfg['SMTP_TIMEOUT'] ?? 20);
+        $mail->CharSet = 'UTF-8';
+
+        $mail->setFrom(
+            ($this->cfg['SMTP_FROM_EMAIL'] ?? '') ?: ($this->cfg['SMTP_USER'] ?? ''),
+            ($this->cfg['SMTP_FROM_NAME'] ?? '') ?: 'Atlant Armour'
+        );
+        return $mail;
     }
 }

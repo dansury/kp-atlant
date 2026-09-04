@@ -63,8 +63,7 @@ class Notifier {
 
         if (empty($stale)) return;
 
-        require_once __DIR__ . '/email.php';
-        $sender = new EmailSender($cfg);
+        require_once __DIR__ . '/mail.php';
 
         foreach ($stale as $req) {
             $subject = "⚠ Необработанный запрос КП #{$req['id']}";
@@ -76,10 +75,10 @@ class Notifier {
             $body .= "Дата: {$req['created_at']}\n";
 
             try {
-                $sender->sendNotification($fallbackEmail, $subject, $body);
+                Mailer::send(['to' => $fallbackEmail, 'subject' => $subject, 'text' => $body]);
                 Db::update('requests', ['email_notified_at' => date('Y-m-d H:i:s')], 'id=?', [$req['id']]);
             } catch (\Exception $e) {
-                error_log("Fallback email failed for request #{$req['id']}: " . $e->getMessage());
+                Logger::exception('notify', $e, ['request_id' => $req['id']]);
             }
         }
     }

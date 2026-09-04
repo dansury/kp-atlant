@@ -4,7 +4,7 @@
  */
 require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/crm.php';
-require_once ROOT . '/lib/email.php';
+require_once ROOT . '/lib/mail.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -59,8 +59,14 @@ switch ($action) {
         $text = $f['final_text'] ?: $f['draft_text'];
         $subject = $input['subject'] ?? "Atlant Armour — по вашему запросу";
 
-        $sender = new EmailSender($cfg);
-        $sender->send($to, $subject, '<p>' . nl2br(htmlspecialchars($text)) . '</p>');
+        Mailer::send([
+            'to'              => $to,
+            'subject'         => $subject,
+            'text'            => $text,
+            'mailbox_id'      => $input['mailbox_id'] ?? null,
+            'manager_id'      => (int)$manager['id'],
+            'counterparty_id' => $f['counterparty_id'] ? (int)$f['counterparty_id'] : null,
+        ]);
 
         $now = date('Y-m-d H:i:s');
         Db::update('followups', ['status' => 'sent', 'sent_at' => $now], 'id=?', [$id]);

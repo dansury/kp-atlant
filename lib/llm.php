@@ -4,15 +4,84 @@
  * Dual-provider: OpenRouter + Yandex FM. Fallback chain, json-mode, retry.
  */
 class LLM {
+    /**
+     * Model catalog shown in the admin panel (same idea as NeuroPro AVAILABLE_MODELS).
+     * The field is a plain list: any slug can still be typed by hand.
+     */
+    public const CATALOG = [
+        'yandex' => [
+            ['id' => 'yandexgpt/latest',      'label' => 'YandexGPT Pro — latest'],
+            ['id' => 'yandexgpt/rc',          'label' => 'YandexGPT Pro — release candidate'],
+            ['id' => 'yandexgpt-lite/latest', 'label' => 'YandexGPT Lite — дешевле и быстрее'],
+            ['id' => 'llama/latest',          'label' => 'Llama (Yandex AI Studio)'],
+        ],
+        'openrouter' => [
+            ['id' => 'google/gemini-2.5-flash',            'label' => 'Gemini 2.5 Flash — быстрый и дешёвый'],
+            ['id' => 'google/gemini-2.5-pro',              'label' => 'Gemini 2.5 Pro'],
+            ['id' => 'anthropic/claude-sonnet-4.5',        'label' => 'Claude Sonnet 4.5'],
+            ['id' => 'openai/gpt-4.1-mini',                'label' => 'GPT-4.1 mini'],
+            ['id' => 'openai/gpt-4o-mini',                 'label' => 'GPT-4o mini'],
+            ['id' => 'qwen/qwen-2.5-72b-instruct',         'label' => 'Qwen 2.5 72B'],
+            ['id' => 'meta-llama/llama-3.3-70b-instruct',  'label' => 'Llama 3.3 70B'],
+        ],
+    ];
+
+    public const PROVIDER_LABELS = ['yandex' => 'Yandex Foundation Models', 'openrouter' => 'OpenRouter'];
+
     private static array $cfg = [];
     private static array $providers = [];
 
     // Init with config array
     public static function init(array $cfg): void {
         self::$cfg = $cfg;
-        self::$providers = array_filter(
-            array_map('trim', explode(',', $cfg['LLM_PROVIDER_PRIORITY'] ?? 'openrouter'))
-        );
+        self::$providers = array_values(array_filter(
+            array_map('trim', explode(',', (string)($cfg['LLM_PROVIDER_PRIORITY'] ?? 'openrouter')))
+        ));
+    }
+
+    /** Providers in their fallback order, with model and key status for the panel. */
+    public static function status(): array {
+        $out = [];
+        foreach (array_keys(self::CATALOG) as $provider) {
+            $key = $provider === 'yandex' ? 'YANDEX_API_KEY' : 'OPENROUTER_API_KEY';
+            $modelKey = $provider === 'yandex' ? 'YANDEX_MODEL' : 'OPENROUTER_MODEL';
+            $pos = array_search($provider, self::$providers, true);
+            $out[] = [
+                'provider' => $provider,
+                'label'    => self::PROVIDER_LABELS[$provider] ?? $provider,
+                'enabled'  => $pos !== false,
+                'order'    => $pos === false ? null : $pos + 1,
+                'model'    => (string)(self::$cfg[$modelKey] ?? ''),
+                'models'   => self::CATALOG[$provider],
+                'key_set'  => (string)(self::$cfg[$key] ?? '') !== '',
+                'ready'    => self::ready($provider),
+            ];
+        }
+        return $out;
+    }
+
+    public static function ready(string $provider): bool {
+        return match ($provider) {
+            'yandex'     => (string)(self::$cfg['YANDEX_API_KEY'] ?? '') !== '' && (string)(self::$cfg['YANDEX_FOLDER_ID'] ?? '') !== '',
+            'openrouter' => (string)(self::$cfg['OPENROUTER_API_KEY'] ?? '') !== '',
+            default      => false,
+        };
+    }
+
+    /** One short round-trip — the «проверить нейросеть» button in the panel. */
+    public static function test(string $provider): array {
+        $started = microtime(true);
+        $answer = match ($provider) {
+            'openrouter' => self::callOpenRouter('Отвечай одним словом.', 'Скажи «готово».', 0, false),
+            'yandex'     => self::callYandex('Отвечай одним словом.', 'Скажи «готово».', 0, false),
+            default      => throw new LLMException("Неизвестный провайдер: $provider"),
+        };
+        return [
+            'provider' => $provider,
+            'model'    => (string)(self::$cfg[$provider === 'yandex' ? 'YANDEX_MODEL' : 'OPENROUTER_MODEL'] ?? ''),
+            'answer'   => mb_substr(trim($answer), 0, 200),
+            'ms'       => (int)round((microtime(true) - $started) * 1000),
+        ];
     }
 
     // Text completion — returns plain string
@@ -40,6 +109,7 @@ class LLM {
             // Retry with lower temp
             $temp = 0.05;
         }
+        Logger::error('llm', 'Модель вернула не-JSON после ' . $maxRetries . ' попыток', ['tail' => mb_substr((string)($raw ?? ''), -400)]);
         throw new LLMException("Failed to parse JSON after $maxRetries attempts: " . json_last_error_msg());
     }
 
@@ -55,10 +125,13 @@ class LLM {
                 };
             } catch (LLMException $e) {
                 $lastErr = $e;
+                Logger::warning('llm', "Провайдер $provider не ответил: " . $e->getMessage(), ['provider' => $provider]);
                 // Continue to next provider
             }
         }
-        throw new LLMException('All LLM providers failed: ' . ($lastErr ? $lastErr->getMessage() : 'none configured'));
+        $message = 'All LLM providers failed: ' . ($lastErr ? $lastErr->getMessage() : 'none configured');
+        Logger::error('llm', $message, ['providers' => self::$providers]);
+        throw new LLMException($message);
     }
 
     // OpenRouter API call
@@ -136,7 +209,10 @@ class LLM {
         curl_close($ch);
 
         if ($resp === false) throw new LLMException("cURL error ($provider): $err");
-        if ($code >= 500 || $code === 429) throw new LLMException("$provider returned HTTP $code");
+        if ($code >= 400) {
+            $detail = mb_substr((string)$resp, 0, 400);
+            throw new LLMException("$provider returned HTTP $code: $detail");
+        }
 
         $data = json_decode($resp, true);
         if (!$data) throw new LLMException("$provider: invalid JSON response");

@@ -75,7 +75,7 @@ foreach ($payload['events'] as $event) {
         }
     } catch (Throwable $e) {
         $result = 'error: ' . $e->getMessage();
-        error_log("MoySklad webhook failed ($entityType/$action/$msId): " . $e->getMessage());
+        Logger::exception('moysklad', $e, ['entity' => $entityType, 'action' => $action, 'moysklad_id' => $msId]);
     }
 
     Db::insert('webhook_log', [

@@ -5,7 +5,7 @@
  */
 require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/sync.php';
-require_once ROOT . '/lib/email.php';
+require_once ROOT . '/lib/mail.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -87,7 +87,15 @@ switch ($action) {
         ]);
 
         try {
-            (new EmailSender($cfg))->send($to, $subject, $body, $path, 'Счёт ' . $inv['name'] . '.pdf');
+            Mailer::send([
+                'to'              => $to,
+                'subject'         => $subject,
+                'html'            => $body,
+                'mailbox_id'      => $input['mailbox_id'] ?? null,
+                'manager_id'      => $manager['id'] ?? null,
+                'counterparty_id' => $inv['counterparty_id'] ? (int)$inv['counterparty_id'] : null,
+                'attachments'     => [['path' => $path, 'name' => 'Счёт ' . $inv['name'] . '.pdf']],
+            ]);
         } catch (Throwable $e) {
             jsonError('Не удалось отправить письмо: ' . $e->getMessage(), 502);
         }

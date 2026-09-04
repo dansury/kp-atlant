@@ -163,3 +163,34 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     .msg--out { margin-left: 0; }
     .chat { max-height: none; }
 }
+
+/* ==== Module 004: admin console, logs, mail ==== */
+
+/* Tab strip of the admin console */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.tab { padding: 8px 14px; font-size: 13px; text-decoration: none; color: var(--text-muted); border-bottom: 2px solid transparent; }
+.tab:hover { color: var(--primary); }
+.tab--active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+
+/* One setting row: label + source, the field, the reset button */
+.setting { display: grid; grid-template-columns: 1fr 320px auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.setting:last-child { border-bottom: none; }
+.setting__label label { font-weight: 600; display: block; }
+.setting__label .muted { margin-top: 2px; }
+.setting__actions { min-width: 90px; text-align: right; }
+
+/* Counter next to a nav item */
+.pill { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: rgba(255,255,255,.25); font-size: 11px; text-align: center; }
+.pill--danger { background: var(--danger); color: #fff; }
+
+/* A card that reports a problem */
+.card--alert { border-left: 3px solid var(--danger); }
+
+/* Mail list */
+.row--unread td { font-weight: 600; background: #f7fbff; }
+.row--off td { opacity: .55; }
+
+@media (max-width: 768px) {
+    .setting { grid-template-columns: 1fr; }
+    .setting__actions { text-align: left; }
+}
