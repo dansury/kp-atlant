@@ -4,6 +4,11 @@
  */
 define('ROOT', dirname(__DIR__));
 
+// Own cookie name. A leftover PHPSESSID from an earlier deploy can be stuck in
+// the browser (a Secure cookie set over HTTPS is never overwritten over plain
+// HTTP), which makes every login bounce back to the form while incognito works.
+define('SESSION_COOKIE', 'ATLANTSID');
+
 // Load config. The file is OPTIONAL: it seeds the defaults, while the values
 // edited in the admin panel live in the DB and win over it. Delete config.php
 // from the server and the service keeps running on what the panel holds.
@@ -748,17 +753,38 @@ function startSession(): void {
     if (PHP_SAPI === 'cli') return;                       // cron/CLI has no session
     if (session_status() === PHP_SESSION_ACTIVE) return;
     if (headers_sent()) return;
-    $https = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
-        || (strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https')
-        || ((int)($_SERVER['SERVER_PORT'] ?? 0) === 443);
+    $https = isHttps();
+    // Never adopt an id we did not issue: after the session storage is wiped a
+    // stale cookie would otherwise keep an unwritable session alive.
+    ini_set('session.use_strict_mode', '1');
+    session_name(SESSION_COOKIE);
     session_set_cookie_params([
-        'lifetime' => $GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400,
+        'lifetime' => (int)($GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400),
         'path'     => '/',
         'httponly' => true,
         'secure'   => $https,   // must be false on plain HTTP, or the cookie is dropped
         'samesite' => 'Lax',    // Strict drops the cookie on external return links
     ]);
     session_start();
+}
+
+// Request came over TLS (directly or through a proxy)
+function isHttps(): bool {
+    return (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+        || (strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https')
+        || ((int)($_SERVER['SERVER_PORT'] ?? 0) === 443);
+}
+
+// Drop session cookies from older builds so the browser keeps exactly one
+function clearLegacySessionCookies(): void {
+    if (PHP_SAPI === 'cli' || headers_sent()) return;
+    foreach (['PHPSESSID'] as $name) {
+        if (!isset($_COOKIE[$name])) continue;
+        foreach (['/', '/api/'] as $path) {
+            setcookie($name, '', ['expires' => time() - 3600, 'path' => $path]);
+        }
+        unset($_COOKIE[$name]);
+    }
 }
 
 // Auth helper: get current manager from session
@@ -774,8 +800,16 @@ function currentManager(): ?array {
 }
 
 // JSON response helpers
-function jsonOk(array $data = []): never {
+// API answers must never come from the browser cache: a cached "me" response
+// would show a logged-out screen right after a successful login.
+function jsonHeaders(): void {
     header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Pragma: no-cache');
+}
+
+function jsonOk(array $data = []): never {
+    jsonHeaders();
     echo json_encode(array_merge(['ok' => true], $data), JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -785,13 +819,13 @@ function jsonError(string $msg, int $code = 400): never {
         Logger::log($code >= 500 ? 'error' : 'warning', 'api', $msg, ['code' => $code]);
     }
     http_response_code($code);
-    header('Content-Type: application/json; charset=utf-8');
+    jsonHeaders();
     echo json_encode(['error' => $msg, 'code' => $code], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 function jsonData(mixed $data): never {
-    header('Content-Type: application/json; charset=utf-8');
+    jsonHeaders();
     echo json_encode($data, JSON_UNESCAPED_UNICODE);
     exit;
 }

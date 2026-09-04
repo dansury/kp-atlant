@@ -13,6 +13,8 @@ const App = {
             method: opts.method || 'GET',
             headers: opts.body ? {'Content-Type': 'application/json'} : {},
             body: opts.body ? JSON.stringify(opts.body) : undefined,
+            credentials: 'same-origin',
+            cache: 'no-store',   // a cached "me" would show the login screen after a login
         });
         if (res.headers.get('content-type')?.includes('application/pdf')) return res;
         const data = await res.json();
@@ -1936,9 +1938,24 @@ const App = {
                     email: document.getElementById('setupEmail').value,
                     password: document.getElementById('setupPass').value,
                 }});
+                if (!await App.sessionAlive()) return;
                 location.reload();
             } catch (err) { App.toast(err.message, 'error'); }
         };
+    },
+
+    // The reload after a login must land on a live session. If the browser
+    // refuses our cookie the login screen would just come back with no reason
+    // shown, so say what happened instead of looping.
+    async sessionAlive() {
+        try {
+            await this.api('auth.php?action=me');
+            return true;
+        } catch {
+            this.toast('Браузер не сохранил cookie сессии. Очистите cookie этого сайта '
+                + 'и отключите блокировку сторонних данных, затем повторите вход.', 'error');
+            return false;
+        }
     },
 
     // Login
@@ -1970,6 +1987,7 @@ const App = {
                     login: document.getElementById('loginUser').value,
                     password: document.getElementById('loginPass').value,
                 }});
+                if (!await App.sessionAlive()) return;
                 location.reload();
             } catch (err) { App.toast(err.message, 'error'); }
         };
