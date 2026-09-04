@@ -33,6 +33,16 @@ body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: v
 .table .num { text-align: center; width: 40px; }
 .table .price { text-align: right; white-space: nowrap; }
 
+/* Log table: fixed narrow columns, the message takes what is left */
+.table--logs { table-layout: fixed; }
+.table--logs .col-when { width: 150px; }
+.table--logs .col-level { width: 90px; }
+.table--logs .col-source { width: 200px; }
+.table--logs td { word-break: break-word; }
+.table--logs .log__when { white-space: nowrap; }
+.table--logs .log__source { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.table--logs .log__msg { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
 /* Buttons */
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border: none; border-radius: var(--radius); font-size: 13px; cursor: pointer; font-weight: 500; transition: .15s; }
 .btn--primary { background: var(--primary); color: #fff; }

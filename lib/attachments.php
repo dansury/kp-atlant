@@ -32,8 +32,9 @@ class Attachments {
      * Store one attachment and extract its text.
      * $file: ['filename' => string, 'content' => binary, 'mime' => string]
      * $links: ['correspondence_id'|'request_id'|'counterparty_id' => int|null]
+     * $opts:  ['ocr' => bool] — false skips recognition (the archive download does)
      */
-    public static function store(array $file, array $links = []): array {
+    public static function store(array $file, array $links = [], array $opts = []): array {
         $name = self::sanitizeFilename($file['filename'] ?? 'attachment');
         $content = $file['content'] ?? '';
         $size = strlen($content);
@@ -50,7 +51,7 @@ class Attachments {
             $status = 'skipped'; // too big to parse, file still kept
         } else {
             try {
-                [$text, $status] = self::extractText($path, $mime, $name);
+                [$text, $status] = self::extractText($path, $mime, $name, $opts);
             } catch (Throwable $e) {
                 $text = '';
                 $status = 'failed';
@@ -75,14 +76,15 @@ class Attachments {
     }
 
     // Dispatch by type. Returns [text, status]
-    public static function extractText(string $path, string $mime, string $filename): array {
+    public static function extractText(string $path, string $mime, string $filename, array $opts = []): array {
         $ext = mb_strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        $ocrAllowed = ($opts['ocr'] ?? true) && self::ocrEnabled();
 
         if ($ext === 'pdf' || str_contains($mime, 'pdf')) {
             $text = self::fromPdf($path);
             if (mb_strlen(trim($text)) >= 40) return [$text, 'ok'];
             // No usable text layer — likely a scan
-            if (self::ocrEnabled()) {
+            if ($ocrAllowed) {
                 $ocr = self::ocr($path, 'application/pdf');
                 if ($ocr !== null && trim($ocr) !== '') return [$ocr, 'ocr'];
             }
@@ -97,7 +99,7 @@ class Attachments {
         }
 
         if (in_array($ext, ['jpg', 'jpeg', 'png'], true) || str_starts_with($mime, 'image/')) {
-            if (!self::ocrEnabled()) return ['', 'skipped'];
+            if (!$ocrAllowed) return ['', 'skipped'];
             $ocr = self::ocr($path, $ext === 'png' ? 'image/png' : 'image/jpeg');
             return $ocr !== null ? [$ocr, 'ocr'] : ['', 'failed'];
         }
@@ -206,6 +208,34 @@ class Attachments {
             ];
             if ($mime === 'application/pdf') $body['page'] = (string)$page;
 
+            [$code, $resp] = self::ocrRequest($body, $key, $folder);
+
+            if ($code !== 200) {
+                if ($page === 0) {
+                    // 429 is Vision's rate limit, not a broken setup — a whole archive
+                    // download hits it routinely, so it is a warning with a hint
+                    $rate = $code === 429;
+                    Logger::log($rate ? 'warning' : 'error', 'ocr',
+                        "Yandex Vision вернул HTTP $code" . ($rate ? ' — превышен лимит запросов, распознавание пропущено' : ''),
+                        ['response' => substr((string)$resp, 0, 500)]);
+                    return null;
+                }
+                break; // no more pages
+            }
+            $data = json_decode((string)$resp, true);
+            $text = $data['result']['textAnnotation']['fullText'] ?? '';
+            if (trim($text) === '') break;
+            $out[] = $text;
+        }
+
+        return $out ? implode("\n\n", $out) : null;
+    }
+
+    /** One Vision call, retried with a pause while the service answers 429/5xx. */
+    private static function ocrRequest(array $body, string $key, string $folder, int $attempts = 3): array {
+        $code = 0;
+        $resp = '';
+        for ($try = 1; $try <= $attempts; $try++) {
             $ch = curl_init('https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText');
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
@@ -219,24 +249,13 @@ class Attachments {
                     'x-data-logging-enabled: false',
                 ],
             ]);
-            $resp = curl_exec($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            $resp = (string)curl_exec($ch);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-            if ($code !== 200) {
-                if ($page === 0) {
-                    Logger::error('ocr', "Yandex Vision вернул HTTP $code", ['response' => substr((string)$resp, 0, 500)]);
-                    return null;
-                }
-                break; // no more pages
-            }
-            $data = json_decode((string)$resp, true);
-            $text = $data['result']['textAnnotation']['fullText'] ?? '';
-            if (trim($text) === '') break;
-            $out[] = $text;
+            if ($code !== 429 && $code < 500) break;
+            if ($try < $attempts) sleep($try);   // 1s, then 2s — Vision limits requests per second
         }
-
-        return $out ? implode("\n\n", $out) : null;
+        return [$code, $resp];
     }
 
     // All extracted attachment text for a request, for the LLM parser
@@ -270,14 +289,16 @@ class Attachments {
 
     // cp1251 → utf8 when needed
     private static function toUtf8(string $s): string {
-        if (mb_check_encoding($s, 'UTF-8')) return $s;
-        return mb_convert_encoding($s, 'UTF-8', 'Windows-1251');
+        return utf8Text($s);
     }
 
     private static function sanitizeFilename(string $name): string {
         $name = basename(str_replace('\\', '/', $name));
-        $name = preg_replace('/[^\p{L}\p{N}\.\-_ ]+/u', '_', $name);
-        $name = trim(preg_replace('/\s+/u', ' ', $name));
+        // A filename from an old letter is not always valid UTF-8; the /u patterns
+        // below return null on such a string, so it is repaired first
+        if (!mb_check_encoding($name, 'UTF-8')) $name = self::toUtf8($name);
+        $name = preg_replace('/[^\p{L}\p{N}\.\-_ ]+/u', '_', $name) ?? '';
+        $name = trim(preg_replace('/\s+/u', ' ', $name) ?? '');
         return mb_substr($name === '' ? 'attachment' : $name, 0, 120);
     }
 

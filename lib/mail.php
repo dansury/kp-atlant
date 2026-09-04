@@ -166,16 +166,27 @@ final class Mailboxes {
 
     /** IMAP/SMTP config for EmailReader / EmailSender, secrets decrypted. */
     public static function cfg(array $box): array {
+        $imapUser = (string)($box['imap_user'] ?? '');
+        $imapPass = Crypt::decrypt((string)($box['imap_password'] ?? ''));
+
+        // One account, one application password: an empty SMTP login or password
+        // means «то же, что у IMAP», not «отправлять без авторизации» — otherwise
+        // the mailbox reads fine and refuses to send.
+        $smtpUser = (string)($box['smtp_user'] ?? '');
+        if (trim($smtpUser) === '') $smtpUser = $imapUser ?: (string)($box['email'] ?? '');
+        $smtpPass = Crypt::decrypt((string)($box['smtp_password'] ?? ''));
+        if ($smtpPass === '') $smtpPass = $imapPass;
+
         return [
             'IMAP_HOST'       => $box['imap_host'] ?? '',
             'IMAP_PORT'       => (int)($box['imap_port'] ?? 993),
-            'IMAP_USER'       => $box['imap_user'] ?? '',
-            'IMAP_PASSWORD'   => Crypt::decrypt((string)($box['imap_password'] ?? '')),
+            'IMAP_USER'       => $imapUser,
+            'IMAP_PASSWORD'   => $imapPass,
             'IMAP_ENCRYPTION' => $box['imap_encryption'] ?? 'ssl',
             'SMTP_HOST'       => $box['smtp_host'] ?? '',
             'SMTP_PORT'       => (int)($box['smtp_port'] ?? 465),
-            'SMTP_USER'       => $box['smtp_user'] ?? '',
-            'SMTP_PASSWORD'   => Crypt::decrypt((string)($box['smtp_password'] ?? '')),
+            'SMTP_USER'       => $smtpUser,
+            'SMTP_PASSWORD'   => $smtpPass,
             'SMTP_ENCRYPTION' => $box['smtp_encryption'] ?? 'ssl',
             'SMTP_FROM_NAME'  => $box['from_name'] ?? '',
             'SMTP_FROM_EMAIL' => ($box['from_email'] ?? '') ?: ($box['email'] ?? ''),
@@ -312,13 +323,13 @@ final class MailArchive {
             'uid'          => (int)($msg['uid'] ?? 0),
             'message_id'   => $msg['message_id'] ?? null,
             'in_reply_to'  => $msg['in_reply_to'] ?? null,
-            'subject'      => $msg['subject'] ?? '',
+            'subject'      => self::utf8($msg['subject'] ?? ''),
             'from_email'   => $msg['from'] ?? '',
-            'from_name'    => $msg['from_name'] ?? '',
-            'to_emails'    => $msg['to'] ?? '',
-            'cc_emails'    => $msg['cc'] ?? '',
-            'body_text'    => mb_strcut((string)($msg['body'] ?? ''), 0, $limit),
-            'body_html'    => mb_strcut((string)($msg['body_html'] ?? ''), 0, $limit),
+            'from_name'    => self::utf8($msg['from_name'] ?? ''),
+            'to_emails'    => self::utf8($msg['to'] ?? ''),
+            'cc_emails'    => self::utf8($msg['cc'] ?? ''),
+            'body_text'    => self::utf8(mb_strcut((string)($msg['body'] ?? ''), 0, $limit)),
+            'body_html'    => self::utf8(mb_strcut((string)($msg['body_html'] ?? ''), 0, $limit)),
             'size'         => (int)($msg['size'] ?? 0),
             'has_attachment' => empty($msg['attachments']) ? 0 : 1,
             'is_read'      => !empty($msg['seen']) ? 1 : 0,
@@ -352,6 +363,14 @@ final class MailArchive {
             'processed_at'    => date('Y-m-d H:i:s'),
             'date_at'         => date('Y-m-d H:i:s'),
         ]);
+    }
+
+    /**
+     * Only valid UTF-8 goes into the archive: a letter declaring one charset and
+     * carrying another makes json_encode() fail — and with it the whole mail page.
+     */
+    private static function utf8(string $s): string {
+        return utf8Text($s);
     }
 
     private static function exists(int $mailboxId, string $folder, int $uid, string $messageId): bool {

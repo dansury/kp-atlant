@@ -75,11 +75,16 @@ final class MailSync {
         return $stored;
     }
 
-    private static function storeAttachments(int $mailMessageId, array $files): array {
+    /**
+     * $ocr=false during «скачать весь архив»: recognizing thousands of old scans
+     * costs money, runs into the Vision rate limit and nobody asked for it —
+     * the text layer of a PDF is still extracted.
+     */
+    private static function storeAttachments(int $mailMessageId, array $files, bool $ocr = true): array {
         $stored = [];
         foreach ($files as $file) {
             try {
-                $stored[] = Attachments::store($file, ['mail_message_id' => $mailMessageId]);
+                $stored[] = Attachments::store($file, ['mail_message_id' => $mailMessageId], ['ocr' => $ocr]);
             } catch (Throwable $e) {
                 Logger::exception('attachments', $e, ['mail_message_id' => $mailMessageId]);
             }
@@ -294,7 +299,7 @@ final class MailSync {
                 $id = MailArchive::storeIncoming($box, $msg, $direction, true);
                 if (!$id) continue;
                 $stored++;
-                self::storeAttachments($id, $msg['attachments'] ?? []);
+                self::storeAttachments($id, $msg['attachments'] ?? [], false);
             }
             // The window held nothing (or was fully consumed) — jump past it
             if (!$uids || $cursor >= end($uids)) $cursor = max($cursor, min($to, $maxUid));
