@@ -90,6 +90,57 @@ try {
             }
             jsonOk($res);
 
+        case 'draft_reply':
+            // «Создать ответ»: the draft is generated here and only here — the mail
+            // sync just notifies, it never spends a model call on an unread letter.
+            $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!$id && !empty($input['request_id'])) {
+                $id = (int)Db::val(
+                    "SELECT id FROM mail_messages WHERE request_id=? AND direction='in' ORDER BY id DESC LIMIT 1",
+                    [(int)$input['request_id']]
+                );
+            }
+            $msg = MailArchive::get($id);
+            if (!$msg) jsonError('Письмо не найдено', 404);
+            if ($msg['direction'] !== 'in') jsonError('Ответ создаётся только на входящее письмо');
+
+            require_once ROOT . '/lib/parser.php';
+
+            $attachText = '';
+            foreach (Db::all("SELECT filename, extracted_text FROM attachments WHERE mail_message_id=?", [$id]) as $a) {
+                if (!empty($a['extracted_text'])) {
+                    $attachText .= "--- Вложение: {$a['filename']} ---\n" . $a['extracted_text'] . "\n\n";
+                }
+            }
+
+            // Earlier letters of the same company (or the same address) give the model
+            // the context a manager would scroll through before answering
+            $thread = $msg['counterparty_id']
+                ? Db::all("SELECT direction, date_at, body_text FROM mail_messages
+                           WHERE counterparty_id=? AND id<>? ORDER BY date_at DESC, id DESC LIMIT 5",
+                          [(int)$msg['counterparty_id'], $id])
+                : Db::all("SELECT direction, date_at, body_text FROM mail_messages
+                           WHERE from_email=? AND id<>? ORDER BY date_at DESC, id DESC LIMIT 5",
+                          [(string)$msg['from_email'], $id]);
+
+            $text = RequestParser::generateReply($msg, [
+                'org_name'    => $msg['counterparty_name'] ?? '',
+                'attachments' => $attachText,
+                'thread'      => array_reverse($thread),
+                'email_rules' => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
+                'tov'         => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
+            ]);
+
+            Logger::info('mail', "Черновик ответа на письмо #$id создан", [
+                'mail_message_id' => $id, 'manager_id' => (int)$manager['id'],
+            ]);
+            jsonData([
+                'mail_message_id' => $id,
+                'text'            => $text,
+                'subject'         => preg_replace('/^(Re:\s*)?/iu', 'Re: ', (string)$msg['subject']),
+                'to'              => (string)$msg['from_email'],
+            ]);
+
         case 'link':
             // Attach an archived message to a company card by hand
             $id = (int)($input['id'] ?? 0);

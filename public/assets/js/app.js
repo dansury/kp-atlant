@@ -263,6 +263,7 @@ const App = {
                 <h2>${isOrder ? 'Заказ' : 'Запрос'} #${req.id} ${this.typeBadge(req.type)}</h2>
                 <div class="flex">
                     ${!req.manager_id ? `<button class="btn btn--outline" onclick="App.assignRequest(${req.id})">Взять в работу</button>` : ''}
+                    ${req.mail_message_id ? `<button class="btn btn--outline" onclick="App.mailCompose(${req.mail_message_id}, true)">Создать ответ</button>` : ''}
                     ${actions}
                 </div>
             </div>
@@ -1232,7 +1233,8 @@ const App = {
                 <h2>${this.esc(m.subject) || 'Без темы'}</h2>
                 <div class="flex">
                     <a href="#mail" class="btn btn--outline btn--sm">← К списку</a>
-                    <button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>
+                    ${m.direction === 'in' ? `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id}, true)">Создать ответ</button>` : ''}
+                    <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>
                 </div>
             </div>
             <div class="card">
@@ -1256,7 +1258,8 @@ const App = {
         `;
     },
 
-    async mailCompose(replyToId) {
+    // $generate=true — the manager pressed «Создать ответ»: draft the text right away
+    async mailCompose(replyToId, generate) {
         const d = await this.api('mail.php?action=list&limit=1');
         let src = null;
         if (replyToId) src = await this.api(`mail.php?action=get&id=${replyToId}`);
@@ -1272,9 +1275,39 @@ const App = {
             <div class="form-group"><label>Кому</label><input type="text" id="cmpTo" value="${this.esc(to)}"></div>
             <div class="form-group"><label>Копия (через запятую)</label><input type="text" id="cmpCc"></div>
             <div class="form-group"><label>Тема</label><input type="text" id="cmpSubject" value="${this.esc(subject)}"></div>
-            <div class="form-group"><label>Текст</label><textarea id="cmpText" rows="9"></textarea></div>
+            <div class="form-group">
+                <div class="flex flex--between">
+                    <label>Текст</label>
+                    ${replyToId && src && src.direction === 'in'
+                        ? `<button class="btn btn--sm btn--outline" id="genReplyBtn" onclick="App.mailGenerateReply(${replyToId})">Создать ответ</button>` : ''}
+                </div>
+                <textarea id="cmpText" rows="9"></textarea>
+            </div>
             <button class="btn btn--primary btn--block" onclick="App.mailSend(${replyToId || 'null'})">Отправить</button>
         `);
+        if (generate && src && src.direction === 'in') this.mailGenerateReply(replyToId);
+    },
+
+    // Draft the reply text via LLM — never on new mail, only on this button
+    async mailGenerateReply(id) {
+        const btn = document.getElementById('genReplyBtn');
+        const area = document.getElementById('cmpText');
+        if (btn) { btn.disabled = true; btn.textContent = 'Генерация...'; }
+        if (area) area.placeholder = 'Нейросеть готовит черновик ответа...';
+        try {
+            const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body: {id}});
+            if (area) area.value = r.text || '';
+            const subj = document.getElementById('cmpSubject');
+            if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
+            const to = document.getElementById('cmpTo');
+            if (to && !to.value.trim() && r.to) to.value = r.to;
+            this.toast('Черновик ответа готов — проверьте перед отправкой', 'success');
+        } catch (err) {
+            this.toast(err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Создать ответ'; }
+            if (area) area.placeholder = '';
+        }
     },
 
     async mailSend(replyToId) {

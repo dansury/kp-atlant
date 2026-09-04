@@ -67,4 +67,42 @@ class RequestParser {
         $user = "Контрагент: $orgName\nКП отправлено $daysSince дней назад\nПозиции: $itemSummary\nЗаказ не создан.";
         return LLM::chatText($system, $user, 0.4);
     }
+
+    /**
+     * Draft a reply to an incoming letter. Called only from «Создать ответ» —
+     * mail sync itself never asks the model for a reply.
+     * $ctx: org_name, attachments (text), thread (array of ['direction','date_at','body_text']),
+     *       email_rules, tov.
+     */
+    public static function generateReply(array $message, array $ctx = []): string {
+        $system = Prompts::render('mail_reply', [
+            'email_rules' => $ctx['email_rules'] ?? '',
+            'tov'         => $ctx['tov'] ?? '',
+        ]);
+
+        $user = '';
+        if (!empty($ctx['org_name']))  $user .= "Компания: {$ctx['org_name']}\n";
+        if (!empty($message['from_name'])) $user .= "Контакт: {$message['from_name']}\n";
+        if (!empty($ctx['thread'])) {
+            $user .= "\n===== ПРЕДЫДУЩАЯ ПЕРЕПИСКА =====\n";
+            foreach ($ctx['thread'] as $t) {
+                $who = ($t['direction'] ?? 'in') === 'in' ? 'Клиент' : 'Мы';
+                $user .= "[$who, {$t['date_at']}] " . self::clip((string)($t['body_text'] ?? ''), 800) . "\n\n";
+            }
+        }
+        $user .= "\n===== ПИСЬМО, НА КОТОРОЕ ОТВЕЧАЕМ =====\n";
+        $user .= "Тема: " . (string)($message['subject'] ?? '') . "\n";
+        $user .= self::clip((string)($message['body_text'] ?? ''), 6000) . "\n";
+        if (trim((string)($ctx['attachments'] ?? '')) !== '') {
+            $user .= "\n===== ТЕКСТ ВЛОЖЕНИЙ =====\n" . self::clip((string)$ctx['attachments'], 6000) . "\n";
+        }
+
+        return LLM::chatText($system, $user, 0.4);
+    }
+
+    /** Keep the prompt bounded — a quoted thread can be megabytes long. */
+    private static function clip(string $text, int $max): string {
+        $text = trim($text);
+        return mb_strlen($text) > $max ? mb_substr($text, 0, $max) . "\n[...]" : $text;
+    }
 }

@@ -67,6 +67,11 @@ switch ($action) {
             "SELECT id, number, status, created_at FROM proposals WHERE request_id=? ORDER BY id DESC",
             [$id]
         );
+        // The letter this request came from — «Создать ответ» works off it
+        $req['mail_message_id'] = (int)Db::val(
+            "SELECT id FROM mail_messages WHERE request_id=? AND direction='in' ORDER BY id DESC LIMIT 1",
+            [$id]
+        ) ?: null;
         $req['orders'] = Db::all(
             "SELECT id, moysklad_id, name, sum, state_name, synced_at FROM orders WHERE request_id=? ORDER BY id DESC",
             [$id]
