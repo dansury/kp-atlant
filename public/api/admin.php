@@ -168,6 +168,30 @@ try {
         case 'prompt_history':
             jsonData(['items' => Prompts::history((string)($_GET['key'] ?? ''))]);
 
+        // ---------- Knowledge base (module 005) ----------
+
+        case 'knowledge':
+            jsonData(Knowledge::status());
+
+        // Manual «проверить и подтянуть»; force re-reads every file
+        case 'knowledge_sync':
+            try {
+                jsonOk(['report' => Knowledge::sync(!empty($input['force']))]);
+            } catch (Throwable $e) {
+                Logger::exception('knowledge', $e, ['manager_id' => $admin['id']]);
+                jsonError('База знаний: ' . $e->getMessage());
+            }
+
+        // What would land in the prompt for this text — the admin can see «когда необходимо»
+        case 'knowledge_preview':
+            $task = (string)($input['task'] ?? $_GET['task'] ?? 'mail_reply');
+            if (!isset(Knowledge::TASKS[$task])) jsonError('Неизвестная задача');
+            jsonData([
+                'task'    => $task,
+                'enabled' => Knowledge::taskEnabled($task),
+                'items'   => Knowledge::preview((string)($input['query'] ?? $_GET['query'] ?? ''), $task),
+            ]);
+
         // ---------- Logs ----------
 
         case 'logs':
@@ -201,6 +225,7 @@ try {
                 'imap'       => EmailReader::available(),
                 'config_file'=> file_exists(ROOT . '/config.php'),
                 'schema'     => (string)Db::val("SELECT value FROM settings WHERE key='schema_version'"),
+                'knowledge'  => array_diff_key(Knowledge::status(), ['docs' => 1, 'tasks' => 1]),
             ]);
 
         default:

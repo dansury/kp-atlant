@@ -32,6 +32,20 @@ return [
     'YANDEX_FOLDER_ID'      => '',
     'YANDEX_MODEL'          => 'yandexgpt/latest',
 
+    // --- База знаний (вики компании из GitHub, модуль 005) ---
+    // Токен можно держать здесь ИЛИ вписать в «Админ → Настройки → База знаний»
+    // (там он шифруется и имеет приоритет над этим файлом).
+    'KNOWLEDGE_ENABLED'      => 1,
+    'KNOWLEDGE_REPO'         => 'dansury/Atlant',
+    'KNOWLEDGE_BRANCH'       => 'Main',
+    'KNOWLEDGE_PATH'         => 'GRAPH/wiki',
+    'GITHUB_TOKEN'           => '',    // fine-grained token, Contents: Read
+    'KNOWLEDGE_SYNC_TTL_SEC' => 600,   // 0 — проверять версию репо перед каждой генерацией
+    'KNOWLEDGE_TIMEOUT_SEC'  => 20,
+    'KNOWLEDGE_TASKS'        => 'mail_reply,cover_letter,followup,normalize_names',
+    'KNOWLEDGE_MAX_CHARS'    => 6000,
+    'KNOWLEDGE_MIN_HITS'     => 2,
+
     // --- МойСклад ---
     'MOYSKLAD_TOKEN'  => '',
     'MOYSKLAD_ORG_ID' => '',

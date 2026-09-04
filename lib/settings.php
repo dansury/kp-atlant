@@ -24,6 +24,18 @@ final class Settings {
         'YANDEX_FOLDER_ID'      => ['llm', 'Folder ID Yandex', 'text', false, '', ''],
         'YANDEX_MODEL'          => ['llm', 'Модель Yandex', 'model:yandex', false, 'yandexgpt/latest', ''],
 
+        // --- Knowledge base (module 005): the company wiki from GitHub ---
+        'KNOWLEDGE_ENABLED'      => ['knowledge', 'Использовать базу знаний', 'bool', false, 1, 'Вики компании подмешивается в промпты, когда относится к делу'],
+        'KNOWLEDGE_REPO'         => ['knowledge', 'Репозиторий GitHub', 'text', false, 'dansury/Atlant', 'В формате owner/repo'],
+        'KNOWLEDGE_BRANCH'       => ['knowledge', 'Ветка', 'text', false, 'Main', ''],
+        'KNOWLEDGE_PATH'         => ['knowledge', 'Папка с вики', 'text', false, 'GRAPH/wiki', 'Путь внутри репозитория; читаются все .md'],
+        'GITHUB_TOKEN'           => ['knowledge', 'Токен GitHub', 'secret', true, '', 'Fine-grained токен с правом Contents: Read. Для приватного репозитория обязателен'],
+        'KNOWLEDGE_SYNC_TTL_SEC' => ['knowledge', 'Проверять обновления не чаще, сек', 'int', false, 600, '0 — проверять версию репозитория перед каждой генерацией'],
+        'KNOWLEDGE_TIMEOUT_SEC'  => ['knowledge', 'Таймаут запроса к GitHub, сек', 'int', false, 20, ''],
+        'KNOWLEDGE_TASKS'        => ['knowledge', 'Где применять', 'text', false, 'mail_reply,cover_letter,followup,normalize_names', 'Ключи задач через запятую: mail_reply, cover_letter, followup, normalize_names'],
+        'KNOWLEDGE_MAX_CHARS'    => ['knowledge', 'Максимум символов вики в промпте', 'int', false, 6000, 'Бюджет для ответа на письмо; у остальных задач — доля от него'],
+        'KNOWLEDGE_MIN_HITS'     => ['knowledge', 'Минимум совпавших терминов', 'int', false, 2, 'Ниже порога раздел вики не подмешивается — «незачем»'],
+
         // --- MoySklad ---
         'MOYSKLAD_TOKEN'  => ['moysklad', 'Токен МойСклад', 'secret', true, '', ''],
         'MOYSKLAD_ORG_ID' => ['moysklad', 'ID организации', 'text', false, '', ''],
@@ -67,6 +79,7 @@ final class Settings {
         'general'  => 'Общие',
         'llm'      => 'Нейросети',
         'moysklad' => 'МойСклад',
+        'knowledge' => 'База знаний (вики)',
         'mail'     => 'Почта (значения по умолчанию)',
         'notify'   => 'Уведомления',
         'log'      => 'Логи',

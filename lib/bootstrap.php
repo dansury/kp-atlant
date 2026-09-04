@@ -26,6 +26,7 @@ require_once __DIR__ . '/settings.php';
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/prompts.php';
 require_once __DIR__ . '/llm.php';
+require_once __DIR__ . '/knowledge.php';
 require_once __DIR__ . '/auth.php';
 
 // Init DB before the settings layer — the overrides live in it
@@ -603,6 +604,24 @@ SQL;
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '5')");
         $current = 5;
+    }
+
+    // v6 — module 005: local copy of the company wiki (GitHub GRAPH/wiki)
+    if ($current < 6) {
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS knowledge_docs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            sha TEXT NOT NULL,
+            size INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+SQL);
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '6')");
+        $current = 6;
     }
 }
 
