@@ -59,6 +59,7 @@ class MoySklad {
                 $code === 401 => 'токен неверный, отозван или не тот скопирован',
                 $code === 403 => 'у сотрудника, чей токен используется, нет прав на товары/контрагентов',
                 $code === 0   => 'запрос до api.moysklad.ru не дошёл (сеть/файрвол хостинга)',
+                $code === 415 => 'API отклонил заголовки запроса (Content-Type на GET) — обновите код на сервере',
                 default       => 'см. ответ API',
             };
             $body = trim((string)(self::$diag['products']['body'] ?? ''));
@@ -208,6 +209,7 @@ class MoySklad {
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_TIMEOUT => 30,
+            CURLOPT_ENCODING => 'gzip',
             CURLOPT_HTTPHEADER => [
                 'Authorization: Bearer ' . self::$token,
                 'Accept: */*',
@@ -491,6 +493,20 @@ class MoySklad {
         return $resp;
     }
 
+    /**
+     * Request headers. MoySklad's nginx answers 415 Unsupported Media Type to
+     * any request that declares Content-Type but carries no body (all GETs),
+     * so the header is only sent when a JSON body is attached.
+     */
+    private static function headers(bool $hasBody): array {
+        $h = [
+            'Authorization: Bearer ' . self::$token,
+            'Accept: application/json;charset=utf-8',
+        ];
+        if ($hasBody) $h[] = 'Content-Type: application/json';
+        return $h;
+    }
+
     // Raw request against the API base — returns [httpCode, body, headers]
     private static function requestRaw(string $method, string $path, ?array $body = null): array {
         return self::requestRawUrl($method, self::$base . $path, $body);
@@ -505,11 +521,8 @@ class MoySklad {
             CURLOPT_TIMEOUT        => 60,
             CURLOPT_CUSTOMREQUEST  => $method,
             CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_HTTPHEADER     => [
-                'Authorization: Bearer ' . self::$token,
-                'Content-Type: application/json',
-                'Accept: application/json;charset=utf-8',
-            ],
+            CURLOPT_ENCODING       => 'gzip',
+            CURLOPT_HTTPHEADER     => self::headers($body !== null),
             CURLOPT_HEADERFUNCTION => function ($ch, $line) use (&$headers) {
                 $parts = explode(':', $line, 2);
                 if (count($parts) === 2) $headers[strtolower(trim($parts[0]))] = trim($parts[1]);
@@ -534,11 +547,8 @@ class MoySklad {
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT => 15,
-                CURLOPT_HTTPHEADER => [
-                    'Authorization: Bearer ' . self::$token,
-                    'Content-Type: application/json',
-                    'Accept: application/json;charset=utf-8',
-                ],
+                CURLOPT_ENCODING => 'gzip',
+                CURLOPT_HTTPHEADER => self::headers($body !== null),
             ]);
             if ($method !== 'GET') {
                 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
