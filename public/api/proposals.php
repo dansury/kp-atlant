@@ -8,7 +8,7 @@ require_once ROOT . '/lib/moysklad.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/pdf.php';
 require_once ROOT . '/lib/kp_content.php';
-require_once ROOT . '/lib/email.php';
+require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/notifier.php';
 require_once ROOT . '/lib/crm.php';
 
@@ -222,8 +222,18 @@ switch ($action) {
         $body = $proposal['cover_letter_final'] ?? $proposal['cover_letter'] ?? '';
         $htmlBody = '<p>' . nl2br(htmlspecialchars($body)) . '</p>';
 
-        $sender = new EmailSender($cfg);
-        $sender->send($to, $subject, $htmlBody, $proposal['pdf_path'], basename($proposal['pdf_path']));
+        // Goes out through the manager's mailbox and lands in the mail archive
+        Mailer::send([
+            'to'              => $to,
+            'subject'         => $subject,
+            'html'            => $htmlBody,
+            'text'            => $body,
+            'mailbox_id'      => $input['mailbox_id'] ?? null,
+            'manager_id'      => (int)$manager['id'],
+            'counterparty_id' => $proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null,
+            'request_id'      => (int)$proposal['request_id'],
+            'attachments'     => [$proposal['pdf_path']],
+        ]);
 
         // Feed entry — an outbound message clears the unanswered highlight (FR-038)
         $manager = currentManager();

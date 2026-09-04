@@ -4,13 +4,11 @@
  */
 define('ROOT', dirname(__DIR__));
 
-// Load config
+// Load config. The file is OPTIONAL: it seeds the defaults, while the values
+// edited in the admin panel live in the DB and win over it. Delete config.php
+// from the server and the service keeps running on what the panel holds.
 $configPath = ROOT . '/config.php';
-if (!file_exists($configPath)) {
-    die('config.php not found. Copy config.example.php to config.php and fill in values.');
-}
-$cfg = require $configPath;
-date_default_timezone_set($cfg['TIMEZONE'] ?? 'Europe/Moscow');
+$fileCfg = file_exists($configPath) ? (array)(require $configPath) : [];
 
 // Autoload composer
 $autoload = ROOT . '/vendor/autoload.php';
@@ -18,19 +16,18 @@ if (file_exists($autoload)) require_once $autoload;
 
 // Load libs
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/crypt.php';
+require_once __DIR__ . '/settings.php';
+require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/prompts.php';
 require_once __DIR__ . '/llm.php';
 require_once __DIR__ . '/auth.php';
 
-// Start the session once, before anything can emit output
-startSession();
-
-// Init DB
-Db::init($cfg['DB_PATH'] ?? ROOT . '/data/kp.db');
-
-// Init LLM
-LLM::init($cfg);
+// Init DB before the settings layer — the overrides live in it
+Db::init($fileCfg['DB_PATH'] ?? ROOT . '/data/kp.db');
 
 // Create schema if needed
+Settings::boot($fileCfg);
 if (!Db::hasTable('managers')) {
     initSchema();
 }
@@ -38,7 +35,21 @@ if (!Db::hasTable('managers')) {
 // Apply incremental migrations (module 002 and later)
 runMigrations();
 
-// Keep managers in sync with config.php (password edits take effect)
+// Effective configuration: DB override → config.php → built-in default
+Settings::boot($fileCfg);
+$cfg = Settings::effective();
+date_default_timezone_set((string)($cfg['TIMEZONE'] ?? 'Europe/Moscow'));
+
+// Every PHP error, warning and uncaught exception goes to the log the admin sees
+Logger::install();
+
+// Start the session once, before anything can emit output
+startSession();
+
+// Init LLM
+LLM::init($cfg);
+
+// Keep managers in sync with config.php (panel edits are not overwritten)
 syncManagersFromConfig($cfg);
 
 function initSchema(): void {
@@ -460,6 +471,141 @@ SQL;
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '3')");
         $current = 3;
     }
+
+    // v4 — module 004: admin console, error log, mail overlay, editable prompts
+    if ($current < 4) {
+        $sql = <<<'SQL'
+        CREATE TABLE IF NOT EXISTS app_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            level TEXT NOT NULL DEFAULT 'info',
+            channel TEXT NOT NULL DEFAULT 'app',
+            message TEXT NOT NULL,
+            context TEXT,
+            source TEXT,
+            manager_id INTEGER,
+            request_uri TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_log_level ON app_log(level, id);
+        CREATE INDEX IF NOT EXISTS idx_log_channel ON app_log(channel, id);
+
+        CREATE TABLE IF NOT EXISTS mailboxes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            manager_id INTEGER REFERENCES managers(id),
+            create_requests INTEGER NOT NULL DEFAULT 1,
+            sync_sent INTEGER NOT NULL DEFAULT 1,
+            imap_host TEXT, imap_port INTEGER DEFAULT 993, imap_encryption TEXT DEFAULT 'ssl',
+            imap_user TEXT, imap_password TEXT,
+            imap_folder_in TEXT DEFAULT 'INBOX', imap_folder_sent TEXT DEFAULT 'INBOX.Sent',
+            smtp_host TEXT, smtp_port INTEGER DEFAULT 465, smtp_encryption TEXT DEFAULT 'ssl',
+            smtp_user TEXT, smtp_password TEXT,
+            from_name TEXT, from_email TEXT,
+            last_uid_in INTEGER NOT NULL DEFAULT 0,
+            last_uid_sent INTEGER NOT NULL DEFAULT 0,
+            last_check_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS mail_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mailbox_id INTEGER REFERENCES mailboxes(id),
+            direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+            folder TEXT NOT NULL DEFAULT 'INBOX',
+            uid INTEGER NOT NULL DEFAULT 0,
+            message_id TEXT,
+            in_reply_to TEXT,
+            subject TEXT,
+            from_email TEXT, from_name TEXT,
+            to_emails TEXT, cc_emails TEXT,
+            body_text TEXT, body_html TEXT,
+            size INTEGER DEFAULT 0,
+            has_attachment INTEGER NOT NULL DEFAULT 0,
+            attachments_json TEXT,
+            counterparty_id INTEGER REFERENCES counterparties(id),
+            request_id INTEGER REFERENCES requests(id),
+            correspondence_id INTEGER REFERENCES correspondence(id),
+            manager_id INTEGER REFERENCES managers(id),
+            is_read INTEGER NOT NULL DEFAULT 0,
+            processed_at TEXT,
+            error TEXT,
+            date_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_mail_box ON mail_messages(mailbox_id, direction, id);
+        CREATE INDEX IF NOT EXISTS idx_mail_uid ON mail_messages(mailbox_id, folder, uid);
+        CREATE INDEX IF NOT EXISTS idx_mail_cp ON mail_messages(counterparty_id);
+
+        CREATE TABLE IF NOT EXISTS prompts (
+            key TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            updated_at TEXT,
+            updated_by INTEGER REFERENCES managers(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL,
+            content TEXT NOT NULL,
+            manager_id INTEGER REFERENCES managers(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_prompt_history_key ON prompt_history(key, id);
+SQL;
+        Db::pdo()->exec($sql);
+
+        // Attachments now also hang off an archived mail message
+        Db::ensureColumn('attachments', 'mail_message_id', 'INTEGER');
+
+        // Managers: several people, editable from the panel, config sync opt-out
+        Db::ensureColumn('managers', 'is_active', 'INTEGER', '1');
+        Db::ensureColumn('managers', 'ui_managed', 'INTEGER', '0');
+        Db::ensureColumn('managers', 'phone', 'TEXT');
+        Db::ensureColumn('managers', 'updated_at', 'TEXT');
+
+        // The mailbox from config.php becomes the first mailbox of the panel
+        seedMailboxFromConfig();
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '4')");
+        $current = 4;
+    }
+}
+
+/** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
+function seedMailboxFromConfig(): void {
+    if (Db::val("SELECT COUNT(*) FROM mailboxes")) return;
+    $file = Settings::fileConfig();
+    $imapHost = (string)($file['IMAP_HOST'] ?? '');
+    $smtpHost = (string)($file['SMTP_HOST'] ?? '');
+    if ($imapHost === '' && $smtpHost === '') return;
+
+    $email = (string)($file['IMAP_USER'] ?? ($file['SMTP_FROM_EMAIL'] ?? ($file['SMTP_USER'] ?? '')));
+    Db::insert('mailboxes', [
+        'name'             => $email !== '' ? $email : 'Основной ящик',
+        'email'            => $email,
+        'is_active'        => 1,
+        'is_default'       => 1,
+        'create_requests'  => 1,
+        'sync_sent'        => 1,
+        'imap_host'        => $imapHost,
+        'imap_port'        => (int)($file['IMAP_PORT'] ?? 993),
+        'imap_encryption'  => (string)($file['IMAP_ENCRYPTION'] ?? 'ssl'),
+        'imap_user'        => (string)($file['IMAP_USER'] ?? ''),
+        'imap_password'    => Crypt::encrypt((string)($file['IMAP_PASSWORD'] ?? '')),
+        'imap_folder_in'   => 'INBOX',
+        'imap_folder_sent' => 'INBOX.Sent',
+        'smtp_host'        => $smtpHost,
+        'smtp_port'        => (int)($file['SMTP_PORT'] ?? 465),
+        'smtp_encryption'  => (string)($file['SMTP_ENCRYPTION'] ?? 'ssl'),
+        'smtp_user'        => (string)($file['SMTP_USER'] ?? ''),
+        'smtp_password'    => Crypt::encrypt((string)($file['SMTP_PASSWORD'] ?? '')),
+        'from_name'        => (string)($file['SMTP_FROM_NAME'] ?? 'Atlant Armour'),
+        'from_email'       => (string)($file['SMTP_FROM_EMAIL'] ?? ''),
+    ]);
 }
 
 // Public mail providers never used to merge companies (C-012)
@@ -539,10 +685,10 @@ MD;
         Db::insert('email_rules', ['content' => $rules]);
     }
 
-    // Seed managers from config
-    global $cfg;
-    if (!empty($cfg['MANAGERS'])) {
-        foreach ($cfg['MANAGERS'] as $login => $info) {
+    // Seed managers from config.php
+    $file = Settings::fileConfig();
+    if (!empty($file['MANAGERS'])) {
+        foreach ($file['MANAGERS'] as $login => $info) {
             if (Db::one("SELECT id FROM managers WHERE login=?", [$login])) continue;
             Db::insert('managers', [
                 'login'         => $login,
@@ -559,7 +705,7 @@ MD;
 // of truth for logins/passwords: an edit there takes effect on the next
 // request. A per-login fingerprint keeps this cheap (no bcrypt when unchanged).
 function syncManagersFromConfig(array $cfg): void {
-    $managers = $cfg['MANAGERS'] ?? [];
+    $managers = Settings::fileConfig()['MANAGERS'] ?? ($cfg['MANAGERS'] ?? []);
     if (!$managers) return;
 
     foreach ($managers as $login => $info) {
@@ -574,7 +720,10 @@ function syncManagersFromConfig(array $cfg): void {
 
         $fpKey = 'manager_fp_' . $login;
         $fp    = hash('sha256', serialize([$pass, $name, $email, $isAdmin]));
-        $row   = Db::one("SELECT id FROM managers WHERE login=?", [$login]);
+        $row   = Db::one("SELECT id, ui_managed FROM managers WHERE login=?", [$login]);
+
+        // Edited in the panel — the panel wins, config.php is only the default
+        if ($row && !empty($row['ui_managed'])) continue;
 
         // Nothing changed and the row still exists -> skip
         if ($row && Db::val("SELECT value FROM settings WHERE key=?", [$fpKey]) === $fp) continue;
@@ -617,7 +766,11 @@ function currentManager(): ?array {
     startSession();
     $id = $_SESSION['manager_id'] ?? null;
     if (!$id) return null;
-    return Db::one("SELECT id, login, name, email, is_admin, moysklad_uid FROM managers WHERE id=?", [$id]);
+    return Db::one(
+        "SELECT id, login, name, email, phone, is_admin, moysklad_uid FROM managers
+         WHERE id=? AND COALESCE(is_active, 1) = 1",
+        [$id]
+    );
 }
 
 // JSON response helpers
@@ -628,6 +781,9 @@ function jsonOk(array $data = []): never {
 }
 
 function jsonError(string $msg, int $code = 400): never {
+    if (class_exists('Logger')) {
+        Logger::log($code >= 500 ? 'error' : 'warning', 'api', $msg, ['code' => $code]);
+    }
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode(['error' => $msg, 'code' => $code], JSON_UNESCAPED_UNICODE);
@@ -643,6 +799,13 @@ function jsonData(mixed $data): never {
 function requireAuth(): array {
     $m = currentManager();
     if (!$m) jsonError('Unauthorized', 401);
+    return $m;
+}
+
+// Admin-only endpoints: settings, mailboxes, managers, prompts, logs
+function requireAdmin(): array {
+    $m = requireAuth();
+    if (empty($m['is_admin'])) jsonError('Доступ только для администратора', 403);
     return $m;
 }
 

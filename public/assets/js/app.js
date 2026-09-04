@@ -80,7 +80,9 @@ const App = {
             this.startPolling();
             this.route();
         } catch {
-            this.renderLogin();
+            let needsSetup = false;
+            try { needsSetup = (await this.api('auth.php?action=state')).needs_setup; } catch {}
+            needsSetup ? this.renderSetup() : this.renderLogin();
         }
         window.addEventListener('hashchange', () => this.route());
 
@@ -102,7 +104,9 @@ const App = {
             <a href="#requests" data-page="requests">Запросы</a>
             <a href="#new" data-page="new">+ Новый</a>
             <a href="#counterparties" data-page="counterparties">Компании</a>
+            <a href="#mail" data-page="mail">Почта<span id="mailBadge"></span></a>
             <a href="#settings" data-page="settings">Настройки</a>
+            ${this.manager.is_admin ? '<a href="#admin" data-page="admin">Админ<span id="logBadge"></span></a>' : ''}
             <a href="#notifications" data-page="notifications">Уведомления<span id="notifBadge"></span></a>
         `;
         document.getElementById('userBlock').innerHTML = `
@@ -119,6 +123,19 @@ const App = {
                 const badge = document.getElementById('notifBadge');
                 if (badge) badge.innerHTML = this.unread > 0 ? `<span class="notif-dot"></span>` : '';
             } catch {}
+            // Unread mail and, for admins, fresh errors are visible from any page
+            try {
+                const mail = await this.api('mail.php?action=list&limit=1');
+                const mb = document.getElementById('mailBadge');
+                if (mb) mb.innerHTML = mail.unread > 0 ? ` <span class="pill">${mail.unread}</span>` : '';
+            } catch {}
+            if (this.manager && this.manager.is_admin) {
+                try {
+                    const c = await this.api('admin.php?action=logs_counts');
+                    const lb = document.getElementById('logBadge');
+                    if (lb) lb.innerHTML = c.errors_24h > 0 ? ` <span class="pill pill--danger">${c.errors_24h}</span>` : '';
+                } catch {}
+            }
         };
         poll();
         this.pollTimer = setInterval(poll, 30000);
@@ -145,6 +162,8 @@ const App = {
             case 'counterparty': this.pageCounterparty(params[0]); break;
             case 'notifications': this.pageNotifications(); break;
             case 'settings': this.pageSettings(); break;
+            case 'mail': this.pageMail(params[0]); break;
+            case 'admin': this.pageAdmin(params[0] || 'overview'); break;
             default: this.pageRequests();
         }
     },
@@ -1112,6 +1131,814 @@ const App = {
             const r = await this.api('products.php?action=refresh_cache', {method:'POST'});
             this.toast(`Загружено ${r.count} товаров за ${r.elapsed_sec}с`, 'success');
         } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ==== Mail: the archive of every incoming and outgoing letter (module 004) ====
+
+    async pageMail(id) {
+        if (id) return this.pageMailMessage(id);
+        const state = this.mailState = this.mailState || {direction: '', mailbox_id: '', q: '', offset: 0};
+        const qs = new URLSearchParams({
+            limit: 50, offset: state.offset,
+            ...(state.direction ? {direction: state.direction} : {}),
+            ...(state.mailbox_id ? {mailbox_id: state.mailbox_id} : {}),
+            ...(state.q ? {q: state.q} : {}),
+            ...(state.unread ? {unread: 1} : {}),
+        });
+        const d = await this.api('mail.php?action=list&' + qs);
+        const tab = (key, label) => `<button class="btn btn--sm ${state.direction === key && !state.unread ? 'btn--primary' : 'btn--outline'}"
+            onclick="App.mailFilter({direction:'${key}',unread:0})">${label}</button>`;
+
+        document.getElementById('app').innerHTML = `
+            <div class="flex flex--between" style="margin-bottom:16px">
+                <h2>Почта</h2>
+                <div class="flex">
+                    <button class="btn btn--outline" onclick="App.mailSync()">⟳ Синхронизировать</button>
+                    <button class="btn btn--primary" onclick="App.mailCompose()">✉ Написать</button>
+                </div>
+            </div>
+            ${(d.mailboxes || []).filter(b => b.last_error).map(b => `
+                <div class="card card--alert"><strong>${this.esc(b.name)}</strong>: ${this.esc(b.last_error)}</div>
+            `).join('')}
+            ${!d.mailboxes || !d.mailboxes.length ? `<div class="card">Почтовые ящики ещё не настроены.
+                ${this.manager.is_admin ? '<a href="#admin/mail">Добавить ящик</a>' : 'Обратитесь к администратору.'}</div>` : ''}
+            <div class="card card--inline">
+                ${tab('', 'Все')}${tab('in', 'Входящие')}${tab('out', 'Исходящие')}
+                <button class="btn btn--sm ${state.unread ? 'btn--primary' : 'btn--outline'}" onclick="App.mailFilter({unread:1,direction:'in'})">Непрочитанные</button>
+                <select id="mailBox" onchange="App.mailFilter({mailbox_id:this.value})">
+                    <option value="">Все ящики</option>
+                    ${(d.mailboxes || []).map(b => `<option value="${b.id}" ${String(state.mailbox_id) === String(b.id) ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
+                </select>
+                <input type="text" id="mailQ" placeholder="Поиск по теме, адресу и тексту" value="${this.esc(state.q)}"
+                       style="max-width:320px" onkeydown="if(event.key==='Enter')App.mailFilter({q:this.value})">
+                <span class="muted">Всего: ${d.total}</span>
+            </div>
+            <div class="card">
+                <table class="table">
+                    <thead><tr><th></th><th>Тема</th><th>Кто</th><th>Компания</th><th>Ящик</th><th>Дата</th></tr></thead>
+                    <tbody>
+                        ${d.items.map(m => `
+                            <tr style="cursor:pointer" onclick="location.hash='mail/${m.id}'" class="${m.direction === 'in' && !m.is_read ? 'row--unread' : ''}">
+                                <td>${m.direction === 'in' ? '📥' : '📤'}${m.has_attachment ? ' 📎' : ''}</td>
+                                <td>${this.esc(m.subject) || '<em>без темы</em>'}
+                                    <div class="muted">${this.esc((m.preview || '').slice(0, 110))}</div></td>
+                                <td>${this.esc(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}</td>
+                                <td>${m.counterparty_id ? `<a href="#counterparty/${m.counterparty_id}" onclick="event.stopPropagation()">${this.esc(m.counterparty_name)}</a>` : '—'}</td>
+                                <td class="muted">${this.esc(m.mailbox_name) || '—'}</td>
+                                <td class="muted">${this.fmtDate(m.date_at)}</td>
+                            </tr>
+                        `).join('')}
+                        ${d.items.length === 0 ? '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">Писем нет</td></tr>' : ''}
+                    </tbody>
+                </table>
+                <div class="flex flex--between" style="margin-top:12px">
+                    <button class="btn btn--sm btn--outline" ${state.offset === 0 ? 'disabled' : ''} onclick="App.mailPage(-1)">← Новее</button>
+                    <button class="btn btn--sm btn--outline" ${state.offset + 50 >= d.total ? 'disabled' : ''} onclick="App.mailPage(1)">Старее →</button>
+                </div>
+            </div>
+        `;
+    },
+
+    mailFilter(patch) {
+        this.mailState = Object.assign(this.mailState || {}, patch, {offset: 0});
+        this.pageMail();
+    },
+
+    mailPage(dir) {
+        this.mailState.offset = Math.max(0, (this.mailState.offset || 0) + dir * 50);
+        this.pageMail();
+    },
+
+    async mailSync() {
+        this.toast('Синхронизация почты...', 'info');
+        try {
+            const r = await this.api('mail.php?action=sync', {method: 'POST', body: {}});
+            const total = (r.report || []).reduce((a, x) => a + x.in + x.out, 0);
+            const errors = (r.report || []).filter(x => x.error);
+            if (errors.length) this.toast(errors.map(e => `${e.name}: ${e.error}`).join('; '), 'error');
+            else this.toast(`Загружено писем: ${total}`, 'success');
+            this.pageMail();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async pageMailMessage(id) {
+        const m = await this.api(`mail.php?action=get&id=${id}`);
+        document.getElementById('app').innerHTML = `
+            <div class="flex flex--between" style="margin-bottom:16px">
+                <h2>${this.esc(m.subject) || 'Без темы'}</h2>
+                <div class="flex">
+                    <a href="#mail" class="btn btn--outline btn--sm">← К списку</a>
+                    <button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>
+                </div>
+            </div>
+            <div class="card">
+                <p><strong>${m.direction === 'in' ? 'От' : 'Кому'}:</strong>
+                   ${this.esc(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}
+                   ${m.from_name ? '· ' + this.esc(m.from_name) : ''}</p>
+                ${m.cc_emails ? `<p><strong>Копия:</strong> ${this.esc(m.cc_emails)}</p>` : ''}
+                <p class="muted">${this.esc(m.mailbox_name) || ''} · ${this.esc(m.folder)} · ${this.fmtDate(m.date_at)}</p>
+                <p><strong>Компания:</strong> ${m.counterparty_id
+                    ? `<a href="#counterparty/${m.counterparty_id}">${this.esc(m.counterparty_name)}</a>`
+                    : 'не определена'}
+                   ${m.request_id ? ` · <a href="#request/${m.request_id}">Запрос #${m.request_id}</a>` : ''}</p>
+                ${m.error ? `<p class="no">Ошибка обработки: ${this.esc(m.error)}</p>` : ''}
+                <hr style="margin:12px 0">
+                <div class="msg__body" style="max-height:none">${this.esc(m.body_text)}</div>
+                ${(m.attachments || []).length ? `
+                    <div class="msg__files">
+                        ${m.attachments.map(a => `<a class="chip" href="/api/mail.php?action=attachment&id=${a.id}" target="_blank">📎 ${this.esc(a.filename)}</a>`).join('')}
+                    </div>` : ''}
+            </div>
+        `;
+    },
+
+    async mailCompose(replyToId) {
+        const d = await this.api('mail.php?action=list&limit=1');
+        let src = null;
+        if (replyToId) src = await this.api(`mail.php?action=get&id=${replyToId}`);
+        const subject = src ? (src.subject || '').replace(/^(Re:\s*)?/i, 'Re: ') : '';
+        const to = src ? (src.direction === 'in' ? src.from_email : src.to_emails) : '';
+        this.modal(replyToId ? 'Ответ' : 'Новое письмо', `
+            <div class="form-group">
+                <label>Отправить из ящика</label>
+                <select id="cmpBox">
+                    ${(d.mailboxes || []).map(b => `<option value="${b.id}" ${src && src.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
+                </select>
+            </div>
+            <div class="form-group"><label>Кому</label><input type="text" id="cmpTo" value="${this.esc(to)}"></div>
+            <div class="form-group"><label>Копия (через запятую)</label><input type="text" id="cmpCc"></div>
+            <div class="form-group"><label>Тема</label><input type="text" id="cmpSubject" value="${this.esc(subject)}"></div>
+            <div class="form-group"><label>Текст</label><textarea id="cmpText" rows="9"></textarea></div>
+            <button class="btn btn--primary btn--block" onclick="App.mailSend(${replyToId || 'null'})">Отправить</button>
+        `);
+    },
+
+    async mailSend(replyToId) {
+        const body = {
+            to: document.getElementById('cmpTo').value.trim(),
+            cc: document.getElementById('cmpCc').value.trim(),
+            subject: document.getElementById('cmpSubject').value.trim(),
+            text: document.getElementById('cmpText').value,
+            mailbox_id: document.getElementById('cmpBox').value || null,
+            reply_to_id: replyToId || null,
+        };
+        try {
+            await this.api('mail.php?action=send', {method: 'POST', body});
+            this.closeModal();
+            this.toast('Письмо отправлено', 'success');
+            this.pageMail();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ==== Admin console (module 004) ====
+
+    pageAdmin(tab) {
+        const tabs = [
+            ['overview', 'Обзор'], ['settings', 'Настройки'], ['llm', 'Нейросети'],
+            ['mail', 'Почта'], ['managers', 'Менеджеры'], ['prompts', 'Промпты'], ['logs', 'Логи'],
+        ];
+        document.getElementById('app').innerHTML = `
+            <h2 style="margin-bottom:12px">Администрирование</h2>
+            <div class="tabs">
+                ${tabs.map(([k, l]) => `<a href="#admin/${k}" class="tab ${tab === k ? 'tab--active' : ''}">${l}</a>`).join('')}
+            </div>
+            <div id="adminBody"><div class="loading">Загрузка...</div></div>
+        `;
+        const render = {
+            overview: () => this.adminOverview(), settings: () => this.adminSettings(),
+            llm: () => this.adminLlm(), mail: () => this.adminMail(),
+            managers: () => this.adminManagers(), prompts: () => this.adminPrompts(),
+            logs: () => this.adminLogs(),
+        }[tab] || (() => this.adminOverview());
+        render();
+    },
+
+    adminFail(err) {
+        document.getElementById('adminBody').innerHTML = `<div class="card"><p class="no">${this.esc(err.message)}</p></div>`;
+    },
+
+    async adminOverview() {
+        try {
+            const d = await this.api('admin.php?action=overview');
+            document.getElementById('adminBody').innerHTML = `
+                <div class="grid grid--2">
+                    <div class="card">
+                        <div class="card__title">Состояние</div>
+                        <p>Ошибок за сутки: <strong class="${d.log.errors_24h ? 'no' : 'ok'}">${d.log.errors_24h}</strong>
+                           · предупреждений: ${d.log.warnings_24h} · записей всего: ${d.log.total}</p>
+                        <p>Почтовых ящиков: <strong>${d.mailboxes}</strong> · менеджеров: <strong>${d.managers}</strong></p>
+                        <p>Расширение IMAP: ${d.imap ? '<span class="ok">есть</span>' : '<span class="no">нет — почта не будет читаться</span>'}</p>
+                        <p>config.php на сервере: ${d.config_file
+                            ? 'есть <span class="muted">— значения из него используются по умолчанию</span>'
+                            : 'нет <span class="muted">— работают значения из интерфейса</span>'}</p>
+                        <p class="muted">Версия схемы БД: ${this.esc(d.schema)}</p>
+                    </div>
+                    <div class="card">
+                        <div class="card__title">Нейросети</div>
+                        ${d.llm.map(p => `<p>${this.esc(p.label)}: ${p.enabled ? `<span class="ok">в цепочке #${p.order}</span>` : '<span class="muted">выключен</span>'}
+                            · ключ ${p.key_set ? '<span class="ok">задан</span>' : '<span class="no">не задан</span>'}
+                            · модель <code>${this.esc(p.model)}</code></p>`).join('')}
+                        <a href="#admin/llm" class="btn btn--outline btn--sm">Настроить</a>
+                    </div>
+                </div>
+                ${d.mail_errors.length ? `<div class="card card--alert">
+                    <div class="card__title">Ошибки почты</div>
+                    ${d.mail_errors.map(e => `<p><strong>${this.esc(e.name)}</strong>: ${this.esc(e.error)} <span class="muted">${this.fmtDate(e.at)}</span></p>`).join('')}
+                </div>` : ''}
+                <div class="card">
+                    <div class="card__title">Проверка подключений</div>
+                    <div class="flex flex--wrap">
+                        <button class="btn btn--outline" onclick="App.testMoysklad()">Проверить МойСклад</button>
+                        <button class="btn btn--outline" onclick="App.testLlm('yandex')">Проверить Yandex</button>
+                        <button class="btn btn--outline" onclick="App.testLlm('openrouter')">Проверить OpenRouter</button>
+                        <a href="#admin/mail" class="btn btn--outline">Проверить почту</a>
+                    </div>
+                    <div id="testResult" style="margin-top:12px"></div>
+                </div>
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    testOut(html, cls = 'ok') {
+        const el = document.getElementById('testResult');
+        if (el) el.innerHTML = `<p class="${cls}">${html}</p>`;
+    },
+
+    async testMoysklad() {
+        this.testOut('Проверяем...', 'muted');
+        try {
+            const r = await this.api('admin.php?action=test_moysklad', {method: 'POST', body: {}});
+            const p = r.permissions || {};
+            const yes = v => v ? '<span class="ok">есть</span>' : '<span class="no">нет</span>';
+            this.testOut(`Товары: ${yes(p.products)} · Контрагенты: ${yes(p.counterparties)} · Заказы: ${yes(p.orders_write)}
+                          · Счета: ${yes(p.invoices)} · Вебхуки: ${yes(p.webhooks)}`, '');
+        } catch (err) { this.testOut(this.esc(err.message), 'no'); }
+    },
+
+    async testLlm(provider) {
+        this.testOut('Спрашиваем модель...', 'muted');
+        try {
+            const r = await this.api('admin.php?action=test_llm', {method: 'POST', body: {provider}});
+            this.testOut(`${this.esc(provider)} — ответ за ${r.result.ms} мс, модель ${this.esc(r.result.model)}: «${this.esc(r.result.answer)}»`);
+        } catch (err) { this.testOut(this.esc(err.message), 'no'); }
+    },
+
+    // ---- Settings: every key, with its source and an override ----
+
+    async adminSettings() {
+        try {
+            const d = await this.api('admin.php?action=settings');
+            this.settingsSpec = d.items;
+            const badge = it => it.source === 'db'
+                ? '<span class="badge badge--confirmed">из интерфейса</span>'
+                : (it.source === 'config' ? '<span class="badge badge--new">из config.php</span>' : '<span class="badge badge--draft">по умолчанию</span>');
+            const field = it => {
+                const id = 'set_' + it.key;
+                if (it.type === 'bool') return `<select id="${id}">
+                    <option value="1" ${String(it.value) === '1' ? 'selected' : ''}>Да</option>
+                    <option value="0" ${String(it.value) !== '1' ? 'selected' : ''}>Нет</option></select>`;
+                if (it.type.startsWith('select:')) return `<select id="${id}">
+                    ${it.type.slice(7).split(',').map(o => `<option value="${o}" ${String(it.value) === o ? 'selected' : ''}>${o || '(без шифрования)'}</option>`).join('')}</select>`;
+                if (it.secret) return `<input type="password" id="${id}" placeholder="${it.filled ? 'задан ' + this.esc(it.tail) + ' — оставьте пустым' : 'не задан'}">`;
+                if (it.type === 'int') return `<input type="number" id="${id}" value="${this.esc(it.value)}">`;
+                return `<input type="text" id="${id}" value="${this.esc(it.value)}">`;
+            };
+            const groups = Object.entries(d.groups).map(([key, title]) => {
+                const items = d.items.filter(i => i.group === key);
+                if (!items.length) return '';
+                return `<div class="card">
+                    <div class="card__title">${this.esc(title)}</div>
+                    ${items.map(it => `
+                        <div class="setting">
+                            <div class="setting__label">
+                                <label for="set_${it.key}">${this.esc(it.label)}</label>
+                                <div class="muted"><code>${it.key}</code> ${badge(it)}
+                                    ${it.hint ? '· ' + this.esc(it.hint) : ''}</div>
+                            </div>
+                            <div class="setting__field">${field(it)}</div>
+                            <div class="setting__actions">
+                                ${it.has_override ? `<button class="btn btn--sm btn--outline" onclick="App.resetSetting('${it.key}')" title="Вернуться к значению из config.php или встроенному">Сбросить</button>` : ''}
+                            </div>
+                        </div>`).join('')}
+                </div>`;
+            }).join('');
+
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <p>Значения из <code>config.php</code> — это умолчания. Всё, что изменено здесь, хранится в базе и имеет приоритет:
+                       если <code>config.php</code> удалить с сервера, сервис продолжит работать на этих значениях.</p>
+                    <p class="muted">config.php на сервере: ${d.config_file ? 'есть' : 'нет'} ·
+                       секреты в базе ${d.encrypted ? 'шифруются' : 'хранятся как есть (нет ext-openssl)'} и никогда не отдаются в браузер.</p>
+                </div>
+                ${groups}
+                <div class="flex flex--end"><button class="btn btn--primary" onclick="App.saveSettings()">Сохранить настройки</button></div>
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    async saveSettings() {
+        const values = {};
+        (this.settingsSpec || []).forEach(it => {
+            const el = document.getElementById('set_' + it.key);
+            if (!el) return;
+            if (it.secret && el.value === '') return;   // empty means "keep the stored secret"
+            values[it.key] = el.value;
+        });
+        try {
+            await this.api('admin.php?action=settings', {method: 'PUT', body: {values}});
+            this.toast('Настройки сохранены', 'success');
+            this.adminSettings();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async resetSetting(key) {
+        try {
+            await this.api('admin.php?action=settings', {method: 'PUT', body: {reset: [key]}});
+            this.toast('Значение сброшено', 'success');
+            this.adminSettings();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ---- LLM: providers, order and models ----
+
+    async adminLlm() {
+        try {
+            const d = await this.api('admin.php?action=overview');
+            const s = await this.api('admin.php?action=settings');
+            this.settingsSpec = s.items.filter(i => i.group === 'llm');
+            const val = k => (s.items.find(i => i.key === k) || {}).value || '';
+            const secret = k => s.items.find(i => i.key === k) || {};
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="card__title">Порядок провайдеров</div>
+                    <p class="muted">Первый отвечает, следующий подхватывает, если первый недоступен.</p>
+                    <div class="form-group">
+                        <input type="text" id="set_LLM_PROVIDER_PRIORITY" value="${this.esc(val('LLM_PROVIDER_PRIORITY'))}"
+                               placeholder="yandex, openrouter">
+                    </div>
+                    <div class="grid grid--2">
+                        <div class="form-group"><label>Таймаут запроса, сек</label>
+                            <input type="number" id="set_LLM_TIMEOUT_SEC" value="${this.esc(val('LLM_TIMEOUT_SEC'))}"></div>
+                        <div class="form-group"><label>Температура по умолчанию</label>
+                            <input type="text" id="set_LLM_TEMPERATURE" value="${this.esc(val('LLM_TEMPERATURE'))}"></div>
+                    </div>
+                </div>
+                ${d.llm.map(p => {
+                    const keyName = p.provider === 'yandex' ? 'YANDEX_API_KEY' : 'OPENROUTER_API_KEY';
+                    const modelName = p.provider === 'yandex' ? 'YANDEX_MODEL' : 'OPENROUTER_MODEL';
+                    const k = secret(keyName);
+                    return `<div class="card">
+                        <div class="card__title">${this.esc(p.label)} ${p.enabled ? `<span class="badge badge--confirmed">#${p.order}</span>` : '<span class="badge badge--draft">выключен</span>'}</div>
+                        <div class="grid grid--2">
+                            <div class="form-group">
+                                <label>Модель</label>
+                                <input type="text" id="set_${modelName}" list="models_${p.provider}" value="${this.esc(p.model)}">
+                                <datalist id="models_${p.provider}">
+                                    ${p.models.map(m => `<option value="${this.esc(m.id)}">${this.esc(m.label)}</option>`).join('')}
+                                </datalist>
+                            </div>
+                            <div class="form-group">
+                                <label>API-ключ</label>
+                                <input type="password" id="set_${keyName}" placeholder="${k.filled ? 'задан ' + this.esc(k.tail) + ' — оставьте пустым' : 'не задан'}">
+                            </div>
+                            ${p.provider === 'yandex' ? `<div class="form-group"><label>Folder ID</label>
+                                <input type="text" id="set_YANDEX_FOLDER_ID" value="${this.esc(val('YANDEX_FOLDER_ID'))}"></div>` : ''}
+                        </div>
+                        <button class="btn btn--outline btn--sm" onclick="App.testLlm('${p.provider}')">Проверить подключение</button>
+                    </div>`;
+                }).join('')}
+                <div id="testResult"></div>
+                <div class="flex flex--end"><button class="btn btn--primary" onclick="App.saveSettings()">Сохранить</button></div>
+            `;
+            this.settingsSpec = s.items.filter(i => document.getElementById('set_' + i.key));
+        } catch (err) { this.adminFail(err); }
+    },
+
+    // ---- Mailboxes ----
+
+    async adminMail() {
+        try {
+            const d = await this.api('admin.php?action=mailboxes');
+            this.mailboxManagers = d.managers;
+            document.getElementById('adminBody').innerHTML = `
+                ${!d.imap_available ? '<div class="card card--alert">На сервере нет расширения PHP <code>imap</code> — входящая почта читаться не будет. Отправка через SMTP работает.</div>' : ''}
+                <div class="card">
+                    <div class="flex flex--between" style="margin-bottom:10px">
+                        <div class="card__title" style="margin:0">Почтовые ящики</div>
+                        <div class="flex">
+                            <button class="btn btn--outline btn--sm" onclick="App.syncAllMailboxes()">⟳ Синхронизировать все</button>
+                            <button class="btn btn--primary btn--sm" onclick="App.editMailbox(null)">+ Добавить ящик</button>
+                        </div>
+                    </div>
+                    <table class="table">
+                        <thead><tr><th>Ящик</th><th>Менеджер</th><th>Писем</th><th>Проверка</th><th></th></tr></thead>
+                        <tbody>
+                            ${d.items.map(b => `
+                                <tr>
+                                    <td><strong>${this.esc(b.name)}</strong> ${b.is_default ? '<span class="badge badge--sent">основной</span>' : ''}
+                                        ${b.is_active ? '' : '<span class="badge badge--draft">выключен</span>'}
+                                        <div class="muted">${this.esc(b.email)} · IMAP ${this.esc(b.imap_host)} · SMTP ${this.esc(b.smtp_host)}</div></td>
+                                    <td>${this.esc(b.manager_name) || '<em>общий</em>'}</td>
+                                    <td class="num">${b.messages}</td>
+                                    <td class="muted">${b.last_error ? `<span class="no">${this.esc(b.last_error)}</span>` : this.fmtDate(b.last_check_at)}</td>
+                                    <td>
+                                        <button class="btn btn--sm btn--outline" onclick="App.editMailbox(${b.id})">Изменить</button>
+                                        <button class="btn btn--sm btn--outline" onclick="App.syncMailbox(${b.id})">Забрать почту</button>
+                                    </td>
+                                </tr>`).join('')}
+                            ${d.items.length === 0 ? '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">Ящиков пока нет</td></tr>' : ''}
+                        </tbody>
+                    </table>
+                </div>
+                <div id="mailboxForm"></div>
+            `;
+            this.mailboxes = d.items;
+            this.mailboxBlank = d.blank;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    editMailbox(id) {
+        const b = id ? this.mailboxes.find(x => x.id === id) : Object.assign({id: '', name: '', imap_password_set: false, smtp_password_set: false}, this.mailboxBlank);
+        const sel = (name, value, options) => `<select id="mb_${name}">
+            ${options.map(o => `<option value="${o[0]}" ${String(value) === String(o[0]) ? 'selected' : ''}>${o[1]}</option>`).join('')}</select>`;
+        document.getElementById('mailboxForm').innerHTML = `
+            <div class="card">
+                <div class="card__title">${id ? 'Ящик: ' + this.esc(b.name) : 'Новый почтовый ящик'}</div>
+                <div class="grid grid--3">
+                    <div class="form-group"><label>Название</label><input type="text" id="mb_name" value="${this.esc(b.name)}"></div>
+                    <div class="form-group"><label>Адрес</label><input type="text" id="mb_email" value="${this.esc(b.email)}"></div>
+                    <div class="form-group"><label>Менеджер</label>
+                        ${sel('manager_id', b.manager_id || '', [['', 'Общий ящик']].concat((this.mailboxManagers || []).map(m => [m.id, m.name])))}</div>
+                </div>
+                <div class="grid grid--3">
+                    <div class="form-group"><label>IMAP сервер</label><input type="text" id="mb_imap_host" value="${this.esc(b.imap_host)}"></div>
+                    <div class="form-group"><label>Порт</label><input type="number" id="mb_imap_port" value="${this.esc(b.imap_port)}"></div>
+                    <div class="form-group"><label>Шифрование</label>
+                        ${sel('imap_encryption', b.imap_encryption, [['ssl', 'SSL'], ['tls', 'TLS'], ['notls', 'без шифрования']])}</div>
+                    <div class="form-group"><label>Логин</label><input type="text" id="mb_imap_user" value="${this.esc(b.imap_user)}"></div>
+                    <div class="form-group"><label>Пароль</label>
+                        <input type="password" id="mb_imap_password" placeholder="${b.imap_password_set ? 'сохранён — оставьте пустым' : 'не задан'}"></div>
+                    <div class="form-group"><label>Папка входящих</label><input type="text" id="mb_imap_folder_in" value="${this.esc(b.imap_folder_in || 'INBOX')}"></div>
+                    <div class="form-group"><label>Папка отправленных</label><input type="text" id="mb_imap_folder_sent" value="${this.esc(b.imap_folder_sent || '')}"></div>
+                </div>
+                <div class="grid grid--3">
+                    <div class="form-group"><label>SMTP сервер</label><input type="text" id="mb_smtp_host" value="${this.esc(b.smtp_host)}"></div>
+                    <div class="form-group"><label>Порт</label><input type="number" id="mb_smtp_port" value="${this.esc(b.smtp_port)}"></div>
+                    <div class="form-group"><label>Шифрование</label>
+                        ${sel('smtp_encryption', b.smtp_encryption, [['ssl', 'SSL'], ['tls', 'TLS'], ['', 'без шифрования']])}</div>
+                    <div class="form-group"><label>Логин</label><input type="text" id="mb_smtp_user" value="${this.esc(b.smtp_user)}"></div>
+                    <div class="form-group"><label>Пароль</label>
+                        <input type="password" id="mb_smtp_password" placeholder="${b.smtp_password_set ? 'сохранён — оставьте пустым' : 'не задан'}"></div>
+                    <div class="form-group"><label>Имя отправителя</label><input type="text" id="mb_from_name" value="${this.esc(b.from_name)}"></div>
+                    <div class="form-group"><label>Адрес отправителя</label><input type="text" id="mb_from_email" value="${this.esc(b.from_email)}"></div>
+                </div>
+                <div class="grid grid--3">
+                    <div class="form-group"><label>Активен</label>${sel('is_active', b.is_active ? 1 : 0, [[1, 'Да'], [0, 'Нет']])}</div>
+                    <div class="form-group"><label>Основной для отправки</label>${sel('is_default', b.is_default ? 1 : 0, [[1, 'Да'], [0, 'Нет']])}</div>
+                    <div class="form-group"><label>Создавать запросы из писем</label>${sel('create_requests', b.create_requests ? 1 : 0, [[1, 'Да'], [0, 'Нет']])}</div>
+                    <div class="form-group"><label>Забирать «Отправленные»</label>${sel('sync_sent', b.sync_sent ? 1 : 0, [[1, 'Да'], [0, 'Нет']])}</div>
+                </div>
+                <div class="flex flex--wrap">
+                    <button class="btn btn--primary" onclick="App.saveMailbox(${id || 'null'})">Сохранить</button>
+                    <button class="btn btn--outline" onclick="App.testMailbox('imap', ${id || 'null'})">Проверить IMAP</button>
+                    <button class="btn btn--outline" onclick="App.testMailbox('smtp', ${id || 'null'})">Проверить SMTP</button>
+                    <button class="btn btn--outline" onclick="App.testMailbox('smtp', ${id || 'null'}, true)">Отправить тестовое письмо</button>
+                    ${id ? `<button class="btn btn--danger" onclick="App.deleteMailbox(${id})">Удалить</button>` : ''}
+                </div>
+                <div id="mbTest" style="margin-top:10px"></div>
+            </div>
+        `;
+    },
+
+    mailboxForm(id) {
+        const val = n => (document.getElementById('mb_' + n) || {}).value ?? '';
+        return {
+            id: id || null,
+            name: val('name'), email: val('email'), manager_id: val('manager_id'),
+            imap_host: val('imap_host'), imap_port: val('imap_port'), imap_encryption: val('imap_encryption'),
+            imap_user: val('imap_user'), imap_password: val('imap_password'),
+            imap_folder_in: val('imap_folder_in'), imap_folder_sent: val('imap_folder_sent'),
+            smtp_host: val('smtp_host'), smtp_port: val('smtp_port'), smtp_encryption: val('smtp_encryption'),
+            smtp_user: val('smtp_user'), smtp_password: val('smtp_password'),
+            from_name: val('from_name'), from_email: val('from_email'),
+            is_active: val('is_active') === '1', is_default: val('is_default') === '1',
+            create_requests: val('create_requests') === '1', sync_sent: val('sync_sent') === '1',
+        };
+    },
+
+    async saveMailbox(id) {
+        try {
+            await this.api('admin.php?action=mailbox_save', {method: 'POST', body: this.mailboxForm(id)});
+            this.toast('Ящик сохранён', 'success');
+            this.adminMail();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async deleteMailbox(id) {
+        if (!confirm('Удалить ящик? Архив писем останется.')) return;
+        try {
+            await this.api('admin.php?action=mailbox_delete', {method: 'POST', body: {id}});
+            this.toast('Ящик удалён', 'success');
+            this.adminMail();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // Tests run on the values in the form, so a new mailbox can be checked before saving
+    async testMailbox(kind, id, send) {
+        const out = document.getElementById('mbTest');
+        out.innerHTML = '<p class="muted">Проверяем...</p>';
+        const body = this.mailboxForm(id);
+        if (send) {
+            const to = prompt('Кому отправить тестовое письмо?', body.email || '');
+            if (!to) { out.innerHTML = ''; return; }
+            body.send_to = to;
+        }
+        try {
+            const r = await this.api(`admin.php?action=test_${kind}`, {method: 'POST', body});
+            out.innerHTML = kind === 'imap'
+                ? `<p class="ok">IMAP работает: папка ${this.esc(r.result.folder)}, писем ${r.result.count}.
+                   <span class="muted">Папки: ${(r.result.folders || []).map(f => this.esc(f)).join(', ')}</span></p>`
+                : `<p class="ok">SMTP работает: ${this.esc(r.result.host)}:${r.result.port}${r.result.sent_to ? ' · письмо отправлено на ' + this.esc(r.result.sent_to) : ''}</p>`;
+        } catch (err) {
+            out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async syncMailbox(id) {
+        this.toast('Забираем почту...', 'info');
+        try {
+            const r = await this.api('admin.php?action=mailbox_sync', {method: 'POST', body: {id}});
+            const rep = (r.report || [])[0] || {};
+            if (rep.error) this.toast(rep.error, 'error');
+            else this.toast(`Входящих: ${rep.in}, исходящих: ${rep.out}, новых запросов: ${rep.requests}`, 'success');
+            this.adminMail();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async syncAllMailboxes() {
+        this.toast('Синхронизация...', 'info');
+        try {
+            const r = await this.api('admin.php?action=mailbox_sync', {method: 'POST', body: {}});
+            const errors = (r.report || []).filter(x => x.error);
+            if (errors.length) this.toast(errors.map(e => `${e.name}: ${e.error}`).join('; '), 'error');
+            else this.toast('Готово', 'success');
+            this.adminMail();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ---- Managers ----
+
+    async adminManagers() {
+        try {
+            const d = await this.api('admin.php?action=managers');
+            this.managersList = d.items;
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="flex flex--between" style="margin-bottom:10px">
+                        <div class="card__title" style="margin:0">Менеджеры</div>
+                        <button class="btn btn--primary btn--sm" onclick="App.editManager(null)">+ Добавить менеджера</button>
+                    </div>
+                    <table class="table">
+                        <thead><tr><th>Имя</th><th>Логин</th><th>Email</th><th>Роль</th><th>Ящиков</th><th>Запросов</th><th></th></tr></thead>
+                        <tbody>
+                            ${d.items.map(m => `
+                                <tr class="${m.is_active ? '' : 'row--off'}">
+                                    <td>${this.esc(m.name)} ${m.is_active ? '' : '<span class="badge badge--draft">отключён</span>'}</td>
+                                    <td><code>${this.esc(m.login)}</code></td>
+                                    <td>${this.esc(m.email) || '—'}</td>
+                                    <td>${m.is_admin ? '<span class="badge badge--confirmed">админ</span>' : 'менеджер'}</td>
+                                    <td class="num">${m.mailboxes}</td>
+                                    <td class="num">${m.requests}</td>
+                                    <td><button class="btn btn--sm btn--outline" onclick="App.editManager(${m.id})">Изменить</button></td>
+                                </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    <p class="muted" style="margin-top:8px">Менеджеры из <code>config.php</code> создаются при первом запуске.
+                       После правки здесь конфиг их больше не перезаписывает.</p>
+                </div>
+                <div id="managerForm"></div>
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    editManager(id) {
+        const m = id ? this.managersList.find(x => x.id === id) : {id: '', name: '', login: '', email: '', phone: '', is_admin: 0, is_active: 1, moysklad_uid: ''};
+        document.getElementById('managerForm').innerHTML = `
+            <div class="card">
+                <div class="card__title">${id ? 'Менеджер: ' + this.esc(m.name) : 'Новый менеджер'}</div>
+                <div class="grid grid--3">
+                    <div class="form-group"><label>Имя</label><input type="text" id="mg_name" value="${this.esc(m.name)}"></div>
+                    <div class="form-group"><label>Логин</label><input type="text" id="mg_login" value="${this.esc(m.login)}"></div>
+                    <div class="form-group"><label>Пароль</label><input type="password" id="mg_password" placeholder="${id ? 'оставьте пустым — не менять' : ''}"></div>
+                    <div class="form-group"><label>Email</label><input type="text" id="mg_email" value="${this.esc(m.email)}"></div>
+                    <div class="form-group"><label>Телефон</label><input type="text" id="mg_phone" value="${this.esc(m.phone)}"></div>
+                    <div class="form-group"><label>UID в МойСклад</label><input type="text" id="mg_uid" value="${this.esc(m.moysklad_uid)}"></div>
+                    <div class="form-group"><label>Права</label>
+                        <select id="mg_admin"><option value="0" ${m.is_admin ? '' : 'selected'}>Менеджер</option>
+                        <option value="1" ${m.is_admin ? 'selected' : ''}>Администратор</option></select></div>
+                    <div class="form-group"><label>Активен</label>
+                        <select id="mg_active"><option value="1" ${m.is_active ? 'selected' : ''}>Да</option>
+                        <option value="0" ${m.is_active ? '' : 'selected'}>Нет</option></select></div>
+                </div>
+                <div class="flex">
+                    <button class="btn btn--primary" onclick="App.saveManager(${id || 'null'})">Сохранить</button>
+                    ${id ? `<button class="btn btn--danger" onclick="App.deleteManager(${id})">Удалить</button>` : ''}
+                </div>
+            </div>
+        `;
+    },
+
+    async saveManager(id) {
+        const v = n => document.getElementById('mg_' + n).value;
+        try {
+            await this.api('admin.php?action=manager_save', {method: 'POST', body: {
+                id, name: v('name'), login: v('login'), password: v('password'), email: v('email'),
+                phone: v('phone'), moysklad_uid: v('uid'), is_admin: v('admin') === '1', is_active: v('active') === '1',
+            }});
+            this.toast('Менеджер сохранён', 'success');
+            this.adminManagers();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async deleteManager(id) {
+        if (!confirm('Удалить менеджера? Если за ним закреплены запросы, он будет отключён, а не удалён.')) return;
+        try {
+            const r = await this.api('admin.php?action=manager_delete', {method: 'POST', body: {id}});
+            this.toast(r.result === 'deleted' ? 'Менеджер удалён' : 'Менеджер отключён', 'success');
+            this.adminManagers();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ---- Technical prompts ----
+
+    async adminPrompts() {
+        try {
+            const d = await this.api('admin.php?action=prompts');
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card"><p>Системные промпты, с которыми сервис обращается к нейросети.
+                   Пустое поле вернёт встроенный текст. Плейсхолдеры <code>{{...}}</code> подставляются кодом — не удаляйте их.</p></div>
+                ${d.items.map(p => `
+                    <div class="card">
+                        <div class="flex flex--between">
+                            <div class="card__title">${this.esc(p.title)}
+                                ${p.is_custom ? '<span class="badge badge--confirmed">изменён</span>' : '<span class="badge badge--draft">встроенный</span>'}</div>
+                            <span class="muted">${p.updated_at ? this.fmtDate(p.updated_at) + (p.updated_by ? ' · ' + this.esc(p.updated_by) : '') : ''}</span>
+                        </div>
+                        <p class="muted">${this.esc(p.description)}
+                           ${p.placeholders.length ? '· плейсхолдеры: ' + p.placeholders.map(v => `<code>{{${v}}}</code>`).join(' ') : ''}</p>
+                        <textarea id="pr_${p.key}" rows="12">${this.esc(p.content)}</textarea>
+                        <div class="flex" style="margin-top:8px">
+                            <button class="btn btn--primary btn--sm" onclick="App.savePrompt('${p.key}')">Сохранить</button>
+                            ${p.is_custom ? `<button class="btn btn--outline btn--sm" onclick="App.resetPrompt('${p.key}')">Вернуть встроенный</button>` : ''}
+                            ${p.history ? `<button class="btn btn--outline btn--sm" onclick="App.promptHistory('${p.key}')">История (${p.history})</button>` : ''}
+                        </div>
+                    </div>`).join('')}
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    async savePrompt(key) {
+        try {
+            await this.api('admin.php?action=prompt_save', {method: 'POST', body: {key, content: document.getElementById('pr_' + key).value}});
+            this.toast('Промпт сохранён', 'success');
+            this.adminPrompts();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async resetPrompt(key) {
+        if (!confirm('Вернуть встроенный текст промпта?')) return;
+        try {
+            await this.api('admin.php?action=prompt_reset', {method: 'POST', body: {key}});
+            this.toast('Промпт возвращён к встроенному', 'success');
+            this.adminPrompts();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async promptHistory(key) {
+        const d = await this.api(`admin.php?action=prompt_history&key=${encodeURIComponent(key)}`);
+        this.modal('История промпта', d.items.map(h => `
+            <div class="card" style="margin-bottom:8px">
+                <div class="muted">${this.fmtDate(h.created_at)} ${h.manager_name ? '· ' + this.esc(h.manager_name) : ''}</div>
+                <pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto">${this.esc(h.content)}</pre>
+            </div>`).join('') || '<p class="muted">Пока пусто</p>');
+    },
+
+    // ---- Error log ----
+
+    async adminLogs() {
+        const st = this.logState = this.logState || {level: 'warning', channel: '', q: '', offset: 0};
+        try {
+            const qs = new URLSearchParams({level: st.level, channel: st.channel, q: st.q, limit: 100, offset: st.offset});
+            const d = await this.api('admin.php?action=logs&' + qs);
+            const levelBadge = l => `<span class="badge badge--${l === 'error' ? 'critical' : (l === 'warning' ? 'warning' : 'new')}">${l}</span>`;
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card card--inline">
+                    <select id="logLevel" onchange="App.logFilter({level:this.value})">
+                        <option value="" ${st.level === '' ? 'selected' : ''}>Все записи</option>
+                        <option value="info" ${st.level === 'info' ? 'selected' : ''}>info и выше</option>
+                        <option value="warning" ${st.level === 'warning' ? 'selected' : ''}>Предупреждения и ошибки</option>
+                        <option value="error" ${st.level === 'error' ? 'selected' : ''}>Только ошибки</option>
+                    </select>
+                    <select id="logChannel" onchange="App.logFilter({channel:this.value})">
+                        <option value="">Все источники</option>
+                        ${(d.channels || []).map(c => `<option value="${this.esc(c)}" ${st.channel === c ? 'selected' : ''}>${this.esc(c)}</option>`).join('')}
+                    </select>
+                    <input type="text" id="logQ" placeholder="Поиск по тексту" value="${this.esc(st.q)}" style="max-width:280px"
+                           onkeydown="if(event.key==='Enter')App.logFilter({q:this.value})">
+                    <span class="muted">Найдено: ${d.total} · за сутки ошибок ${d.counts.errors_24h}, предупреждений ${d.counts.warnings_24h}</span>
+                    <button class="btn btn--sm btn--outline" onclick="App.adminLogs()">⟳ Обновить</button>
+                    <button class="btn btn--sm btn--danger" onclick="App.clearLogs()">Очистить</button>
+                </div>
+                <div class="card">
+                    <table class="table">
+                        <thead><tr><th>Когда</th><th>Уровень</th><th>Источник</th><th>Сообщение</th></tr></thead>
+                        <tbody>
+                            ${d.items.map(r => `
+                                <tr onclick="App.logDetails(${r.id})" style="cursor:pointer">
+                                    <td class="muted" style="white-space:nowrap">${this.fmtDate(r.created_at)}</td>
+                                    <td>${levelBadge(r.level)}</td>
+                                    <td>${this.esc(r.channel)}<div class="muted">${this.esc(r.source || '')}</div></td>
+                                    <td>${this.esc(r.message)}
+                                        ${r.request_uri ? `<div class="muted">${this.esc(r.request_uri)}</div>` : ''}</td>
+                                </tr>`).join('')}
+                            ${d.items.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">Записей нет</td></tr>' : ''}
+                        </tbody>
+                    </table>
+                    <div class="flex flex--between" style="margin-top:12px">
+                        <button class="btn btn--sm btn--outline" ${st.offset === 0 ? 'disabled' : ''} onclick="App.logPage(-1)">← Новее</button>
+                        <button class="btn btn--sm btn--outline" ${st.offset + 100 >= d.total ? 'disabled' : ''} onclick="App.logPage(1)">Старее →</button>
+                    </div>
+                </div>
+            `;
+            this.logRows = d.items;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    logFilter(patch) {
+        this.logState = Object.assign(this.logState || {}, patch, {offset: 0});
+        this.adminLogs();
+    },
+
+    logPage(dir) {
+        this.logState.offset = Math.max(0, (this.logState.offset || 0) + dir * 100);
+        this.adminLogs();
+    },
+
+    logDetails(id) {
+        const r = (this.logRows || []).find(x => x.id === id);
+        if (!r) return;
+        let ctx = r.context || '';
+        try { ctx = JSON.stringify(JSON.parse(ctx), null, 2); } catch (e) {}
+        this.modal('Запись лога', `
+            <p><strong>${this.esc(r.level)}</strong> · ${this.esc(r.channel)} · ${this.fmtDate(r.created_at)}</p>
+            <p>${this.esc(r.message)}</p>
+            ${r.source ? `<p class="muted">${this.esc(r.source)}</p>` : ''}
+            ${r.request_uri ? `<p class="muted">${this.esc(r.request_uri)}</p>` : ''}
+            ${ctx ? `<pre style="white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto">${this.esc(ctx)}</pre>` : ''}
+        `);
+    },
+
+    async clearLogs() {
+        if (!confirm('Очистить журнал полностью?')) return;
+        try {
+            const r = await this.api('admin.php?action=logs_clear', {method: 'POST', body: {}});
+            this.toast(`Удалено записей: ${r.deleted}`, 'success');
+            this.adminLogs();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // First run: no accounts yet (config.php is optional since module 004)
+    renderSetup() {
+        document.getElementById('nav').innerHTML = '';
+        document.getElementById('userBlock').innerHTML = '';
+        document.getElementById('app').innerHTML = `
+            <div class="login-wrap">
+                <div class="login-box card">
+                    <div class="card__title" style="text-align:center">Первый запуск</div>
+                    <p class="muted" style="margin-bottom:16px">Создайте администратора — дальше все настройки,
+                       почтовые ящики и менеджеры заводятся в интерфейсе.</p>
+                    <form id="setupForm">
+                        <div class="form-group"><label>Имя</label><input type="text" id="setupName" required></div>
+                        <div class="form-group"><label>Логин</label><input type="text" id="setupLogin" required></div>
+                        <div class="form-group"><label>Email</label><input type="text" id="setupEmail"></div>
+                        <div class="form-group"><label>Пароль</label><input type="password" id="setupPass" required minlength="8"></div>
+                        <button type="submit" class="btn btn--primary btn--block">Создать администратора</button>
+                    </form>
+                </div>
+            </div>
+        `;
+        document.getElementById('setupForm').onsubmit = async (e) => {
+            e.preventDefault();
+            try {
+                await App.api('auth.php?action=setup', {method: 'POST', body: {
+                    name: document.getElementById('setupName').value,
+                    login: document.getElementById('setupLogin').value,
+                    email: document.getElementById('setupEmail').value,
+                    password: document.getElementById('setupPass').value,
+                }});
+                location.reload();
+            } catch (err) { App.toast(err.message, 'error'); }
+        };
     },
 
     // Login

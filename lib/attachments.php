@@ -54,12 +54,13 @@ class Attachments {
             } catch (Throwable $e) {
                 $text = '';
                 $status = 'failed';
-                error_log('Attachment extract failed: ' . $e->getMessage());
+                Logger::exception('attachments', $e, ['file' => $name]);
             }
         }
 
         $id = Db::insert('attachments', [
             'correspondence_id' => $links['correspondence_id'] ?? null,
+            'mail_message_id'   => $links['mail_message_id'] ?? null,
             'request_id'        => $links['request_id'] ?? null,
             'counterparty_id'   => $links['counterparty_id'] ?? null,
             'filename'          => $name,
@@ -113,7 +114,7 @@ class Attachments {
             $pdf = $parser->parseFile($path);
             return trim($pdf->getText());
         } catch (Throwable $e) {
-            error_log('PDF parse failed: ' . $e->getMessage());
+            Logger::warning('attachments', 'PDF parse failed: ' . $e->getMessage(), ['file' => basename($path)]);
             return '';
         }
     }
@@ -224,7 +225,7 @@ class Attachments {
 
             if ($code !== 200) {
                 if ($page === 0) {
-                    error_log("Yandex OCR failed ($code): " . substr((string)$resp, 0, 300));
+                    Logger::error('ocr', "Yandex Vision вернул HTTP $code", ['response' => substr((string)$resp, 0, 500)]);
                     return null;
                 }
                 break; // no more pages

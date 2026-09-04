@@ -1,5 +1,6 @@
 config.php
 data/kp.db
+data/secret.key
 data/kp.db-wal
 data/kp.db-shm
 data/kp/

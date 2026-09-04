@@ -66,6 +66,6 @@ foreach ($stale as $proposal) {
 
         echo "Follow-up suggested for KP #{$proposal['number']} ({$proposal['counterparty_name']})\n";
     } catch (\Exception $e) {
-        error_log("Follow-up generation failed for proposal #{$proposal['id']}: " . $e->getMessage());
+        Logger::exception('followup', $e, ['proposal_id' => $proposal['id']]);
     }
 }
