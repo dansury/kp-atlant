@@ -200,6 +200,36 @@ class MsSync {
         return ['orders' => $orders, 'invoices' => $invoices];
     }
 
+    // Webhooks this module needs (FR-029)
+    private const WANTED_HOOKS = [
+        ['customerorder', 'CREATE'],
+        ['customerorder', 'UPDATE'],
+        ['invoiceout', 'CREATE'],
+        ['invoiceout', 'UPDATE'],
+    ];
+
+    // Endpoint path used to recognise our own hooks regardless of the secret
+    public const HOOK_PATH = '/api/moysklad_hook.php';
+
+    public static function webhookUrl(): string {
+        $appUrl = rtrim($GLOBALS['cfg']['APP_URL'] ?? '', '/');
+        $secret = (string)Db::val("SELECT value FROM settings WHERE key='moysklad_webhook_secret'");
+        return $appUrl . self::HOOK_PATH . '?secret=' . urlencode($secret);
+    }
+
+    // Our hooks in MoySklad — matched by endpoint, so hooks left over from an
+    // older secret are found instead of being silently duplicated.
+    public static function ourWebhooks(): array {
+        $wanted = self::webhookUrl();
+        $out = [];
+        foreach (MoySklad::listWebhooks() as $w) {
+            if (!str_contains((string)$w['url'], self::HOOK_PATH)) continue;
+            $w['current'] = ($w['url'] === $wanted) && !empty($w['enabled']);
+            $out[] = $w;
+        }
+        return $out;
+    }
+
     // Register the webhooks this module needs (FR-029). Idempotent.
     public static function ensureWebhooks(): array {
         self::init();
@@ -208,53 +238,63 @@ class MsSync {
             return ['ok' => false, 'error' => 'APP_URL должен быть публичным https-адресом'];
         }
 
-        $secret = (string)Db::val("SELECT value FROM settings WHERE key='moysklad_webhook_secret'");
-        $url = "$appUrl/api/moysklad_hook.php?secret=" . urlencode($secret);
-
-        $wanted = [
-            ['customerorder', 'CREATE'],
-            ['customerorder', 'UPDATE'],
-            ['invoiceout', 'CREATE'],
-            ['invoiceout', 'UPDATE'],
-        ];
+        $url = self::webhookUrl();
 
         try {
-            $existing = MoySklad::listWebhooks();
+            $existing = self::ourWebhooks();
         } catch (Throwable $e) {
-            return ['ok' => false, 'error' => 'Нет прав на вебхуки: ' . $e->getMessage()];
+            return ['ok' => false, 'error' => 'Нет доступа к вебхукам: ' . $e->getMessage()];
         }
 
-        $created = 0;
-        foreach ($wanted as [$entity, $action]) {
-            $found = false;
+        $created = 0; $updated = 0; $kept = 0; $errors = [];
+
+        foreach (self::WANTED_HOOKS as [$entity, $action]) {
+            // Prefer an exact match, otherwise reuse a stale hook on the same endpoint
+            $exact = null; $stale = null;
             foreach ($existing as $w) {
-                if ($w['entityType'] === $entity && $w['action'] === $action && $w['url'] === $url) {
-                    $found = true;
-                    break;
-                }
+                if ($w['entityType'] !== $entity || $w['action'] !== $action) continue;
+                if (!empty($w['current'])) { $exact = $w; break; }
+                $stale = $stale ?? $w;
             }
-            if (!$found) {
-                try {
+
+            if ($exact) { $kept++; continue; }
+
+            try {
+                if ($stale) {
+                    MoySklad::updateWebhook($stale['id'], $url, true);
+                    $updated++;
+                } else {
                     MoySklad::createWebhook($url, $entity, $action);
                     $created++;
-                } catch (Throwable $e) {
-                    return ['ok' => false, 'error' => "Не удалось создать вебхук $entity/$action: " . $e->getMessage(), 'created' => $created];
                 }
+            } catch (Throwable $e) {
+                // MoySklad refusing a duplicate means the hook is already in place
+                $msg = MoySklad::lastErrorMessage();
+                $dup = MoySklad::lastErrorCode() === 409
+                    || str_contains(mb_strtolower($msg), 'уже существует')
+                    || str_contains(mb_strtolower($msg), 'already exists');
+                if ($dup) { $kept++; continue; }
+                $errors[] = "$entity/$action: " . $e->getMessage();
             }
         }
 
-        return ['ok' => true, 'created' => $created, 'url' => $url];
+        if ($errors) {
+            return [
+                'ok' => false,
+                'error' => 'Не удалось зарегистрировать вебхуки — ' . implode(' | ', $errors),
+                'created' => $created, 'updated' => $updated, 'kept' => $kept,
+            ];
+        }
+
+        return ['ok' => true, 'created' => $created, 'updated' => $updated, 'kept' => $kept, 'url' => $url];
     }
 
     // Remove this installation's webhooks
     public static function removeWebhooks(): int {
         self::init();
-        $secret = (string)Db::val("SELECT value FROM settings WHERE key='moysklad_webhook_secret'");
         $removed = 0;
-        foreach (MoySklad::listWebhooks() as $w) {
-            if (str_contains($w['url'], $secret)) {
-                if (MoySklad::deleteWebhook($w['id'])) $removed++;
-            }
+        foreach (self::ourWebhooks() as $w) {
+            if (MoySklad::deleteWebhook($w['id'])) $removed++;
         }
         return $removed;
     }
