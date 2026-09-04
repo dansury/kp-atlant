@@ -217,7 +217,6 @@ class MoySklad {
         ]);
         $body = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
         return ($code >= 200 && $code < 300 && $body !== false && $body !== '') ? (string)$body : null;
     }
 
@@ -569,7 +568,6 @@ class MoySklad {
         }
         $raw = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
         return [$code, (string)$raw, $headers];
     }
 
@@ -595,7 +593,6 @@ class MoySklad {
             $resp = curl_exec($ch);
             $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $curlErr = curl_error($ch);
-            curl_close($ch);
 
             // Keep the last response for diagnostics
             self::$lastHttp = [

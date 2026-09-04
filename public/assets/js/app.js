@@ -17,10 +17,27 @@ const App = {
             cache: 'no-store',   // a cached "me" would show the login screen after a login
         });
         if (res.headers.get('content-type')?.includes('application/pdf')) return res;
-        const data = await res.json();
-        if (data.error) {
+        // A PHP fatal (or an empty body) is not JSON — without this the page would
+        // wait for a promise that never resolves and stay on «Загрузка...»
+        const raw = await res.text();
+        let data;
+        try {
+            data = raw ? JSON.parse(raw) : {};
+        } catch (e) {
+            const err = new Error(`Сервер вернул не JSON (HTTP ${res.status}). ${raw.slice(0, 200)}`);
+            err.status = res.status;
+            throw err;
+        }
+        // An «error» field of a data row is not an error of the request itself:
+        // a letter that failed to parse carries one, and the page must still open
+        if (typeof data.error === 'string' && (!res.ok || data.code)) {
             const err = new Error(data.error);
             err.data = data;
+            err.status = res.status;
+            throw err;
+        }
+        if (!res.ok) {
+            const err = new Error(`Сервер ответил HTTP ${res.status}`);
             err.status = res.status;
             throw err;
         }
@@ -155,19 +172,35 @@ const App = {
         this.onTabVisible = null; // only the company card re-syncs on focus
         this.closeModal();
 
-        switch (page) {
-            case 'requests': this.pageRequests(); break;
-            case 'new': this.pageNewRequest(); break;
-            case 'request': this.pageRequest(params[0]); break;
-            case 'proposal': this.pageProposal(params[0]); break;
-            case 'counterparties': this.pageCounterparties(); break;
-            case 'counterparty': this.pageCounterparty(params[0]); break;
-            case 'notifications': this.pageNotifications(); break;
-            case 'settings': this.pageSettings(); break;
-            case 'mail': this.pageMail(params[0]); break;
-            case 'admin': this.pageAdmin(params[0] || 'overview'); break;
-            default: this.pageRequests();
-        }
+        const open = () => {
+            switch (page) {
+                case 'requests': return this.pageRequests();
+                case 'new': return this.pageNewRequest();
+                case 'request': return this.pageRequest(params[0]);
+                case 'proposal': return this.pageProposal(params[0]);
+                case 'counterparties': return this.pageCounterparties();
+                case 'counterparty': return this.pageCounterparty(params[0]);
+                case 'notifications': return this.pageNotifications();
+                case 'settings': return this.pageSettings();
+                case 'mail': return this.pageMail(params[0]);
+                case 'admin': return this.pageAdmin(params[0] || 'overview');
+                default: return this.pageRequests();
+            }
+        };
+        // Whatever the page throws, the user sees the reason and a retry button —
+        // never a spinner that spins forever
+        Promise.resolve().then(open).catch(err => this.pageFail(err));
+    },
+
+    pageFail(err) {
+        console.error(err);
+        const app = document.getElementById('app');
+        if (app) app.innerHTML = `
+            <div class="card card--alert">
+                <div class="card__title">Страница не открылась</div>
+                <p>${this.esc(err && err.message ? err.message : String(err))}</p>
+                <button class="btn btn--outline btn--sm" onclick="App.route()">Повторить</button>
+            </div>`;
     },
 
     // === Pages ===
@@ -1733,7 +1766,8 @@ const App = {
                         ${sel('imap_encryption', b.imap_encryption, [['ssl', 'SSL'], ['tls', 'TLS'], ['notls', 'без шифрования']])}</div>
                     <div class="form-group"><label>Логин</label><input type="text" id="mb_imap_user" value="${this.esc(b.imap_user)}"></div>
                     <div class="form-group"><label>Пароль <span class="muted" id="mbImapPwdNote"></span></label>
-                        <input type="password" id="mb_imap_password" placeholder="${b.imap_password_set ? 'сохранён — оставьте пустым' : 'не задан'}"></div>
+                        <input type="password" id="mb_imap_password" placeholder="${b.imap_password_set ? 'сохранён — оставьте пустым' : 'не задан'}"
+                               oninput="App.mirrorSmtpPassword()"></div>
                     <div class="form-group"><label>Папка входящих</label><input type="text" id="mb_imap_folder_in" value="${this.esc(b.imap_folder_in || 'INBOX')}"></div>
                     <div class="form-group"><label>Папка отправленных</label><input type="text" id="mb_imap_folder_sent" value="${this.esc(b.imap_folder_sent || '')}"></div>
                 </div>
@@ -1744,7 +1778,7 @@ const App = {
                         ${sel('smtp_encryption', b.smtp_encryption, [['ssl', 'SSL'], ['tls', 'TLS'], ['', 'без шифрования']])}</div>
                     <div class="form-group"><label>Логин</label><input type="text" id="mb_smtp_user" value="${this.esc(b.smtp_user)}"></div>
                     <div class="form-group"><label>Пароль <span class="muted" id="mbSmtpPwdNote"></span></label>
-                        <input type="password" id="mb_smtp_password" placeholder="${b.smtp_password_set ? 'сохранён — оставьте пустым' : 'не задан'}"
+                        <input type="password" id="mb_smtp_password" placeholder="${b.smtp_password_set ? 'сохранён — оставьте пустым' : 'если пусто — как у IMAP'}"
                                oninput="App.mirrorImapPassword()"></div>
                     <div class="form-group"><label>Имя отправителя</label><input type="text" id="mb_from_name" value="${this.esc(b.from_name)}"></div>
                     <div class="form-group"><label>Адрес отправителя</label><input type="text" id="mb_from_email" value="${this.esc(b.from_email)}"></div>
@@ -1819,12 +1853,23 @@ const App = {
         else this.applyProvider(false);
     },
 
-    /** One application password serves both IMAP and SMTP — no need to type it twice. */
-    mirrorImapPassword() {
-        const smtp = document.getElementById('mb_smtp_password');
-        const imap = document.getElementById('mb_imap_password');
-        if (smtp && imap && !imap.value) imap.value = smtp.value;
+    /**
+     * One application password serves both IMAP and SMTP, so whichever field is
+     * filled in copies itself into the other — until that other one is typed in
+     * by hand, and then it is left alone.
+     */
+    mirrorPassword(fromId, toId) {
+        const from = document.getElementById(fromId);
+        const to = document.getElementById(toId);
+        if (!from || !to) return;
+        from.dataset.typed = '1';
+        if (to.dataset.typed === '1' && to.value) return;
+        to.value = from.value;
+        to.dataset.typed = '';
     },
+
+    mirrorImapPassword() { this.mirrorPassword('mb_smtp_password', 'mb_imap_password'); },
+    mirrorSmtpPassword() { this.mirrorPassword('mb_imap_password', 'mb_smtp_password'); },
 
     mailboxForm(id) {
         const val = n => (document.getElementById('mb_' + n) || {}).value ?? '';
@@ -1874,7 +1919,7 @@ const App = {
             out.innerHTML = kind === 'imap'
                 ? `<p class="ok">IMAP работает: папка ${this.esc(r.result.folder)}, писем ${r.result.count}.
                    <span class="muted">Папки: ${(r.result.folders || []).map(f => this.esc(f)).join(', ')}</span></p>`
-                : `<p class="ok">SMTP работает: ${this.esc(r.result.host)}:${r.result.port}${r.result.sent_to ? ' · письмо отправлено на ' + this.esc(r.result.sent_to) : ''}</p>`;
+                : `<p class="ok">SMTP работает: ${this.esc(r.result.host)}:${r.result.port} · логин ${this.esc(r.result.user)}${r.result.sent_to ? ' · письмо отправлено на ' + this.esc(r.result.sent_to) : ''}</p>`;
         } catch (err) {
             out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
         }
@@ -2106,20 +2151,24 @@ const App = {
                     </select>
                     <input type="text" id="logQ" placeholder="Поиск по тексту" value="${this.esc(st.q)}" style="max-width:280px"
                            onkeydown="if(event.key==='Enter')App.logFilter({q:this.value})">
-                    <span class="muted">Найдено: ${d.total} · за сутки ошибок ${d.counts.errors_24h}, предупреждений ${d.counts.warnings_24h}</span>
+                    <span class="muted">Записей: ${d.total} · за сутки ошибок ${d.counts.errors_24h}, предупреждений ${d.counts.warnings_24h}
+                          <br>Повторы одного и того же сообщения собираются в одну строку со счётчиком</span>
                     <button class="btn btn--sm btn--outline" onclick="App.adminLogs()">⟳ Обновить</button>
                     <button class="btn btn--sm btn--danger" onclick="App.clearLogs()">Очистить</button>
                 </div>
                 <div class="card">
-                    <table class="table">
+                    <table class="table table--logs">
+                        <colgroup><col class="col-when"><col class="col-level"><col class="col-source"><col></colgroup>
                         <thead><tr><th>Когда</th><th>Уровень</th><th>Источник</th><th>Сообщение</th></tr></thead>
                         <tbody>
                             ${d.items.map(r => `
                                 <tr onclick="App.logDetails(${r.id})" style="cursor:pointer">
-                                    <td class="muted" style="white-space:nowrap">${this.fmtDate(r.created_at)}</td>
-                                    <td>${levelBadge(r.level)}</td>
-                                    <td>${this.esc(r.channel)}<div class="muted">${this.esc(r.source || '')}</div></td>
-                                    <td>${this.esc(r.message)}
+                                    <td class="muted log__when">${this.fmtDate(r.last_at || r.created_at)}
+                                        ${Number(r.repeat_count) > 1 ? `<div class="muted">с ${this.fmtDate(r.created_at)}</div>` : ''}</td>
+                                    <td>${levelBadge(r.level)}
+                                        ${Number(r.repeat_count) > 1 ? `<div class="badge badge--new">×${r.repeat_count}</div>` : ''}</td>
+                                    <td class="log__source">${this.esc(r.channel)}<div class="muted">${this.esc(r.source || '')}</div></td>
+                                    <td class="log__msg">${this.esc(r.message)}
                                         ${r.request_uri ? `<div class="muted">${this.esc(r.request_uri)}</div>` : ''}</td>
                                 </tr>`).join('')}
                             ${d.items.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">Записей нет</td></tr>' : ''}
@@ -2151,7 +2200,8 @@ const App = {
         let ctx = r.context || '';
         try { ctx = JSON.stringify(JSON.parse(ctx), null, 2); } catch (e) {}
         this.modal('Запись лога', `
-            <p><strong>${this.esc(r.level)}</strong> · ${this.esc(r.channel)} · ${this.fmtDate(r.created_at)}</p>
+            <p><strong>${this.esc(r.level)}</strong> · ${this.esc(r.channel)} · ${this.fmtDate(r.created_at)}
+               ${Number(r.repeat_count) > 1 ? `· повторилось ${r.repeat_count} раз, последний ${this.fmtDate(r.last_at)}` : ''}</p>
             <p>${this.esc(r.message)}</p>
             ${r.source ? `<p class="muted">${this.esc(r.source)}</p>` : ''}
             ${r.request_uri ? `<p class="muted">${this.esc(r.request_uri)}</p>` : ''}

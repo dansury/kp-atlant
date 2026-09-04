@@ -72,6 +72,7 @@ final class Settings {
         'LOG_LEVEL'          => ['log', 'Уровень логирования', 'select:debug,info,warning,error', false, 'info', ''],
         'LOG_RETENTION_DAYS' => ['log', 'Хранить логи, дней', 'int', false, 30, ''],
         'LOG_PHP_ERRORS'     => ['log', 'Ловить ошибки и warning PHP', 'bool', false, 1, ''],
+        'LOG_PHP_DEPRECATED' => ['log', 'Писать deprecated-предупреждения PHP', 'bool', false, 0, 'Служебные сообщения новой версии PHP — нужны разработчику, не администратору'],
     ];
 
     /** Group titles for the admin UI */

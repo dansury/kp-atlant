@@ -16,7 +16,7 @@ class Db {
         ]);
         self::$pdo->exec('PRAGMA journal_mode=WAL');
         self::$pdo->exec('PRAGMA foreign_keys=ON');
-        self::$pdo->exec('PRAGMA busy_timeout=5000');
+        self::$pdo->exec('PRAGMA busy_timeout=15000');
     }
 
     public static function pdo(): PDO {

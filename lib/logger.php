@@ -10,6 +10,9 @@ final class Logger {
     private static bool $installed = false;
     private static bool $inLog = false;   // never let logging recurse through the error handler
 
+    /** Repeats of the same message inside this window collapse into one row. */
+    private const DEDUP_SEC = 600;
+
     public static function debug(string $channel, string $message, array $ctx = []): void { self::log('debug', $channel, $message, $ctx); }
     public static function info(string $channel, string $message, array $ctx = []): void { self::log('info', $channel, $message, $ctx); }
     public static function warning(string $channel, string $message, array $ctx = []): void { self::log('warning', $channel, $message, $ctx); }
@@ -35,14 +38,37 @@ final class Logger {
 
         self::$inLog = true;
         try {
+            $text   = self::clip($message, 4000);
+            $source = isset($ctx['file']) ? basename((string)$ctx['file']) . ':' . ($ctx['line'] ?? '?') : null;
+            $now    = self::now();
+
+            // The same deprecation fires hundreds of times per archive download —
+            // the admin needs to see it once, with a counter, not to scroll past it
+            $dup = Db::one(
+                "SELECT id FROM app_log
+                 WHERE level=? AND channel=? AND message=? AND COALESCE(source,'')=? AND last_at >= ?
+                 ORDER BY id DESC LIMIT 1",
+                [$level, $channel, $text, (string)$source, self::now(time() - self::DEDUP_SEC)]
+            );
+            if ($dup) {
+                Db::q("UPDATE app_log SET repeat_count = COALESCE(repeat_count,1) + 1, last_at = ? WHERE id = ?",
+                      [$now, (int)$dup['id']]);
+                return;
+            }
+
             Db::insert('app_log', [
                 'level'      => $level,
                 'channel'    => $channel,
-                'message'    => self::clip($message, 4000),
+                'message'    => $text,
                 'context'    => $ctx ? self::clip(json_encode(self::scrub($ctx), JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR), 16000) : null,
-                'source'     => isset($ctx['file']) ? basename((string)$ctx['file']) . ':' . ($ctx['line'] ?? '?') : null,
+                'source'     => $source,
                 'manager_id' => $_SESSION['manager_id'] ?? null,
                 'request_uri'=> isset($_SERVER['REQUEST_URI']) ? self::clip((string)$_SERVER['REQUEST_URI'], 300) : null,
+                // Written by PHP, not by SQLite: datetime('now') is UTC and the
+                // admin reads the log in the timezone set in the settings
+                'created_at' => $now,
+                'last_at'    => $now,
+                'repeat_count' => 1,
             ]);
         } catch (Throwable) {
             // Logging must never break the request it is describing
@@ -63,6 +89,10 @@ final class Logger {
         set_error_handler(function (int $no, string $str, string $file = '', int $line = 0): bool {
             if (!(error_reporting() & $no)) return false;
             if (!Settings::get('LOG_PHP_ERRORS', 1)) return false;
+            // Deprecation notices of the PHP version itself say nothing about the
+            // request that triggered them — off unless the admin asks for them
+            if (in_array($no, [E_DEPRECATED, E_USER_DEPRECATED], true)
+                && !Settings::get('LOG_PHP_DEPRECATED', 0)) return false;
             self::log(self::levelForErrno($no), 'php', $str, ['file' => $file, 'line' => $line, 'errno' => $no]);
             return false;   // let PHP's own handling continue
         });
@@ -100,7 +130,7 @@ final class Logger {
         }
         $limit  = min(500, max(1, (int)($f['limit'] ?? 100)));
         $offset = max(0, (int)($f['offset'] ?? 0));
-        $sql = 'SELECT * FROM app_log WHERE ' . implode(' AND ', $where) . ' ORDER BY id DESC LIMIT ? OFFSET ?';
+        $sql = 'SELECT * FROM app_log WHERE ' . implode(' AND ', $where) . ' ORDER BY COALESCE(last_at, created_at) DESC, id DESC LIMIT ? OFFSET ?';
         return [
             'items'    => Db::all($sql, [...$params, $limit, $offset]),
             'total'    => (int)Db::val('SELECT COUNT(*) FROM app_log WHERE ' . implode(' AND ', $where), $params),
@@ -111,11 +141,17 @@ final class Logger {
 
     /** Errors and warnings of the last 24 hours — the badge in the header. */
     public static function counts(): array {
+        $since = self::now(time() - 86400);
         return [
-            'errors_24h'   => (int)Db::val("SELECT COUNT(*) FROM app_log WHERE level='error' AND created_at >= datetime('now','-1 day')"),
-            'warnings_24h' => (int)Db::val("SELECT COUNT(*) FROM app_log WHERE level='warning' AND created_at >= datetime('now','-1 day')"),
+            'errors_24h'   => (int)Db::val("SELECT COALESCE(SUM(repeat_count),0) FROM app_log WHERE level='error' AND last_at >= ?", [$since]),
+            'warnings_24h' => (int)Db::val("SELECT COALESCE(SUM(repeat_count),0) FROM app_log WHERE level='warning' AND last_at >= ?", [$since]),
             'total'        => (int)Db::val("SELECT COUNT(*) FROM app_log"),
         ];
+    }
+
+    /** Timestamps in the log are local: TIMEZONE from the settings, not UTC. */
+    private static function now(?int $ts = null): string {
+        return date('Y-m-d H:i:s', $ts ?? time());
     }
 
     public static function clear(?string $level = null): int {
@@ -126,7 +162,7 @@ final class Logger {
     /** Drop rows older than LOG_RETENTION_DAYS. Called from cron. */
     public static function prune(): int {
         $days = max(1, (int)Settings::get('LOG_RETENTION_DAYS', 30));
-        return Db::q("DELETE FROM app_log WHERE created_at < datetime('now', ?)", ["-$days days"])->rowCount();
+        return Db::q("DELETE FROM app_log WHERE COALESCE(last_at, created_at) < ?", [self::now(time() - $days * 86400)])->rowCount();
     }
 
     /** Credentials never go into the log (Constitution, V). */

@@ -38,6 +38,10 @@ if (!Db::hasTable('managers')) {
     initSchema();
 }
 
+// The timezone is set before the migrations: they convert stored timestamps and
+// must already know which zone the service works in
+date_default_timezone_set((string)(Settings::get('TIMEZONE', 'Europe/Moscow') ?: 'Europe/Moscow'));
+
 // Apply incremental migrations (module 002 and later)
 runMigrations();
 
@@ -490,6 +494,9 @@ SQL;
             source TEXT,
             manager_id INTEGER,
             request_uri TEXT,
+            repeat_count INTEGER NOT NULL DEFAULT 1,
+            last_at TEXT,
+            -- Logger writes this itself, in the timezone of the settings
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_log_level ON app_log(level, id);
@@ -622,6 +629,26 @@ SQL;
 SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '6')");
         $current = 6;
+    }
+
+    // v7 — the log collapses repeats and keeps local time
+    if ($current < 7) {
+        Db::ensureColumn('app_log', 'repeat_count', 'INTEGER', '1');
+        Db::ensureColumn('app_log', 'last_at', 'TEXT');
+        // Rows written before this migration hold UTC — shift them once by the
+        // offset of TIMEZONE, so the whole log reads in one timezone.
+        // SQLite's own 'localtime' is the server's OS zone, which is not it.
+        $offset = (new DateTimeZone(date_default_timezone_get()))
+            ->getOffset(new DateTimeImmutable('now', new DateTimeZone('UTC')));
+        if ($offset !== 0) {
+            Db::q("UPDATE app_log SET created_at = datetime(created_at, ?) WHERE created_at IS NOT NULL",
+                  [sprintf('%+d seconds', $offset)]);
+        }
+        Db::q("UPDATE app_log SET last_at = created_at WHERE last_at IS NULL");
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_log_dedup ON app_log(level, channel, last_at)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '7')");
+        $current = 7;
     }
 }
 
@@ -844,6 +871,23 @@ function currentManager(): ?array {
     );
 }
 
+/**
+ * Repair text of unknown origin: mail from the 2000s, a filename inside a MIME
+ * header, a PDF with no encoding declared. Invalid UTF-8 breaks json_encode(),
+ * the /u regex flag and mb_* alike, so nothing gets stored before it goes through here.
+ */
+function utf8Text(string $s): string {
+    if ($s === '' || mb_check_encoding($s, 'UTF-8')) return $s;
+    // Any valid multi-byte sequence means the string is UTF-8 with a few bad bytes
+    if (preg_match('/[\xC2-\xF4][\x80-\xBF]/', $s)) {
+        return (string)@iconv('UTF-8', 'UTF-8//IGNORE', $s);
+    }
+    $cp1251 = (string)@mb_convert_encoding($s, 'UTF-8', 'Windows-1251');
+    return mb_check_encoding($cp1251, 'UTF-8') && $cp1251 !== ''
+        ? $cp1251
+        : (string)@iconv('UTF-8', 'UTF-8//IGNORE', $s);
+}
+
 // JSON response helpers
 // API answers must never come from the browser cache: a cached "me" response
 // would show a logged-out screen right after a successful login.
@@ -853,9 +897,24 @@ function jsonHeaders(): void {
     header('Pragma: no-cache');
 }
 
+/**
+ * One letter with a broken charset used to break a whole page: json_encode()
+ * returns false on invalid UTF-8, the answer was empty and the browser sat on
+ * «Загрузка...» forever. Bad bytes are replaced, and a failure still answers JSON.
+ */
+function jsonBody(mixed $data): string {
+    $flags = JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR;
+    $out = json_encode($data, $flags);
+    if ($out === false) {
+        if (class_exists('Logger')) Logger::error('api', 'Ответ не сериализуется в JSON: ' . json_last_error_msg());
+        $out = json_encode(['error' => 'Ответ сервера не удалось сформировать', 'code' => 500], $flags) ?: '{}';
+    }
+    return $out;
+}
+
 function jsonOk(array $data = []): never {
     jsonHeaders();
-    echo json_encode(array_merge(['ok' => true], $data), JSON_UNESCAPED_UNICODE);
+    echo jsonBody(array_merge(['ok' => true], $data));
     exit;
 }
 
@@ -865,13 +924,13 @@ function jsonError(string $msg, int $code = 400): never {
     }
     http_response_code($code);
     jsonHeaders();
-    echo json_encode(['error' => $msg, 'code' => $code], JSON_UNESCAPED_UNICODE);
+    echo jsonBody(['error' => $msg, 'code' => $code]);
     exit;
 }
 
 function jsonData(mixed $data): never {
     jsonHeaders();
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    echo jsonBody($data);
     exit;
 }
 

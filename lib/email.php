@@ -338,7 +338,8 @@ class EmailSender {
 
     // Send email with optional attachments. $attachments: [[path, name], ...]
     public function send(string $to, string $subject, string $htmlBody, ?string $attachPath = null, ?string $attachName = null, array $opts = []): void {
-        $mail = $this->prepare();
+        $dialog = [];
+        $mail = $this->prepare($dialog);
         $mail->addAddress($to);
         foreach ((array)($opts['cc'] ?? []) as $cc) {
             if (trim((string)$cc) !== '') $mail->addCC(trim((string)$cc));
@@ -360,32 +361,79 @@ class EmailSender {
             if ($path && file_exists($path)) $mail->addAttachment($path, is_array($a) ? ($a['name'] ?? basename($path)) : basename($path));
         }
 
-        $mail->send();
+        self::deliver($mail, $dialog);
         $this->lastRawMessage = $mail->getSentMIMEMessage();
     }
 
     // Send plain text notification
     public function sendNotification(string $to, string $subject, string $text): void {
-        $mail = $this->prepare();
+        $dialog = [];
+        $mail = $this->prepare($dialog);
         $mail->addAddress($to);
         $mail->Subject = $subject;
         $mail->Body = $text;
-        $mail->send();
+        self::deliver($mail, $dialog);
         $this->lastRawMessage = $mail->getSentMIMEMessage();
+    }
+
+    /** Send, and turn PHPMailer's terse failure into something an admin can act on. */
+    private static function deliver(PHPMailer $mail, array &$dialog): void {
+        try {
+            $mail->send();
+        } catch (Throwable $e) {
+            throw new RuntimeException(self::explain($e->getMessage(), $dialog), 0, $e);
+        }
     }
 
     /** Connect and authenticate without sending anything — the «проверить почту» button. */
     public function testConnection(): array {
-        $mail = $this->prepare();
-        $mail->SMTPDebug = SMTP::DEBUG_OFF;
-        if (!$mail->smtpConnect()) throw new RuntimeException('SMTP: не удалось подключиться — ' . $mail->ErrorInfo);
+        $dialog = [];
+        $mail = $this->prepare($dialog);
+        try {
+            if (!$mail->smtpConnect()) {
+                throw new RuntimeException('не удалось подключиться — ' . $mail->ErrorInfo);
+            }
+        } catch (Throwable $e) {
+            throw new RuntimeException(self::explain($e->getMessage(), $dialog));
+        }
         $mail->smtpClose();
-        return ['host' => $mail->Host, 'port' => $mail->Port, 'user' => $mail->Username];
+        return [
+            'host' => $mail->Host,
+            'port' => $mail->Port,
+            'user' => $mail->Username,
+        ];
     }
 
-    private function prepare(): PHPMailer {
+    /**
+     * «SMTP Error: Could not authenticate» says nothing on its own. The server's own
+     * answer does, so the dialog goes into the message — and Yandex, Mail.ru and
+     * Gmail all mean the same thing by it: the app password is missing or wrong.
+     */
+    private static function explain(string $error, array $dialog): string {
+        $answer = '';
+        foreach (array_reverse($dialog) as $line) {
+            if (preg_match('/SERVER -> CLIENT:\s*(5\d\d.*)/', $line, $m)) { $answer = trim($m[1]); break; }
+        }
+        $msg = trim($error);
+        if ($answer !== '') $msg .= ' | ответ сервера: ' . mb_substr($answer, 0, 300);
+        if (stripos($error, 'authenticate') !== false) {
+            $msg .= ' | Проверьте логин (обычно полный адрес) и пароль приложения — '
+                  . 'для Яндекса, Mail.ru и Gmail обычный пароль от аккаунта по SMTP не работает. '
+                  . 'Если пароль вводился только в поле IMAP, впишите его и в поле SMTP.';
+        }
+        return $msg;
+    }
+
+    private function prepare(?array &$dialog = null): PHPMailer {
         $mail = new PHPMailer(true);
         $mail->isSMTP();
+        if ($dialog !== null) {
+            // PHPMailer hides the credentials itself, so the dialog is safe to keep
+            $mail->SMTPDebug = SMTP::DEBUG_SERVER;
+            $mail->Debugoutput = function (string $str, int $level) use (&$dialog): void {
+                $dialog[] = trim($str);
+            };
+        }
         $mail->Host = $this->cfg['SMTP_HOST'] ?? '';
         $mail->Port = (int)($this->cfg['SMTP_PORT'] ?? 465);
         $mail->SMTPAuth = ($this->cfg['SMTP_USER'] ?? '') !== '';
