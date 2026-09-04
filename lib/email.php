@@ -37,19 +37,89 @@ class EmailReader {
         };
         // Self-signed certificates are common on shared hosting; the connection stays encrypted
         if ($enc !== 'notls') $flags .= '/novalidate-cert';
-        return '{' . $host . ':' . $port . $flags . '}' . $folder;
+        return '{' . $host . ':' . $port . $flags . '}' . self::encodeFolder($folder);
+    }
+
+    /**
+     * IMAP folder names travel in modified UTF-7 (RFC 2060). Yandex and Mail.ru
+     * name their folders in Russian («Отправленные»), so a plain UTF-8 name
+     * simply does not open.
+     */
+    public static function encodeFolder(string $folder): string {
+        if ($folder === '' || !preg_match('/[^\x20-\x7E]|&/', $folder)) return $folder;
+        if (function_exists('imap_utf8_to_mutf7')) {
+            $encoded = imap_utf8_to_mutf7($folder);
+            if ($encoded !== false) return $encoded;
+        }
+        // Older builds of ext-imap lack the helper — «Отправленные» still has to work
+        $out = '';
+        $buffer = '';
+        foreach (preg_split('//u', $folder, -1, PREG_SPLIT_NO_EMPTY) as $char) {
+            $plain = strlen($char) === 1 && ord($char) >= 0x20 && ord($char) <= 0x7E && $char !== '&';
+            if ($plain) {
+                $out .= self::mutf7Chunk($buffer) . $char;
+                $buffer = '';
+            } elseif ($char === '&') {
+                $out .= self::mutf7Chunk($buffer) . '&-';
+                $buffer = '';
+            } else {
+                $buffer .= $char;
+            }
+        }
+        return $out . self::mutf7Chunk($buffer);
+    }
+
+    /** One run of non-ASCII characters as &base64-of-UTF-16BE- (RFC 2060 flavour). */
+    private static function mutf7Chunk(string $run): string {
+        if ($run === '') return '';
+        $b64 = base64_encode(mb_convert_encoding($run, 'UTF-16BE', 'UTF-8'));
+        return '&' . rtrim(strtr($b64, '/', ','), '=') . '-';
+    }
+
+    public static function decodeFolder(string $folder): string {
+        if ($folder === '' || strpos($folder, '&') === false) return $folder;
+        if (function_exists('imap_mutf7_to_utf8')) {
+            $decoded = imap_mutf7_to_utf8($folder);
+            if ($decoded !== false) return $decoded;
+        }
+        return preg_replace_callback('/&([A-Za-z0-9+,]*)-/', function ($m) {
+            if ($m[1] === '') return '&';
+            $b64 = strtr($m[1], ',', '/');
+            $b64 .= str_repeat('=', (4 - strlen($b64) % 4) % 4);
+            return mb_convert_encoding((string)base64_decode($b64), 'UTF-8', 'UTF-16BE');
+        }, $folder);
     }
 
     /** Folder names of the account — the admin picks INBOX / Sent from a real list. */
     public function folders(): array {
         $prefix = $this->mailboxRef('');
         $list = @imap_list($this->imap, $prefix, '*') ?: [];
-        return array_map(fn($f) => str_replace($prefix, '', $f), $list);
+        return array_map(fn($f) => self::decodeFolder(str_replace($prefix, '', $f)), $list);
     }
 
     public function messageCount(): int {
         $info = @imap_check($this->imap);
         return $info ? (int)$info->Nmsgs : 0;
+    }
+
+    /** Highest UID in the open folder — the finish line of a full archive download. */
+    public function maxUid(): int {
+        $count = $this->messageCount();
+        if ($count < 1) return 0;
+        return (int)@imap_uid($this->imap, $count);
+    }
+
+    /** UIDs present in a range, ascending. Ranges are sparse: deleted mail leaves gaps. */
+    public function uidsInRange(int $from, int $to): array {
+        if ($to < $from) return [];
+        $overviews = @imap_fetch_overview($this->imap, "$from:$to", FT_UID) ?: [];
+        $uids = [];
+        foreach ($overviews as $ov) {
+            $uid = (int)($ov->uid ?? 0);
+            if ($uid >= $from && $uid <= $to) $uids[] = $uid;   // "*" ranges answer beyond the bounds
+        }
+        sort($uids);
+        return $uids;
     }
 
     /**

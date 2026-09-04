@@ -1524,6 +1524,7 @@ const App = {
         try {
             const d = await this.api('admin.php?action=mailboxes');
             this.mailboxManagers = d.managers;
+            this.mailProviders = d.providers || [];   // the table names the service, so load it first
             document.getElementById('adminBody').innerHTML = `
                 ${!d.imap_available ? '<div class="card card--alert">На сервере нет расширения PHP <code>imap</code> — входящая почта читаться не будет. Отправка через SMTP работает.</div>' : ''}
                 <div class="card">
@@ -1535,24 +1536,30 @@ const App = {
                         </div>
                     </div>
                     <table class="table">
-                        <thead><tr><th>Ящик</th><th>Менеджер</th><th>Писем</th><th>Проверка</th><th></th></tr></thead>
+                        <thead><tr><th>Ящик</th><th>Менеджер</th><th>Писем</th><th>Весь архив</th><th>Проверка</th><th></th></tr></thead>
                         <tbody>
                             ${d.items.map(b => `
                                 <tr>
                                     <td><strong>${this.esc(b.name)}</strong> ${b.is_default ? '<span class="badge badge--sent">основной</span>' : ''}
                                         ${b.is_active ? '' : '<span class="badge badge--draft">выключен</span>'}
-                                        <div class="muted">${this.esc(b.email)} · IMAP ${this.esc(b.imap_host)} · SMTP ${this.esc(b.smtp_host)}</div></td>
+                                        <div class="muted">${this.esc(b.email)} · ${this.esc(this.providerTitle(b.provider))} · IMAP ${this.esc(b.imap_host)}</div></td>
                                     <td>${this.esc(b.manager_name) || '<em>общий</em>'}</td>
-                                    <td class="num">${b.messages}</td>
+                                    <td class="num">${b.messages}${b.oldest_at ? `<div class="muted">с ${this.fmtDate(b.oldest_at)}</div>` : ''}</td>
+                                    <td id="bf_${b.id}">${this.backfillLabel(b.backfill)}</td>
                                     <td class="muted">${b.last_error ? `<span class="no">${this.esc(b.last_error)}</span>` : this.fmtDate(b.last_check_at)}</td>
                                     <td>
                                         <button class="btn btn--sm btn--outline" onclick="App.editMailbox(${b.id})">Изменить</button>
                                         <button class="btn btn--sm btn--outline" onclick="App.syncMailbox(${b.id})">Забрать почту</button>
+                                        <button class="btn btn--sm btn--outline" onclick="App.backfillMailbox(${b.id})">Скачать весь архив</button>
+                                        <a class="btn btn--sm btn--outline" href="api/admin.php?action=mailbox_export&id=${b.id}">Выгрузить .mbox</a>
                                     </td>
                                 </tr>`).join('')}
-                            ${d.items.length === 0 ? '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">Ящиков пока нет</td></tr>' : ''}
+                            ${d.items.length === 0 ? '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">Ящиков пока нет</td></tr>' : ''}
                         </tbody>
                     </table>
+                    <p class="muted">«Скачать весь архив» забирает ВСЮ переписку ящика, а не только новое: письма идут шагами,
+                        кнопку можно нажать повторно — загрузка продолжится с того же места. Старые письма попадают в архив,
+                        но запросы КП из них не создаются.</p>
                 </div>
                 <div id="mailboxForm"></div>
             `;
@@ -1570,17 +1577,23 @@ const App = {
                 <div class="card__title">${id ? 'Ящик: ' + this.esc(b.name) : 'Новый почтовый ящик'}</div>
                 <div class="grid grid--3">
                     <div class="form-group"><label>Название</label><input type="text" id="mb_name" value="${this.esc(b.name)}"></div>
-                    <div class="form-group"><label>Адрес</label><input type="text" id="mb_email" value="${this.esc(b.email)}"></div>
+                    <div class="form-group"><label>Адрес</label>
+                        <input type="text" id="mb_email" value="${this.esc(b.email)}" oninput="App.mailboxEmailChanged()"></div>
+                    <div class="form-group"><label>Почтовый сервис</label>
+                        <select id="mb_provider" onchange="App.providerChanged()">
+                            ${(this.mailProviders || []).map(p => `<option value="${p.key}" ${String(b.provider || 'custom') === p.key ? 'selected' : ''}>${this.esc(p.title)}</option>`).join('')}
+                        </select></div>
                     <div class="form-group"><label>Менеджер</label>
                         ${sel('manager_id', b.manager_id || '', [['', 'Общий ящик']].concat((this.mailboxManagers || []).map(m => [m.id, m.name])))}</div>
                 </div>
+                <div id="mbProviderHint" class="card card--alert" style="margin-bottom:12px"></div>
                 <div class="grid grid--3">
                     <div class="form-group"><label>IMAP сервер</label><input type="text" id="mb_imap_host" value="${this.esc(b.imap_host)}"></div>
                     <div class="form-group"><label>Порт</label><input type="number" id="mb_imap_port" value="${this.esc(b.imap_port)}"></div>
                     <div class="form-group"><label>Шифрование</label>
                         ${sel('imap_encryption', b.imap_encryption, [['ssl', 'SSL'], ['tls', 'TLS'], ['notls', 'без шифрования']])}</div>
                     <div class="form-group"><label>Логин</label><input type="text" id="mb_imap_user" value="${this.esc(b.imap_user)}"></div>
-                    <div class="form-group"><label>Пароль</label>
+                    <div class="form-group"><label>Пароль <span class="muted" id="mbImapPwdNote"></span></label>
                         <input type="password" id="mb_imap_password" placeholder="${b.imap_password_set ? 'сохранён — оставьте пустым' : 'не задан'}"></div>
                     <div class="form-group"><label>Папка входящих</label><input type="text" id="mb_imap_folder_in" value="${this.esc(b.imap_folder_in || 'INBOX')}"></div>
                     <div class="form-group"><label>Папка отправленных</label><input type="text" id="mb_imap_folder_sent" value="${this.esc(b.imap_folder_sent || '')}"></div>
@@ -1591,8 +1604,9 @@ const App = {
                     <div class="form-group"><label>Шифрование</label>
                         ${sel('smtp_encryption', b.smtp_encryption, [['ssl', 'SSL'], ['tls', 'TLS'], ['', 'без шифрования']])}</div>
                     <div class="form-group"><label>Логин</label><input type="text" id="mb_smtp_user" value="${this.esc(b.smtp_user)}"></div>
-                    <div class="form-group"><label>Пароль</label>
-                        <input type="password" id="mb_smtp_password" placeholder="${b.smtp_password_set ? 'сохранён — оставьте пустым' : 'не задан'}"></div>
+                    <div class="form-group"><label>Пароль <span class="muted" id="mbSmtpPwdNote"></span></label>
+                        <input type="password" id="mb_smtp_password" placeholder="${b.smtp_password_set ? 'сохранён — оставьте пустым' : 'не задан'}"
+                               oninput="App.mirrorImapPassword()"></div>
                     <div class="form-group"><label>Имя отправителя</label><input type="text" id="mb_from_name" value="${this.esc(b.from_name)}"></div>
                     <div class="form-group"><label>Адрес отправителя</label><input type="text" id="mb_from_email" value="${this.esc(b.from_email)}"></div>
                 </div>
@@ -1607,18 +1621,77 @@ const App = {
                     <button class="btn btn--outline" onclick="App.testMailbox('imap', ${id || 'null'})">Проверить IMAP</button>
                     <button class="btn btn--outline" onclick="App.testMailbox('smtp', ${id || 'null'})">Проверить SMTP</button>
                     <button class="btn btn--outline" onclick="App.testMailbox('smtp', ${id || 'null'}, true)">Отправить тестовое письмо</button>
+                    ${id ? `<button class="btn btn--outline" onclick="App.restartBackfill(${id})">Скачать архив заново</button>` : ''}
                     ${id ? `<button class="btn btn--danger" onclick="App.deleteMailbox(${id})">Удалить</button>` : ''}
                 </div>
                 <div id="mbTest" style="margin-top:10px"></div>
             </div>
         `;
+        this.applyProvider(false);
+    },
+
+    /** An explicit pick wins over the domain guess for the rest of the session. */
+    providerChanged() {
+        const sel = document.getElementById('mb_provider');
+        if (sel) sel.dataset.touched = '1';
+        this.applyProvider(true);
+    },
+
+    providerTitle(key) {
+        const p = (this.mailProviders || []).find(x => x.key === (key || 'custom'));
+        return p ? p.title : (key || '');
+    },
+
+    /** Provider picked — fill the servers and show what kind of password is needed. */
+    applyProvider(overwrite) {
+        const key = (document.getElementById('mb_provider') || {}).value || 'custom';
+        const p = (this.mailProviders || []).find(x => x.key === key);
+        if (!p) return;
+        const email = (document.getElementById('mb_email') || {}).value || '';
+        const set = (name, value) => {
+            const el = document.getElementById('mb_' + name);
+            if (el && value !== undefined && value !== '' && (overwrite || !el.value)) el.value = value;
+        };
+        Object.keys(p.defaults || {}).forEach(f => set(f, p.defaults[f]));
+        if (p.app_password && email) { set('imap_user', email); set('smtp_user', email); set('from_email', email); }
+
+        const hint = document.getElementById('mbProviderHint');
+        if (hint) {
+            hint.style.display = p.hint ? '' : 'none';
+            hint.innerHTML = `${this.esc(p.hint)}${p.help_url ? ` <a href="${p.help_url}" target="_blank" rel="noopener">Создать пароль приложения →</a>` : ''}`;
+        }
+        const note = p.app_password ? 'пароль приложения' : '';
+        ['mbImapPwdNote', 'mbSmtpPwdNote'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = note;
+        });
+    },
+
+    /** Typing the address picks the service by its domain, while it is still untouched. */
+    mailboxEmailChanged() {
+        const sel = document.getElementById('mb_provider');
+        if (!sel || sel.dataset.touched === '1') return;
+        const email = (document.getElementById('mb_email') || {}).value || '';
+        const domain = (email.split('@')[1] || '').toLowerCase();
+        const guess = {'yandex.ru': 'yandex', 'yandex.com': 'yandex', 'ya.ru': 'yandex', 'narod.ru': 'yandex',
+                       'mail.ru': 'mailru', 'bk.ru': 'mailru', 'inbox.ru': 'mailru', 'list.ru': 'mailru',
+                       'gmail.com': 'gmail'}[domain];
+        if (guess && sel.value !== guess) { sel.value = guess; this.applyProvider(true); }
+        else this.applyProvider(false);
+    },
+
+    /** One application password serves both IMAP and SMTP — no need to type it twice. */
+    mirrorImapPassword() {
+        const smtp = document.getElementById('mb_smtp_password');
+        const imap = document.getElementById('mb_imap_password');
+        if (smtp && imap && !imap.value) imap.value = smtp.value;
     },
 
     mailboxForm(id) {
         const val = n => (document.getElementById('mb_' + n) || {}).value ?? '';
         return {
             id: id || null,
-            name: val('name'), email: val('email'), manager_id: val('manager_id'),
+            name: val('name'), email: val('email'), provider: val('provider'), manager_id: val('manager_id'),
             imap_host: val('imap_host'), imap_port: val('imap_port'), imap_encryption: val('imap_encryption'),
             imap_user: val('imap_user'), imap_password: val('imap_password'),
             imap_folder_in: val('imap_folder_in'), imap_folder_sent: val('imap_folder_sent'),
@@ -1677,6 +1750,51 @@ const App = {
             else this.toast(`Входящих: ${rep.in}, исходящих: ${rep.out}, новых запросов: ${rep.requests}`, 'success');
             this.adminMail();
         } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /** Human-readable state of the full archive download. */
+    backfillLabel(bf) {
+        if (!bf) return '<span class="muted">—</span>';
+        if (bf.done) return `<span class="ok">скачан</span>${bf.finished_at ? `<div class="muted">${this.fmtDate(bf.finished_at)}</div>` : ''}`;
+        if (!bf.started_at) return '<span class="muted">не скачан</span>';
+        return `<span class="muted">${bf.percent}%</span>`;
+    },
+
+    /**
+     * Walks the whole mailbox in steps: the server hands back a cursor, we keep
+     * asking until it says done. Stopping the page just pauses it — the next run
+     * continues from the same letter.
+     */
+    async backfillMailbox(id, restart) {
+        if (this.backfillRunning) { this.backfillRunning = false; this.toast('Скачивание остановлено', 'info'); return; }
+        const cell = document.getElementById('bf_' + id);
+        this.backfillRunning = true;
+        let total = 0;
+        try {
+            while (this.backfillRunning) {
+                const r = await this.api('admin.php?action=mailbox_backfill', {
+                    method: 'POST', body: {id, restart: restart ? 1 : 0},
+                });
+                restart = false;
+                const res = r.result || {};
+                total += res.stored || 0;
+                if (cell) cell.innerHTML = `<span class="muted">${res.percent || 0}% · +${total}</span>
+                    <div><button class="btn btn--sm btn--outline" onclick="App.backfillMailbox(${id})">стоп</button></div>`;
+                if (res.error) { this.toast(res.error, 'error'); break; }
+                if (res.done) { this.toast(`Архив скачан полностью: новых писем ${total}`, 'success'); break; }
+                if (!res.scanned) { this.toast(`Загружено писем: ${total}`, 'info'); break; }
+            }
+        } catch (err) {
+            this.toast(err.message, 'error');
+        } finally {
+            this.backfillRunning = false;
+            this.adminMail();
+        }
+    },
+
+    async restartBackfill(id) {
+        if (!confirm('Пройти ящик с самого первого письма заново? Уже скачанные письма не задвоятся.')) return;
+        this.backfillMailbox(id, true);
     },
 
     async syncAllMailboxes() {

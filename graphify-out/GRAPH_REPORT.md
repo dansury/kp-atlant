@@ -128,3 +128,23 @@ The graph confirms the spec is well-structured and ready for the next pipeline s
 - **MoySklad Integration remains the god node** and gets heavier: US8, US9 and the webhook receiver all hang off it. The mitigation is unchanged in shape but wider in scope — every new MoySklad-dependent feature degrades gracefully (FR-039): no webhook rights → pull on card open plus cron; no invoice rights → the invoice block simply stays empty.
 - **Counterparty grew into the hub of community 2.** It now owns contacts, the chat feed, merge links and answer state. `Crm::rootId()` is the single place that resolves merged cards — any new query against `counterparties` must go through it or it will read a tombstone.
 - **New coupling: Attachment Extractor → Request Parser.** Attachment text is now part of the LLM parse input, so a broken extractor silently degrades classification quality rather than failing loudly. Watch `extract_status` in the attachments table.
+
+## Обновление 04.09.2026 — почтовые сервисы и полный архив
+
+### New components
+
+| Node | File | Role |
+|---|---|---|
+| Mail Providers | `lib/mail.php` | Пресеты Яндекс / Mail.ru / Gmail: серверы, порты, русская папка «Отправленные», подсказка про пароль приложения |
+| Archive Backfill | `lib/mailsync.php` | Скачивание всей истории ящика шагами: курсор на папку, продолжение после обрыва, без создания запросов из старых писем |
+
+### Shifts in the graph
+
+- **Email Receiver перестал быть «только новое».** У чтения появилось два режима:
+  инкрементальный по watermark (`last_uid_*`) и полный обход (`backfill_uid_*`).
+  Курсоры независимы, поэтому фоновая выкачка архива не сдвигает обычную синхронизацию.
+- **Mail Providers стал единственным местом, где живут адреса серверов.** Форма ящика,
+  «Проверить IMAP/SMTP» и `Mailboxes::save()` берут значения оттуда — новый почтовый
+  сервис добавляется одной записью в `MailProviders::PRESETS`.
+- **Разрыв связи «архив → парсер».** Письма из полного обхода помечаются обработанными
+  сразу: архив растёт, а Request Parser (и расходы на нейросеть) их не касается.

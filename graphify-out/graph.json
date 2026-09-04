@@ -4,10 +4,10 @@
     "extracted": "2026-08-25",
     "mode": "deep",
     "source_files": 6,
-    "node_count": 62,
-    "edge_count": 106,
+    "node_count": 64,
+    "edge_count": 110,
     "communities": 6,
-    "updated": "2026-08-28"
+    "updated": "2026-09-04"
   },
   "nodes": [
     {
@@ -450,6 +450,20 @@
       "type": "entity",
       "community": 2,
       "description": "Unified feed row: inbound, outbound, note or system event"
+    },
+    {
+      "id": "comp:mail-providers",
+      "label": "Mail Providers",
+      "type": "component",
+      "community": 1,
+      "description": "MailProviders presets (lib/mail.php): Yandex/Mail.ru/Gmail hosts, ports, Russian Sent folder and the app-password hint"
+    },
+    {
+      "id": "comp:mail-backfill",
+      "label": "Archive Backfill",
+      "type": "component",
+      "community": 1,
+      "description": "MailSync::backfill (lib/mailsync.php): resumable full-history download of a mailbox, cursor per folder, no request creation from old mail"
     }
   ],
   "edges": [
@@ -1088,6 +1102,30 @@
       "target": "comp:mssync",
       "label": "delegates to",
       "type": "DEPENDS_ON"
+    },
+    {
+      "source": "comp:mail-providers",
+      "target": "comp:email-receiver",
+      "label": "presets IMAP settings",
+      "type": "CONFIGURES"
+    },
+    {
+      "source": "comp:mail-providers",
+      "target": "comp:email-sender",
+      "label": "presets SMTP settings",
+      "type": "CONFIGURES"
+    },
+    {
+      "source": "comp:mail-backfill",
+      "target": "comp:email-receiver",
+      "label": "walks UIDs of every folder",
+      "type": "USES"
+    },
+    {
+      "source": "comp:mail-backfill",
+      "target": "comp:mail-providers",
+      "label": "opens folders named by the preset",
+      "type": "USES"
     }
   ]
 }

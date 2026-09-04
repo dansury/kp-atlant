@@ -48,6 +48,8 @@ final class Settings {
         'MAIL_APPEND_SENT'   => ['mail', 'Класть свои письма в «Отправленные»', 'bool', false, 1, 'IMAP APPEND после отправки'],
         'MAIL_FETCH_LIMIT'   => ['mail', 'Писем за один проход', 'int', false, 50, ''],
         'MAIL_BODY_MAX_KB'   => ['mail', 'Максимум тела письма, КБ', 'int', false, 512, ''],
+        'MAIL_BACKFILL_BATCH'   => ['mail', 'Писем за один шаг скачивания архива', 'int', false, 100, 'Скачивание всей почты идёт шагами — на дешёвом хостинге ставьте меньше'],
+        'MAIL_BACKFILL_SECONDS' => ['mail', 'Лимит времени на шаг, сек', 'int', false, 20, 'Шаг прерывается по времени, следующий продолжает с того же места'],
 
         // --- Notifications ---
         'FALLBACK_EMAIL'        => ['notify', 'Почта для эскалации', 'text', false, '', 'Куда уходит письмо о необработанном запросе'],
