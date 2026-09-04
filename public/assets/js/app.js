@@ -85,6 +85,28 @@ const App = {
         return `<span class="badge badge--unanswered badge--${state.level}">Без ответа ${age}</span>`;
     },
 
+    // Triage verdict (module 006). The category picks the reply prompt and the
+    // fact sources, so it is worth showing next to the row, not hiding in a log.
+    categoryBadge(key, label) {
+        if (!key) return '';
+        const cls = {
+            order: 'badge--order', kp_request: 'badge--kp',
+            spam: 'badge--muted', service: 'badge--muted', supplier_offer: 'badge--muted',
+        }[key] || 'badge--kp';
+        return `<span class="badge ${cls}" title="Категория запроса">${this.esc(label || key)}</span>`;
+    },
+
+    categoryLabels: {},
+
+    async loadCategories() {
+        if (Object.keys(this.categoryLabels).length) return this.categoryLabels;
+        try {
+            const d = await this.api('requests.php?action=categories');
+            (d.categories || []).forEach(c => { this.categoryLabels[c.key] = c.label; });
+        } catch { /* the selector just falls back to raw keys */ }
+        return this.categoryLabels;
+    },
+
     typeBadge(type) {
         return type === 'order'
             ? '<span class="badge badge--order">Заказ</span>'
@@ -93,9 +115,13 @@ const App = {
 
     // Init app
     async init() {
+        this.registerServiceWorker();
+        this.watchInstallPrompt();
         try {
             this.manager = await this.api('auth.php?action=me');
             this.renderNav();
+            this.initPush();
+            this.loadCategories();
             this.startPolling();
             this.route();
         } catch {
@@ -227,7 +253,7 @@ const App = {
                                 style="cursor:pointer" onclick="location.hash='request/${r.id}'">
                                 <td class="num">${r.id}</td>
                                 <td>${this.esc(r.counterparty_name) || '—'} ${this.answerBadge(r.answer_state)}</td>
-                                <td>${this.typeBadge(r.type)}</td>
+                                <td>${r.category ? this.categoryBadge(r.category, App.categoryLabels[r.category]) : this.typeBadge(r.type)}</td>
                                 <td>${r.source === 'email' ? '📧 Email' : '📋 Ручной'}${r.attachments_count > 0 ? ' 📎' + r.attachments_count : ''}</td>
                                 <td class="num">${r.items_count || 0}</td>
                                 <td>${this.esc(r.manager_name) || '<em>пул</em>'}</td>
@@ -1061,9 +1087,19 @@ const App = {
                 <div class="card__title">Обработка писем</div>
                 <div class="loading">Загрузка...</div>
             </div>
+            <div class="card" id="pushCard">
+                <div class="card__title">Уведомления на телефон</div>
+                <div class="loading">Загрузка...</div>
+            </div>
+            <div class="card" id="installCard">
+                <div class="card__title">Приложение на телефоне</div>
+                <div class="loading">Загрузка...</div>
+            </div>
         `;
         this.loadMoyskladSettings();
         this.loadProcessingSettings();
+        this.renderPushCard();
+        this.renderInstallCard();
     },
 
     // MoySklad access + webhook status (FR-029, FR-039)
@@ -1296,6 +1332,7 @@ const App = {
         const d = await this.api('mail.php?action=list&limit=1');
         let src = null;
         if (replyToId) src = await this.api(`mail.php?action=get&id=${replyToId}`);
+        await this.loadCategories();
         const subject = src ? (src.subject || '').replace(/^(Re:\s*)?/i, 'Re: ') : '';
         const to = src ? (src.direction === 'in' ? src.from_email : src.to_emails) : '';
         this.modal(replyToId ? 'Ответ' : 'Новое письмо', `
@@ -1311,8 +1348,14 @@ const App = {
             <div class="form-group">
                 <div class="flex flex--between">
                     <label>Текст</label>
-                    ${replyToId && src && src.direction === 'in'
-                        ? `<button class="btn btn--sm btn--outline" id="genReplyBtn" onclick="App.mailGenerateReply(${replyToId})">Создать ответ</button>` : ''}
+                    ${replyToId && src && src.direction === 'in' ? `
+                        <span class="flex" style="gap:6px;align-items:center">
+                            <select id="cmpCategory" style="width:auto;font-size:13px" title="Тип запроса — от него зависят промпт и источники фактов">
+                                ${Object.entries(this.categoryLabels).map(([k, l]) =>
+                                    `<option value="${k}" ${src.category === k ? 'selected' : ''}>${this.esc(l)}</option>`).join('')}
+                            </select>
+                            <button class="btn btn--sm btn--outline" id="genReplyBtn" onclick="App.mailGenerateReply(${replyToId})">Создать ответ</button>
+                        </span>` : ''}
                 </div>
                 <textarea id="cmpText" rows="9"></textarea>
             </div>
@@ -1328,13 +1371,14 @@ const App = {
         if (btn) { btn.disabled = true; btn.textContent = 'Генерация...'; }
         if (area) area.placeholder = 'Нейросеть готовит черновик ответа...';
         try {
-            const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body: {id}});
+            const sel = document.getElementById('cmpCategory');
+            const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body: {id, category: sel ? sel.value : null}});
             if (area) area.value = r.text || '';
             const subj = document.getElementById('cmpSubject');
             if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
             const to = document.getElementById('cmpTo');
             if (to && !to.value.trim() && r.to) to.value = r.to;
-            this.toast('Черновик ответа готов — проверьте перед отправкой', 'success');
+            this.toast('Черновик готов' + (r.category_label ? ` (${r.category_label})` : '') + ' — проверьте перед отправкой', 'success');
         } catch (err) {
             this.toast(err.message, 'error');
         } finally {
@@ -2311,4 +2355,226 @@ const App = {
 };
 
 // Boot
+// ==== PWA and web push (module 007) ====
+// Ported from kraskiweb: same enable/mute/test flow and the same copyable
+// diagnostics, because «уведомления не приходят» is otherwise unanswerable.
+Object.assign(App, {
+    pushReg: null,
+    swError: null,
+    lastPushError: null,
+    deferredInstall: null,
+
+    registerServiceWorker() {
+        if (!('serviceWorker' in navigator)) return;
+        navigator.serviceWorker.register('/sw.js').catch(e => { this.swError = e; });
+    },
+
+    // Chrome fires this instead of installing on its own; keep it for the button
+    watchInstallPrompt() {
+        window.addEventListener('beforeinstallprompt', e => {
+            e.preventDefault();
+            this.deferredInstall = e;
+            const card = document.getElementById('installCard');
+            if (card) this.renderInstallCard();
+        });
+        window.addEventListener('appinstalled', () => { this.deferredInstall = null; });
+    },
+
+    pushSupported() {
+        return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    },
+
+    isStandalone() {
+        return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+            || window.navigator.standalone === true;
+    },
+
+    isIos() {
+        return /iphone|ipad|ipod/i.test(navigator.userAgent)
+            || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    },
+
+    // The endpoint the browser hands out rotates — refresh the server's copy on load
+    async initPush() {
+        if (!this.pushSupported()) return;
+        try {
+            this.pushReg = await navigator.serviceWorker.ready;
+            if (Notification.permission === 'granted') {
+                const sub = await this.pushReg.pushManager.getSubscription();
+                if (sub) await this.api('push.php?action=subscribe', {method: 'POST', body: {subscription: sub.toJSON()}});
+            }
+        } catch { /* push is a bonus, never a blocker */ }
+    },
+
+    // Plain-Russian reason plus the exact API state — enough to answer a support call
+    pushDiagnostics() {
+        const L = [
+            'Адрес: ' + location.href,
+            'Протокол: ' + location.protocol + (window.isSecureContext ? ' (secure context: да)' : ' (secure context: НЕТ — это и есть причина)'),
+            'serviceWorker: ' + ('serviceWorker' in navigator ? 'есть' : 'НЕТ'),
+            'PushManager: ' + ('PushManager' in window ? 'есть' : 'НЕТ'),
+            'Notification: ' + ('Notification' in window ? 'есть' : 'НЕТ'),
+        ];
+        if ('Notification' in window) L.push('Разрешение: ' + Notification.permission);
+        L.push('Установлено как приложение: ' + (this.isStandalone() ? 'да' : 'нет'));
+        if (this.swError) L.push('Ошибка регистрации Service Worker: ' + (this.swError.message || this.swError));
+        if (this.lastPushError) L.push('Последняя ошибка push: ' + (this.lastPushError.message || this.lastPushError));
+        L.push('User-Agent: ' + navigator.userAgent);
+        return L.join('\n');
+    },
+
+    pushUnsupportedHint() {
+        if (!window.isSecureContext) {
+            return 'Сайт открыт без HTTPS (' + location.protocol + '). Браузер включает Service Worker, '
+                 + 'установку приложения и push только по https:// — настройте сертификат на хостинге.';
+        }
+        if (this.swError) return 'Service Worker не зарегистрировался — подробности в диагностике ниже.';
+        return 'Этот браузер не даёт Service Worker или Push API.';
+    },
+
+    diagBlock(title, text) {
+        return `<details style="margin-top:10px">
+            <summary style="cursor:pointer;color:var(--text-muted);font-size:13px">${this.esc(title)}</summary>
+            <pre style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:8px;border-radius:6px;margin-top:6px">${this.esc(text)}</pre>
+        </details>`;
+    },
+
+    async renderPushCard() {
+        const card = document.getElementById('pushCard');
+        if (!card) return;
+        if (!this.pushSupported()) {
+            card.innerHTML = `<div class="card__title">Уведомления на телефон</div>
+                <p class="muted">${this.esc(this.pushUnsupportedHint())}</p>
+                <p class="muted" style="font-size:12px">На iPhone сначала установите приложение на экран «Домой» (Поделиться → «На экран „Домой“»), затем включите уведомления отсюда.</p>
+                ${this.diagBlock('Диагностика', this.pushDiagnostics())}`;
+            return;
+        }
+        let subscribed = false;
+        try {
+            this.pushReg = this.pushReg || await navigator.serviceWorker.ready;
+            subscribed = !!(await this.pushReg.pushManager.getSubscription());
+        } catch { /* */ }
+
+        let prefs = {kinds: {}, muted: [], devices: 0, available: false};
+        try { prefs = await this.api('push.php?action=prefs'); } catch (e) { this.lastPushError = e; }
+
+        const rows = Object.entries(prefs.kinds || {}).map(([k, label]) => `
+            <label class="flex" style="gap:8px;align-items:center;padding:4px 0">
+                <input type="checkbox" data-push-kind="${this.esc(k)}" ${(prefs.muted || []).includes(k) ? '' : 'checked'} ${subscribed ? '' : 'disabled'}>
+                ${this.esc(label)}
+            </label>`).join('');
+
+        card.innerHTML = `
+            <div class="card__title">Уведомления на телефон</div>
+            <p class="muted" style="font-size:13px">Приходят о новых запросах, заказах и напоминаниях, даже когда браузер закрыт.
+               Подписка действует на этом устройстве — включите её на каждом телефоне и компьютере.</p>
+            ${prefs.available === false ? '<p class="no">Сервер не может отправлять push: проверьте «Админ → Настройки → Push-уведомления».</p>' : ''}
+            <div class="flex" style="gap:8px;margin:10px 0">
+                ${subscribed
+                    ? '<button class="btn btn--outline btn--sm" onclick="App.disablePush()">Отключить на этом устройстве</button>'
+                    : '<button class="btn btn--sm" onclick="App.enablePush()">🔔 Включить уведомления</button>'}
+                <button class="btn btn--outline btn--sm" onclick="App.testPush(this)" ${subscribed ? '' : 'disabled'}>📨 Проверить</button>
+            </div>
+            <p class="muted" style="font-size:13px">${subscribed ? '✅ Подписка активна. Устройств у вас: ' + (prefs.devices || 0) : 'На этом устройстве подписка не включена.'}</p>
+            <div style="margin-top:10px"><strong style="font-size:13px">Что присылать</strong>${rows}</div>
+            ${this.lastPushError ? this.diagBlock('Ошибка push', String(this.lastPushError.message || this.lastPushError) + '\n\n' + this.pushDiagnostics()) : this.diagBlock('Диагностика', this.pushDiagnostics())}`;
+
+        card.querySelectorAll('[data-push-kind]').forEach(cb => cb.onchange = async () => {
+            try {
+                await this.api('push.php?action=mute', {method: 'POST', body: {kind: cb.dataset.pushKind, muted: !cb.checked}});
+            } catch (e) { this.toast(e.message, 'error'); cb.checked = !cb.checked; }
+        });
+    },
+
+    async enablePush() {
+        if (!this.pushSupported()) { this.toast('Браузер не поддерживает уведомления', 'error'); return; }
+        try {
+            const perm = await Notification.requestPermission();
+            if (perm !== 'granted') {
+                this.lastPushError = new Error('Разрешение не выдано (Notification.permission = ' + perm + ')');
+                this.toast('Уведомления не разрешены', 'error');
+                return this.renderPushCard();
+            }
+            this.pushReg = await navigator.serviceWorker.ready;
+            let sub = await this.pushReg.pushManager.getSubscription();
+            if (!sub) {
+                const {key} = await this.api('push.php?action=key');
+                sub = await this.pushReg.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: this.urlB64ToBytes(key),
+                });
+            }
+            await this.api('push.php?action=subscribe', {method: 'POST', body: {subscription: sub.toJSON()}});
+            this.lastPushError = null;
+            this.toast('Уведомления включены', 'success');
+        } catch (e) {
+            this.lastPushError = e;
+            this.toast(e.message || 'Не удалось включить уведомления', 'error');
+        }
+        this.renderPushCard();
+    },
+
+    async disablePush() {
+        try {
+            this.pushReg = this.pushReg || await navigator.serviceWorker.ready;
+            const sub = await this.pushReg.pushManager.getSubscription();
+            if (sub) {
+                await this.api('push.php?action=unsubscribe', {method: 'POST', body: {endpoint: sub.endpoint}}).catch(() => {});
+                await sub.unsubscribe();
+            }
+            this.lastPushError = null;
+            this.toast('Уведомления отключены на этом устройстве');
+        } catch (e) { this.lastPushError = e; this.toast(e.message, 'error'); }
+        this.renderPushCard();
+    },
+
+    async testPush(btn) {
+        btn.disabled = true;
+        try {
+            const r = await this.api('push.php?action=test', {method: 'POST', body: {}});
+            this.lastPushError = null;
+            this.toast(r.sent > 0 ? 'Отправлено — уведомление должно появиться' : 'Нет активных подписок', r.sent > 0 ? 'success' : 'error');
+        } catch (e) { this.lastPushError = e; this.toast(e.message, 'error'); this.renderPushCard(); }
+        finally { btn.disabled = false; }
+    },
+
+    urlB64ToBytes(base64) {
+        const pad = '='.repeat((4 - (base64.length % 4)) % 4);
+        const raw = atob((base64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+        const out = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+        return out;
+    },
+
+    renderInstallCard() {
+        const card = document.getElementById('installCard');
+        if (!card) return;
+        const standalone = this.isStandalone();
+        let verdict;
+        if (standalone) verdict = '✅ Приложение уже установлено — вы работаете в нём.';
+        else if (!window.isSecureContext) verdict = '❌ Установка возможна только по https:// — настройте сертификат на хостинге.';
+        else if (this.deferredInstall) verdict = '✅ Можно установить прямо сейчас.';
+        else if (this.isIos()) verdict = 'ℹ️ На iPhone/iPad: «Поделиться» → «На экран „Домой“».';
+        else verdict = 'ℹ️ Системное предложение ещё не появилось. Меню браузера → «Установить приложение».';
+
+        card.innerHTML = `
+            <div class="card__title">Приложение на телефоне</div>
+            <p class="muted" style="font-size:13px">Панель ставится на экран «Домой» и открывается как обычное приложение — без адресной строки и с уведомлениями.</p>
+            <p>${this.esc(verdict)}</p>
+            ${standalone ? '' : `<div class="flex" style="gap:8px;margin-top:8px">
+                <button class="btn btn--sm" onclick="App.triggerInstall()" ${this.deferredInstall ? '' : 'disabled'}>📲 Установить</button>
+                <button class="btn btn--outline btn--sm" onclick="App.renderInstallCard()">Обновить</button>
+            </div>`}
+            ${this.diagBlock('Диагностика установки', this.pushDiagnostics())}`;
+    },
+
+    async triggerInstall() {
+        if (!this.deferredInstall) return;
+        this.deferredInstall.prompt();
+        try { await this.deferredInstall.userChoice; } catch { /* */ }
+        this.deferredInstall = null;
+        this.renderInstallCard();
+    },
+});
+
 document.addEventListener('DOMContentLoaded', () => App.init());

@@ -153,6 +153,9 @@ class EmailReader {
         $header = @imap_headerinfo($this->imap, $no);
         if (!$header) return null;
         [$text, $html, $attachments] = $this->getBodyAndAttachments($no);
+        // Raw headers: the triage prefilter reads List-Unsubscribe / Precedence /
+        // Auto-Submitted from them to spot a mailing before spending a model call.
+        $raw = (string)@imap_fetchheader($this->imap, $no);
 
         return [
             'uid'         => $uid,
@@ -169,6 +172,7 @@ class EmailReader {
             'size'        => (int)($header->Size ?? 0),
             'body'        => $text,
             'body_html'   => $html,
+            'headers'     => mb_strcut($raw, 0, 16384),
             'attachments' => $attachments,
         ];
     }

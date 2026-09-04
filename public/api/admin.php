@@ -4,6 +4,7 @@
  * Everything here is admin-only (module 004).
  */
 require_once __DIR__ . '/../../lib/bootstrap.php';
+require_once ROOT . '/lib/push.php';
 require_once ROOT . '/lib/managers.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/mailsync.php';
@@ -182,6 +183,10 @@ try {
                 jsonError('База знаний: ' . $e->getMessage());
             }
 
+        // Rebuild the FTS index by hand — after a schema change or a doubtful search
+        case 'knowledge_reindex':
+            jsonOk(['indexed' => Knowledge::reindex(), 'fts' => Knowledge::ftsAvailable()]);
+
         // What would land in the prompt for this text — the admin can see «когда необходимо»
         case 'knowledge_preview':
             $task = (string)($input['task'] ?? $_GET['task'] ?? 'mail_reply');
@@ -226,6 +231,14 @@ try {
                 'config_file'=> file_exists(ROOT . '/config.php'),
                 'schema'     => (string)Db::val("SELECT value FROM settings WHERE key='schema_version'"),
                 'knowledge'  => array_diff_key(Knowledge::status(), ['docs' => 1, 'tasks' => 1]),
+                // What the mailbox actually consists of — the point of module 006
+                'triage'     => ['enabled' => Triage::enabled(), 'categories' => Triage::stats(30)],
+                'push'       => [
+                    'enabled'     => Push::enabled(),
+                    'reason'      => Push::unavailableReason(),
+                    'subscribers' => (int)Db::val("SELECT COUNT(DISTINCT manager_id) FROM push_subscriptions"),
+                    'devices'     => (int)Db::val("SELECT COUNT(*) FROM push_subscriptions"),
+                ],
             ]);
 
         default:

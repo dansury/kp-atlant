@@ -12,6 +12,15 @@ Use OpenRouter + Yandex Foundation Models wrapper from NeuroPro (lib/llm.php pat
 ## Knowledge base
 The company wiki lives in a separate repo (`dansury/Atlant`, `GRAPH/wiki`). Never inline its facts into code or prompts — the local copy is synced by `Knowledge::sync()` and injected into a generation with `Knowledge::augment($promptKey, $vars, $query)`, which picks only the wiki sections that match the text at hand. A new generation that may need company facts must go through `Knowledge::augment()` and declare its prompt key in `Knowledge::TASKS`.
 
+## Incoming mail
+Every inbound letter goes through `Triage` (module 006), never straight to the parser.
+`Triage::prefilter()` decides for free whether a letter is service mail; `Triage::classify()`
+does parsing and classification in ONE model call; `Triage::route()` maps the category to a
+reply prompt and its fact sources. A new request category must be added to `Triage::CATEGORIES`
+together with its prompt in `Prompts::registry()` and its budget in `Knowledge::TASKS`.
+Never call the model twice for one letter, and never let a draft invent a price, a stock
+level or an order status — those come from `Catalog`, not from the wiki.
+
 ## Configuration
 Never read `config.php` directly. `config.php` holds DEFAULTS only and is optional; the effective value is `Settings::get('KEY')` (DB override → config.php → built-in default), and `$cfg` from bootstrap is already that merged array. A new setting must be declared in `Settings::SPEC` so the admin panel can show and override it. Secrets go through `Crypt` and never reach the browser.
 

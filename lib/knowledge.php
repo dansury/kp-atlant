@@ -11,10 +11,20 @@ final class Knowledge {
 
     /** Tasks that may receive wiki context: prompt key => [label, share of the char budget] */
     public const TASKS = [
-        'mail_reply'      => ['Ответ на письмо клиента', 1.0],
-        'cover_letter'    => ['Сопроводительное письмо к КП', 0.6],
-        'followup'        => ['Письмо вдогонку', 0.4],
-        'normalize_names' => ['Нормализация наименований', 0.5],
+        'mail_reply'          => ['Ответ на письмо клиента', 1.0],
+        // Module 006: one prompt per request category, each with its own budget —
+        // a product question needs the whole wiki section, a wholesale reply a hint.
+        'reply_kp'            => ['Ответ: запрос КП или счёта', 0.8],
+        'reply_product'       => ['Ответ: вопрос о товаре', 1.0],
+        'reply_availability'  => ['Ответ: наличие и сроки', 0.8],
+        'reply_order_status'  => ['Ответ: статус заказа', 0.5],
+        'reply_return'        => ['Ответ: возврат или обмен', 0.7],
+        'reply_docs'          => ['Ответ: документы и сертификаты', 0.6],
+        'reply_wholesale'     => ['Ответ: опт и дилерство', 0.6],
+        'reply_complaint'     => ['Ответ: претензия и гарантия', 0.7],
+        'cover_letter'        => ['Сопроводительное письмо к КП', 0.6],
+        'followup'            => ['Письмо вдогонку', 0.4],
+        'normalize_names'     => ['Нормализация наименований', 0.5],
     ];
 
     private const API = 'https://api.github.com';
@@ -109,6 +119,9 @@ final class Knowledge {
             'synced_at'  => self::state('synced_at'),
             'last_error' => self::state('last_error'),
             'ttl_sec'    => (int)Settings::get('KNOWLEDGE_SYNC_TTL_SEC', 600),
+            'fts'        => self::ftsAvailable(),
+            'indexed'    => (int)(self::state('indexed_count') ?: 0),
+            'indexed_at' => self::state('indexed_at'),
             'tasks'      => array_map(fn($t) => [
                 'key'     => $t,
                 'label'   => self::TASKS[$t][0],
@@ -187,6 +200,10 @@ final class Knowledge {
             self::state('synced_at', self::now());
             self::state('last_error', '');
             $report['status'] = ($report['updated'] || $report['deleted']) ? 'updated' : 'up_to_date';
+            // The section index mirrors knowledge_docs — rebuild it whenever they move
+            if ($report['status'] === 'updated' || !(int)Db::val("SELECT COUNT(*) FROM knowledge_sections")) {
+                $report['indexed'] = self::reindex();
+            }
             if ($report['status'] === 'updated') {
                 Logger::info('knowledge', "База знаний обновлена: {$report['updated']} файлов, удалено {$report['deleted']}",
                     ['repo' => $repo, 'commit' => $head['sha']]);
@@ -297,6 +314,13 @@ final class Knowledge {
      * off-topic letter gets no knowledge block at all.
      */
     public static function search(string $query, int $budget): array {
+        // FTS5 ranks in C over an index built at sync time; the PHP scan below
+        // re-stems the whole wiki on every call and only survives as a fallback
+        // for a build of SQLite compiled without FTS5.
+        if (self::ftsAvailable()) {
+            $picked = self::searchFts($query, $budget);
+            if ($picked !== null) return $picked;
+        }
         $sections = self::sections();
         if (!$sections) return [];
 
@@ -344,6 +368,147 @@ final class Knowledge {
         return $out;
     }
 
+    // ---------------------------------------------------------------- FTS5
+
+    /**
+     * Is this SQLite built with FTS5? Checked once per request: on a host without
+     * it the whole module still works, just on the slower PHP scan.
+     */
+    public static function ftsAvailable(): bool {
+        static $ok = null;
+        if ($ok !== null) return $ok;
+        try {
+            Db::pdo()->exec("CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts_probe USING fts5(x)");
+            Db::pdo()->exec("DROP TABLE IF EXISTS knowledge_fts_probe");
+            $ok = true;
+        } catch (Throwable) {
+            $ok = false;
+        }
+        return $ok;
+    }
+
+    /**
+     * Rebuild the section index. Called from sync() — the wiki changes rarely,
+     * a letter arrives often, so the work belongs here and not in the query path.
+     */
+    public static function reindex(): int {
+        if (!self::ftsAvailable()) return 0;
+        Db::pdo()->exec("DELETE FROM knowledge_fts");
+        Db::pdo()->exec("DELETE FROM knowledge_sections");
+        $n = 0;
+        foreach (self::sections() as $s) {
+            $id = Db::insert('knowledge_sections', [
+                'doc_path' => $s['path'],
+                'title'    => $s['title'],
+                'heading'  => $s['heading'],
+                'tags'     => $s['tags'],
+                'body'     => $s['text'],
+                'chars'    => mb_strlen($s['text']),
+            ]);
+            Db::q("INSERT INTO knowledge_fts (rowid, title, heading, tags, body) VALUES (?,?,?,?,?)",
+                  [$id, $s['title'], $s['heading'], $s['tags'], $s['text']]);
+            $n++;
+        }
+        self::state('indexed_at', self::now());
+        self::state('indexed_count', (string)$n);
+        return $n;
+    }
+
+    /**
+     * BM25 search over the section index. Returns null when the index is empty
+     * (nothing synced yet) so the caller can fall back to the scan.
+     */
+    private static function searchFts(string $query, int $budget): ?array {
+        try {
+            if (!(int)Db::val("SELECT COUNT(*) FROM knowledge_sections")) return null;
+            $match = self::ftsQuery($query);
+            if ($match === '') return [];
+            // Column weights: a hit in the page title or the heading is worth more
+            // than one in the body — same intent as the x2 boost of the PHP scan.
+            $rows = Db::all(
+                "SELECT s.title, s.doc_path AS path, s.body,
+                        bm25(knowledge_fts, 3.0, 3.0, 2.0, 1.0) AS rank
+                 FROM knowledge_fts JOIN knowledge_sections s ON s.id = knowledge_fts.rowid
+                 WHERE knowledge_fts MATCH ? ORDER BY rank LIMIT 40",
+                [$match]
+            );
+        } catch (Throwable $e) {
+            Logger::exception('knowledge', $e, ['stage' => 'fts_search']);
+            return null;
+        }
+        if (!$rows) return [];
+
+        $minHits = max(1, (int)Settings::get('KNOWLEDGE_MIN_HITS', 2));
+        $qStems = self::stems($query);
+        $weights = self::stemWeights(array_keys($qStems));
+        $out = [];
+        $left = $budget;
+        foreach ($rows as $row) {
+            if ($left < 400) break;
+            // BM25 alone would hand back a section matching one common word.
+            // Same rule as the scan: a term that lives in one or two sections is
+            // a strong signal on its own, a term in half the wiki is not — so
+            // «доставка до Мариуполя» passes on «мариуп» while «прошу выставить
+            // счёт» does not pass on «выстав».
+            $hits = 0;
+            foreach (array_keys(array_intersect_key($qStems, self::stems($row['title'] . ' ' . $row['body']))) as $stem) {
+                $hits += ($weights[$stem] ?? 99) <= 2 ? 2 : 1;
+            }
+            if ($hits < $minHits) continue;
+            $text = self::clip((string)$row['body'], min($left, 2500));
+            $left -= mb_strlen($text);
+            $out[] = ['title' => $row['title'], 'path' => $row['path'], 'text' => $text,
+                      'score' => -(float)$row['rank'], 'hits' => $hits];
+        }
+        return $out;
+    }
+
+    /**
+     * How many sections each query stem occurs in — the df the scan computes by
+     * walking the whole corpus. fts5vocab answers it from the index instead.
+     * A missing vocab table (older SQLite) simply means «no rare-term bonus».
+     */
+    private static function stemWeights(array $stems): array {
+        if (!$stems) return [];
+        try {
+            Db::pdo()->exec("CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vocab USING fts5vocab(knowledge_fts, 'row')");
+        } catch (Throwable) {
+            return [];
+        }
+        $out = [];
+        foreach ($stems as $stem) {
+            if ($stem === '') continue;
+            try {
+                // Stems are prefixes, so sum the whole range they cover
+                $out[$stem] = (int)Db::val(
+                    "SELECT COALESCE(SUM(doc), 0) FROM knowledge_vocab WHERE term >= ? AND term < ?",
+                    [$stem, $stem . "\u{10FFFF}"]
+                );
+            } catch (Throwable) {
+                return [];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * FTS5 MATCH expression from a letter. FTS5 has no Russian stemmer, so a word
+     * longer than five letters goes in as a prefix — «бронежилет*» catches
+     * «бронежилетов» and «бронежилете».
+     */
+    private static function ftsQuery(string $query): string {
+        $query = mb_strtolower(mb_substr(trim($query), 0, 6000));
+        $query = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $query);
+        $terms = [];
+        foreach (preg_split('/\s+/u', trim($query)) ?: [] as $w) {
+            if (mb_strlen($w) < self::MIN_TOKEN_LEN) continue;
+            if (in_array($w, self::STOPWORDS, true)) continue;
+            $terms[$w] = mb_strlen($w) > 5 ? mb_substr($w, 0, 6) . '*' : $w;
+            if (count($terms) >= 40) break;
+        }
+        return implode(' OR ', array_map(fn($t) => '"' . str_replace('"', '', rtrim($t, '*')) . '"' . (str_ends_with($t, '*') ? '*' : ''), $terms));
+    }
+
     /** Wiki documents split into `##` sections — the unit we retrieve and inject. */
     private static function sections(): array {
         $out = [];
@@ -360,11 +525,13 @@ final class Knowledge {
                 $title = $doc['title'] . ($heading !== '' ? " → $heading" : '');
                 $head = self::stems($doc['title'] . ' ' . $doc['tags'] . ' ' . $heading);
                 $out[] = [
-                    'path'  => $doc['path'],
-                    'title' => $title,
-                    'text'  => ($heading !== '' ? "## $heading\n" : '') . $text,
-                    'head'  => $head,
-                    'stems' => self::stems($text) + $head,
+                    'path'    => $doc['path'],
+                    'title'   => $title,
+                    'heading' => $heading,
+                    'tags'    => (string)$doc['tags'],
+                    'text'    => ($heading !== '' ? "## $heading\n" : '') . $text,
+                    'head'    => $head,
+                    'stems'   => self::stems($text) + $head,
                 ];
             }
         }

@@ -27,6 +27,7 @@ require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/prompts.php';
 require_once __DIR__ . '/llm.php';
 require_once __DIR__ . '/knowledge.php';
+require_once __DIR__ . '/triage.php';
 require_once __DIR__ . '/auth.php';
 
 // Init DB before the settings layer — the overrides live in it
@@ -649,6 +650,76 @@ SQL);
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '7')");
         $current = 7;
+    }
+
+    // v8 — module 006: triage of incoming mail + FTS5 index over the wiki
+    if ($current < 8) {
+        Db::ensureColumn('requests', 'category', 'TEXT');
+        Db::ensureColumn('requests', 'category_confidence', 'REAL');
+        Db::ensureColumn('requests', 'category_reason', 'TEXT');
+        Db::ensureColumn('requests', 'category_source', 'TEXT');
+        Db::ensureColumn('mail_messages', 'category', 'TEXT');
+        Db::ensureColumn('mail_messages', 'triage_reason', 'TEXT');
+        // The prefilter reads List-Unsubscribe / Precedence / Auto-Submitted from these
+        Db::ensureColumn('mail_messages', 'headers', 'TEXT');
+        // TRIAGE_AUTO_DRAFT parks a ready answer here, so «Создать ответ» opens
+        // it instantly instead of paying for a second generation
+        Db::ensureColumn('mail_messages', 'draft_text', 'TEXT');
+        Db::ensureColumn('mail_messages', 'draft_at', 'TEXT');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_requests_category ON requests(category)");
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_mail_category ON mail_messages(direction, category)");
+
+        // Wiki sections + their full-text index. The virtual table is optional:
+        // a SQLite built without FTS5 keeps working on the PHP scan (module 005).
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS knowledge_sections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_path TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            heading TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL,
+            chars INTEGER NOT NULL DEFAULT 0
+        );
+SQL);
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_ksections_doc ON knowledge_sections(doc_path)");
+        try {
+            Db::pdo()->exec("CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts
+                USING fts5(title, heading, tags, body, tokenize='unicode61 remove_diacritics 2')");
+        } catch (Throwable $e) {
+            Logger::warning('knowledge', 'SQLite без FTS5 — поиск по вики останется на переборе в PHP',
+                            ['error' => $e->getMessage()]);
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '8')");
+        $current = 8;
+    }
+
+    // v9 — module 007: installable admin app (PWA) and web-push subscriptions
+    if ($current < 9) {
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER NOT NULL REFERENCES managers(id),
+            endpoint TEXT NOT NULL UNIQUE,
+            p256dh TEXT NOT NULL,
+            auth TEXT NOT NULL,
+            user_agent TEXT,
+            last_used_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_push_manager ON push_subscriptions(manager_id);
+
+        CREATE TABLE IF NOT EXISTS push_mutes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER NOT NULL REFERENCES managers(id),
+            kind TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_push_mute_uniq ON push_mutes(manager_id, ifnull(kind,''));
+SQL);
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '9')");
+        $current = 9;
     }
 }
 

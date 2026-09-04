@@ -8,6 +8,7 @@ require_once __DIR__ . '/parser.php';
 require_once __DIR__ . '/notifier.php';
 require_once __DIR__ . '/attachments.php';
 require_once __DIR__ . '/crm.php';
+require_once __DIR__ . '/triage.php';
 
 final class MailSync {
     /** Sync all active mailboxes (or one). Returns a per-mailbox report. */
@@ -118,6 +119,19 @@ final class MailSync {
 
     /** Returns true when the letter actually became a request. */
     private static function toRequest(array $row): bool {
+        // Free verdict first: a Yandex.Direct digest or a MoySklad ticket is not a
+        // request and must not cost a model call (module 006).
+        $pre = Triage::prefilter($row);
+        if ($pre) {
+            Db::update('mail_messages', [
+                'processed_at'  => date('Y-m-d H:i:s'),
+                'category'      => $pre['category'],
+                'triage_reason' => $pre['reason'],
+                'error'         => null,
+            ], 'id=?', [$row['id']]);
+            return false;
+        }
+
         $attachments = Db::all("SELECT * FROM attachments WHERE mail_message_id=?", [$row['id']]);
         $attachmentText = '';
         foreach ($attachments as $a) {
@@ -129,12 +143,32 @@ final class MailSync {
         // Nothing to read — a bare auto-reply, a picture-only newsletter. Archive it
         // and stop: asking the model to parse an empty letter only fills the log.
         if (mb_strlen(trim((string)$row['body_text'])) < 20 && trim($attachmentText) === '') {
-            Db::update('mail_messages', ['processed_at' => date('Y-m-d H:i:s'), 'error' => null], 'id=?', [$row['id']]);
+            Db::update('mail_messages', [
+                'processed_at'  => date('Y-m-d H:i:s'),
+                'category'      => 'service',
+                'triage_reason' => 'Пустое письмо — нечего разбирать',
+                'error'         => null,
+            ], 'id=?', [$row['id']]);
             return false;
         }
 
-        $parsed = RequestParser::parse((string)$row['body_text'], $attachmentText);
+        $parsed = Triage::classify((string)$row['body_text'], $attachmentText);
+        $category = (string)($parsed['category'] ?? 'other');
         $type = ($parsed['request_type'] ?? 'kp_request') === 'order' ? 'order' : 'kp_request';
+
+        // A supplier pitch, a SEO mailing or a service notice the model recognised:
+        // archive it under its category and stop — no request, no notification.
+        if (!Triage::createsRequest($category)) {
+            Db::update('mail_messages', [
+                'processed_at'  => date('Y-m-d H:i:s'),
+                'category'      => $category,
+                'triage_reason' => (string)($parsed['category_reason'] ?? ''),
+                'error'         => null,
+            ], 'id=?', [$row['id']]);
+            Logger::info('mail', "Письмо от {$row['from_email']} отнесено к «" . Triage::label($category) . "» — запрос не создаётся",
+                         ['mail_message_id' => $row['id']]);
+            return false;
+        }
 
         $counterpartyId = Crm::resolveCounterparty([
             'inn'            => $parsed['inn'] ?? '',
@@ -160,6 +194,10 @@ final class MailSync {
             'status'           => 'new',
             'type'             => $type,
             'type_source'      => 'llm',
+            'category'            => $category,
+            'category_confidence' => (float)($parsed['category_confidence'] ?? 0),
+            'category_reason'     => (string)($parsed['category_reason'] ?? ''),
+            'category_source'     => (string)($parsed['category_source'] ?? 'llm'),
             'email_from'       => $row['from_email'],
             'email_subject'    => $row['subject'],
             'email_message_id' => $row['message_id'],
@@ -182,17 +220,42 @@ final class MailSync {
 
         Db::update('mail_messages', [
             'processed_at'      => date('Y-m-d H:i:s'),
+            'category'          => $category,
+            'triage_reason'     => (string)($parsed['category_reason'] ?? ''),
             'request_id'        => $requestId,
             'counterparty_id'   => $counterpartyId,
             'correspondence_id' => $corrId,
             'error'             => null,
         ], 'id=?', [$row['id']]);
 
+        self::autoDraft($row, $category, $counterpartyId, $attachmentText);
+
         $orgName = $parsed['org_name'] ?? null;
-        $label = $type === 'order' ? 'Новый заказ' : 'Новый запрос на КП';
-        $title = $label . ($orgName ? " от $orgName" : ' от ' . $row['from_email']);
+        $title = Triage::label($category) . ($orgName ? " от $orgName" : ' от ' . $row['from_email']);
         Notifier::notify('new_request', $title, $row['subject'], 'request', $requestId);
         return true;
+    }
+
+    /**
+     * Draft the answer right at sync time when TRIAGE_AUTO_DRAFT is on. Off by
+     * default: until the manager trusts the categories, every letter should not
+     * cost a second model call. A failure here must never lose the request.
+     */
+    private static function autoDraft(array $row, string $category, ?int $counterpartyId, string $attachmentText): void {
+        if ((int)Settings::get('TRIAGE_AUTO_DRAFT', 0) !== 1) return;
+        if (Triage::route($category)[0] === null) return;
+        try {
+            $text = Triage::draft($row, $category, [
+                'org_name'        => $counterpartyId ? (string)Db::val("SELECT name FROM counterparties WHERE id=?", [$counterpartyId]) : '',
+                'attachments'     => $attachmentText,
+                'counterparty_id' => $counterpartyId,
+                'email_rules'     => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
+                'tov'             => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
+            ]);
+            Db::update('mail_messages', ['draft_text' => $text, 'draft_at' => date('Y-m-d H:i:s')], 'id=?', [$row['id']]);
+        } catch (Throwable $e) {
+            Logger::exception('mail', $e, ['mail_message_id' => $row['id'], 'stage' => 'auto_draft']);
+        }
     }
 
     // ---- Full archive download (FR-053) ----

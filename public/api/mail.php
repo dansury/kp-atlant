@@ -7,6 +7,7 @@ require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/mailsync.php';
 require_once ROOT . '/lib/crm.php';
+require_once ROOT . '/lib/triage.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -21,6 +22,7 @@ try {
                 'direction'       => $_GET['direction'] ?? null,
                 'counterparty_id' => $_GET['counterparty_id'] ?? null,
                 'unread'          => !empty($_GET['unread']),
+                'category'        => $_GET['category'] ?? null,
                 'q'               => trim((string)($_GET['q'] ?? '')),
                 'limit'           => $_GET['limit'] ?? 50,
                 'offset'          => $_GET['offset'] ?? 0,
@@ -34,7 +36,7 @@ try {
         case 'get':
             $msg = MailArchive::get((int)($_GET['id'] ?? 0));
             if (!$msg) jsonError('Not found', 404);
-            unset($msg['body_html']);   // the browser gets plain text only — no remote content, no scripts
+            unset($msg['body_html'], $msg['headers']);   // plain text only — no remote content, no scripts, no raw headers
             MailArchive::markRead((int)$msg['id']);
             jsonData($msg);
 
@@ -123,23 +125,61 @@ try {
                            WHERE from_email=? AND id<>? ORDER BY date_at DESC, id DESC LIMIT 5",
                           [(string)$msg['from_email'], $id]);
 
-            $text = RequestParser::generateReply($msg, [
-                'org_name'    => $msg['counterparty_name'] ?? '',
-                'attachments' => $attachText,
-                'thread'      => array_reverse($thread),
-                'email_rules' => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
-                'tov'         => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
-            ]);
+            // The category picks the prompt and the fact sources (module 006).
+            // The manager may override it right in the reply dialog.
+            $category = trim((string)($input['category'] ?? $msg['category'] ?? ''));
+            if (!isset(Triage::CATEGORIES[$category])) $category = 'other';
 
-            Logger::info('mail', "Черновик ответа на письмо #$id создан", [
-                'mail_message_id' => $id, 'manager_id' => (int)$manager['id'],
+            $ctx = [
+                'org_name'        => $msg['counterparty_name'] ?? '',
+                'attachments'     => $attachText,
+                'thread'          => array_reverse($thread),
+                'counterparty_id' => $msg['counterparty_id'] ?? null,
+                'email_rules'     => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
+                'tov'             => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
+            ];
+            // A draft prepared at sync time (TRIAGE_AUTO_DRAFT) is used once and
+            // cleared — pressing the button again must regenerate, not repeat.
+            $text = '';
+            if (empty($input['category']) && trim((string)($msg['draft_text'] ?? '')) !== '') {
+                $text = (string)$msg['draft_text'];
+                Db::update('mail_messages', ['draft_text' => null], 'id=?', [$id]);
+            } else {
+                $text = Triage::enabled()
+                    ? Triage::draft($msg, $category, $ctx)
+                    : RequestParser::generateReply($msg, $ctx);
+            }
+
+            [$promptKey] = Triage::route($category);
+            $promptKey = $promptKey ?? 'mail_reply';
+            if (!empty($input['category']) && $input['category'] !== ($msg['category'] ?? null)) {
+                Db::update('mail_messages', ['category' => $category], 'id=?', [$id]);
+                if (!empty($msg['request_id'])) {
+                    Db::update('requests', ['category' => $category, 'category_source' => 'manager'],
+                               'id=?', [(int)$msg['request_id']]);
+                }
+            }
+
+            Logger::info('mail', "Черновик ответа на письмо #$id создан (" . Triage::label($category) . ')', [
+                'mail_message_id' => $id, 'manager_id' => (int)$manager['id'], 'prompt' => $promptKey,
             ]);
             jsonData([
                 'mail_message_id' => $id,
                 'text'            => $text,
+                'category'        => $category,
+                'category_label'  => Triage::label($category),
+                'prompt'          => $promptKey,
                 'subject'         => preg_replace('/^(Re:\s*)?/iu', 'Re: ', (string)$msg['subject']),
                 'to'              => (string)$msg['from_email'],
             ]);
+
+        case 'categories':
+            // For the «тип запроса» selector in the reply dialog
+            jsonData(['categories' => array_map(
+                fn($k) => ['key' => $k, 'label' => Triage::label($k), 'answerable' => Triage::route($k)[0] !== null,
+                           'creates_request' => Triage::createsRequest($k)],
+                array_keys(Triage::CATEGORIES)
+            )]);
 
         case 'link':
             // Attach an archived message to a company card by hand

@@ -21,10 +21,15 @@ switch ($action) {
             $where .= ' AND r.status = ?';
             $params[] = $status;
         }
+        if (!empty($_GET['category'])) {
+            $where .= ' AND r.category = ?';
+            $params[] = (string)$_GET['category'];
+        }
 
         $total = Db::val("SELECT COUNT(*) FROM requests r WHERE $where", $params);
         $rows = Db::all(
             "SELECT r.id, r.source, r.status, r.type, r.type_source, r.email_from, r.created_at, r.updated_at,
+                    r.category, r.category_confidence, r.category_reason, r.category_source,
                     r.counterparty_id, c.name as counterparty_name, m.name as manager_name,
                     c.last_inbound_at, c.last_outbound_at,
                     (SELECT COUNT(*) FROM proposal_items pi JOIN proposals p ON pi.proposal_id=p.id WHERE p.request_id=r.id) as items_count,
@@ -152,6 +157,33 @@ switch ($action) {
             'updated_at'  => date('Y-m-d H:i:s'),
         ], 'id=?', [$id]);
         jsonOk(['type' => $type]);
+
+    case 'set_category':
+        // Manual override of the triage verdict (FR-060). The category picks the
+        // reply prompt and the fact sources, so the manager must be able to fix it.
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        $input = getInput();
+        $category = (string)($input['category'] ?? '');
+        if (!isset(Triage::CATEGORIES[$category])) jsonError('Неизвестная категория');
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+
+        Db::update('requests', [
+            'category'        => $category,
+            'category_source' => 'manager',
+            'type'            => Triage::requestType($category) ?: 'kp_request',
+            'type_source'     => 'manual',
+            'updated_at'      => date('Y-m-d H:i:s'),
+        ], 'id=?', [$id]);
+        Db::update('mail_messages', ['category' => $category], 'request_id=?', [$id]);
+        jsonOk(['category' => $category, 'label' => Triage::label($category)]);
+
+    case 'categories':
+        requireAuth();
+        jsonData(['categories' => array_map(
+            fn($k) => ['key' => $k, 'label' => Triage::label($k)],
+            array_keys(Triage::CATEGORIES)
+        )]);
 
     case 'attachment':
         // Download one attachment (feed and request card)

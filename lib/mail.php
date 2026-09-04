@@ -330,6 +330,7 @@ final class MailArchive {
             'cc_emails'    => self::utf8($msg['cc'] ?? ''),
             'body_text'    => self::utf8(mb_strcut((string)($msg['body'] ?? ''), 0, $limit)),
             'body_html'    => self::utf8(mb_strcut((string)($msg['body_html'] ?? ''), 0, $limit)),
+            'headers'      => self::utf8((string)($msg['headers'] ?? '')),
             'size'         => (int)($msg['size'] ?? 0),
             'has_attachment' => empty($msg['attachments']) ? 0 : 1,
             'is_read'      => !empty($msg['seen']) ? 1 : 0,
@@ -390,6 +391,7 @@ final class MailArchive {
         }
         if (!empty($f['counterparty_id'])) { $where[] = 'm.counterparty_id = ?'; $params[] = (int)$f['counterparty_id']; }
         if (!empty($f['unread'])) $where[] = 'm.is_read = 0';
+        if (!empty($f['category'])) { $where[] = 'm.category = ?'; $params[] = (string)$f['category']; }
         if (!empty($f['q'])) {
             $where[] = '(m.subject LIKE ? OR m.from_email LIKE ? OR m.to_emails LIKE ? OR m.body_text LIKE ?)';
             $like = '%' . $f['q'] . '%';
@@ -399,7 +401,7 @@ final class MailArchive {
         $offset = max(0, (int)($f['offset'] ?? 0));
         $sql = "SELECT m.id, m.mailbox_id, m.direction, m.folder, m.subject, m.from_email, m.from_name,
                        m.to_emails, m.has_attachment, m.is_read, m.date_at, m.request_id, m.counterparty_id,
-                       m.error, substr(m.body_text, 1, 200) AS preview,
+                       m.error, m.category, m.triage_reason, substr(m.body_text, 1, 200) AS preview,
                        b.name AS mailbox_name, c.name AS counterparty_name
                 FROM mail_messages m
                 LEFT JOIN mailboxes b ON b.id = m.mailbox_id

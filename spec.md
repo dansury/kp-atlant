@@ -7,6 +7,13 @@
 | Rich КП: cards, photos, upsell | `specs/003-kp-rich-content/spec.md` | Implemented |
 | Админ-панель: логи, настройки, почта, промпты | `specs/004-admin-console/spec.md` | Implemented |
 | База знаний: вики компании из GitHub в промптах | `specs/005-knowledge-base/spec.md` | Implemented |
+| Классификация писем и ответ по типу запроса | `specs/006-email-triage/spec.md` | Implemented |
+| PWA и web push для администраторов | `specs/007-pwa-push/spec.md` | Implemented |
+
+## Research
+| Вопрос | Файл |
+|---|---|
+| Чем искать факты для ответа на shared-хостинге (RAG / БД / эмбеддинги) | `specs/006-email-triage/research.md` |
 
 ## Constitution
 `.specify/memory/constitution.md`
