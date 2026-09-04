@@ -17,6 +17,8 @@ class Auth {
         // The session must be running before $_SESSION is written, otherwise
         // the login is silently lost and the user bounces back to the form.
         startSession();
+        // A stale cookie from an older build would keep shadowing ours
+        clearLegacySessionCookies();
         if (session_status() === PHP_SESSION_ACTIVE) session_regenerate_id(true);
         $_SESSION['manager_id'] = $manager['id'];
         Logger::info('auth', 'Вход в систему: ' . $manager['login'], ['manager_id' => $manager['id']]);
@@ -31,6 +33,7 @@ class Auth {
     // Logout
     public static function logout(): void {
         startSession();
+        clearLegacySessionCookies();
         $_SESSION = [];
         if (ini_get('session.use_cookies')) {
             $p = session_get_cookie_params();
