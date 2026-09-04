@@ -1332,7 +1332,8 @@ const App = {
     pageAdmin(tab) {
         const tabs = [
             ['overview', 'Обзор'], ['settings', 'Настройки'], ['llm', 'Нейросети'],
-            ['mail', 'Почта'], ['managers', 'Менеджеры'], ['prompts', 'Промпты'], ['logs', 'Логи'],
+            ['mail', 'Почта'], ['knowledge', 'База знаний'], ['managers', 'Менеджеры'],
+            ['prompts', 'Промпты'], ['logs', 'Логи'],
         ];
         document.getElementById('app').innerHTML = `
             <h2 style="margin-bottom:12px">Администрирование</h2>
@@ -1344,6 +1345,7 @@ const App = {
         const render = {
             overview: () => this.adminOverview(), settings: () => this.adminSettings(),
             llm: () => this.adminLlm(), mail: () => this.adminMail(),
+            knowledge: () => this.adminKnowledge(),
             managers: () => this.adminManagers(), prompts: () => this.adminPrompts(),
             logs: () => this.adminLogs(),
         }[tab] || (() => this.adminOverview());
@@ -1377,6 +1379,16 @@ const App = {
                             · модель <code>${this.esc(p.model)}</code></p>`).join('')}
                         <a href="#admin/llm" class="btn btn--outline btn--sm">Настроить</a>
                     </div>
+                </div>
+                <div class="card">
+                    <div class="card__title">База знаний (вики)</div>
+                    ${d.knowledge.enabled ? `<p>Репозиторий <code>${this.esc(d.knowledge.repo)}</code> · ветка <code>${this.esc(d.knowledge.branch)}</code>
+                        · токен ${d.knowledge.token_set ? '<span class="ok">задан</span>' : '<span class="muted">не задан (только публичный репозиторий)</span>'}</p>
+                       <p>Коммит <code>${this.esc((d.knowledge.commit || '—').slice(0, 8))}</code>
+                        · проверено ${d.knowledge.checked_at ? this.fmtDate(d.knowledge.checked_at) : 'ни разу'}</p>
+                       ${d.knowledge.last_error ? `<p class="no">${this.esc(d.knowledge.last_error)}</p>` : ''}`
+                     : '<p class="muted">Выключена — вики не подмешивается в промпты</p>'}
+                    <a href="#admin/knowledge" class="btn btn--outline btn--sm">Открыть</a>
                 </div>
                 ${d.mail_errors.length ? `<div class="card card--alert">
                     <div class="card__title">Ошибки почты</div>
@@ -1418,6 +1430,100 @@ const App = {
             const r = await this.api('admin.php?action=test_llm', {method: 'POST', body: {provider}});
             this.testOut(`${this.esc(provider)} — ответ за ${r.result.ms} мс, модель ${this.esc(r.result.model)}: «${this.esc(r.result.answer)}»`);
         } catch (err) { this.testOut(this.esc(err.message), 'no'); }
+    },
+
+    // ---- Knowledge base: the company wiki pulled from GitHub ----
+
+    async adminKnowledge() {
+        try {
+            const d = await this.api('admin.php?action=knowledge');
+            this.knowledgeState = d;
+            const kb = n => (n / 1024).toFixed(1) + ' КБ';
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="card__title">Состояние копии</div>
+                    ${d.enabled ? '' : '<p class="no">База знаний выключена — включите KNOWLEDGE_ENABLED в «Настройках».</p>'}
+                    <p>Источник: <code>${this.esc(d.repo)}</code> · ветка <code>${this.esc(d.branch)}</code>
+                       · папка <code>${this.esc(d.path)}</code></p>
+                    <p>Токен GitHub: ${d.token_set ? '<span class="ok">задан</span>' : '<span class="muted">не задан — доступен только публичный репозиторий</span>'}
+                       <span class="muted">(«Настройки → База знаний» или config.php)</span></p>
+                    <p>Версия: коммит <code>${this.esc((d.commit || '—').slice(0, 8))}</code>
+                       ${d.commit_at ? '· ' + this.fmtDate(d.commit_at) : ''}</p>
+                    <p>Проверено: ${d.checked_at ? this.fmtDate(d.checked_at) : 'ни разу'}
+                       · скачано: ${d.synced_at ? this.fmtDate(d.synced_at) : 'ни разу'}
+                       · документов: <strong>${d.docs_count}</strong> (${kb(d.total_size)})</p>
+                    <p class="muted">Версия репозитория проверяется перед генерацией, но не чаще чем раз в
+                       ${d.ttl_sec} сек (KNOWLEDGE_SYNC_TTL_SEC; 0 — каждый раз).</p>
+                    ${d.last_error ? `<p class="no">Последняя ошибка: ${this.esc(d.last_error)}</p>` : ''}
+                    <div class="flex flex--wrap">
+                        <button class="btn btn--primary" onclick="App.knowledgeSync(false)">Проверить и обновить</button>
+                        <button class="btn btn--outline" onclick="App.knowledgeSync(true)">Перечитать всё заново</button>
+                    </div>
+                    <div id="knowledgeResult" style="margin-top:12px"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card__title">Где используется</div>
+                    <p class="muted">Вики подмешивается только в эти генерации и только теми разделами,
+                       которые относятся к тексту. Список задач — настройка KNOWLEDGE_TASKS.</p>
+                    ${d.tasks.map(t => `<p>${t.enabled ? '<span class="ok">вкл</span>' : '<span class="muted">выкл</span>'}
+                        · ${this.esc(t.label)} <code>${t.key}</code> · бюджет ${t.budget} символов</p>`).join('')}
+                </div>
+
+                <div class="card">
+                    <div class="card__title">Проверка подбора</div>
+                    <p class="muted">Вставьте текст письма или список позиций — увидите, какие разделы вики попадут в промпт.</p>
+                    <textarea id="kbQuery" rows="4" placeholder="Например: какой класс защиты у шлема Атом и есть ли размер L?"></textarea>
+                    <div class="flex flex--wrap" style="margin-top:8px">
+                        <select id="kbTask">${d.tasks.map(t => `<option value="${t.key}">${this.esc(t.label)}</option>`).join('')}</select>
+                        <button class="btn btn--outline" onclick="App.knowledgePreview()">Подобрать</button>
+                    </div>
+                    <div id="kbPreview" style="margin-top:12px"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card__title">Документы (${d.docs_count})</div>
+                    <table class="table"><thead><tr><th>Страница</th><th>Файл</th><th>Размер</th><th>Обновлён</th></tr></thead>
+                    <tbody>${d.docs.map(doc => `<tr>
+                        <td>${this.esc(doc.title)}</td>
+                        <td class="muted"><code>${this.esc(doc.path)}</code></td>
+                        <td>${kb(doc.size)}</td>
+                        <td class="muted">${this.fmtDate(doc.updated_at)}</td>
+                    </tr>`).join('') || '<tr><td colspan="4" class="muted">Пока пусто — нажмите «Проверить и обновить»</td></tr>'}
+                    </tbody></table>
+                </div>
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    async knowledgeSync(force) {
+        const out = document.getElementById('knowledgeResult');
+        out.innerHTML = '<p class="muted">Спрашиваем GitHub...</p>';
+        try {
+            const r = await this.api('admin.php?action=knowledge_sync', {method: 'POST', body: {force}});
+            const rep = r.report;
+            out.innerHTML = `<p class="ok">${rep.status === 'updated'
+                ? `Обновлено файлов: ${rep.updated}, удалено: ${rep.deleted}`
+                : 'Актуально — новых изменений нет'} · коммит <code>${this.esc((rep.commit || '').slice(0, 8))}</code></p>`;
+            this.adminKnowledge();
+        } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
+    },
+
+    async knowledgePreview() {
+        const out = document.getElementById('kbPreview');
+        const query = document.getElementById('kbQuery').value;
+        const task = document.getElementById('kbTask').value;
+        out.innerHTML = '<p class="muted">Ищем...</p>';
+        try {
+            const d = await this.api('admin.php?action=knowledge_preview', {method: 'POST', body: {query, task}});
+            if (!d.items.length) {
+                out.innerHTML = '<p class="muted">Ничего подходящего — вики в этот промпт не попадёт.</p>';
+                return;
+            }
+            out.innerHTML = (d.enabled ? '' : '<p class="no">Для этой задачи база знаний выключена — показан «сухой» подбор.</p>')
+                + d.items.map(i => `<p>${this.esc(i.title)}
+                    <span class="muted">· ${i.chars} симв. · совпало терминов: ${i.hits} · вес ${i.score}</span></p>`).join('');
+        } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
     // ---- Settings: every key, with its source and an override ----

@@ -6,6 +6,7 @@
 | Orders, Invoice Sync & Company Chat | `specs/002-orders-crm-chat/spec.md` | Draft |
 | Rich КП: cards, photos, upsell | `specs/003-kp-rich-content/spec.md` | Implemented |
 | Админ-панель: логи, настройки, почта, промпты | `specs/004-admin-console/spec.md` | Implemented |
+| База знаний: вики компании из GitHub в промптах | `specs/005-knowledge-base/spec.md` | Implemented |
 
 ## Constitution
 `.specify/memory/constitution.md`

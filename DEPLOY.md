@@ -95,7 +95,7 @@
    менеджера (логин/пароль).
 3. Настроить в панели хостинга cron на `cron/check_mail.php`,
    `cron/check_followups.php`, `cron/check_notifications.php`,
-   `cron/sync_moysklad.php` (пути — см. `plan.md`, D-004).
+   `cron/sync_moysklad.php`, `cron/sync_knowledge.php` (пути — см. `plan.md`, D-004).
 
 ## Проверка
 

@@ -41,7 +41,8 @@ class RequestParser {
             }
         }
 
-        $system = Prompts::render('cover_letter', ['tov' => $tov, 'few_shot' => $fewShot]);
+        // The wiki knows our products — pull in what this KP is actually about
+        $system = Knowledge::augment('cover_letter', ['tov' => $tov, 'few_shot' => $fewShot], "$orgName\n$itemList");
 
         $user = "Контрагент: $orgName\nПозиции КП:\n$itemList";
         return LLM::chatText($system, $user, 0.4);
@@ -51,18 +52,18 @@ class RequestParser {
     public static function normalizeNames(array $rawNames): array {
         if (empty($rawNames)) return [];
 
-        $system = Prompts::render('normalize_names');
         $user = json_encode($rawNames, JSON_UNESCAPED_UNICODE);
+        $system = Knowledge::augment('normalize_names', [], implode(' ', array_map('strval', $rawNames)));
         return LLM::chatJson($system, $user);
     }
 
     // Generate follow-up email text
     public static function generateFollowup(array $proposal, string $orgName, int $daysSince, string $emailRules, string $tov): string {
-        $system = Prompts::render('followup', ['email_rules' => $emailRules, 'tov' => $tov]);
         $itemSummary = '';
         if (!empty($proposal['items'])) {
             $itemSummary = implode(', ', array_map(fn($i) => $i['product_name'], $proposal['items']));
         }
+        $system = Knowledge::augment('followup', ['email_rules' => $emailRules, 'tov' => $tov], "$orgName $itemSummary");
 
         $user = "Контрагент: $orgName\nКП отправлено $daysSince дней назад\nПозиции: $itemSummary\nЗаказ не создан.";
         return LLM::chatText($system, $user, 0.4);
@@ -75,10 +76,14 @@ class RequestParser {
      *       email_rules, tov.
      */
     public static function generateReply(array $message, array $ctx = []): string {
-        $system = Prompts::render('mail_reply', [
+        // Retrieval query = what the client actually wrote: subject, body, attachments
+        $query = trim((string)($message['subject'] ?? '') . "\n"
+            . self::clip((string)($message['body_text'] ?? ''), 4000) . "\n"
+            . self::clip((string)($ctx['attachments'] ?? ''), 1500));
+        $system = Knowledge::augment('mail_reply', [
             'email_rules' => $ctx['email_rules'] ?? '',
             'tov'         => $ctx['tov'] ?? '',
-        ]);
+        ], $query);
 
         $user = '';
         if (!empty($ctx['org_name']))  $user .= "Компания: {$ctx['org_name']}\n";
