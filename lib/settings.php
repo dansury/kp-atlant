@@ -32,9 +32,22 @@ final class Settings {
         'GITHUB_TOKEN'           => ['knowledge', 'Токен GitHub', 'secret', true, '', 'Fine-grained токен с правом Contents: Read. Для приватного репозитория обязателен'],
         'KNOWLEDGE_SYNC_TTL_SEC' => ['knowledge', 'Проверять обновления не чаще, сек', 'int', false, 600, '0 — проверять версию репозитория перед каждой генерацией'],
         'KNOWLEDGE_TIMEOUT_SEC'  => ['knowledge', 'Таймаут запроса к GitHub, сек', 'int', false, 20, ''],
-        'KNOWLEDGE_TASKS'        => ['knowledge', 'Где применять', 'text', false, 'mail_reply,cover_letter,followup,normalize_names', 'Ключи задач через запятую: mail_reply, cover_letter, followup, normalize_names'],
+        'KNOWLEDGE_TASKS'        => ['knowledge', 'Где применять', 'text', false, 'mail_reply,reply_kp,reply_product,reply_availability,reply_order_status,reply_return,reply_docs,reply_wholesale,reply_complaint,cover_letter,followup,normalize_names', 'Ключи задач через запятую: mail_reply, cover_letter, followup, normalize_names'],
         'KNOWLEDGE_MAX_CHARS'    => ['knowledge', 'Максимум символов вики в промпте', 'int', false, 6000, 'Бюджет для ответа на письмо; у остальных задач — доля от него'],
         'KNOWLEDGE_MIN_HITS'     => ['knowledge', 'Минимум совпавших терминов', 'int', false, 2, 'Ниже порога раздел вики не подмешивается — «незачем»'],
+
+        // --- Triage (module 006): what a letter is and how it gets answered ---
+        'TRIAGE_ENABLED'          => ['triage', 'Классифицировать входящие письма', 'bool', false, 1, 'Выключено — как раньше: каждое письмо становится запросом КП'],
+        'TRIAGE_SERVICE_SENDERS'  => ['triage', 'Служебные отправители', 'text', false, 'yandex.ru, yandex.com, yandex-team.ru, moysklad.ru, sweb.ru, nic.ru, rutubeinfo.ru, no-reply@*, noreply@*, devnull@*', 'Через запятую. Домен покрывает поддомены; можно маски вида no-reply@*'],
+        'TRIAGE_MIN_CONFIDENCE'   => ['triage', 'Порог уверенности классификатора', 'text', false, '0.5', 'Ниже порога письмо помечается «не определено» — разбирает менеджер'],
+        'TRIAGE_CATALOG_LIMIT'    => ['triage', 'Позиций каталога в промпте', 'int', false, 6, 'Сколько товаров из МойСклад подмешивать в ответ'],
+        'TRIAGE_AUTO_DRAFT'       => ['triage', 'Готовить черновик сразу', 'bool', false, 0, 'Иначе черновик создаётся по кнопке «Создать ответ» — это экономит вызовы модели'],
+
+        // --- Web push (module 007) ---
+        'PUSH_ENABLED'      => ['push', 'Push-уведомления', 'bool', false, 1, 'Уведомления на телефон администратора о новых письмах и запросах'],
+        'PUSH_VAPID_PUBLIC' => ['push', 'VAPID public key', 'text', false, '', 'Генерируется автоматически при первом включении'],
+        'PUSH_VAPID_PRIVATE'=> ['push', 'VAPID private key', 'secret', true, '', 'Генерируется автоматически; менять вручную не нужно'],
+        'PUSH_VAPID_SUBJECT'=> ['push', 'Контакт для push-сервиса', 'text', false, '', 'mailto:… — по нему push-сервис свяжется при проблемах'],
 
         // --- MoySklad ---
         'MOYSKLAD_TOKEN'  => ['moysklad', 'Токен МойСклад', 'secret', true, '', ''],
@@ -81,6 +94,8 @@ final class Settings {
         'llm'      => 'Нейросети',
         'moysklad' => 'МойСклад',
         'knowledge' => 'База знаний (вики)',
+        'triage'   => 'Разбор входящей почты',
+        'push'     => 'Push-уведомления',
         'mail'     => 'Почта (значения по умолчанию)',
         'notify'   => 'Уведомления',
         'log'      => 'Логи',

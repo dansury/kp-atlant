@@ -14,6 +14,16 @@ $assetVer = max(
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Atlant Armour — КП</title>
+    <!-- Installable on a phone: manifest + icons + standalone chrome (module 007) -->
+    <meta name="theme-color" content="#17181c">
+    <meta name="description" content="Разбор входящих запросов, коммерческие предложения и счета Atlant Armour.">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Атлант КП">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/assets/icons/icon-192.png" sizes="192x192" type="image/png">
+    <link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
     <link rel="stylesheet" href="/assets/css/app.css?v=<?= $assetVer ?>">
 </head>
 <body>

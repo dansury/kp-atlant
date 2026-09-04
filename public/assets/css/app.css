@@ -124,6 +124,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Request type + unanswered badges */
 .badge--order { background: #fdecea; color: #b3261e; }
 .badge--kp { background: #e3f2fd; color: #1565c0; }
+/* Triage categories that never become a request — muted, they need no attention */
+.badge--muted { background: var(--bg); color: var(--text-muted); }
 .badge--unanswered { margin-left: 6px; }
 .badge--warn { background: #fff3e0; color: var(--warning); }
 .badge--critical { background: #fdecea; color: var(--danger); }

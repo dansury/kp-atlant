@@ -43,6 +43,17 @@
     RewriteRule ^(?!public/)(.*)$ public/$1 [L]
 </IfModule>
 
+# PWA (module 007): correct types, and never let a browser pin an old worker
+<IfModule mod_mime.c>
+    AddType application/manifest+json .webmanifest
+</IfModule>
+<IfModule mod_headers.c>
+    <FilesMatch "^sw\.js$">
+        Header set Cache-Control "no-cache, max-age=0, must-revalidate"
+        Header set Service-Worker-Allowed "/"
+    </FilesMatch>
+</IfModule>
+
 # Disable directory listings
 Options -Indexes
 

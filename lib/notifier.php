@@ -2,10 +2,24 @@
 /**
  * Notification: create, poll, 24h email fallback.
  */
+require_once __DIR__ . '/push.php';
+
 class Notifier {
+
+    /** In-app notification type => push kind the manager can mute separately. */
+    private const PUSH_KINDS = [
+        'new_request' => 'new_request',
+        'new_order'   => 'order',
+        'invoice'     => 'order',
+        'followup'    => 'followup',
+    ];
 
     // Create notification for a manager (or all if manager_id=null)
     public static function notify(string $type, string $title, ?string $body = null, ?string $refType = null, ?int $refId = null, ?int $managerId = null): int {
+        // The bell in the header only rings while a tab is open — push is what
+        // reaches the administrator's phone when it is not (module 007).
+        self::push($type, $title, (string)$body, $refType, $refId, $managerId);
+
         if ($managerId) {
             return Db::insert('notifications', [
                 'manager_id' => $managerId,
@@ -30,6 +44,16 @@ class Notifier {
             ]);
         }
         return $lastId;
+    }
+
+    /** Mirror an in-app notification to the manager's devices. Never fatal. */
+    private static function push(string $type, string $title, string $body, ?string $refType, ?int $refId, ?int $managerId): void {
+        try {
+            $url = ($refType === 'request' && $refId) ? '/#requests/' . $refId : '/';
+            Push::notify(self::PUSH_KINDS[$type] ?? 'system', $title, $body, $url, $managerId);
+        } catch (Throwable $e) {
+            Logger::exception('push', $e, ['type' => $type]);
+        }
     }
 
     // Get unread notifications for a manager
