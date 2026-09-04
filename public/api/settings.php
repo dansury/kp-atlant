@@ -103,13 +103,13 @@ switch ($action) {
         $hooks = [];
         if (!empty($perms['webhooks'])) {
             try {
-                foreach (MoySklad::listWebhooks() as $w) {
-                    if (str_contains($w['url'], $secret)) $hooks[] = $w;
-                }
+                // Includes hooks left from an older secret, flagged as `current` => false
+                $hooks = MsSync::ourWebhooks();
             } catch (Throwable $e) {
                 $error = $error ?? $e->getMessage();
             }
         }
+        $hooksCurrent = array_values(array_filter($hooks, fn($w) => !empty($w['current'])));
 
         jsonData([
             'permissions'  => $perms,
@@ -117,7 +117,8 @@ switch ($action) {
             'ms_error'     => $error,
             'diag'         => MoySklad::getDiagnostics(),
             'webhook_url'  => $appUrl . '/api/moysklad_hook.php?secret=' . $secret,
-            'webhooks'     => $hooks,
+            'webhooks'     => $hooksCurrent,
+            'webhooks_all' => $hooks,
             'app_url_ok'   => str_starts_with($appUrl, 'https://'),
             'last_webhook' => Db::one("SELECT entity_type, action, result, created_at FROM webhook_log ORDER BY id DESC LIMIT 1"),
         ]);

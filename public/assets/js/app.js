@@ -1039,6 +1039,7 @@ const App = {
             const d = await this.api('settings.php?action=moysklad');
             const p = d.permissions || {};
             const yes = v => v ? '<span class="ok">есть</span>' : '<span class="no">нет</span>';
+            const stale = (d.webhooks_all || []).filter(w => !w.current).length;
             card.innerHTML = `
                 <div class="card__title">Интеграция с МойСклад</div>
                 ${d.ms_error ? `<p class="no">${this.esc(d.ms_error)}</p>` : ''}
@@ -1048,6 +1049,7 @@ const App = {
                 <p class="muted">Адрес вебхука: <code>${this.esc(d.webhook_url)}</code></p>
                 ${!d.app_url_ok ? '<p class="no">APP_URL в config.php должен быть публичным https-адресом — иначе вебхуки не придут, останется подтяжка при открытии карточки.</p>' : ''}
                 <p>Зарегистрировано вебхуков: <strong>${(d.webhooks || []).length}</strong> из 4
+                   ${stale ? `<span class="muted">· с устаревшим адресом: ${stale} (кнопка ниже их обновит)</span>` : ''}
                    ${d.last_webhook ? `<span class="muted">· последний: ${this.esc(d.last_webhook.entity_type)}/${this.esc(d.last_webhook.action)} — ${this.esc(d.last_webhook.result)}, ${this.fmtDate(d.last_webhook.created_at)}</span>` : ''}</p>
                 <div class="flex">
                     <button class="btn btn--primary" onclick="App.registerWebhooks()">Зарегистрировать вебхуки</button>
@@ -1062,7 +1064,7 @@ const App = {
     async registerWebhooks() {
         try {
             const r = await this.api('settings.php?action=webhooks_register', {method: 'POST'});
-            this.toast(`Вебхуки зарегистрированы (новых: ${r.created})`, 'success');
+            this.toast(`Вебхуки готовы: новых ${r.created}, обновлено ${r.updated}, уже было ${r.kept}`, 'success');
             this.loadMoyskladSettings();
         } catch (err) { this.toast(err.message, 'error'); }
     },

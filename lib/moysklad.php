@@ -477,6 +477,13 @@ class MoySklad {
         return ['id' => self::extractId($resp['id'] ?? $resp['meta']['href'] ?? '')];
     }
 
+    // Point an existing webhook at a new URL / re-enable it
+    public static function updateWebhook(string $id, string $url, bool $enabled = true): array {
+        $resp = self::request('PUT', "/entity/webhook/$id", ['url' => $url, 'enabled' => $enabled]);
+        if ($resp === null) throw new MoySkladException('PUT failed: /entity/webhook/' . $id . self::lastErrorSuffix());
+        return ['id' => self::extractId($resp['id'] ?? $resp['meta']['href'] ?? '')];
+    }
+
     public static function deleteWebhook(string $id): bool {
         [$code] = self::requestRaw('DELETE', "/entity/webhook/$id");
         return $code >= 200 && $code < 300;
@@ -489,8 +496,36 @@ class MoySklad {
 
     private static function post(string $path, array $body): array {
         $resp = self::request('POST', $path, $body);
-        if ($resp === null) throw new MoySkladException('POST failed: ' . $path);
+        if ($resp === null) throw new MoySkladException('POST failed: ' . $path . self::lastErrorSuffix());
         return $resp;
+    }
+
+    // Human-readable tail for exceptions: HTTP code + MoySklad error text
+    private static function lastErrorSuffix(): string {
+        $code = (int)(self::$lastHttp['code'] ?? 0);
+        $msg = self::lastErrorMessage();
+        return ' (HTTP ' . $code . ($msg !== '' ? ': ' . $msg : '') . ')';
+    }
+
+    // MoySklad returns {"errors":[{"error":"...","parameter":"...","code":N}]}
+    public static function lastErrorMessage(): string {
+        $body = (string)(self::$lastHttp['body'] ?? '');
+        $data = json_decode($body, true);
+        if (is_array($data) && !empty($data['errors'])) {
+            $parts = [];
+            foreach ($data['errors'] as $e) {
+                $t = trim((string)($e['error'] ?? ''));
+                if (($e['parameter'] ?? '') !== '') $t .= ' [' . $e['parameter'] . ']';
+                if (($e['code'] ?? 0) !== 0) $t .= ' code=' . $e['code'];
+                if ($t !== '') $parts[] = $t;
+            }
+            if ($parts) return implode('; ', $parts);
+        }
+        return trim(substr($body, 0, 300));
+    }
+
+    public static function lastErrorCode(): int {
+        return (int)(self::$lastHttp['code'] ?? 0);
     }
 
     /**
