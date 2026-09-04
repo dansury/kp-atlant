@@ -95,6 +95,7 @@ try {
             jsonData([
                 'items'         => Mailboxes::describe(),
                 'blank'         => Mailboxes::blank(),
+                'providers'     => MailProviders::describe(),
                 'managers'      => Db::all("SELECT id, name FROM managers WHERE COALESCE(is_active,1)=1 ORDER BY name"),
                 'imap_available'=> EmailReader::available(),
             ]);
@@ -110,6 +111,34 @@ try {
         case 'mailbox_sync':
             $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
             jsonOk(['report' => MailSync::run($id ?: null)]);
+
+        // ---------- Full archive download ----------
+
+        // One step of «скачать весь архив». The panel calls it until done=true —
+        // a shared host would kill a single request that walks 20 000 letters.
+        case 'mailbox_backfill':
+            $box = Mailboxes::get((int)($input['id'] ?? $_GET['id'] ?? 0));
+            if (!$box) jsonError('Ящик не найден', 404);
+            if (!empty($input['restart'])) MailSync::backfillReset((int)$box['id']);
+            jsonOk(['result' => MailSync::backfill(
+                $box,
+                isset($input['seconds']) ? (int)$input['seconds'] : null,
+                isset($input['batch']) ? (int)$input['batch'] : null
+            )]);
+
+        // Archive of a mailbox as an .mbox file — importable into any mail client
+        case 'mailbox_export':
+            $id  = (int)($_GET['id'] ?? 0);
+            $box = $id ? Mailboxes::get($id) : null;
+            if ($id && !$box) jsonError('Ящик не найден', 404);
+            $name = $box ? preg_replace('/[^A-Za-z0-9._-]+/', '-', (string)($box['email'] ?: $box['name'])) : 'all';
+            header('Content-Type: application/mbox; charset=UTF-8');
+            header('Content-Disposition: attachment; filename="mail-' . trim($name, '-') . '-' . date('Y-m-d') . '.mbox"');
+            header('X-Accel-Buffering: no');
+            while (ob_get_level()) ob_end_flush();
+            MailArchive::exportMbox($id ?: null);
+            Logger::info('mail', 'Архив писем выгружен', ['mailbox_id' => $id ?: null, 'manager_id' => $admin['id']]);
+            exit;
 
         // ---------- Managers ----------
 
@@ -192,6 +221,14 @@ function mailboxFromInput(array $input): array {
 
     foreach (Mailboxes::FIELDS as $f) {
         if (array_key_exists($f, $input)) $box[$f] = $input[$f];
+    }
+    // The same preset the save applies, so «Проверить IMAP» works on a form
+    // where the admin typed only the address and the application password
+    $provider = (string)($box['provider'] ?? '');
+    if ($provider !== '' && $provider !== 'custom') {
+        foreach (MailProviders::apply($provider, (string)($box['email'] ?? '')) as $f => $v) {
+            if (trim((string)($box[$f] ?? '')) === '') $box[$f] = $v;
+        }
     }
     foreach (['imap_password', 'smtp_password'] as $f) {
         if (($input[$f] ?? '') !== '') $box[$f] = Crypt::encrypt((string)$input[$f]);

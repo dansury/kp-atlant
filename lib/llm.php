@@ -97,6 +97,8 @@ class LLM {
     // JSON completion — returns parsed array
     public static function chatJson(string $system, string $user, float $temp = 0.1): array {
         $maxRetries = 3;
+        $raw = '';
+        $why = 'пустой ответ';
         for ($i = 0; $i < $maxRetries; $i++) {
             $raw = self::call($system, $user, $temp, true);
             // Strip markdown fences
@@ -105,12 +107,19 @@ class LLM {
             $raw = preg_replace('/<think>.*?<\/think>/s', '', $raw);
             $raw = trim($raw);
             $data = json_decode($raw, true);
-            if (json_last_error() === JSON_ERROR_NONE) return $data;
+            // Models like to wrap the object in a sentence — take the object itself
+            if (!is_array($data) && preg_match('/[{\[].*[}\]]/s', $raw, $m)) {
+                $data = json_decode($m[0], true);
+            }
+            if (is_array($data)) return $data;
+            // json_last_error() is reset by any json_encode() further down (logging,
+            // for one), so the reason has to be captured right here
+            $why = json_last_error() === JSON_ERROR_NONE ? 'ответ не является объектом JSON' : json_last_error_msg();
             // Retry with lower temp
             $temp = 0.05;
         }
-        Logger::error('llm', 'Модель вернула не-JSON после ' . $maxRetries . ' попыток', ['tail' => mb_substr((string)($raw ?? ''), -400)]);
-        throw new LLMException("Failed to parse JSON after $maxRetries attempts: " . json_last_error_msg());
+        Logger::error('llm', 'Модель вернула не-JSON после ' . $maxRetries . ' попыток: ' . $why, ['tail' => mb_substr($raw, -400)]);
+        throw new LLMException("Failed to parse JSON after $maxRetries attempts: $why");
     }
 
     // Core call with fallback chain

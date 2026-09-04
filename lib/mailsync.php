@@ -99,8 +99,7 @@ final class MailSync {
         $count = 0;
         foreach ($rows as $row) {
             try {
-                self::toRequest($row);
-                $count++;
+                if (self::toRequest($row)) $count++;
             } catch (Throwable $e) {
                 Db::update('mail_messages', [
                     'processed_at' => date('Y-m-d H:i:s'),
@@ -112,13 +111,21 @@ final class MailSync {
         return $count;
     }
 
-    private static function toRequest(array $row): void {
+    /** Returns true when the letter actually became a request. */
+    private static function toRequest(array $row): bool {
         $attachments = Db::all("SELECT * FROM attachments WHERE mail_message_id=?", [$row['id']]);
         $attachmentText = '';
         foreach ($attachments as $a) {
             if (!empty($a['extracted_text'])) {
                 $attachmentText .= "--- Вложение: {$a['filename']} ---\n" . $a['extracted_text'] . "\n\n";
             }
+        }
+
+        // Nothing to read — a bare auto-reply, a picture-only newsletter. Archive it
+        // and stop: asking the model to parse an empty letter only fills the log.
+        if (mb_strlen(trim((string)$row['body_text'])) < 20 && trim($attachmentText) === '') {
+            Db::update('mail_messages', ['processed_at' => date('Y-m-d H:i:s'), 'error' => null], 'id=?', [$row['id']]);
+            return false;
         }
 
         $parsed = RequestParser::parse((string)$row['body_text'], $attachmentText);
@@ -180,6 +187,138 @@ final class MailSync {
         $label = $type === 'order' ? 'Новый заказ' : 'Новый запрос на КП';
         $title = $label . ($orgName ? " от $orgName" : ' от ' . $row['from_email']);
         Notifier::notify('new_request', $title, $row['subject'], 'request', $requestId);
+        return true;
+    }
+
+    // ---- Full archive download (FR-053) ----
+
+    /** Folders a full download walks: column prefix => [folder name, direction]. */
+    private static function backfillFolders(array $box): array {
+        $folders = ['in' => [(string)($box['imap_folder_in'] ?: 'INBOX'), 'in']];
+        $sent = trim((string)($box['imap_folder_sent'] ?? ''));
+        if ($sent !== '' && !empty($box['sync_sent'])) $folders['sent'] = [$sent, 'out'];
+        return $folders;
+    }
+
+    /**
+     * Pull the WHOLE history of a mailbox into the archive, not just what arrived
+     * since the last check. Resumable by design: a shared host kills a long request,
+     * so every batch stores its cursor and the next call carries on from there.
+     * Nothing here creates requests — old mail is history, not a new КП.
+     */
+    public static function backfill(array $box, ?int $budgetSeconds = null, ?int $batch = null): array {
+        $box = Mailboxes::get((int)$box['id']) ?: $box;
+        $res = ['mailbox_id' => (int)$box['id'], 'name' => $box['name'], 'stored' => 0, 'scanned' => 0, 'error' => null];
+        if (!EmailReader::available()) {
+            $res['error'] = 'Расширение PHP imap не установлено на сервере';
+            return $res + ['done' => false, 'percent' => 0, 'progress' => Mailboxes::backfillProgress($box)];
+        }
+
+        $deadline = microtime(true) + max(5, $budgetSeconds ?? (int)Settings::get('MAIL_BACKFILL_SECONDS', 20));
+        $left     = max(1, $batch ?? (int)Settings::get('MAIL_BACKFILL_BATCH', 100));
+        if (empty($box['backfill_started_at'])) {
+            Db::update('mailboxes', ['backfill_started_at' => date('Y-m-d H:i:s'), 'backfill_finished_at' => null], 'id=?', [$box['id']]);
+            $box['backfill_started_at'] = date('Y-m-d H:i:s');
+        }
+
+        try {
+            foreach (self::backfillFolders($box) as $key => [$folder, $direction]) {
+                if (!empty($box["backfill_done_$key"])) continue;
+                if ($left <= 0 || microtime(true) >= $deadline) break;
+                $one = self::backfillFolder($box, $key, $folder, $direction, $left, $deadline);
+                $res['stored']  += $one['stored'];
+                $res['scanned'] += $one['scanned'];
+                $left -= $one['scanned'];
+                $box = Mailboxes::get((int)$box['id']) ?: $box;   // cursors moved
+            }
+            Db::update('mailboxes', ['last_error' => null], 'id=?', [$box['id']]);
+        } catch (Throwable $e) {
+            $res['error'] = $e->getMessage();
+            Db::update('mailboxes', ['last_error' => 'Архив: ' . $e->getMessage()], 'id=?', [$box['id']]);
+            Logger::exception('mail', $e, ['mailbox_id' => $box['id'], 'stage' => 'backfill']);
+            $box = Mailboxes::get((int)$box['id']) ?: $box;
+        }
+
+        $progress = Mailboxes::backfillProgress($box);
+        if ($progress['done'] && empty($box['backfill_finished_at'])) {
+            Db::update('mailboxes', ['backfill_finished_at' => date('Y-m-d H:i:s')], 'id=?', [$box['id']]);
+            $progress['finished_at'] = date('Y-m-d H:i:s');
+            Logger::info('mail', "Ящик «{$box['name']}»: архив писем скачан полностью", ['mailbox_id' => $box['id']]);
+        }
+        return $res + ['done' => $progress['done'], 'percent' => $progress['percent'], 'progress' => $progress];
+    }
+
+    /** One folder, one batch: walk UIDs upwards from the stored cursor. */
+    private static function backfillFolder(array $box, string $key, string $folder, string $direction, int $limit, float $deadline): array {
+        $cursorCol = "backfill_uid_$key";
+        $maxCol    = "backfill_max_$key";
+        $doneCol   = "backfill_done_$key";
+        $uidCol    = $key === 'in' ? 'last_uid_in' : 'last_uid_sent';
+
+        $reader = new EmailReader(Mailboxes::cfg($box));
+        $reader->connect($folder);
+        try {
+            return self::backfillWalk($box, $key, $folder, $direction, $limit, $deadline, $reader);
+        } finally {
+            $reader->close();
+        }
+    }
+
+    /**
+     * The walk itself, split off from the connection so it can be exercised without
+     * an IMAP server. $reader only has to answer maxUid / uidsInRange / fetchUid.
+     */
+    private static function backfillWalk(array $box, string $key, string $folder, string $direction, int $limit, float $deadline, $reader): array {
+        $cursorCol = "backfill_uid_$key";
+        $maxCol    = "backfill_max_$key";
+        $doneCol   = "backfill_done_$key";
+        $uidCol    = $key === 'in' ? 'last_uid_in' : 'last_uid_sent';
+
+        $maxUid = $reader->maxUid();
+        $cursor = (int)($box[$cursorCol] ?? 0);
+        Db::update('mailboxes', [$maxCol => $maxUid], 'id=?', [$box['id']]);
+
+        $stored = 0;
+        $scanned = 0;
+        // UIDs are sparse — deleted mail leaves holes, so we probe by windows
+        $window = 500;
+        while ($cursor < $maxUid && $scanned < $limit && microtime(true) < $deadline) {
+            $to   = (int)min($maxUid, $cursor + $window);
+            $uids = $reader->uidsInRange($cursor + 1, $to);
+            foreach ($uids as $uid) {
+                if ($scanned >= $limit || microtime(true) >= $deadline) break;
+                $scanned++;
+                $cursor = $uid;
+                $msg = $reader->fetchUid($uid);
+                if (!$msg) continue;
+                $id = MailArchive::storeIncoming($box, $msg, $direction, true);
+                if (!$id) continue;
+                $stored++;
+                self::storeAttachments($id, $msg['attachments'] ?? []);
+            }
+            // The window held nothing (or was fully consumed) — jump past it
+            if (!$uids || $cursor >= end($uids)) $cursor = max($cursor, min($to, $maxUid));
+        }
+
+        $done = $cursor >= $maxUid;
+        $update = [$cursorCol => $cursor, $doneCol => $done ? 1 : 0];
+        // The regular sync may now start from where the archive ends — no re-reading
+        if ($done && $cursor > (int)($box[$uidCol] ?? 0)) $update[$uidCol] = $cursor;
+        Db::update('mailboxes', $update, 'id=?', [$box['id']]);
+
+        if ($stored) Logger::info('mail', "Ящик «{$box['name']}»: архив $folder — загружено $stored", ['mailbox_id' => $box['id']]);
+        return ['stored' => $stored, 'scanned' => $scanned, 'done' => $done];
+    }
+
+    /** Start the download over — after «Забрать заново» or a changed folder. */
+    public static function backfillReset(int $mailboxId): void {
+        Db::update('mailboxes', [
+            'backfill_uid_in' => 0, 'backfill_uid_sent' => 0,
+            'backfill_done_in' => 0, 'backfill_done_sent' => 0,
+            'backfill_max_in' => 0, 'backfill_max_sent' => 0,
+            'backfill_started_at' => null, 'backfill_finished_at' => null,
+        ], 'id=?', [$mailboxId]);
+        Logger::info('mail', 'Скачивание архива начато заново', ['mailbox_id' => $mailboxId]);
     }
 
     /** Connection check for the admin panel: opens the folders and counts messages. */
@@ -190,6 +329,7 @@ final class MailSync {
             'ok'      => true,
             'folder'  => $box['imap_folder_in'] ?: 'INBOX',
             'count'   => $reader->messageCount(),
+            'total'   => $reader->maxUid(),
             'folders' => $reader->folders(),
         ];
         $reader->close();

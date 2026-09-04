@@ -578,6 +578,32 @@ SQL;
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '4')");
         $current = 4;
     }
+
+    // v5 — module 004: mail provider presets (Yandex & co) and the full archive download
+    if ($current < 5) {
+        // Which service the mailbox lives on — drives the presets and the app-password hint
+        Db::ensureColumn('mailboxes', 'provider', 'TEXT', "'custom'");
+
+        // Cursors of «скачать весь архив»: how far back each folder has been walked
+        Db::ensureColumn('mailboxes', 'backfill_uid_in', 'INTEGER', '0');
+        Db::ensureColumn('mailboxes', 'backfill_uid_sent', 'INTEGER', '0');
+        Db::ensureColumn('mailboxes', 'backfill_max_in', 'INTEGER', '0');
+        Db::ensureColumn('mailboxes', 'backfill_max_sent', 'INTEGER', '0');
+        Db::ensureColumn('mailboxes', 'backfill_done_in', 'INTEGER', '0');
+        Db::ensureColumn('mailboxes', 'backfill_done_sent', 'INTEGER', '0');
+        Db::ensureColumn('mailboxes', 'backfill_started_at', 'TEXT');
+        Db::ensureColumn('mailboxes', 'backfill_finished_at', 'TEXT');
+
+        // Existing mailboxes get their provider guessed from the address
+        require_once ROOT . '/lib/mail.php';
+        foreach (Db::all("SELECT id, email, imap_user FROM mailboxes") as $box) {
+            $email = (string)($box['email'] ?: $box['imap_user']);
+            Db::update('mailboxes', ['provider' => MailProviders::detect($email)], 'id=?', [$box['id']]);
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '5')");
+        $current = 5;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

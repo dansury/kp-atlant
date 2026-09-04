@@ -6,10 +6,132 @@
  */
 require_once __DIR__ . '/email.php';
 
+/**
+ * Ready-made settings of the mail services people actually use here.
+ * Yandex, Mail.ru and Gmail all refuse the account password over IMAP/SMTP:
+ * the mailbox needs a separate application password, and that is the single
+ * thing an admin gets wrong most often — hence the hint travels with the preset.
+ */
+final class MailProviders {
+    public const PRESETS = [
+        'yandex' => [
+            'title'            => 'Яндекс.Почта',
+            'domains'          => ['yandex.ru', 'yandex.com', 'ya.ru', 'yandex.by', 'yandex.kz', 'narod.ru'],
+            'imap_host'        => 'imap.yandex.ru',
+            'imap_port'        => 993,
+            'imap_encryption'  => 'ssl',
+            'imap_folder_in'   => 'INBOX',
+            'imap_folder_sent' => 'Отправленные',
+            'smtp_host'        => 'smtp.yandex.ru',
+            'smtp_port'        => 465,
+            'smtp_encryption'  => 'ssl',
+            'login_is_email'   => true,
+            'app_password'     => true,
+            'help_url'         => 'https://id.yandex.ru/security/app-passwords',
+            'hint'             => 'Яндекс не пускает по обычному паролю. В «Яндекс ID → Безопасность → Пароли приложений» '
+                . 'создайте пароль для «Почты» и вставьте его в оба поля пароля. Для ящика на своём домене '
+                . '(Яндекс 360) логин — полный адрес, серверы те же. В настройках почты должен быть включён IMAP.',
+        ],
+        'mailru' => [
+            'title'            => 'Mail.ru',
+            'domains'          => ['mail.ru', 'bk.ru', 'inbox.ru', 'list.ru', 'internet.ru'],
+            'imap_host'        => 'imap.mail.ru',
+            'imap_port'        => 993,
+            'imap_encryption'  => 'ssl',
+            'imap_folder_in'   => 'INBOX',
+            'imap_folder_sent' => 'Отправленные',
+            'smtp_host'        => 'smtp.mail.ru',
+            'smtp_port'        => 465,
+            'smtp_encryption'  => 'ssl',
+            'login_is_email'   => true,
+            'app_password'     => true,
+            'help_url'         => 'https://account.mail.ru/user/2-step-auth/passwords/',
+            'hint'             => 'Mail.ru требует пароль для внешнего приложения — создайте его в настройках аккаунта.',
+        ],
+        'gmail' => [
+            'title'            => 'Gmail',
+            'domains'          => ['gmail.com', 'googlemail.com'],
+            'imap_host'        => 'imap.gmail.com',
+            'imap_port'        => 993,
+            'imap_encryption'  => 'ssl',
+            'imap_folder_in'   => 'INBOX',
+            'imap_folder_sent' => '[Gmail]/Sent Mail',
+            'smtp_host'        => 'smtp.gmail.com',
+            'smtp_port'        => 465,
+            'smtp_encryption'  => 'ssl',
+            'login_is_email'   => true,
+            'app_password'     => true,
+            'help_url'         => 'https://myaccount.google.com/apppasswords',
+            'hint'             => 'Нужен пароль приложения Google (при включённой двухфакторной аутентификации).',
+        ],
+        'custom' => [
+            'title'            => 'Другой (свои настройки)',
+            'domains'          => [],
+            'imap_port'        => 993,
+            'imap_encryption'  => 'ssl',
+            'imap_folder_in'   => 'INBOX',
+            'imap_folder_sent' => 'INBOX.Sent',
+            'smtp_port'        => 465,
+            'smtp_encryption'  => 'ssl',
+            'login_is_email'   => false,
+            'app_password'     => false,
+            'help_url'         => '',
+            'hint'             => 'Хостинговый ящик: серверы и папки возьмите из панели хостинга.',
+        ],
+    ];
+
+    /** Preset by key, always a full row — an unknown key falls back to «свои настройки». */
+    public static function get(string $key): array {
+        return self::PRESETS[$key] ?? self::PRESETS['custom'];
+    }
+
+    /** Guess the provider from the address, so «добавить ящик» is one field long. */
+    public static function detect(string $email): string {
+        $domain = strtolower(trim(substr(strrchr($email, '@') ?: '', 1)));
+        if ($domain === '') return 'custom';
+        foreach (self::PRESETS as $key => $preset) {
+            if (in_array($domain, $preset['domains'], true)) return $key;
+        }
+        return 'custom';
+    }
+
+    /** Preset values for a mailbox row: hosts, ports, folders and the login. */
+    public static function apply(string $key, string $email): array {
+        $p = self::get($key);
+        $values = [];
+        foreach (['imap_host','imap_port','imap_encryption','imap_folder_in','imap_folder_sent',
+                  'smtp_host','smtp_port','smtp_encryption'] as $f) {
+            if (isset($p[$f])) $values[$f] = $p[$f];
+        }
+        if (!empty($p['login_is_email']) && $email !== '') {
+            $values['imap_user'] = $email;
+            $values['smtp_user'] = $email;
+            $values['from_email'] = $email;
+        }
+        return $values;
+    }
+
+    /** The panel list: key, title, hint and where to create the app password. */
+    public static function describe(): array {
+        $out = [];
+        foreach (self::PRESETS as $key => $p) {
+            $out[] = [
+                'key'          => $key,
+                'title'        => $p['title'],
+                'hint'         => $p['hint'],
+                'help_url'     => $p['help_url'],
+                'app_password' => (bool)$p['app_password'],
+                'defaults'     => self::apply($key, ''),
+            ];
+        }
+        return $out;
+    }
+}
+
 final class Mailboxes {
     /** Columns the admin panel may write. Passwords are handled separately. */
     public const FIELDS = [
-        'name','email','is_active','is_default','manager_id','create_requests','sync_sent',
+        'name','email','provider','is_active','is_default','manager_id','create_requests','sync_sent',
         'imap_host','imap_port','imap_encryption','imap_user','imap_folder_in','imap_folder_sent',
         'smtp_host','smtp_port','smtp_encryption','smtp_user','from_name','from_email',
     ];
@@ -65,6 +187,7 @@ final class Mailboxes {
         return [
             'name'             => 'Новый ящик',
             'email'            => (string)Settings::get('SMTP_FROM_EMAIL', ''),
+            'provider'         => 'custom',
             'is_active'        => 1,
             'is_default'       => Db::val("SELECT COUNT(*) FROM mailboxes") ? 0 : 1,
             'create_requests'  => 1,
@@ -98,6 +221,17 @@ final class Mailboxes {
         }
         if (($data['name'] ?? '') === '' && !$id) $data['name'] = $data['email'] ?? 'Ящик';
 
+        // A known provider fills in whatever the admin left blank — Yandex needs
+        // nothing but the address and the application password.
+        $email    = (string)($data['email'] ?? ($id ? (string)(self::get($id)['email'] ?? '') : ''));
+        $provider = (string)($data['provider'] ?? '');
+        if ($provider === '' && $email !== '' && !$id) $provider = $data['provider'] = MailProviders::detect($email);
+        if ($provider !== '' && $provider !== 'custom') {
+            foreach (MailProviders::apply($provider, $email) as $f => $v) {
+                if (!isset($data[$f]) || trim((string)$data[$f]) === '') $data[$f] = $v;
+            }
+        }
+
         if ($id) {
             Db::update('mailboxes', $data, 'id=?', [$id]);
         } else {
@@ -125,9 +259,35 @@ final class Mailboxes {
             $box['imap_password_set'] = trim((string)($row['imap_password'] ?? '')) !== '';
             $box['smtp_password_set'] = trim((string)($row['smtp_password'] ?? '')) !== '';
             $box['messages'] = (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE mailbox_id=?", [$box['id']]);
+            $box['oldest_at'] = (string)Db::val("SELECT MIN(date_at) FROM mail_messages WHERE mailbox_id=?", [$box['id']]);
+            $box['backfill']  = self::backfillProgress($box);
             $out[] = $box;
         }
         return $out;
+    }
+
+    /** How far the «скачать весь архив» run got, in a shape the panel can render. */
+    public static function backfillProgress(array $box): array {
+        $folders = [
+            'in'   => ['cursor' => (int)($box['backfill_uid_in'] ?? 0),   'max' => (int)($box['backfill_max_in'] ?? 0),   'done' => !empty($box['backfill_done_in'])],
+            'sent' => ['cursor' => (int)($box['backfill_uid_sent'] ?? 0), 'max' => (int)($box['backfill_max_sent'] ?? 0), 'done' => !empty($box['backfill_done_sent'])],
+        ];
+        $wantSent = !empty($box['sync_sent']) && trim((string)($box['imap_folder_sent'] ?? '')) !== '';
+        if (!$wantSent) unset($folders['sent']);
+
+        $percent = 0;
+        $parts = 0;
+        foreach ($folders as $f) {
+            $parts++;
+            $percent += $f['done'] ? 100 : ($f['max'] > 0 ? min(100, (int)round($f['cursor'] / $f['max'] * 100)) : 0);
+        }
+        return [
+            'folders'     => $folders,
+            'done'        => !array_filter($folders, fn($f) => !$f['done']),
+            'percent'     => $parts ? (int)round($percent / $parts) : 0,
+            'started_at'  => $box['backfill_started_at'] ?? null,
+            'finished_at' => $box['backfill_finished_at'] ?? null,
+        ];
     }
 }
 
@@ -135,8 +295,13 @@ final class Mailboxes {
  * The archive itself: every message the service sees or sends, in one table.
  */
 final class MailArchive {
-    /** Store an incoming message. Returns the row id, or 0 when already archived. */
-    public static function storeIncoming(array $box, array $msg, string $direction = 'in'): int {
+    /**
+     * Store an incoming message. Returns the row id, or 0 when already archived.
+     * $markProcessed stamps the row as handled: old mail pulled by the full-archive
+     * download must land in the archive WITHOUT waking the request pipeline —
+     * a three-year-old letter is history, not a new КП request.
+     */
+    public static function storeIncoming(array $box, array $msg, string $direction = 'in', bool $markProcessed = false): int {
         if (self::exists((int)$box['id'], $msg['folder'] ?? 'INBOX', (int)$msg['uid'], (string)($msg['message_id'] ?? ''))) return 0;
 
         $limit = max(16, (int)Settings::get('MAIL_BODY_MAX_KB', 512)) * 1024;
@@ -157,6 +322,7 @@ final class MailArchive {
             'size'         => (int)($msg['size'] ?? 0),
             'has_attachment' => empty($msg['attachments']) ? 0 : 1,
             'is_read'      => !empty($msg['seen']) ? 1 : 0,
+            'processed_at' => $markProcessed ? date('Y-m-d H:i:s') : null,
             'date_at'      => $msg['date'] ?? date('Y-m-d H:i:s'),
         ]);
     }
@@ -241,6 +407,55 @@ final class MailArchive {
 
     public static function markRead(int $id, bool $read = true): void {
         Db::update('mail_messages', ['is_read' => $read ? 1 : 0], 'id=?', [$id]);
+    }
+
+    /**
+     * Stream the archive of a mailbox as an mbox file — the format Thunderbird,
+     * Outlook importers and `grep` all understand. Written straight to the output
+     * buffer: the archive is bigger than the memory a shared host gives us.
+     */
+    public static function exportMbox(?int $mailboxId): void {
+        $where  = $mailboxId ? 'mailbox_id = ?' : '1=1';
+        $params = $mailboxId ? [$mailboxId] : [];
+        $stmt = Db::q("SELECT * FROM mail_messages WHERE $where ORDER BY date_at, id", $params);
+
+        while ($row = $stmt->fetch()) {
+            $from = $row['from_email'] ?: 'unknown@localhost';
+            $date = date('D M j H:i:s Y', strtotime((string)$row['date_at']) ?: time());
+            echo "From $from $date\r\n";
+            foreach ([
+                'Date'        => date('r', strtotime((string)$row['date_at']) ?: time()),
+                'From'        => self::mimeAddress((string)$row['from_name'], $from),
+                'To'          => (string)$row['to_emails'],
+                'Cc'          => (string)$row['cc_emails'],
+                'Subject'     => (string)$row['subject'],
+                'Message-ID'  => (string)$row['message_id'],
+                'In-Reply-To' => (string)$row['in_reply_to'],
+                'X-Folder'    => (string)$row['folder'],
+            ] as $header => $value) {
+                if (trim($value) === '') continue;
+                echo self::mimeHeader($header, $value) . "\r\n";
+            }
+            echo "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
+            // «From » at the start of a body line is the mbox record separator
+            echo preg_replace('/^(>*From )/m', '>$1', str_replace("\r\n", "\n", (string)$row['body_text'])) . "\r\n\r\n";
+            flush();
+        }
+    }
+
+    /** «Пётр» <p@corp.ru> — the display name is encoded, the address must stay readable. */
+    private static function mimeAddress(string $name, string $email): string {
+        $name = trim(str_replace(['"', "\r", "\n"], '', $name));
+        if ($name === '') return "<$email>";
+        $name = preg_match('/[\x80-\xFF]/', $name) ? '=?UTF-8?B?' . base64_encode($name) . '?=' : '"' . $name . '"';
+        return "$name <$email>";
+    }
+
+    /** Non-ASCII headers travel base64-encoded, or a mail client shows mojibake. */
+    private static function mimeHeader(string $name, string $value): string {
+        $value = str_replace(["\r", "\n"], ' ', $value);
+        if (preg_match('/[\x80-\xFF]/', $value)) $value = '=?UTF-8?B?' . base64_encode($value) . '?=';
+        return "$name: $value";
     }
 }
 
