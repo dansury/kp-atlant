@@ -163,10 +163,10 @@ class EmailReader {
             'message_id'  => trim((string)($header->message_id ?? '')),
             'in_reply_to' => trim((string)($header->in_reply_to ?? '')),
             'from'        => $this->addr($header->from[0] ?? null),
-            'from_name'   => $this->decodeMime($header->from[0]->personal ?? ''),
+            'from_name'   => self::decodeMime($header->from[0]->personal ?? ''),
             'to'          => $this->addrList($header->to ?? []),
             'cc'          => $this->addrList($header->cc ?? []),
-            'subject'     => $this->decodeMime($header->subject ?? ''),
+            'subject'     => self::decodeMime($header->subject ?? ''),
             'date'        => date('Y-m-d H:i:s', strtotime($header->date ?? 'now') ?: time()),
             'seen'        => ($header->Unseen ?? 'U') !== 'U',
             'size'        => (int)($header->Size ?? 0),
@@ -195,6 +195,42 @@ class EmailReader {
     /** Put a copy of an outgoing message into the Sent folder, like a mail client does. */
     public function appendSent(string $rawMessage, string $folder): bool {
         return (bool)@imap_append($this->imap, $this->mailboxRef($folder), $rawMessage, "\\Seen");
+    }
+
+    /**
+     * The account's Spam/Junk folder — mirrors findSentFolder(). «Отметить спамом»
+     * has to land somewhere real: Yandex and Mail.ru call it «Спам», Gmail
+     * «[Gmail]/Spam», cPanel mailboxes usually just «Junk».
+     */
+    public function findJunkFolder(string $configured = ''): ?string {
+        $folders = $this->folders();
+        if (!$folders) return $configured !== '' ? $configured : null;
+
+        $eq = fn(string $a, string $b) => mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+        foreach ($folders as $f) {
+            if ($configured !== '' && $eq($f, $configured)) return $f;
+        }
+
+        $known = ['Спам', 'Spam', 'Junk', 'Junk E-mail', '[Gmail]/Spam', 'INBOX.Junk', 'INBOX.Spam'];
+        foreach ($known as $name) {
+            foreach ($folders as $f) if ($eq($f, $name)) return $f;
+        }
+        foreach ($folders as $f) {
+            $leaf = mb_strtolower((string)preg_replace('#^.*[/.]#u', '', $f));
+            if (in_array($leaf, ['spam', 'junk', 'спам', 'junk e-mail'], true)) return $f;
+        }
+        return $configured !== '' ? $configured : null;
+    }
+
+    /**
+     * Move one message into Junk by UID — this is what makes «Спам» real on the
+     * server, not just in our own database: every other client on the account
+     * sees the letter filed as spam too.
+     */
+    public function moveToJunk(int $uid, string $junkFolder): bool {
+        $ok = @imap_mail_move($this->imap, (string)$uid, $junkFolder, CP_UID);
+        if ($ok) @imap_expunge($this->imap);
+        return (bool)$ok;
     }
 
     /**
@@ -252,7 +288,7 @@ class EmailReader {
         if (empty($struct->parts)) {
             $raw = imap_fetchbody($this->imap, $id, '1');
             if (trim($raw) === '') $raw = imap_body($this->imap, $id);
-            $decoded = $this->toUtf8($this->decodeBody($raw, $struct->encoding ?? 0), $this->partCharset($struct));
+            $decoded = self::toUtf8($this->decodeBody($raw, $struct->encoding ?? 0), $this->partCharset($struct));
             if (strtoupper($struct->subtype ?? 'PLAIN') === 'HTML') $html = $decoded; else $text = $decoded;
         } else {
             $this->walkParts($id, $struct->parts, '', $text, $html, $attachments);
@@ -297,7 +333,7 @@ class EmailReader {
 
             if (($part->type ?? 1) !== 0) continue; // not text
             $raw = imap_fetchbody($this->imap, $id, $section);
-            $decoded = $this->toUtf8($this->decodeBody($raw, $part->encoding ?? 0), $this->partCharset($part));
+            $decoded = self::toUtf8($this->decodeBody($raw, $part->encoding ?? 0), $this->partCharset($part));
             $subtype = strtoupper($part->subtype ?? '');
             if ($subtype === 'PLAIN') {
                 $text .= ($text !== '' ? "\n" : '') . $decoded;
@@ -307,16 +343,62 @@ class EmailReader {
         }
     }
 
-    // Attachment filename from dparameters/parameters, MIME-decoded
+    /**
+     * Attachment filename from dparameters/parameters, MIME-decoded.
+     *
+     * A plain `filename=` parameter is the easy case. A name with non-ASCII
+     * characters is often sent as RFC 2231 extended parameters instead —
+     * `filename*=UTF-8''...` or, once it is long enough, split across
+     * `filename*0*=`, `filename*1*=`, … — and PHP's imap extension hands those
+     * back as separate parameters with a literal `*` in the attribute name
+     * rather than merging them. Left unhandled, every part.attribute check
+     * below misses and the attachment falls back to the generic name the
+     * caller substitutes, which is the «непонятный attachment» a manager sees
+     * instead of the real file.
+     */
     private function partFilename(object $part): string {
         foreach (['dparameters', 'parameters'] as $bag) {
+            $plain = null;
+            $extended = []; // segment index => raw value, for filename*N*=... / filename*N=...
+            $single = null; // filename*=charset'lang'value
+
             foreach ($part->$bag ?? [] as $p) {
-                if (in_array(strtolower($p->attribute), ['filename', 'name'], true) && $p->value !== '') {
-                    return $this->decodeMime($p->value);
+                $attr = strtolower((string)$p->attribute);
+                $value = (string)$p->value;
+                if ($value === '') continue;
+
+                if (preg_match('/^(filename|name)$/', $attr)) {
+                    $plain = $plain ?? $value;
+                } elseif (preg_match('/^(?:filename|name)\*(\d+)\*?$/', $attr, $m)) {
+                    $extended[(int)$m[1]] = $value;
+                } elseif (preg_match('/^(?:filename|name)\*$/', $attr)) {
+                    $single = $single ?? $value;
                 }
             }
+
+            if ($extended) {
+                ksort($extended);
+                $name = self::decodeRfc2231(implode('', $extended));
+                if ($name !== '') return $name;
+            }
+            if ($single !== null) {
+                $name = self::decodeRfc2231($single);
+                if ($name !== '') return $name;
+            }
+            if ($plain !== null) return self::decodeMime($plain);
         }
         return '';
+    }
+
+    /** `UTF-8''%D0%9A...` (RFC 2231 §4) → UTF-8. Falls back to the raw value. */
+    private static function decodeRfc2231(string $value): string {
+        if (preg_match("/^([^']*)'([^']*)'(.*)$/s", $value, $m)) {
+            [, $charset, , $encoded] = $m;
+            $decoded = rawurldecode($encoded);
+            $charset = trim($charset) !== '' ? $charset : 'UTF-8';
+            return self::toUtf8($decoded, $charset);
+        }
+        return self::toUtf8(rawurldecode($value), 'UTF-8');
     }
 
     private function partCharset(object $part): string {
@@ -332,7 +414,7 @@ class EmailReader {
         return $type . '/' . strtolower($part->subtype ?? 'octet-stream');
     }
 
-    private function toUtf8(string $s, string $charset): string {
+    public static function toUtf8(string $s, string $charset): string {
         $charset = strtoupper(trim($charset));
         if ($charset === '' || $charset === 'UTF-8' || $charset === 'US-ASCII') {
             return mb_check_encoding($s, 'UTF-8') ? $s : mb_convert_encoding($s, 'UTF-8', 'Windows-1251');
@@ -358,7 +440,7 @@ class EmailReader {
      * survived neither the archive nor json_encode: subjects reached the browser
      * as a row of «?» boxes. Each chunk is converted before it is joined.
      */
-    private function decodeMime(string $str): string {
+    public static function decodeMime(string $str): string {
         if (trim($str) === '') return '';
         $parts = imap_mime_header_decode($str);
         if (!$parts) return utf8Text($str);
@@ -371,9 +453,36 @@ class EmailReader {
             // 8-bit bytes some clients drop into a header raw
             $result .= in_array($charset, ['DEFAULT', 'UTF-8', 'US-ASCII', 'ASCII', ''], true)
                 ? utf8Text($text)
-                : $this->toUtf8($text, $charset);
+                : self::toUtf8($text, $charset);
         }
         return utf8Text($result);
+    }
+
+    /**
+     * One header's raw value out of a stored raw-header blob (module 006 kept it
+     * for the triage prefilter; the mail archive's encoding repair reads it too,
+     * to re-decode a subject that was mangled before the decoder above existed).
+     * Handles RFC 5322 folded continuation lines; returns '' when absent.
+     */
+    public static function headerValue(string $rawHeaders, string $name): string {
+        if ($rawHeaders === '') return '';
+        $lines = preg_split('/\r\n|\r|\n/', $rawHeaders) ?: [];
+        $value = '';
+        $capturing = false;
+        foreach ($lines as $line) {
+            if ($capturing) {
+                if ($line !== '' && ($line[0] === ' ' || $line[0] === "\t")) {
+                    $value .= ' ' . trim($line);
+                    continue;
+                }
+                break;
+            }
+            if (preg_match('/^' . preg_quote($name, '/') . '\s*:\s*(.*)$/i', $line, $m)) {
+                $value = $m[1];
+                $capturing = true;
+            }
+        }
+        return trim($value);
     }
 
     public function close(): void {

@@ -126,4 +126,43 @@ final class Catalog {
     private static function money(float $v): string {
         return number_format($v, 2, ',', ' ') . ' ₽';
     }
+
+    // ---------------------------------------------------------------- price types
+
+    /**
+     * The price to actually use for one catalog row, resolved in the order a
+     * manager expects: an explicit choice for this one line beats the
+     * counterparty's own default, which beats the service-wide default, which
+     * beats whatever `products_cache.price` already holds (a catalog synced
+     * before this feature existed still has exactly one price per product).
+     */
+    public static function priceFor(array $product, ?int $counterpartyId = null, ?string $priceType = null): float {
+        $prices = self::decodePrices($product['prices_json'] ?? null);
+        if (!$prices) return (float)($product['price'] ?? 0);
+
+        $wanted = $priceType;
+        if ($wanted === null && $counterpartyId) {
+            $wanted = (string)(Db::val("SELECT default_price_type FROM counterparties WHERE id=?", [$counterpartyId]) ?: '') ?: null;
+        }
+        $wanted = $wanted ?? (string)Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '');
+
+        if ($wanted !== '' && array_key_exists($wanted, $prices)) return (float)$prices[$wanted];
+        return (float)($product['price'] ?? 0);
+    }
+
+    /** `{type name: value}` decoded from products_cache.prices_json, or []. */
+    public static function decodePrices(?string $json): array {
+        if (!$json) return [];
+        $decoded = json_decode($json, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /** Every price type the synced catalog knows about — for the settings/pickers. */
+    public static function priceTypes(): array {
+        $types = [];
+        foreach (Db::all("SELECT prices_json FROM products_cache WHERE prices_json IS NOT NULL AND prices_json <> ''") as $row) {
+            foreach (array_keys(self::decodePrices($row['prices_json'])) as $t) $types[$t] = true;
+        }
+        return array_keys($types);
+    }
 }

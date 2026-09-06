@@ -238,27 +238,35 @@ const App = {
     // === Pages ===
 
     // Requests list
-    async pageRequests() {
-        const data = await this.api('requests.php?action=list');
+    async pageRequests(q) {
+        q = q || '';
+        const data = await this.api('requests.php?action=list' + (q ? '&q=' + encodeURIComponent(q) : ''));
         const statusBadge = s => {
             const map = {new:'new',processing:'draft',draft_ready:'draft',sent:'sent',ordered:'confirmed',closed:'sent'};
             const labels = {new:'Новый',processing:'Обработка',draft_ready:'Черновик',sent:'Отправлен',ordered:'Заказ создан',closed:'Закрыт'};
             return `<span class="badge badge--${map[s]||'new'}">${labels[s]||s}</span>`;
         };
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between" style="margin-bottom:16px">
-                <h2>Запросы и заказы</h2>
-                <a href="#new" class="btn btn--primary">+ Новый запрос</a>
+            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
+                <h2 style="margin:0">Запросы и заказы</h2>
+                <div class="flex" style="gap:8px">
+                    <input type="text" id="reqSearch" placeholder="Поиск по контрагенту, контакту, теме…" value="${this.esc(q)}"
+                           style="min-width:220px" onkeydown="if(event.key==='Enter')App.pageRequests(this.value.trim())">
+                    <button class="btn btn--outline" onclick="App.pageRequests(document.getElementById('reqSearch').value.trim())">Найти</button>
+                    <a href="#new" class="btn btn--primary">+ Новый запрос</a>
+                </div>
             </div>
             <div class="card">
+                <div class="table-scroll">
                 <table class="table">
-                    <thead><tr><th class="num">#</th><th>Контрагент</th><th>Тип</th><th>Источник</th><th>Позиций</th><th>Менеджер</th><th>Статус</th><th>Дата</th></tr></thead>
+                    <thead><tr><th class="num">#</th><th>Контрагент</th><th>Контакт</th><th>Тип</th><th>Источник</th><th>Позиций</th><th>Менеджер</th><th>Статус</th><th>Дата</th></tr></thead>
                     <tbody>
                         ${data.items.map(r => `
                             <tr class="${r.answer_state && r.answer_state.unanswered ? 'row--unanswered row--' + r.answer_state.level : ''}"
                                 style="cursor:pointer" onclick="location.hash='request/${r.id}'">
                                 <td class="num">${r.id}</td>
                                 <td>${this.esc(r.counterparty_name) || '—'} ${this.answerBadge(r.answer_state)}</td>
+                                <td>${this.esc(r.contact_person) || '<span class="muted">—</span>'}</td>
                                 <td>${r.category ? this.categoryBadge(r.category, App.categoryLabels[r.category]) : this.typeBadge(r.type)}</td>
                                 <td>${r.source === 'email' ? '📧 Email' : '📋 Ручной'}${r.attachments_count > 0 ? ' 📎' + r.attachments_count : ''}</td>
                                 <td class="num">${r.items_count || 0}</td>
@@ -267,9 +275,10 @@ const App = {
                                 <td>${this.fmtDate(r.created_at, false)}</td>
                             </tr>
                         `).join('')}
-                        ${data.items.length === 0 ? '<tr><td colspan="8" style="text-align:center;color:var(--text-muted)">Нет запросов</td></tr>' : ''}
+                        ${data.items.length === 0 ? `<tr><td colspan="9" style="text-align:center;color:var(--text-muted)">${q ? 'Ничего не найдено' : 'Нет запросов'}</td></tr>` : ''}
                     </tbody>
                 </table>
+                </div>
             </div>
         `;
     },
@@ -469,6 +478,7 @@ const App = {
                 <input type="text" data-field="unit" value="${this.esc(i.unit || 'шт.')}" placeholder="Ед." title="Единица измерения">
                 <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
                        placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal()">
+                <span class="price-opts-slot">${this.priceOptsSelect(i.price_options || {})}</span>
                 <input type="text" data-field="notes" value="${this.esc(i.notes || '')}" placeholder="Примечание">
                 <label title="Позиция подтверждена менеджером — автоподбор её больше не трогает">
                     <input type="checkbox" data-field="is_confirmed" ${i.is_confirmed ? 'checked' : ''}> ок
@@ -476,6 +486,24 @@ const App = {
                 <button class="btn btn--outline btn--sm" title="Убрать строку"
                         onclick="this.closest('[data-match-row]').remove(); App.updateMatchTotal()">×</button>
             </div>`;
+    },
+
+    // Prices МойСклад knows for the matched product, so the manager can pick a
+    // type instead of typing a number — «как руками, так и выбором».
+    priceOptsSelect(prices) {
+        const entries = Object.entries(prices || {});
+        if (entries.length < 2) return '';
+        return `<select class="price-opts" title="Выбрать тип цены" onchange="App.applyPriceOption(this)">
+            <option value="">цена…</option>
+            ${entries.map(([name, val]) => `<option value="${this.esc(String(val))}">${this.esc(name)} — ${this.fmtMoney(val)}</option>`).join('')}
+        </select>`;
+    },
+
+    applyPriceOption(sel) {
+        if (!sel.value) return;
+        const row = sel.closest('[data-match-row]');
+        const price = row && row.querySelector('[data-field="price"]');
+        if (price) { price.value = sel.value; this.updateMatchTotal(); }
     },
 
     // The manager answered the «равнозначные» question — the line stops asking
@@ -527,7 +555,7 @@ const App = {
                 box.innerHTML = d.items.map(p => `
                     <div class="suggest__item" onmousedown="App.pickSuggest(this, '${this.jsStr(JSON.stringify({
                         moysklad_id: p.moysklad_id, name: p.name, article: p.article || p.code || '',
-                        unit: p.unit || 'шт.', price: p.price || 0, stock: p.stock ?? '',
+                        unit: p.unit || 'шт.', price: p.price || 0, stock: p.stock ?? '', prices: p.prices || {},
                     }))}')">
                         <div>${this.esc(p.name)}</div>
                         <div class="muted">${this.esc(p.characteristics || p.article || p.code || '')}
@@ -557,7 +585,10 @@ const App = {
         set('price', p.price);
         set('stock', p.stock);
         row.querySelector('[data-field="is_confirmed"]').checked = true;
-        el.closest('.suggest').hidden = true;
+        const slot = row.querySelector('.price-opts-slot');
+        if (slot) slot.innerHTML = this.priceOptsSelect(p.prices || {});
+        const suggest = el.closest ? el.closest('.suggest') : null;
+        if (suggest) suggest.hidden = true;
         this.updateMatchTotal();
     },
 
@@ -565,7 +596,7 @@ const App = {
         const v = JSON.parse(json);
         this.pickSuggest(el, JSON.stringify({
             moysklad_id: v.moysklad_id, name: v.name, article: v.article || '',
-            unit: v.unit || 'шт.', price: v.price || 0, stock: v.stock ?? '',
+            unit: v.unit || 'шт.', price: v.price || 0, stock: v.stock ?? '', prices: v.prices || {},
         }));
     },
 
@@ -1169,12 +1200,36 @@ const App = {
                 </div>
             `;
             this.loadChat(cp.id);
+            this.loadCounterpartyPriceTypes(cp);
 
             // Returning from the MoySklad tab refreshes the card (FR-030)
             this.onTabVisible = () => {
                 if (location.hash === `#counterparty/${cp.id}`) this.syncCompany(cp.id, true);
             };
             this.syncCompany(cp.id, true);
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // Which price type this counterparty gets by default (module: price defaults)
+    async loadCounterpartyPriceTypes(cp) {
+        const sel = document.getElementById('cpPriceType');
+        if (!sel) return;
+        try {
+            const d = await this.api('products.php?action=price_types');
+            (d.items || []).forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                if (name === cp.default_price_type) opt.selected = true;
+                sel.appendChild(opt);
+            });
+        } catch { /* каталог ещё не синхронизирован — список типов пуст, это не ошибка */ }
+    },
+
+    async setCounterpartyPriceType(id, value) {
+        try {
+            await this.api(`counterparties.php?action=update&id=${id}`, {method: 'POST', body: {default_price_type: value}});
+            this.toast('Сохранено', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -1191,6 +1246,12 @@ const App = {
                 <p><strong>МойСклад:</strong> ${cp.moysklad_id ? 'привязан' : '<span class="muted">не привязан</span>'}</p>
                 ${cp.merged_cards && cp.merged_cards.length
                     ? `<p class="muted">Объединено с: ${cp.merged_cards.map(m => this.esc(m.name)).join(', ')}</p>` : ''}
+                <div class="form-group" style="margin-top:8px">
+                    <label>Цена по умолчанию для этого контрагента</label>
+                    <select id="cpPriceType" onchange="App.setCounterpartyPriceType(${cp.id}, this.value)">
+                        <option value="">как в настройках каталога</option>
+                    </select>
+                </div>
             </div>
 
             <div class="card">
@@ -2040,6 +2101,7 @@ const App = {
                     <div class="flex" style="margin-top:8px">
                         <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id}, false, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Ответить на это письмо</button>
                         ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id}, true, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Создать ответ</button>` : ''}
+                        ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                     </div>
                 </div>
             </div>`.replace('class="tmsg ', open ? 'class="tmsg tmsg--open ' : 'class="tmsg ');
@@ -2070,6 +2132,7 @@ const App = {
                     <a href="#mail" class="btn btn--outline btn--sm">← К списку</a>
                     ${m.direction === 'in' ? `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id}, true)">Создать ответ</button>` : ''}
                     <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>
+                    ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                 </div>
             </div>
             <div class="card">
@@ -2103,11 +2166,17 @@ const App = {
     async pageBoards() {
         const d = await this.api('boards.php?action=list');
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between" style="margin-bottom:16px">
-                <h2>Доски</h2>
-                <button class="btn btn--primary" onclick="App.boardCreate()">+ Новая доска</button>
+            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
+                <h2 style="margin:0">Доски</h2>
+                <div class="flex" style="gap:8px">
+                    <input type="text" id="boardsSearch" placeholder="Поиск по всем доскам…" style="min-width:220px"
+                           onkeydown="if(event.key==='Enter')App.boardsSearch()">
+                    <button class="btn btn--outline" onclick="App.boardsSearch()">Найти</button>
+                    <button class="btn btn--primary" onclick="App.boardCreate()">+ Новая доска</button>
+                </div>
             </div>
-            <div class="grid grid--3">
+            <div id="boardsSearchResult"></div>
+            <div class="grid grid--3" id="boardsGrid">
                 ${d.items.map(b => `
                     <div class="board-tile" onclick="location.hash='board/${b.id}'">
                         <div class="board-tile__name">${this.esc(b.name)}</div>
@@ -2115,6 +2184,32 @@ const App = {
                     </div>`).join('')}
             </div>
         `;
+    },
+
+    // Search across every board at once — a card's title/note, its mail thread
+    // and the request behind it
+    async boardsSearch() {
+        const input = document.getElementById('boardsSearch');
+        const q = (input ? input.value : '').trim();
+        const box = document.getElementById('boardsSearchResult');
+        const grid = document.getElementById('boardsGrid');
+        if (!box) return;
+        if (q.length < 2) { box.innerHTML = ''; if (grid) grid.hidden = false; return; }
+        box.innerHTML = '<div class="loading">Ищем...</div>';
+        if (grid) grid.hidden = true;
+        try {
+            const d = await this.api('boards.php?action=search&q=' + encodeURIComponent(q));
+            box.innerHTML = !d.items.length ? '<p class="muted">Ничего не найдено</p>' : `
+                <div class="card">
+                    ${d.items.map(c => `
+                        <div class="search-hit" onclick="location.hash='board/${c.board_id}'">
+                            <div><strong>${this.esc(c.title)}</strong>
+                                <span class="muted">— ${this.esc(c.board_name)} / ${this.esc(c.column_title)}</span></div>
+                            ${c.note ? `<div class="muted">${this.esc(c.note)}</div>` : ''}
+                        </div>
+                    `).join('')}
+                </div>`;
+        } catch (err) { box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
     async boardCreate() {
@@ -2130,13 +2225,15 @@ const App = {
         const b = await this.api(`boards.php?action=get&id=${id}`);
         this.board = b;
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between" style="margin-bottom:12px">
-                <div class="flex">
+            <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
+                <div class="flex flex--wrap" style="gap:8px">
                     <a href="#boards" class="btn btn--outline btn--sm">← Доски</a>
                     <h2 style="margin:0">${this.esc(b.name)}</h2>
                     <button class="btn btn--outline btn--sm" onclick="App.boardRename(${b.id})">Переименовать</button>
                 </div>
-                <div class="flex">
+                <div class="flex flex--wrap" style="gap:8px">
+                    <input type="text" id="boardFilter" placeholder="Поиск по доске…" style="min-width:180px"
+                           oninput="App.boardFilter(this.value)">
                     <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn(${b.id})">+ Колонка</button>
                     <button class="btn btn--outline btn--sm" onclick="App.boardDelete(${b.id})">Удалить доску</button>
                 </div>
@@ -2146,6 +2243,15 @@ const App = {
             </div>
         `;
         this.boardBindDnd();
+    },
+
+    // Client-side filter over the cards already on the page — every request of
+    // this board, not just the one column being looked at
+    boardFilter(q) {
+        q = q.trim().toLowerCase();
+        document.querySelectorAll('.bcard').forEach(card => {
+            card.hidden = !(!q || card.textContent.toLowerCase().includes(q));
+        });
     },
 
     boardColumn(c) {
@@ -2374,6 +2480,17 @@ const App = {
     },
 
     // $generate=true — the manager pressed «Создать ответ»: draft the text right away.
+    // «Спам»: files the letter as spam, moves it into the mailbox's own Spam/Junk
+    // folder on the server, and remembers the sender for next time.
+    async markSpam(id) {
+        if (!confirm('Отметить письмо как спам? Оно уйдёт в папку «Спам» на почтовом сервере, а письма с этого адреса больше не станут запросами.')) return;
+        try {
+            await this.api('mail.php?action=mark_spam', {method: 'POST', body: {id}});
+            this.toast('Отмечено как спам', 'success');
+            this.route();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
     // $threadKey keeps the answer in the conversation it belongs to, whichever
     // mailbox it is sent from.
     async mailCompose(replyToId, generate, threadKey) {

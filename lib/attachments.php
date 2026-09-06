@@ -292,6 +292,19 @@ class Attachments {
         return utf8Text($s);
     }
 
+    /**
+     * `Content-Disposition` for a download. A plain `filename="..."` with raw
+     * Cyrillic bytes is what produced the unreadable name in the browser's save
+     * dialog — RFC 6266/5987's `filename*=UTF-8''...` is what every current
+     * browser actually reads a non-ASCII name from; the quoted `filename=` next
+     * to it is an ASCII fallback for anything older.
+     */
+    public static function contentDisposition(string $filename): string {
+        $ascii = preg_replace('/[^\x20-\x7E]/', '_', $filename) ?? 'attachment';
+        $ascii = str_replace('"', "'", $ascii);
+        return 'attachment; filename="' . $ascii . '"; filename*=UTF-8\'\'' . rawurlencode($filename);
+    }
+
     private static function sanitizeFilename(string $name): string {
         $name = basename(str_replace('\\', '/', $name));
         // A filename from an old letter is not always valid UTF-8; the /u patterns

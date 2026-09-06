@@ -202,6 +202,32 @@ final class Boards {
         Db::q("DELETE FROM board_cards WHERE id=?", [$cardId]);
     }
 
+    /**
+     * A card, wherever it lives: title/note of the card itself, plus the mail
+     * thread and the request behind it — a manager searching for «Глори Эйр»
+     * should find the card even when only the letter mentions the company.
+     */
+    public static function search(string $q, int $limit = 50): array {
+        $like = '%' . $q . '%';
+        return Db::all(
+            "SELECT d.id AS card_id, d.title, d.note, d.thread_key, d.request_id, d.moved_at,
+                    col.id AS column_id, col.title AS column_title, col.color,
+                    b.id AS board_id, b.name AS board_name
+             FROM board_cards d
+             JOIN board_columns col ON col.id = d.column_id
+             JOIN boards b ON b.id = col.board_id
+             LEFT JOIN mail_messages m ON m.thread_key = d.thread_key
+             LEFT JOIN requests r ON r.id = d.request_id
+             WHERE d.title LIKE ? OR d.note LIKE ?
+                OR m.subject LIKE ? OR m.body_text LIKE ? OR m.from_email LIKE ? OR m.from_name LIKE ?
+                OR r.email_subject LIKE ? OR r.raw_text LIKE ? OR r.email_from LIKE ?
+             GROUP BY d.id
+             ORDER BY d.moved_at DESC
+             LIMIT ?",
+            [$like, $like, $like, $like, $like, $like, $like, $like, $like, $limit]
+        );
+    }
+
     /** Which boards a thread is already on — the mail page shows it as a chip. */
     public static function threadPlacement(string $threadKey): array {
         return Db::all(

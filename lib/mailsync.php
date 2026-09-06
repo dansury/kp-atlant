@@ -258,6 +258,66 @@ final class MailSync {
         }
     }
 
+    // ---- Spam ----
+
+    /**
+     * The manager pressed «Спам» on a letter. Filed as spam here (so the
+     * request pipeline stops treating it as one), moved into the mailbox's own
+     * Spam/Junk folder (so the server itself — and every other client on the
+     * account — agrees it is spam, not just our database), and the sender is
+     * remembered so the next letter from them is never even offered as a request.
+     */
+    public static function markAsSpam(int $mailMessageId): array {
+        $row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$mailMessageId]);
+        if (!$row) throw new RuntimeException('Письмо не найдено');
+
+        Db::update('mail_messages', [
+            'category'      => 'spam',
+            'triage_reason' => 'Отмечено спамом вручную',
+        ], 'id=?', [$mailMessageId]);
+        if (!empty($row['request_id'])) {
+            Db::update('requests', [
+                'category'        => 'spam',
+                'category_source' => 'manager',
+            ], 'id=?', [(int)$row['request_id']]);
+        }
+
+        $moved = false;
+        $moveError = null;
+        if ($row['direction'] === 'in' && (int)$row['uid'] > 0 && !empty($row['mailbox_id']) && EmailReader::available()) {
+            $box = Mailboxes::get((int)$row['mailbox_id']);
+            if ($box) {
+                try {
+                    $reader = new EmailReader(Mailboxes::cfg($box));
+                    $reader->connect((string)($row['folder'] ?: 'INBOX'));
+                    $junk = $reader->findJunkFolder();
+                    if ($junk !== null) {
+                        $moved = $reader->moveToJunk((int)$row['uid'], $junk);
+                    }
+                    $reader->close();
+                } catch (Throwable $e) {
+                    $moveError = $e->getMessage();
+                    Logger::exception('mail', $e, ['mail_message_id' => $mailMessageId, 'stage' => 'mark_spam']);
+                }
+            }
+        }
+
+        $from = mb_strtolower(trim((string)$row['from_email']));
+        if ($from !== '') {
+            $list = array_values(array_filter(array_map('trim', explode(',', (string)Settings::get('TRIAGE_SPAM_SENDERS', '')))));
+            $already = array_map('mb_strtolower', $list);
+            if (!in_array($from, $already, true)) {
+                $list[] = $from;
+                Settings::set('TRIAGE_SPAM_SENDERS', implode(', ', $list));
+            }
+        }
+
+        Logger::info('mail', "Письмо #$mailMessageId отмечено как спам" . ($moved ? ' и перемещено в папку спама на сервере' : ''),
+            ['mail_message_id' => $mailMessageId, 'moved' => $moved, 'move_error' => $moveError]);
+
+        return ['moved' => $moved, 'move_error' => $moveError];
+    }
+
     // ---- Full archive download (FR-053) ----
 
     /** Folders a full download walks: column prefix => [folder name, direction]. */

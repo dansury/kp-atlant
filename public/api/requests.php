@@ -7,6 +7,7 @@ require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
+require_once ROOT . '/lib/attachments.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -27,13 +28,23 @@ switch ($action) {
         if (!empty($_GET['category'])) {
             $where .= ' AND r.category = ?';
             $params[] = (string)$_GET['category'];
+        } else {
+            // Спам не должен занимать место в обычном списке запросов, пока его
+            // явно не запросили через фильтр по категории
+            $where .= " AND r.category IS NOT 'spam'";
+        }
+        if (trim((string)($_GET['q'] ?? '')) !== '') {
+            // Поиск по всем запросам: контрагент, контактное лицо, тема письма, текст
+            $where .= ' AND (c.name LIKE ? OR c.contact_person LIKE ? OR r.email_subject LIKE ? OR r.email_from LIKE ? OR r.raw_text LIKE ?)';
+            $like = '%' . trim((string)$_GET['q']) . '%';
+            array_push($params, $like, $like, $like, $like, $like);
         }
 
-        $total = Db::val("SELECT COUNT(*) FROM requests r WHERE $where", $params);
+        $total = Db::val("SELECT COUNT(*) FROM requests r LEFT JOIN counterparties c ON r.counterparty_id = c.id WHERE $where", $params);
         $rows = Db::all(
             "SELECT r.id, r.source, r.status, r.type, r.type_source, r.email_from, r.created_at, r.updated_at,
                     r.category, r.category_confidence, r.category_reason, r.category_source,
-                    r.counterparty_id, c.name as counterparty_name, m.name as manager_name,
+                    r.counterparty_id, c.name as counterparty_name, c.contact_person, m.name as manager_name,
                     c.last_inbound_at, c.last_outbound_at,
                     (SELECT COUNT(*) FROM proposal_items pi JOIN proposals p ON pi.proposal_id=p.id WHERE p.request_id=r.id) as items_count,
                     (SELECT COUNT(*) FROM attachments a WHERE a.request_id=r.id) as attachments_count
@@ -57,7 +68,8 @@ switch ($action) {
     case 'get':
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
-        $req = Db::one("SELECT r.*, c.name as counterparty_name, c.inn as counterparty_inn, m.name as manager_name
+        $req = Db::one("SELECT r.*, c.name as counterparty_name, c.inn as counterparty_inn,
+                               c.contact_person, c.contact_email, c.contact_phone, m.name as manager_name
                          FROM requests r
                          LEFT JOIN counterparties c ON r.counterparty_id = c.id
                          LEFT JOIN managers m ON r.manager_id = m.id
@@ -240,7 +252,7 @@ switch ($action) {
         if (!is_file($path)) jsonError('File missing on disk', 404);
 
         header('Content-Type: ' . ($a['mime'] ?: 'application/octet-stream'));
-        header('Content-Disposition: attachment; filename="' . rawurlencode($a['filename']) . '"');
+        header('Content-Disposition: ' . Attachments::contentDisposition($a['filename']));
         header('Content-Length: ' . filesize($path));
         readfile($path);
         exit;

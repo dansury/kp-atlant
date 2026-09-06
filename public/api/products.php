@@ -28,7 +28,7 @@ switch ($action) {
             array_push($params, "%$w%", "%$w%", "%$w%", "%$w%", "%$w%");
         }
         $items = Db::all(
-            "SELECT moysklad_id, name, article, code, price, stock, reserved, unit,
+            "SELECT moysklad_id, name, article, code, price, prices_json, stock, reserved, unit,
                     characteristics, product_type, category
              FROM products_cache
              WHERE " . implode(' AND ', $where) . "
@@ -36,6 +36,14 @@ switch ($action) {
              LIMIT ?",
             [...$params, $limit]
         );
+        $counterpartyId = (int)($_GET['counterparty_id'] ?? 0) ?: null;
+        require_once ROOT . '/lib/catalog.php';
+        foreach ($items as &$it) {
+            $it['prices'] = Catalog::decodePrices($it['prices_json'] ?? null);
+            $it['price'] = Catalog::priceFor($it, $counterpartyId);
+            unset($it['prices_json']);
+        }
+        unset($it);
 
         // Nothing locally — ask MoySklad itself, if the token still works
         $fromApi = false;
@@ -163,6 +171,13 @@ switch ($action) {
             'items'  => ProductMatcher::findCandidates($q, max(2, (int)Settings::get('MATCH_CANDIDATES', 5))),
             'vector' => Embeddings::enabled(),
         ]);
+
+    // Every price type the synced catalog knows — the picker for «цена по
+    // умолчанию» in settings and on a counterparty card
+    case 'price_types':
+        requireAuth();
+        require_once ROOT . '/lib/catalog.php';
+        jsonData(['items' => Catalog::priceTypes()]);
 
     default:
         jsonError('Unknown action', 400);
