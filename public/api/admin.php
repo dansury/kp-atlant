@@ -63,6 +63,34 @@ try {
                 jsonError('Нейросеть не ответила: ' . $e->getMessage());
             }
 
+        // Why a provider refuses to answer: the key, or something on the way.
+        // On a Russian host the API is often answered by a filter, not by the
+        // provider — and then no key can help, only a proxy.
+        case 'llm_diagnose':
+            $provider = (string)($input['provider'] ?? $_GET['provider'] ?? 'openrouter');
+            if (!isset(LLM::CATALOG[$provider])) jsonError('Неизвестный провайдер');
+            jsonOk(['result' => LLM::diagnose($provider)]);
+
+        // Live OpenRouter catalog: after this the picker lists every model the
+        // account can actually call, free ones in their own group
+        case 'openrouter_models_refresh':
+            try {
+                $payload = LLM::refreshOpenRouterModels();
+            } catch (Throwable $e) {
+                Logger::exception('llm', $e);
+                jsonError('Каталог OpenRouter не обновился: ' . $e->getMessage());
+            }
+            Logger::info('llm', 'Каталог OpenRouter обновлён: ' . count($payload['models']) . ' моделей');
+            jsonOk(['count' => count($payload['models']), 'synced_at' => $payload['synced_at']]);
+
+        case 'openrouter_models_forget':
+            LLM::forgetOpenRouterModels();
+            jsonOk();
+
+        // Re-read letters archived before the header decoder knew about charsets
+        case 'mail_repair_encoding':
+            jsonOk(['result' => MailArchive::repairEncoding()]);
+
         case 'test_imap':
             $box = mailboxFromInput($input);
             try {
@@ -220,6 +248,10 @@ try {
             $boxes = Mailboxes::all();
             jsonData([
                 'llm'        => LLM::status(),
+                // Where model requests go out and how fresh the OpenRouter list is
+                'llm_route'  => LLM::routeLabel(),
+                'llm_catalog'=> ['count' => count(LLM::openRouterCache()['models'] ?? []),
+                                 'synced_at' => LLM::openRouterCache()['synced_at'] ?? null],
                 'log'        => Logger::counts(),
                 'mailboxes'  => count($boxes),
                 'mail_errors'=> array_values(array_filter(array_map(

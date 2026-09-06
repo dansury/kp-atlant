@@ -84,6 +84,27 @@ switch ($action) {
         }
         jsonOk();
 
+    /**
+     * Model picker data for anyone who may write a reply — not just admins.
+     * No keys travel here: only slugs, labels and the group they belong to.
+     */
+    case 'llm_models':
+        requireAuth();
+        $out = [];
+        foreach (array_keys(LLM::CATALOG) as $provider) {
+            $out[] = [
+                'provider' => $provider,
+                'label'    => LLM::PROVIDER_LABELS[$provider] ?? $provider,
+                'ready'    => LLM::ready($provider),
+                'models'   => LLM::catalog($provider),
+            ];
+        }
+        jsonData([
+            'providers' => $out,
+            'current'   => LLM::currentModel(),
+            'picker'    => (string)Settings::get('LLM_MODEL_PICKER', '1') === '1',
+        ]);
+
     // MoySklad integration status and webhooks (FR-029, FR-039)
     case 'moysklad':
         requireAuth();
@@ -116,6 +137,9 @@ switch ($action) {
             // NOT 'error': the JS api() helper treats a top-level `error` as a failed request
             'ms_error'     => $error,
             'diag'         => MoySklad::getDiagnostics(),
+            // Which layer the token came from: «из интерфейса» is editable right
+            // here, «из config.php» lives on the server
+            'token_source' => Settings::source('MOYSKLAD_TOKEN'),
             'webhook_url'  => $appUrl . '/api/moysklad_hook.php?secret=' . $secret,
             'webhooks'     => $hooksCurrent,
             'webhooks_all' => $hooks,

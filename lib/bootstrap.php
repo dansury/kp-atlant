@@ -721,6 +721,53 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '9')");
         $current = 9;
     }
+
+    // v10 — module 008: catalog from an Excel export, matched positions on the
+    // request card, photos chosen per KP
+    if ($current < 10) {
+        // What the MoySklad export carries beyond name and price
+        Db::ensureColumn('products_cache', 'code', 'TEXT');
+        Db::ensureColumn('products_cache', 'product_type', 'TEXT', "'product'");
+        Db::ensureColumn('products_cache', 'parent_id', 'TEXT');
+        Db::ensureColumn('products_cache', 'characteristics', 'TEXT');
+        // Public CDN links from the export — no token needed to fetch them
+        Db::ensureColumn('products_cache', 'image_urls', 'TEXT');
+        Db::ensureColumn('products_cache', 'is_archived', 'INTEGER', '0');
+        Db::ensureColumn('products_cache', 'source', 'TEXT', "'moysklad'");
+        Db::ensureColumn('products_cache', 'imported_at', 'TEXT');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_products_code ON products_cache(code)");
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_products_parent ON products_cache(parent_id)");
+
+        // «Подходящие позиции» of a request: what the manager confirmed the client
+        // asked for. The KP is built from these rows, not from a fresh guess.
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS request_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL DEFAULT 0,
+            raw_name TEXT NOT NULL DEFAULT '',
+            quantity REAL NOT NULL DEFAULT 1,
+            moysklad_product_id TEXT,
+            product_name TEXT,
+            article TEXT,
+            unit TEXT NOT NULL DEFAULT 'шт.',
+            price REAL NOT NULL DEFAULT 0,
+            stock INTEGER,
+            match_confidence REAL,
+            match_variants TEXT,
+            is_confirmed INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_request_items ON request_items(request_id, position);
+SQL);
+
+        // Which photos of a product go into this KP (FR-046)
+        Db::ensureColumn('proposal_items', 'selected_images', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '10')");
+        $current = 10;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
@@ -949,14 +996,16 @@ function currentManager(): ?array {
  */
 function utf8Text(string $s): string {
     if ($s === '' || mb_check_encoding($s, 'UTF-8')) return $s;
-    // Any valid multi-byte sequence means the string is UTF-8 with a few bad bytes
-    if (preg_match('/[\xC2-\xF4][\x80-\xBF]/', $s)) {
-        return (string)@iconv('UTF-8', 'UTF-8//IGNORE', $s);
-    }
+
+    // Deciding between «UTF-8 with a few broken bytes» and «windows-1251» by the
+    // presence of one valid pair was wrong: cp1251 «№» right after a capital
+    // Cyrillic letter forms exactly such a pair, so whole Russian subjects were
+    // run through //IGNORE and came out as a row of «?». Keep what survives more.
+    $stripped = (string)@iconv('UTF-8', 'UTF-8//IGNORE', $s);
+    if ($stripped !== '' && strlen($stripped) >= (int)(strlen($s) * 0.9)) return $stripped;
+
     $cp1251 = (string)@mb_convert_encoding($s, 'UTF-8', 'Windows-1251');
-    return mb_check_encoding($cp1251, 'UTF-8') && $cp1251 !== ''
-        ? $cp1251
-        : (string)@iconv('UTF-8', 'UTF-8//IGNORE', $s);
+    return mb_check_encoding($cp1251, 'UTF-8') && $cp1251 !== '' ? $cp1251 : $stripped;
 }
 
 // JSON response helpers

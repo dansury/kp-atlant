@@ -9,6 +9,7 @@
 | База знаний: вики компании из GitHub в промптах | `specs/005-knowledge-base/spec.md` | Implemented |
 | Классификация писем и ответ по типу запроса | `specs/006-email-triage/spec.md` | Implemented |
 | PWA и web push для администраторов | `specs/007-pwa-push/spec.md` | Implemented |
+| Каталог, подходящие позиции, выбор модели | `specs/008-catalog-and-matching/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |

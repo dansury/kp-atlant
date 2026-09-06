@@ -21,11 +21,22 @@ together with its prompt in `Prompts::registry()` and its budget in `Knowledge::
 Never call the model twice for one letter, and never let a draft invent a price, a stock
 level or an order status — those come from `Catalog`, not from the wiki.
 
+## Catalog
+`products_cache` has two sources and must keep working on either: `MoySklad::refreshProductCache()`
+through the API, and `CatalogImport::run()` from a МойСклад Excel export (module 008). Never make a
+KP, a match or a draft depend on the API being reachable — a dead token must degrade to the imported
+catalog, not to an error. Stock never comes from the file. Prices and names for a client-facing
+document come from `products_cache`, never from a model.
+
+## Interface
+There is ONE «Настройки» item in the header: everything lives under `#settings/<tab>`, admin-only
+tabs hidden from a plain manager. Do not add a second top-level entry for a settings screen.
+
 ## Configuration
 Never read `config.php` directly. `config.php` holds DEFAULTS only and is optional; the effective value is `Settings::get('KEY')` (DB override → config.php → built-in default), and `$cfg` from bootstrap is already that merged array. A new setting must be declared in `Settings::SPEC` so the admin panel can show and override it. Secrets go through `Crypt` and never reach the browser.
 
 ## Errors
-Report failures with `Logger::error()` / `Logger::exception()` (channel + context), not `error_log()` — the admin reads them in «Админ → Логи».
+Report failures with `Logger::error()` / `Logger::exception()` (channel + context), not `error_log()` — the admin reads them in «Настройки → Логи».
 
 ## Language
 Code comments in English. UI in Russian. Specs in English.

@@ -122,21 +122,23 @@ class MoySklad {
 
             foreach ($data['rows'] as $p) {
                 $mapped = self::mapProduct($p);
-                $normalized = mb_strtolower(preg_replace('/[\s\-\"\'«»()]+/', ' ', $mapped['name']));
+                // /u matters: without it the byte 0xBB of «»» is stripped out of
+                // every «л» and the normalized name stops matching anything
+                $normalized = trim(mb_strtolower(preg_replace('/[\s\-\"\'«»()]+/u', ' ', $mapped['name'])));
                 $category = $mapped['category'] ?? '';
                 $isAddon = ($addonCategory !== '' && $category === $addonCategory) ? 1 : 0;
 
-                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, price, stock, reserved, unit, description, category, is_addon, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, code, price, stock, reserved, unit, description, category, is_addon, product_type, source, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'product', 'moysklad', datetime('now'))
                     ON CONFLICT(moysklad_id) DO UPDATE SET
                         name=excluded.name, name_normalized=excluded.name_normalized,
-                        article=excluded.article, price=excluded.price,
+                        article=excluded.article, code=excluded.code, price=excluded.price,
                         stock=excluded.stock, reserved=excluded.reserved,
                         unit=excluded.unit, description=excluded.description,
                         category=excluded.category, is_addon=excluded.is_addon,
-                        updated_at=datetime('now')", [
+                        source='moysklad', updated_at=datetime('now')", [
                     $mapped['id'], $mapped['name'], $normalized,
-                    $mapped['article'], $mapped['price'],
+                    $mapped['article'], $mapped['code'], $mapped['price'],
                     $mapped['stock'], $mapped['reserved'],
                     $mapped['unit'], $mapped['description'], $category, $isAddon,
                 ]);
@@ -631,6 +633,7 @@ class MoySklad {
             'id' => self::extractId($p['id'] ?? $p['meta']['href'] ?? ''),
             'name' => $p['name'] ?? '',
             'article' => $p['article'] ?? '',
+            'code' => $p['code'] ?? '',
             'price' => $price,
             'stock' => 0, // filled from stock report
             'reserved' => 0,

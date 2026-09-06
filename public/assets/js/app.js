@@ -145,13 +145,15 @@ const App = {
     // Render navigation
     renderNav() {
         const nav = document.getElementById('nav');
+        // One «Настройки» for everything: the split between it and a separate
+        // «Админ» meant two menu items with the same name and no way to guess
+        // which one held the setting you were after
         nav.innerHTML = `
             <a href="#requests" data-page="requests">Запросы</a>
             <a href="#new" data-page="new">+ Новый</a>
             <a href="#counterparties" data-page="counterparties">Компании</a>
             <a href="#mail" data-page="mail">Почта<span id="mailBadge"></span></a>
-            <a href="#settings" data-page="settings">Настройки</a>
-            ${this.manager.is_admin ? '<a href="#admin" data-page="admin">Админ<span id="logBadge"></span></a>' : ''}
+            <a href="#settings" data-page="settings">Настройки<span id="logBadge"></span></a>
             <a href="#notifications" data-page="notifications">Уведомления<span id="notifBadge"></span></a>
         `;
         document.getElementById('userBlock').innerHTML = `
@@ -191,7 +193,7 @@ const App = {
         const hash = location.hash.slice(1) || 'requests';
         const [page, ...params] = hash.split('/');
         document.querySelectorAll('.header__nav a').forEach(a => {
-            a.classList.toggle('active', a.dataset.page === page);
+            a.classList.toggle('active', a.dataset.page === (page === 'admin' ? 'settings' : page));
         });
         const app = document.getElementById('app');
         app.innerHTML = '<div class="loading">Загрузка...</div>';
@@ -207,9 +209,10 @@ const App = {
                 case 'counterparties': return this.pageCounterparties();
                 case 'counterparty': return this.pageCounterparty(params[0]);
                 case 'notifications': return this.pageNotifications();
-                case 'settings': return this.pageSettings();
+                case 'settings': return this.pageSettings(params[0]);
                 case 'mail': return this.pageMail(params[0]);
-                case 'admin': return this.pageAdmin(params[0] || 'overview');
+                // Bookmarks and links from before the merge still work
+                case 'admin': location.replace('#settings/' + (params[0] || '')); return;
                 default: return this.pageRequests();
             }
         };
@@ -338,6 +341,26 @@ const App = {
 
             <div class="grid grid--2">
                 <div class="card">
+                    <div class="card__title">Распознанные позиции</div>
+                    <p class="muted">То, что просит клиент, слово в слово.</p>
+                    ${parsed.items && parsed.items.length ? `
+                        <table class="table">
+                            <thead><tr><th>Наименование</th><th class="num">Кол-во</th></tr></thead>
+                            <tbody>
+                                ${parsed.items.map(i => `<tr><td>${this.esc(i.name)}</td><td class="num">${this.esc(i.qty)}</td></tr>`).join('')}
+                            </tbody>
+                        </table>
+                    ` : '<p class="muted">Позиции ещё не распознаны</p>'}
+                    ${parsed.delivery_terms ? `<p style="margin-top:10px"><strong>Доставка:</strong> ${this.esc(parsed.delivery_terms)}</p>` : ''}
+                </div>
+                <div class="card" id="matchCard">
+                    <div class="card__title">Подходящие позиции</div>
+                    <div class="loading">Подбираем по каталогу...</div>
+                </div>
+            </div>
+
+            <div class="grid grid--2">
+                <div class="card">
                     <div class="card__title">Исходный запрос</div>
                     <p><strong>Источник:</strong> ${req.source === 'email' ? 'Email' : 'Ручной ввод'}</p>
                     ${req.email_from ? `<p><strong>От:</strong> ${this.esc(req.email_from)}</p>` : ''}
@@ -349,23 +372,184 @@ const App = {
                     <pre style="white-space:pre-wrap;font-size:13px">${this.esc(req.raw_text)}</pre>
                 </div>
                 <div>
-                    <div class="card">
-                        <div class="card__title">Распознанные позиции</div>
-                        ${parsed.items && parsed.items.length ? `
-                            <table class="table">
-                                <thead><tr><th>Наименование</th><th>Кол-во</th></tr></thead>
-                                <tbody>
-                                    ${parsed.items.map(i => `<tr><td>${this.esc(i.name)}</td><td>${this.esc(i.qty)}</td></tr>`).join('')}
-                                </tbody>
-                            </table>
-                        ` : '<p class="muted">Позиции ещё не распознаны</p>'}
-                        ${parsed.delivery_terms ? `<p style="margin-top:10px"><strong>Доставка:</strong> ${this.esc(parsed.delivery_terms)}</p>` : ''}
-                    </div>
                     ${this.attachmentsCard(req.attachments)}
                     ${this.requestDocsCard(req)}
                 </div>
             </div>
         `;
+        this.renderMatchedItems(req.id, req.items || []);
+    },
+
+    // ==== «Подходящие позиции»: what the letter's lines mean in our catalog ====
+    // The KP is built from this table, so a wrong guess is corrected once, here,
+    // and not again in every proposal generated afterwards.
+
+    renderMatchedItems(requestId, items) {
+        const card = document.getElementById('matchCard');
+        if (!card) return;
+        card.innerHTML = `
+            <div class="card__title">Подходящие позиции</div>
+            <p class="muted">Позиции каталога, из которых соберётся КП. Начните печатать название —
+               подскажет локальная база товаров.</p>
+            <div id="matchRows">${items.map(i => this.matchRow(i)).join('')}</div>
+            ${items.length ? '' : '<p class="muted" id="matchEmpty">Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
+            <div class="flex flex--wrap" style="margin-top:10px">
+                <button class="btn btn--outline btn--sm" onclick="App.addMatchRow()">+ Позиция</button>
+                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(${requestId}, false)">Подобрать по каталогу</button>
+                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(${requestId}, true)"
+                        title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
+                <button class="btn btn--primary btn--sm" onclick="App.saveMatchedItems(${requestId})">Сохранить</button>
+            </div>
+            <div id="matchTotal" class="muted" style="margin-top:8px"></div>
+        `;
+        this.updateMatchTotal();
+    },
+
+    matchRow(i = {}) {
+        const conf = i.match_confidence ? Math.round(i.match_confidence * 100) : null;
+        return `
+            <div class="match-row" data-match-row>
+                <input type="hidden" data-field="id" value="${this.esc(i.id || '')}">
+                <input type="hidden" data-field="raw_name" value="${this.esc(i.raw_name || '')}">
+                <input type="hidden" data-field="moysklad_product_id" value="${this.esc(i.moysklad_product_id || '')}">
+                <input type="hidden" data-field="article" value="${this.esc(i.article || '')}">
+                <input type="hidden" data-field="stock" value="${i.stock ?? ''}">
+                <div class="match-row__name">
+                    ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}</div>` : ''}
+                    <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
+                           value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
+                    <div class="suggest" hidden></div>
+                    ${(i.variants || []).length ? `<div class="muted">ещё похожие:
+                        ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : ''}
+                </div>
+                <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
+                       placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal()">
+                <input type="text" data-field="unit" value="${this.esc(i.unit || 'шт.')}" placeholder="Ед." title="Единица измерения">
+                <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
+                       placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal()">
+                <input type="text" data-field="notes" value="${this.esc(i.notes || '')}" placeholder="Примечание">
+                <label title="Позиция подтверждена менеджером — автоподбор её больше не трогает">
+                    <input type="checkbox" data-field="is_confirmed" ${i.is_confirmed ? 'checked' : ''}> ок
+                </label>
+                <button class="btn btn--outline btn--sm" title="Убрать строку"
+                        onclick="this.closest('[data-match-row]').remove(); App.updateMatchTotal()">×</button>
+            </div>`;
+    },
+
+    addMatchRow() {
+        const box = document.getElementById('matchRows');
+        if (!box) return;
+        const empty = document.getElementById('matchEmpty');
+        if (empty) empty.remove();
+        box.insertAdjacentHTML('beforeend', this.matchRow({quantity: 1, unit: 'шт.', price: 0}));
+    },
+
+    // Autocomplete against the local product base (МойСклад-синхронизация или импорт Excel)
+    matchSuggest(input) {
+        const box = input.parentElement.querySelector('.suggest');
+        const q = input.value.trim();
+        // A hand-typed name is no longer the catalog row that was there before
+        input.closest('[data-match-row]').querySelector('[data-field="moysklad_product_id"]').value = '';
+        clearTimeout(this._suggestTimer);
+        if (q.length < 2) { box.hidden = true; return; }
+
+        this._suggestTimer = setTimeout(async () => {
+            try {
+                const d = await this.api('products.php?action=search&limit=8&q=' + encodeURIComponent(q));
+                if (!d.items.length) { box.hidden = true; return; }
+                box.innerHTML = d.items.map(p => `
+                    <div class="suggest__item" onmousedown="App.pickSuggest(this, '${this.jsStr(JSON.stringify({
+                        moysklad_id: p.moysklad_id, name: p.name, article: p.article || p.code || '',
+                        unit: p.unit || 'шт.', price: p.price || 0, stock: p.stock ?? '',
+                    }))}')">
+                        <div>${this.esc(p.name)}</div>
+                        <div class="muted">${this.esc(p.characteristics || p.article || p.code || '')}
+                            · ${this.fmtMoney(p.price)}${p.stock !== null && p.stock !== undefined ? ` · остаток ${p.stock}` : ''}</div>
+                    </div>`).join('');
+                box.hidden = false;
+            } catch { box.hidden = true; }
+        }, 250);
+    },
+
+    hideSuggest(input) {
+        // mousedown on a suggestion fires before blur, so the pick still lands
+        setTimeout(() => {
+            const box = input.parentElement.querySelector('.suggest');
+            if (box) box.hidden = true;
+        }, 150);
+    },
+
+    pickSuggest(el, json) {
+        const p = JSON.parse(json);
+        const row = el.closest('[data-match-row]');
+        const set = (f, v) => { const i = row.querySelector(`[data-field="${f}"]`); if (i) i.value = v; };
+        set('product_name', p.name);
+        set('moysklad_product_id', p.moysklad_id);
+        set('article', p.article);
+        set('unit', p.unit);
+        set('price', p.price);
+        set('stock', p.stock);
+        row.querySelector('[data-field="is_confirmed"]').checked = true;
+        el.closest('.suggest').hidden = true;
+        this.updateMatchTotal();
+    },
+
+    pickVariant(el, json) {
+        const v = JSON.parse(json);
+        this.pickSuggest(el, JSON.stringify({
+            moysklad_id: v.moysklad_id, name: v.name, article: v.article || '',
+            unit: v.unit || 'шт.', price: v.price || 0, stock: v.stock ?? '',
+        }));
+    },
+
+    collectMatchedItems() {
+        return [...document.querySelectorAll('[data-match-row]')].map(row => {
+            const out = {};
+            row.querySelectorAll('[data-field]').forEach(el => {
+                out[el.dataset.field] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
+            });
+            out.quantity = parseFloat(out.quantity) || 0;
+            out.price = parseFloat(out.price) || 0;
+            return out;
+        });
+    },
+
+    updateMatchTotal() {
+        const el = document.getElementById('matchTotal');
+        if (!el) return;
+        const rows = this.collectMatchedItems();
+        const total = rows.reduce((s, r) => s + r.price * r.quantity, 0);
+        const noPrice = rows.filter(r => !r.price).length;
+        el.innerHTML = rows.length
+            ? `Позиций: ${rows.length} · сумма по каталогу: ${this.fmtMoney(total)}`
+              + (noPrice ? ` · без цены: ${noPrice}` : '')
+            : '';
+    },
+
+    async saveMatchedItems(requestId, silent = false) {
+        const res = await this.api(`requests.php?action=items_save&id=${requestId}`, {
+            method: 'POST', body: {items: this.collectMatchedItems()},
+        });
+        if (!silent) this.toast('Позиции сохранены', 'success');
+        this.renderMatchedItems(requestId, res.items || []);
+        return res.items;
+    },
+
+    async rematchItems(requestId, smart) {
+        // What the manager has already typed must survive the re-match
+        const pending = this.collectMatchedItems();
+        const card = document.getElementById('matchCard');
+        card.innerHTML = `<div class="card__title">Подходящие позиции</div>
+                          <div class="loading">${smart ? 'Спрашиваем нейросеть и подбираем...' : 'Подбираем по каталогу...'}</div>`;
+        try {
+            await this.api(`requests.php?action=items_save&id=${requestId}`, {method: 'POST', body: {items: pending}});
+            const res = await this.api(`requests.php?action=items_rematch&id=${requestId}&smart=${smart ? 1 : 0}`, {method: 'POST'});
+            this.renderMatchedItems(requestId, res.items || []);
+            this.toast('Подбор обновлён — подтверждённые строки не тронуты', 'success');
+        } catch (err) {
+            this.toast(err.message, 'error');
+            this.renderMatchedItems(requestId, []);
+        }
     },
 
     // Attachments of the incoming email (FR-021, FR-022)
@@ -507,6 +691,11 @@ const App = {
         const btn = document.getElementById('genBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Генерация...'; }
         try {
+            // The KP is built from «Подходящие позиции» — send the table as it
+            // looks on screen, not as it was last saved
+            if (document.querySelector('[data-match-row]')) {
+                await this.saveMatchedItems(requestId, true);
+            }
             const p = await this.api(`proposals.php?action=generate&request_id=${requestId}`, {method:'POST'});
             this.toast('КП сформировано', 'success');
             location.hash = `proposal/${p.id}`;
@@ -640,6 +829,8 @@ const App = {
                 <button class="btn btn--primary" onclick="App.sendProposal(${id})">Отправить КП</button>
             </div>
         `;
+        // Thumbnails load per position, so a KP with many photos still opens fast
+        items.forEach(it => { if (it.moysklad_product_id) this.loadItemPhotos(it.id); });
     },
 
     // One product card in the editor: texts, photo count, "от" price flags
@@ -668,7 +859,44 @@ const App = {
                     <label><input type="checkbox" data-field="price_from" ${it.price_from == 1 ? 'checked' : ''}> Цена «от»</label>
                     <label><input type="checkbox" data-field="qty_from" ${it.qty_from == 1 ? 'checked' : ''}> Кол-во «от»</label>
                 </div>
+                <div class="item-card__photos" data-photos>
+                    ${it.moysklad_product_id ? '<div class="muted">Фотографии загружаются...</div>' : ''}
+                </div>
             </div>`;
+    },
+
+    /**
+     * Photo picker of one KP position (FR-046). Photos come from both sources —
+     * downloaded through the МойСклад API and the CDN links of the Excel export
+     * — and the manager ticks the ones this particular KP should carry.
+     */
+    async loadItemPhotos(itemId) {
+        const card = document.querySelector(`.item-card[data-item-id="${itemId}"]`);
+        const box = card && card.querySelector('[data-photos]');
+        if (!box) return;
+        try {
+            const d = await this.api(`proposals.php?action=item_images&item_id=${itemId}`);
+            if (!d.available.length) {
+                box.innerHTML = '<div class="muted">Фотографий у позиции нет. Их приносит синхронизация с МойСклад '
+                              + 'или импорт каталога из Excel.</div>';
+                return;
+            }
+            // No stored choice means «все, что нашлись» — the behaviour before the picker
+            const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
+            box.innerHTML = `
+                <div class="muted">Фото в этом КП (${chosen.length} из ${d.available.length}):</div>
+                <div class="photos">
+                    ${d.available.map(a => `
+                        <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
+                            <input type="checkbox" data-photo-key="${this.esc(a.key)}"
+                                   ${chosen.includes(a.key) ? 'checked' : ''}
+                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked)">
+                            <img src="${this.esc(a.url)}" alt="" loading="lazy">
+                        </label>`).join('')}
+                </div>`;
+        } catch (err) {
+            box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
+        }
     },
 
     // One upsell row in the editor
@@ -725,6 +953,12 @@ const App = {
             card.querySelectorAll('[data-field]').forEach(el => {
                 out[el.dataset.field] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
             });
+            // The photo picker is only sent once it has actually rendered —
+            // otherwise a slow load would be saved as «фото не нужны»
+            const boxes = card.querySelectorAll('[data-photo-key]');
+            if (boxes.length) {
+                out.selected_images = [...boxes].filter(b => b.checked).map(b => b.dataset.photoKey);
+            }
             return out;
         });
         const addons = [...document.querySelectorAll('[data-addon]')].map(row => {
@@ -1070,34 +1304,329 @@ const App = {
         btn.closest('.flex').parentElement.remove();
     },
 
-    // Settings page
-    async pageSettings() {
+    // ==== Settings: one menu item, tabs inside (modules 004 and 008) ====
+    // There used to be two «Настройки» in the header — a personal one and an
+    // admin one — and no way to tell from the name which held what. Everything
+    // lives here now; the tabs an ordinary manager may not touch are hidden.
+
+    settingsTabs() {
+        const admin = !!(this.manager && this.manager.is_admin);
+        return [
+            ['overview',   'Обзор',           true],
+            ['catalog',    'Каталог товаров', false],
+            ['moysklad',   'МойСклад',        true],
+            ['llm',        'Нейросети',       true],
+            ['mail',       'Почта',           true],
+            ['processing', 'Обработка писем', true],
+            ['kp',         'Оформление КП',   true],
+            ['knowledge',  'База знаний',     true],
+            ['managers',   'Менеджеры',       true],
+            ['prompts',    'Промпты',         true],
+            ['device',     'Это устройство',  false],
+            ['all',        'Все параметры',   true],
+            ['logs',       'Логи',            true],
+        ].filter(([, , adminOnly]) => admin || !adminOnly);
+    },
+
+    pageSettings(tab) {
+        const tabs = this.settingsTabs();
+        if (!tabs.some(([k]) => k === tab)) tab = tabs[0][0];
         document.getElementById('app').innerHTML = `
-            <h2 style="margin-bottom:16px">Настройки</h2>
+            <h2 style="margin-bottom:12px">Настройки</h2>
+            <div class="tabs">
+                ${tabs.map(([k, l]) => `<a href="#settings/${k}" class="tab ${tab === k ? 'tab--active' : ''}">${this.esc(l)}</a>`).join('')}
+            </div>
+            <div id="adminBody"><div class="loading">Загрузка...</div></div>
+        `;
+        const render = {
+            overview:   () => this.adminOverview(),
+            catalog:    () => this.settingsCatalog(),
+            moysklad:   () => this.settingsMoysklad(),
+            llm:        () => this.adminLlm(),
+            mail:       () => this.adminMail(),
+            processing: () => this.settingsProcessing(),
+            kp:         () => this.settingsKp(),
+            knowledge:  () => this.adminKnowledge(),
+            managers:   () => this.adminManagers(),
+            prompts:    () => this.adminPrompts(),
+            device:     () => this.settingsDevice(),
+            all:        () => this.adminSettings(),
+            logs:       () => this.adminLogs(),
+        }[tab] || (() => this.settingsCatalog());
+        render();
+    },
+
+    // ---- Catalog: the local product base the KP and the matcher read ----
+
+    async settingsCatalog() {
+        document.getElementById('adminBody').innerHTML = `
+            <div class="card" id="catalogStats"><div class="loading">Считаем каталог...</div></div>
             <div class="card">
-                <div class="card__title">Обновить кэш товаров</div>
-                <p style="margin-bottom:10px">Загрузить актуальный каталог из МойСклад</p>
+                <div class="card__title">Обновить из МойСклад</div>
+                <p class="muted">Тянет номенклатуру, цены и остатки через API. Нужен рабочий токен.</p>
                 <button class="btn btn--outline" onclick="App.refreshProducts()">Обновить каталог</button>
             </div>
-            <div class="card" id="msCard">
-                <div class="card__title">Интеграция с МойСклад</div>
-                <div class="loading">Проверяем доступ...</div>
+            <div class="card">
+                <div class="card__title">Обновить из файла Excel</div>
+                <p class="muted">Выгрузка МойСклад: «Товары → Экспорт → Excel». Из файла берутся названия,
+                   артикулы, цены, описания, модификации и ссылки на фотографии.
+                   <strong>Остатки не берутся</strong> — в выгрузке лежит неснижаемый остаток,
+                   а не наличие; оно приходит синхронизацией по API.</p>
+                <div class="grid grid--2">
+                    <div class="form-group">
+                        <label>Файл выгрузки (.xlsx или .csv)</label>
+                        <input type="file" id="catalogFile" accept=".xlsx,.csv">
+                    </div>
+                    <div class="form-group">
+                        <label>Колонка цены</label>
+                        <input type="text" id="catalogPriceCol" placeholder="Цена: Опт безнал">
+                        <div class="muted">Пусто — берётся «Цена: Опт безнал», затем «Опт», затем «Розница»</div>
+                    </div>
+                </div>
+                <label style="display:block;margin-bottom:10px">
+                    <input type="checkbox" id="catalogPrune">
+                    Удалить из базы позиции, которых нет в файле (те, что уже попали в КП, останутся)
+                </label>
+                <button class="btn btn--primary" id="catalogImportBtn" onclick="App.importCatalog()">Загрузить файл</button>
+                <div id="catalogImportResult" style="margin-top:12px"></div>
             </div>
-            <div class="card" id="processingCard">
-                <div class="card__title">Обработка писем</div>
-                <div class="loading">Загрузка...</div>
-            </div>
-            <div class="card" id="pushCard">
-                <div class="card__title">Уведомления на телефон</div>
-                <div class="loading">Загрузка...</div>
-            </div>
-            <div class="card" id="installCard">
-                <div class="card__title">Приложение на телефоне</div>
-                <div class="loading">Загрузка...</div>
+            <div class="card">
+                <div class="card__title">Проверить поиск</div>
+                <p class="muted">То же, что подставляется в «Подходящие позиции» на карточке запроса.</p>
+                <div class="flex">
+                    <input type="text" id="catalogQuery" placeholder="бронежилет скрытого ношения"
+                           onkeydown="if(event.key==='Enter')App.catalogSearch()">
+                    <button class="btn btn--outline" onclick="App.catalogSearch()">Найти</button>
+                </div>
+                <div id="catalogSearchResult" style="margin-top:12px"></div>
             </div>
         `;
+        this.loadCatalogStats();
+        try {
+            const s = await this.api('admin.php?action=settings');
+            const col = (s.items || []).find(i => i.key === 'CATALOG_PRICE_COLUMN');
+            const el = document.getElementById('catalogPriceCol');
+            if (el && col) el.value = col.value || '';
+        } catch { /* a plain manager cannot read settings — the field just stays empty */ }
+    },
+
+    async loadCatalogStats() {
+        const card = document.getElementById('catalogStats');
+        if (!card) return;
+        try {
+            const d = await this.api('products.php?action=stats');
+            card.innerHTML = `
+                <div class="card__title">Что сейчас в базе</div>
+                <p>Позиций: <strong>${d.total}</strong> · из них модификаций: ${d.variants}
+                   · с ценой: ${d.with_price} · с фотографиями: ${d.with_photos}
+                   ${d.archived ? ` · архивных: ${d.archived}` : ''}</p>
+                <p class="muted">Последнее обновление: ${d.updated_at ? this.fmtDate(d.updated_at) : 'никогда'}
+                   ${d.from_excel ? ` · из файла Excel: ${d.from_excel} позиций, ${d.imported_at ? this.fmtDate(d.imported_at) : ''}` : ''}</p>
+                ${d.total === 0 ? '<p class="no">Каталог пуст — КП будет собираться без цен и наличия.</p>' : ''}
+            `;
+        } catch (err) {
+            card.innerHTML = `<div class="card__title">Что сейчас в базе</div><p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async importCatalog() {
+        const input = document.getElementById('catalogFile');
+        const out = document.getElementById('catalogImportResult');
+        const btn = document.getElementById('catalogImportBtn');
+        if (!input || !input.files.length) { this.toast('Выберите файл выгрузки', 'error'); return; }
+
+        // The price column is a stored setting, so the next import repeats this choice
+        const col = (document.getElementById('catalogPriceCol') || {}).value;
+        if (col !== undefined && this.manager.is_admin) {
+            try {
+                await this.api('admin.php?action=settings', {method: 'PUT', body: {values: {CATALOG_PRICE_COLUMN: col}}});
+            } catch { /* not fatal — the import falls back to the usual columns */ }
+        }
+
+        const fd = new FormData();
+        fd.append('file', input.files[0]);
+        fd.append('prune', document.getElementById('catalogPrune').checked ? '1' : '0');
+
+        btn.disabled = true;
+        btn.textContent = 'Читаем файл...';
+        out.innerHTML = '<p class="muted">Файл разбирается на сервере, это может занять минуту.</p>';
+        try {
+            const res = await fetch('/api/products.php?action=import', {method: 'POST', body: fd, credentials: 'same-origin'});
+            const raw = await res.text();
+            let d;
+            try { d = JSON.parse(raw); } catch { throw new Error(`Сервер вернул не JSON (HTTP ${res.status}). ${raw.slice(0, 200)}`); }
+            if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+
+            const r = d.report;
+            out.innerHTML = `
+                <p class="ok">Загружено позиций: <strong>${r.imported}</strong> из ${r.total}
+                   · модификаций: ${r.variants} · с фотографиями: ${r.images}
+                   ${r.skipped ? ` · пропущено: ${r.skipped}` : ''}${r.pruned ? ` · удалено: ${r.pruned}` : ''}</p>
+                ${r.price_column ? `<p class="muted">Цены взяты из колонки «${this.esc(r.price_column)}».</p>` : ''}
+                ${(r.warnings || []).map(w => `<p class="muted">${this.esc(w)}</p>`).join('')}
+            `;
+            this.loadCatalogStats();
+        } catch (err) {
+            out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Загрузить файл';
+        }
+    },
+
+    async catalogSearch() {
+        const out = document.getElementById('catalogSearchResult');
+        const q = document.getElementById('catalogQuery').value.trim();
+        if (!q) return;
+        out.innerHTML = '<p class="muted">Ищем...</p>';
+        try {
+            const d = await this.api('products.php?action=search&limit=15&q=' + encodeURIComponent(q));
+            out.innerHTML = d.items.length ? `
+                ${d.from_api ? '<p class="muted">В локальной базе не нашлось — показан ответ МойСклад.</p>' : ''}
+                <table class="table">
+                    <thead><tr><th>Наименование</th><th>Артикул</th><th class="price">Цена</th><th class="num">Остаток</th></tr></thead>
+                    <tbody>${d.items.map(i => `<tr>
+                        <td>${this.esc(i.name)}${i.characteristics ? `<div class="muted">${this.esc(i.characteristics)}</div>` : ''}</td>
+                        <td class="muted">${this.esc(i.article || i.code || '')}</td>
+                        <td class="price">${this.fmtMoney(i.price)}</td>
+                        <td class="num">${i.stock ?? '—'}</td>
+                    </tr>`).join('')}</tbody>
+                </table>` : '<p class="muted">Ничего не найдено.</p>';
+        } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
+    },
+
+    async refreshProducts() {
+        this.toast('Обновление каталога...', 'info');
+        try {
+            const r = await this.api('products.php?action=refresh_cache', {method:'POST'});
+            this.toast(`Загружено ${r.count} товаров за ${r.elapsed_sec}с`, 'success');
+            this.loadCatalogStats();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ---- MoySklad: token, access and webhooks ----
+
+    settingsMoysklad() {
+        document.getElementById('adminBody').innerHTML = `
+            ${this.manager.is_admin ? `
+            <div class="card">
+                <div class="card__title">Токен доступа</div>
+                <p class="muted">МойСклад → профиль сотрудника → «Токен доступа». Токен отзывается при смене
+                   пароля сотрудника: если доступ вдруг пропал, чаще всего дело именно в этом.</p>
+                <div class="grid grid--2">
+                    <div class="form-group"><label>Токен</label>
+                        <input type="password" id="set_MOYSKLAD_TOKEN" placeholder="вставьте новый токен"></div>
+                    <div class="form-group"><label>ID организации</label>
+                        <input type="text" id="set_MOYSKLAD_ORG_ID" value=""></div>
+                </div>
+                <button class="btn btn--primary" onclick="App.saveMoyskladToken()">Сохранить и проверить</button>
+            </div>` : ''}
+            <div class="card" id="msCard"><div class="loading">Проверяем доступ...</div></div>
+        `;
         this.loadMoyskladSettings();
+        if (this.manager.is_admin) {
+            this.api('admin.php?action=settings').then(s => {
+                this.settingsSpec = (s.items || []).filter(i => i.group === 'moysklad');
+                const org = this.settingsSpec.find(i => i.key === 'MOYSKLAD_ORG_ID');
+                const el = document.getElementById('set_MOYSKLAD_ORG_ID');
+                if (el && org) el.value = org.value || '';
+            }).catch(() => {});
+        }
+    },
+
+    async saveMoyskladToken() {
+        const values = {MOYSKLAD_ORG_ID: document.getElementById('set_MOYSKLAD_ORG_ID').value};
+        const token = document.getElementById('set_MOYSKLAD_TOKEN').value;
+        if (token !== '') values.MOYSKLAD_TOKEN = token;
+        try {
+            await this.api('admin.php?action=settings', {method: 'PUT', body: {values}});
+            this.toast('Сохранено — проверяем доступ', 'success');
+            document.getElementById('set_MOYSKLAD_TOKEN').value = '';
+            this.loadMoyskladSettings();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ---- Attachment parsing, OCR and highlighting thresholds ----
+
+    settingsProcessing() {
+        document.getElementById('adminBody').innerHTML = `
+            <div class="card" id="processingCard"><div class="loading">Загрузка...</div></div>
+            <div class="card">
+                <div class="card__title">Кодировка архива писем</div>
+                <p class="muted">Письма, забранные до исправления разбора заголовков, могли попасть в архив
+                   с испорченной кодировкой — темы выглядят как ряд «?». Кнопка перечитывает такие записи.
+                   Тему, от которой в базе не осталось байтов, вернёт только повторное скачивание ящика.</p>
+                <button class="btn btn--outline" onclick="App.repairMailEncoding()">Перечитать кодировку</button>
+                <div id="repairResult" style="margin-top:10px"></div>
+            </div>
+        `;
         this.loadProcessingSettings();
+    },
+
+    async repairMailEncoding() {
+        const out = document.getElementById('repairResult');
+        out.innerHTML = '<p class="muted">Перечитываем архив...</p>';
+        try {
+            const d = await this.api('admin.php?action=mail_repair_encoding', {method: 'POST', body: {}});
+            out.innerHTML = `<p class="ok">Проверено писем: ${d.result.checked}, исправлено записей: ${d.result.fixed}</p>`;
+        } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
+    },
+
+    // ---- KP look: default texts, photos and upsell ----
+
+    async settingsKp() {
+        try {
+            const d = await this.api('settings.php?action=general');
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="card__title">Умолчания коммерческого предложения</div>
+                    <div class="grid grid--3">
+                        <div class="form-group"><label>НДС по умолчанию, %</label>
+                            <input type="number" id="kpVat" value="${this.esc(d.default_vat_rate || 5)}"></div>
+                        <div class="form-group"><label>Срок исполнения, дней</label>
+                            <input type="number" id="kpExec" value="${this.esc(d.default_execution_days || 30)}"></div>
+                        <div class="form-group"><label>Срок действия КП, дней</label>
+                            <input type="number" id="kpValid" value="${this.esc(d.default_validity_days || 14)}"></div>
+                        <div class="form-group"><label>Фото на позицию, максимум</label>
+                            <input type="number" id="kpMaxImages" min="0" max="12" value="${this.esc(d.kp_max_images_per_item || 5)}"></div>
+                        <div class="form-group"><label>Папка модулей в МойСклад</label>
+                            <input type="text" id="kpAddonCategory" value="${this.esc(d.addon_category || '')}"></div>
+                    </div>
+                    <div class="form-group"><label>Условия поставки</label>
+                        <textarea id="kpConditions" rows="2">${this.esc(d.default_conditions_text || '')}</textarea></div>
+                    <div class="form-group"><label>Гарантия</label>
+                        <textarea id="kpWarranty" rows="2">${this.esc(d.default_warranty_text || '')}</textarea></div>
+                    <div class="form-group"><label>Оговорка под фотографиями</label>
+                        <textarea id="kpImagesNote" rows="2">${this.esc(d.kp_images_note || '')}</textarea></div>
+                    <button class="btn btn--primary" onclick="App.saveKpSettings()">Сохранить</button>
+                </div>
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    async saveKpSettings() {
+        try {
+            await this.api('settings.php?action=general', {method: 'PUT', body: {
+                default_vat_rate: document.getElementById('kpVat').value,
+                default_execution_days: document.getElementById('kpExec').value,
+                default_validity_days: document.getElementById('kpValid').value,
+                kp_max_images_per_item: document.getElementById('kpMaxImages').value,
+                addon_category: document.getElementById('kpAddonCategory').value,
+                default_conditions_text: document.getElementById('kpConditions').value,
+                default_warranty_text: document.getElementById('kpWarranty').value,
+                kp_images_note: document.getElementById('kpImagesNote').value,
+            }});
+            this.toast('Сохранено', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ---- This device: push and the installable app ----
+
+    settingsDevice() {
+        document.getElementById('adminBody').innerHTML = `
+            <div class="card" id="pushCard"><div class="loading">Загрузка...</div></div>
+            <div class="card" id="installCard"><div class="loading">Загрузка...</div></div>
+        `;
         this.renderPushCard();
         this.renderInstallCard();
     },
@@ -1105,19 +1634,21 @@ const App = {
     // MoySklad access + webhook status (FR-029, FR-039)
     async loadMoyskladSettings() {
         const card = document.getElementById('msCard');
+        if (!card) return;
         try {
             const d = await this.api('settings.php?action=moysklad');
             const p = d.permissions || {};
             const yes = v => v ? '<span class="ok">есть</span>' : '<span class="no">нет</span>';
             const stale = (d.webhooks_all || []).filter(w => !w.current).length;
+            const source = {db: 'задан в этом окне', config: 'из config.php на сервере', default: 'не задан'}[d.token_source] || d.token_source;
             card.innerHTML = `
-                <div class="card__title">Интеграция с МойСклад</div>
+                <div class="card__title">Доступ к API</div>
                 ${d.ms_error ? `<p class="no">${this.esc(d.ms_error)}</p>` : ''}
-                ${d.diag ? `<p class="muted">Токен в config.php на сервере: длина ${d.diag.token_len}, конец «…${this.esc(d.diag.token_tail)}»${Object.entries(d.diag.probes || {}).map(([k, v]) => ` · ${k}: HTTP ${v.code}`).join('')}</p>` : ''}
+                ${d.diag ? `<p class="muted">Токен: ${this.esc(source)}, длина ${d.diag.token_len}, конец «…${this.esc(d.diag.token_tail)}»${Object.entries(d.diag.probes || {}).map(([k, v]) => ` · ${k}: HTTP ${v.code}`).join('')}</p>` : ''}
                 <p>Товары: ${yes(p.products)} · Контрагенты: ${yes(p.counterparties)} · Заказы: ${yes(p.orders_write)}
                    · Счета: ${yes(p.invoices)} · Вебхуки: ${yes(p.webhooks)}</p>
                 <p class="muted">Адрес вебхука: <code>${this.esc(d.webhook_url)}</code></p>
-                ${!d.app_url_ok ? '<p class="no">APP_URL в config.php должен быть публичным https-адресом — иначе вебхуки не придут, останется подтяжка при открытии карточки.</p>' : ''}
+                ${!d.app_url_ok ? '<p class="no">APP_URL в настройках должен быть публичным https-адресом — иначе вебхуки не придут, останется подтяжка при открытии карточки.</p>' : ''}
                 <p>Зарегистрировано вебхуков: <strong>${(d.webhooks || []).length}</strong> из 4
                    ${stale ? `<span class="muted">· с устаревшим адресом: ${stale} (кнопка ниже их обновит)</span>` : ''}
                    ${d.last_webhook ? `<span class="muted">· последний: ${this.esc(d.last_webhook.entity_type)}/${this.esc(d.last_webhook.action)} — ${this.esc(d.last_webhook.result)}, ${this.fmtDate(d.last_webhook.created_at)}</span>` : ''}</p>
@@ -1127,7 +1658,7 @@ const App = {
                 </div>
             `;
         } catch (err) {
-            card.innerHTML = `<div class="card__title">Интеграция с МойСклад</div><p class="no">${this.esc(err.message)}</p>`;
+            card.innerHTML = `<div class="card__title">Доступ к API</div><p class="no">${this.esc(err.message)}</p>`;
         }
     },
 
@@ -1199,14 +1730,6 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    async refreshProducts() {
-        this.toast('Обновление каталога...', 'info');
-        try {
-            const r = await this.api('products.php?action=refresh_cache', {method:'POST'});
-            this.toast(`Загружено ${r.count} товаров за ${r.elapsed_sec}с`, 'success');
-        } catch (err) { this.toast(err.message, 'error'); }
-    },
-
     // ==== Mail: the archive of every incoming and outgoing letter (module 004) ====
 
     async pageMail(id) {
@@ -1235,7 +1758,7 @@ const App = {
                 <div class="card card--alert"><strong>${this.esc(b.name)}</strong>: ${this.esc(b.last_error)}</div>
             `).join('')}
             ${!d.mailboxes || !d.mailboxes.length ? `<div class="card">Почтовые ящики ещё не настроены.
-                ${this.manager.is_admin ? '<a href="#admin/mail">Добавить ящик</a>' : 'Обратитесь к администратору.'}</div>` : ''}
+                ${this.manager.is_admin ? '<a href="#settings/mail">Добавить ящик</a>' : 'Обратитесь к администратору.'}</div>` : ''}
             <div class="card card--inline">
                 ${tab('', 'Все')}${tab('in', 'Входящие')}${tab('out', 'Исходящие')}
                 <button class="btn btn--sm ${state.unread ? 'btn--primary' : 'btn--outline'}" onclick="App.mailFilter({unread:1,direction:'in'})">Непрочитанные</button>
@@ -1327,12 +1850,46 @@ const App = {
         `;
     },
 
+    // Model list for the reply window, loaded once per session
+    async loadLlmModels() {
+        if (this.llmModels) return this.llmModels;
+        try {
+            this.llmModels = await this.api('settings.php?action=llm_models');
+        } catch {
+            this.llmModels = {providers: [], picker: false};
+        }
+        return this.llmModels;
+    },
+
+    /**
+     * «Нейросеть» dropdown of the reply window. The default option keeps the
+     * configured fallback chain; picking a model sends that one model and only
+     * it. Hidden entirely when «Настройки → Нейросети → Выбор модели» is off.
+     */
+    replyModelSelect(d) {
+        if (!d || !d.picker) return '';
+        const current = d.current || {};
+        return `<select id="cmpModel" style="width:auto;font-size:13px;flex:1 1 200px"
+                        title="Какой нейросетью писать черновик">
+            <option value="">По умолчанию (${this.esc(current.model || 'цепочка провайдеров')})</option>
+            ${(d.providers || []).map(p => {
+                const groups = {};
+                (p.models || []).forEach(m => { (groups[m.group || p.label] = groups[m.group || p.label] || []).push(m); });
+                return Object.entries(groups).map(([g, list]) => `<optgroup label="${this.esc(p.label)} · ${this.esc(g)}">
+                    ${list.map(m => `<option value="${this.esc(p.provider)}:${this.esc(m.id)}"
+                        ${p.ready ? '' : 'disabled'}>${this.esc(m.label)}${p.ready ? '' : ' — нет ключа'}</option>`).join('')}
+                </optgroup>`).join('');
+            }).join('')}
+        </select>`;
+    },
+
     // $generate=true — the manager pressed «Создать ответ»: draft the text right away
     async mailCompose(replyToId, generate) {
         const d = await this.api('mail.php?action=list&limit=1');
         let src = null;
         if (replyToId) src = await this.api(`mail.php?action=get&id=${replyToId}`);
         await this.loadCategories();
+        const llm = await this.loadLlmModels();
         const subject = src ? (src.subject || '').replace(/^(Re:\s*)?/i, 'Re: ') : '';
         const to = src ? (src.direction === 'in' ? src.from_email : src.to_emails) : '';
         this.modal(replyToId ? 'Ответ' : 'Новое письмо', `
@@ -1346,17 +1903,17 @@ const App = {
             <div class="form-group"><label>Копия (через запятую)</label><input type="text" id="cmpCc"></div>
             <div class="form-group"><label>Тема</label><input type="text" id="cmpSubject" value="${this.esc(subject)}"></div>
             <div class="form-group">
-                <div class="flex flex--between">
-                    <label>Текст</label>
-                    ${replyToId && src && src.direction === 'in' ? `
-                        <span class="flex" style="gap:6px;align-items:center">
-                            <select id="cmpCategory" style="width:auto;font-size:13px" title="Тип запроса — от него зависят промпт и источники фактов">
-                                ${Object.entries(this.categoryLabels).map(([k, l]) =>
-                                    `<option value="${k}" ${src.category === k ? 'selected' : ''}>${this.esc(l)}</option>`).join('')}
-                            </select>
-                            <button class="btn btn--sm btn--outline" id="genReplyBtn" onclick="App.mailGenerateReply(${replyToId})">Создать ответ</button>
-                        </span>` : ''}
-                </div>
+                <label>Текст</label>
+                ${replyToId && src && src.direction === 'in' ? `
+                    <div class="flex flex--wrap" style="gap:6px;align-items:center;margin-bottom:8px">
+                        <select id="cmpCategory" style="width:auto;font-size:13px;flex:1 1 160px"
+                                title="Тип запроса — от него зависят промпт и источники фактов">
+                            ${Object.entries(this.categoryLabels).map(([k, l]) =>
+                                `<option value="${k}" ${src.category === k ? 'selected' : ''}>${this.esc(l)}</option>`).join('')}
+                        </select>
+                        ${this.replyModelSelect(llm)}
+                        <button class="btn btn--sm btn--outline" id="genReplyBtn" onclick="App.mailGenerateReply(${replyToId})">Создать ответ</button>
+                    </div>` : ''}
                 <textarea id="cmpText" rows="9"></textarea>
             </div>
             <button class="btn btn--primary btn--block" onclick="App.mailSend(${replyToId || 'null'})">Отправить</button>
@@ -1372,13 +1929,18 @@ const App = {
         if (area) area.placeholder = 'Нейросеть готовит черновик ответа...';
         try {
             const sel = document.getElementById('cmpCategory');
-            const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body: {id, category: sel ? sel.value : null}});
+            const model = document.getElementById('cmpModel');
+            const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body: {
+                id, category: sel ? sel.value : null, model: model ? model.value : '',
+            }});
             if (area) area.value = r.text || '';
             const subj = document.getElementById('cmpSubject');
             if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
             const to = document.getElementById('cmpTo');
             if (to && !to.value.trim() && r.to) to.value = r.to;
-            this.toast('Черновик готов' + (r.category_label ? ` (${r.category_label})` : '') + ' — проверьте перед отправкой', 'success');
+            this.toast('Черновик готов' + (r.category_label ? ` (${r.category_label}` : '')
+                + (r.model ? `, ${r.model}` : '') + (r.category_label ? ')' : '')
+                + ' — проверьте перед отправкой', 'success');
         } catch (err) {
             this.toast(err.message, 'error');
         } finally {
@@ -1404,30 +1966,7 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    // ==== Admin console (module 004) ====
-
-    pageAdmin(tab) {
-        const tabs = [
-            ['overview', 'Обзор'], ['settings', 'Настройки'], ['llm', 'Нейросети'],
-            ['mail', 'Почта'], ['knowledge', 'База знаний'], ['managers', 'Менеджеры'],
-            ['prompts', 'Промпты'], ['logs', 'Логи'],
-        ];
-        document.getElementById('app').innerHTML = `
-            <h2 style="margin-bottom:12px">Администрирование</h2>
-            <div class="tabs">
-                ${tabs.map(([k, l]) => `<a href="#admin/${k}" class="tab ${tab === k ? 'tab--active' : ''}">${l}</a>`).join('')}
-            </div>
-            <div id="adminBody"><div class="loading">Загрузка...</div></div>
-        `;
-        const render = {
-            overview: () => this.adminOverview(), settings: () => this.adminSettings(),
-            llm: () => this.adminLlm(), mail: () => this.adminMail(),
-            knowledge: () => this.adminKnowledge(),
-            managers: () => this.adminManagers(), prompts: () => this.adminPrompts(),
-            logs: () => this.adminLogs(),
-        }[tab] || (() => this.adminOverview());
-        render();
-    },
+    // ==== Settings tabs that only an administrator sees (module 004) ====
 
     adminFail(err) {
         document.getElementById('adminBody').innerHTML = `<div class="card"><p class="no">${this.esc(err.message)}</p></div>`;
@@ -1454,7 +1993,9 @@ const App = {
                         ${d.llm.map(p => `<p>${this.esc(p.label)}: ${p.enabled ? `<span class="ok">в цепочке #${p.order}</span>` : '<span class="muted">выключен</span>'}
                             · ключ ${p.key_set ? '<span class="ok">задан</span>' : '<span class="no">не задан</span>'}
                             · модель <code>${this.esc(p.model)}</code></p>`).join('')}
-                        <a href="#admin/llm" class="btn btn--outline btn--sm">Настроить</a>
+                        <p class="muted">Запросы идут ${this.esc(d.llm_route || 'напрямую')}${d.llm_catalog && d.llm_catalog.count
+                            ? ` · каталог OpenRouter: ${d.llm_catalog.count} моделей, ${this.fmtDate(d.llm_catalog.synced_at)}` : ''}</p>
+                        <a href="#settings/llm" class="btn btn--outline btn--sm">Настроить</a>
                     </div>
                 </div>
                 <div class="card">
@@ -1465,7 +2006,7 @@ const App = {
                         · проверено ${d.knowledge.checked_at ? this.fmtDate(d.knowledge.checked_at) : 'ни разу'}</p>
                        ${d.knowledge.last_error ? `<p class="no">${this.esc(d.knowledge.last_error)}</p>` : ''}`
                      : '<p class="muted">Выключена — вики не подмешивается в промпты</p>'}
-                    <a href="#admin/knowledge" class="btn btn--outline btn--sm">Открыть</a>
+                    <a href="#settings/knowledge" class="btn btn--outline btn--sm">Открыть</a>
                 </div>
                 ${d.mail_errors.length ? `<div class="card card--alert">
                     <div class="card__title">Ошибки почты</div>
@@ -1477,7 +2018,8 @@ const App = {
                         <button class="btn btn--outline" onclick="App.testMoysklad()">Проверить МойСклад</button>
                         <button class="btn btn--outline" onclick="App.testLlm('yandex')">Проверить Yandex</button>
                         <button class="btn btn--outline" onclick="App.testLlm('openrouter')">Проверить OpenRouter</button>
-                        <a href="#admin/mail" class="btn btn--outline">Проверить почту</a>
+                        <button class="btn btn--outline" onclick="App.diagnoseLlm('openrouter')">Куда уходит запрос</button>
+                        <a href="#settings/mail" class="btn btn--outline">Проверить почту</a>
                     </div>
                     <div id="testResult" style="margin-top:12px"></div>
                 </div>
@@ -1505,7 +2047,24 @@ const App = {
         this.testOut('Спрашиваем модель...', 'muted');
         try {
             const r = await this.api('admin.php?action=test_llm', {method: 'POST', body: {provider}});
-            this.testOut(`${this.esc(provider)} — ответ за ${r.result.ms} мс, модель ${this.esc(r.result.model)}: «${this.esc(r.result.answer)}»`);
+            this.testOut(`${this.esc(provider)} — ответ за ${r.result.ms} мс, модель ${this.esc(r.result.model)}
+                          (${this.esc(r.result.route)}): «${this.esc(r.result.answer)}»`);
+        } catch (err) { this.testOut(this.esc(err.message), 'no'); }
+    },
+
+    // Separates «ключ не тот» from «запрос не дошёл»: a 403 written by a filter
+    // on the way looks nothing like a provider's own refusal
+    async diagnoseLlm(provider) {
+        this.testOut('Проверяем маршрут до API...', 'muted');
+        try {
+            const r = (await this.api('admin.php?action=llm_diagnose', {method: 'POST', body: {provider}})).result;
+            this.testOut(`
+                <strong>${this.esc(r.url)}</strong> — ${this.esc(r.route)}, HTTP ${r.http_code}, ${r.ms} мс<br>
+                ${r.curl_error ? `Ошибка соединения: ${this.esc(r.curl_error)}<br>` : ''}
+                ${r.body_head ? `Ответ: <code>${this.esc(r.body_head)}</code><br>` : ''}
+                <span class="${r.intercepted ? 'no' : 'ok'}">${r.intercepted
+                    ? 'Отвечает не провайдер, а фильтр на пути.'
+                    : 'Отвечает сам провайдер.'}</span><br>${this.esc(r.hint)}`, '');
         } catch (err) { this.testOut(this.esc(err.message), 'no'); }
     },
 
@@ -1608,6 +2167,12 @@ const App = {
     async adminSettings() {
         try {
             const d = await this.api('admin.php?action=settings');
+            // Model keys get the same grouped picker as the «Нейросети» tab
+            let catalogs = {};
+            try {
+                const m = await this.api('settings.php?action=llm_models');
+                (m.providers || []).forEach(p => { catalogs[p.provider] = p.models; });
+            } catch { /* the plain text field is a fine fallback */ }
             this.settingsSpec = d.items;
             const badge = it => it.source === 'db'
                 ? '<span class="badge badge--confirmed">из интерфейса</span>'
@@ -1619,6 +2184,7 @@ const App = {
                     <option value="0" ${String(it.value) !== '1' ? 'selected' : ''}>Нет</option></select>`;
                 if (it.type.startsWith('select:')) return `<select id="${id}">
                     ${it.type.slice(7).split(',').map(o => `<option value="${o}" ${String(it.value) === o ? 'selected' : ''}>${o || '(без шифрования)'}</option>`).join('')}</select>`;
+                if (it.type.startsWith('model:')) return this.modelSelect(id, catalogs[it.type.slice(6)] || [], String(it.value));
                 if (it.secret) return `<input type="password" id="${id}" placeholder="${it.filled ? 'задан ' + this.esc(it.tail) + ' — оставьте пустым' : 'не задан'}">`;
                 if (it.type === 'int') return `<input type="number" id="${id}" value="${this.esc(it.value)}">`;
                 return `<input type="text" id="${id}" value="${this.esc(it.value)}">`;
@@ -1679,15 +2245,52 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    // ---- LLM: providers, order and models ----
+    // ---- LLM: providers, order, models and the road to the API ----
+
+    /**
+     * A grouped <select> of every model of a provider, plus «своя модель» that
+     * reveals a text field: the catalog is a convenience, not a fence — any slug
+     * can still be typed. `models` come from the server: the built-in list plus
+     * whatever «Обновить каталог OpenRouter» downloaded.
+     */
+    modelSelect(id, models, value, extra = '') {
+        const groups = {};
+        (models || []).forEach(m => { (groups[m.group || 'Модели'] = groups[m.group || 'Модели'] || []).push(m); });
+        const known = (models || []).some(m => m.id === value);
+        return `
+            <select id="${id}_pick" onchange="App.modelPicked('${id}')" ${extra}>
+                ${Object.entries(groups).map(([g, list]) => `<optgroup label="${this.esc(g)}">
+                    ${list.map(m => `<option value="${this.esc(m.id)}" ${m.id === value ? 'selected' : ''}>${this.esc(m.label)}</option>`).join('')}
+                </optgroup>`).join('')}
+                <option value="" ${known ? '' : 'selected'}>— своя модель —</option>
+            </select>
+            <input type="text" id="${id}" value="${this.esc(value || '')}" placeholder="vendor/model"
+                   style="margin-top:6px" ${known ? 'hidden' : ''}>
+        `;
+    },
+
+    // «своя модель» reveals the field; a catalog row fills it and hides it again
+    modelPicked(id) {
+        const pick = document.getElementById(id + '_pick');
+        const field = document.getElementById(id);
+        if (!pick || !field) return;
+        if (pick.value === '') {
+            field.hidden = false;
+            field.focus();
+        } else {
+            field.value = pick.value;
+            field.hidden = true;
+        }
+    },
 
     async adminLlm() {
         try {
             const d = await this.api('admin.php?action=overview');
             const s = await this.api('admin.php?action=settings');
-            this.settingsSpec = s.items.filter(i => i.group === 'llm');
             const val = k => (s.items.find(i => i.key === k) || {}).value || '';
             const secret = k => s.items.find(i => i.key === k) || {};
+            const cat = d.llm_catalog || {};
+
             document.getElementById('adminBody').innerHTML = `
                 <div class="card">
                     <div class="card__title">Порядок провайдеров</div>
@@ -1696,13 +2299,55 @@ const App = {
                         <input type="text" id="set_LLM_PROVIDER_PRIORITY" value="${this.esc(val('LLM_PROVIDER_PRIORITY'))}"
                                placeholder="yandex, openrouter">
                     </div>
-                    <div class="grid grid--2">
+                    <div class="grid grid--3">
                         <div class="form-group"><label>Таймаут запроса, сек</label>
                             <input type="number" id="set_LLM_TIMEOUT_SEC" value="${this.esc(val('LLM_TIMEOUT_SEC'))}"></div>
                         <div class="form-group"><label>Температура по умолчанию</label>
                             <input type="text" id="set_LLM_TEMPERATURE" value="${this.esc(val('LLM_TEMPERATURE'))}"></div>
+                        <div class="form-group"><label>Выбор модели в окне ответа</label>
+                            <select id="set_LLM_MODEL_PICKER">
+                                <option value="1" ${val('LLM_MODEL_PICKER') === '1' ? 'selected' : ''}>Показывать</option>
+                                <option value="0" ${val('LLM_MODEL_PICKER') !== '1' ? 'selected' : ''}>Скрыть</option>
+                            </select></div>
                     </div>
                 </div>
+
+                <div class="card">
+                    <div class="card__title">Доступ к API</div>
+                    <p class="muted">Сейчас запросы идут <strong>${this.esc(d.llm_route || 'напрямую')}</strong>.
+                       Если провайдер отвечает «Access denied by security policy» или подобным, при живом ключе —
+                       значит, до него запрос не доходит: его завернул фильтр по дороге. Тогда нужен прокси
+                       вне фильтрации либо свой зеркальный адрес API.</p>
+                    <div class="grid grid--2">
+                        <div class="form-group"><label>Прокси</label>
+                            <input type="text" id="set_LLM_PROXY" value="${this.esc(val('LLM_PROXY'))}"
+                                   placeholder="http://host:port или socks5h://host:port"></div>
+                        <div class="form-group"><label>Логин:пароль прокси</label>
+                            <input type="password" id="set_LLM_PROXY_AUTH"
+                                   placeholder="${secret('LLM_PROXY_AUTH').filled ? 'задан — оставьте пустым' : 'если прокси без авторизации — пусто'}"></div>
+                        <div class="form-group" style="grid-column:span 2"><label>Адрес API OpenRouter</label>
+                            <input type="text" id="set_OPENROUTER_BASE_URL" value="${this.esc(val('OPENROUTER_BASE_URL'))}"
+                                   placeholder="https://openrouter.ai/api/v1"></div>
+                    </div>
+                    <div class="flex flex--wrap">
+                        <button class="btn btn--outline" onclick="App.diagnoseLlm('openrouter')">Куда уходит запрос — OpenRouter</button>
+                        <button class="btn btn--outline" onclick="App.diagnoseLlm('yandex')">…и Yandex</button>
+                    </div>
+                    <div id="testResult" style="margin-top:12px"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card__title">Каталог моделей OpenRouter</div>
+                    <p class="muted">${cat.count
+                        ? `Загружено моделей: <strong>${cat.count}</strong>, ${this.fmtDate(cat.synced_at)}. Они добавлены в списки ниже.`
+                        : 'Пока используется встроенный список. Обновите каталог — и в выпадающих списках появятся все модели, доступные вашему ключу, а бесплатные соберутся в отдельную группу.'}</p>
+                    <div class="flex flex--wrap">
+                        <button class="btn btn--outline" onclick="App.refreshOpenRouterModels()">Обновить каталог OpenRouter</button>
+                        ${cat.count ? '<button class="btn btn--outline" onclick="App.forgetOpenRouterModels()">Убрать из списков</button>' : ''}
+                    </div>
+                    <div id="orCatalogResult" style="margin-top:10px"></div>
+                </div>
+
                 ${d.llm.map(p => {
                     const keyName = p.provider === 'yandex' ? 'YANDEX_API_KEY' : 'OPENROUTER_API_KEY';
                     const modelName = p.provider === 'yandex' ? 'YANDEX_MODEL' : 'OPENROUTER_MODEL';
@@ -1712,10 +2357,7 @@ const App = {
                         <div class="grid grid--2">
                             <div class="form-group">
                                 <label>Модель</label>
-                                <input type="text" id="set_${modelName}" list="models_${p.provider}" value="${this.esc(p.model)}">
-                                <datalist id="models_${p.provider}">
-                                    ${p.models.map(m => `<option value="${this.esc(m.id)}">${this.esc(m.label)}</option>`).join('')}
-                                </datalist>
+                                ${this.modelSelect('set_' + modelName, p.models, p.model)}
                             </div>
                             <div class="form-group">
                                 <label>API-ключ</label>
@@ -1727,11 +2369,28 @@ const App = {
                         <button class="btn btn--outline btn--sm" onclick="App.testLlm('${p.provider}')">Проверить подключение</button>
                     </div>`;
                 }).join('')}
-                <div id="testResult"></div>
                 <div class="flex flex--end"><button class="btn btn--primary" onclick="App.saveSettings()">Сохранить</button></div>
             `;
             this.settingsSpec = s.items.filter(i => document.getElementById('set_' + i.key));
         } catch (err) { this.adminFail(err); }
+    },
+
+    async refreshOpenRouterModels() {
+        const out = document.getElementById('orCatalogResult');
+        out.innerHTML = '<p class="muted">Спрашиваем OpenRouter...</p>';
+        try {
+            const r = await this.api('admin.php?action=openrouter_models_refresh', {method: 'POST', body: {}});
+            out.innerHTML = `<p class="ok">Загружено моделей: ${r.count}</p>`;
+            this.adminLlm();
+        } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
+    },
+
+    async forgetOpenRouterModels() {
+        try {
+            await this.api('admin.php?action=openrouter_models_forget', {method: 'POST', body: {}});
+            this.toast('Списки вернулись к встроенному каталогу');
+            this.adminLlm();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // ---- Mailboxes ----
@@ -2468,7 +3127,7 @@ Object.assign(App, {
             <div class="card__title">Уведомления на телефон</div>
             <p class="muted" style="font-size:13px">Приходят о новых запросах, заказах и напоминаниях, даже когда браузер закрыт.
                Подписка действует на этом устройстве — включите её на каждом телефоне и компьютере.</p>
-            ${prefs.available === false ? '<p class="no">Сервер не может отправлять push: проверьте «Админ → Настройки → Push-уведомления».</p>' : ''}
+            ${prefs.available === false ? '<p class="no">Сервер не может отправлять push: проверьте «Настройки → Все параметры → Push-уведомления».</p>' : ''}
             <div class="flex" style="gap:8px;margin:10px 0">
                 ${subscribed
                     ? '<button class="btn btn--outline btn--sm" onclick="App.disablePush()">Отключить на этом устройстве</button>'

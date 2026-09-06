@@ -6,6 +6,7 @@ require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/moysklad.php';
 require_once ROOT . '/lib/matcher.php';
+require_once ROOT . '/lib/request_items.php';
 require_once ROOT . '/lib/pdf.php';
 require_once ROOT . '/lib/kp_content.php';
 require_once ROOT . '/lib/mail.php';
@@ -37,15 +38,23 @@ switch ($action) {
         // Ensure MoySklad is initialized
         MoySklad::init($cfg['MOYSKLAD_TOKEN'] ?? '');
 
-        // Refresh product cache for fresh prices (Constitution II)
-        MoySklad::refreshProductCache();
+        // Refresh product cache for fresh prices (Constitution II). Best-effort:
+        // with a dead token the catalog imported from Excel still stands, and a
+        // KP built on it beats no KP at all.
+        try {
+            MoySklad::refreshProductCache();
+        } catch (Throwable $e) {
+            Logger::warning('catalog', 'Каталог не обновился перед КП: ' . $e->getMessage());
+        }
+        ProductMatcher::forgetCatalog();
 
-        // Parse items if not yet parsed
-        $parsed = $req['parsed_json'] ? json_decode($req['parsed_json'], true) : RequestParser::parse($req['raw_text']);
-        $parsedItems = $parsed['items'] ?? [];
-
-        // Match against MoySklad products
-        $matched = ProductMatcher::matchItems($parsedItems);
+        // The КП is built from «Подходящие позиции» — the table the manager
+        // checked on the request card. Nothing there yet: match on the spot.
+        $matched = RequestItems::toProposalItems(RequestItems::ensure($requestId, true));
+        if (!$matched) {
+            $parsed = $req['parsed_json'] ? json_decode($req['parsed_json'], true) : RequestParser::parse($req['raw_text']);
+            $matched = ProductMatcher::matchItems($parsed['items'] ?? []);
+        }
 
         // Create proposal
         $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1");
@@ -75,7 +84,8 @@ switch ($action) {
                 'match_confidence' => $match['score'] ?? null,
                 'match_variants' => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
                 'is_confirmed' => $m['is_confirmed'] ? 1 : 0,
-                'notes' => ($match && ($match['stock'] ?? 0) == 0) ? 'под заказ' : null,
+                // The manager's own note wins over the automatic «под заказ»
+                'notes' => $m['notes'] ?? (($match && ($match['stock'] ?? 0) == 0) ? 'под заказ' : null),
             ]);
         }
 
@@ -148,6 +158,11 @@ switch ($action) {
                 foreach (['quantity', 'price', 'product_name', 'is_confirmed', 'notes', 'vat_rate', 'moysklad_product_id',
                           'description_text', 'specs_text', 'included_text', 'show_images', 'price_from', 'qty_from'] as $f) {
                     if (array_key_exists($f, $itemData)) $upd[$f] = $itemData[$f];
+                }
+                // Which photos of this product go into the KP (FR-046). An empty
+                // array is a decision too — «этой позиции фото не нужны».
+                if (array_key_exists('selected_images', $itemData) && is_array($itemData['selected_images'])) {
+                    $upd['selected_images'] = json_encode(array_values($itemData['selected_images']), JSON_UNESCAPED_UNICODE);
                 }
                 if ($upd) Db::update('proposal_items', $upd, 'id=? AND proposal_id=?', [$itemId, $id]);
             }
@@ -252,6 +267,26 @@ switch ($action) {
         Db::update('requests', ['status' => 'sent', 'updated_at' => $now], 'id=?', [$proposal['request_id']]);
 
         jsonOk(['sent_at' => $now]);
+
+    // Photos available for one KP position, with the manager's current pick
+    case 'item_images':
+        requireAuth();
+        $itemId = (int)($_GET['item_id'] ?? 0);
+        $item = Db::one("SELECT id, moysklad_product_id, selected_images FROM proposal_items WHERE id=?", [$itemId]);
+        if (!$item) jsonError('Позиция не найдена', 404);
+
+        $msId = (string)($item['moysklad_product_id'] ?? '');
+        $available = $msId === '' ? [] : array_map(fn($img) => [
+            'key' => $img['key'],
+            'url' => '/api/products.php?action=image&id=' . rawurlencode($msId) . '&key=' . rawurlencode($img['key']),
+        ], KpContent::productImageList($msId));
+
+        $selected = json_decode((string)($item['selected_images'] ?? ''), true);
+        jsonData([
+            'available' => $available,
+            // null — «выбор не делали»: в КП идут все найденные фото
+            'selected'  => is_array($selected) ? $selected : null,
+        ]);
 
     case 'addons_suggest':
         requireAuth();

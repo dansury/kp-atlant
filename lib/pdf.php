@@ -31,9 +31,10 @@ class PdfGenerator {
             $item['sum'] = $item['price'] * $item['quantity'];
             $total += $item['sum'];
             if (!empty($item['price_from'])) $totalIsFrom = true;
-            // Photos are embedded as data URIs — mPDF cannot read storage/ paths
+            // Photos are embedded as data URIs — mPDF cannot read storage/ paths.
+            // Which of them go in is the manager's pick (proposal_items.selected_images)
             $item['gallery'] = !empty($item['show_images'])
-                ? KpContent::imagesForPdf($item['images_json'] ?? null, $maxImages)
+                ? KpContent::itemGallery($item, $maxImages)
                 : [];
         }
         unset($item);

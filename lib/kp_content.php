@@ -18,6 +18,12 @@ class KpContent {
 
             $product = Db::one("SELECT * FROM products_cache WHERE moysklad_id=?", [$msId]);
             if (!$product) continue;
+            // Same for the card text: a variant inherits the product's description
+            if (trim((string)($product['description'] ?? '')) === '' && !empty($product['parent_id'])) {
+                $parent = Db::one("SELECT description, specs_text, included_text FROM products_cache WHERE moysklad_id=?",
+                                  [$product['parent_id']]);
+                if ($parent) $product = array_merge($product, array_filter($parent, fn($v) => (string)$v !== ''));
+            }
 
             $upd = [];
 
@@ -132,5 +138,112 @@ class KpContent {
             $out[] = 'data:image/' . $ext . ';base64,' . base64_encode(file_get_contents($path));
         }
         return $out;
+    }
+
+    // ==== Photos of a product: what exists, and which of them go into this KP ====
+
+    /**
+     * Every photo we know of for a product, from both sources: files already
+     * downloaded through the API (images_json) and the public CDN links the
+     * Excel export carries (image_urls). A key — «local:0», «url:2» — identifies
+     * one photo across a redeploy, so a manager's selection survives it.
+     * @return array<int,array{key:string,source:string,ref:string}>
+     */
+    public static function productImageList(string $moyskladId, int $max = 12): array {
+        $row = Db::one("SELECT images_json, image_urls, parent_id FROM products_cache WHERE moysklad_id=?", [$moyskladId]);
+        if (!$row) return [];
+
+        // A variant («Бронежилет (Размер: L)») carries no photos of its own —
+        // in МойСклад they hang on the product, so borrow them from the parent
+        $empty = fn($v) => $v === null || $v === '' || $v === '[]';
+        if ($empty($row['images_json']) && $empty($row['image_urls']) && !empty($row['parent_id'])) {
+            $parent = Db::one("SELECT images_json, image_urls FROM products_cache WHERE moysklad_id=?", [$row['parent_id']]);
+            if ($parent) $row = $parent + $row;
+        }
+
+        $out = [];
+        foreach ((array)(json_decode((string)($row['images_json'] ?? ''), true) ?: []) as $i => $path) {
+            if (is_string($path) && file_exists($path)) $out[] = ['key' => "local:$i", 'source' => 'file', 'ref' => $path];
+        }
+        foreach ((array)(json_decode((string)($row['image_urls'] ?? ''), true) ?: []) as $i => $url) {
+            if (is_string($url) && str_starts_with($url, 'http')) $out[] = ['key' => "url:$i", 'source' => 'url', 'ref' => $url];
+        }
+        return array_slice($out, 0, $max);
+    }
+
+    /** One photo by its key — raw bytes plus a mime type, ready to stream. */
+    public static function imageBytes(string $moyskladId, string $key): ?array {
+        foreach (self::productImageList($moyskladId, 100) as $img) {
+            if ($img['key'] !== $key) continue;
+            $binary = $img['source'] === 'file' ? @file_get_contents($img['ref']) : self::fetchUrl($img['ref']);
+            if ($binary === false || $binary === null || $binary === '') return null;
+            return ['bytes' => $binary, 'mime' => self::mimeOf($img['ref'], $binary)];
+        }
+        return null;
+    }
+
+    /**
+     * Photos of one KP position as data URIs. `selected_images` holds the keys
+     * the manager ticked; an empty selection means «все, что нашлись» — the
+     * behaviour КП had before the picker existed.
+     */
+    public static function itemGallery(array $item, int $max = 5): array {
+        $selected = json_decode((string)($item['selected_images'] ?? ''), true);
+        $msId = (string)($item['moysklad_product_id'] ?? '');
+
+        // No catalog link (a hand-typed position) — only what is already on the item
+        if ($msId === '') return self::imagesForPdf($item['images_json'] ?? null, $max);
+
+        $list = self::productImageList($msId);
+        if (is_array($selected) && $selected !== []) {
+            $list = array_values(array_filter($list, fn($i) => in_array($i['key'], $selected, true)));
+        } elseif (is_array($selected)) {
+            return [];   // an explicitly empty selection means «без фото»
+        }
+
+        $out = [];
+        foreach (array_slice($list, 0, $max) as $img) {
+            $binary = $img['source'] === 'file' ? @file_get_contents($img['ref']) : self::fetchUrl($img['ref']);
+            if (!$binary) continue;
+            $out[] = 'data:' . self::mimeOf($img['ref'], $binary) . ';base64,' . base64_encode($binary);
+        }
+        // Nothing resolved (offline, links rotted) — fall back to the cached paths
+        return $out ?: self::imagesForPdf($item['images_json'] ?? null, $max);
+    }
+
+    /** Public CDN image, cached on disk so a PDF rebuild does not re-download it. */
+    private static function fetchUrl(string $url): ?string {
+        $dir = ROOT . '/storage/product_images';
+        if (!is_dir($dir)) @mkdir($dir, 0755, true);
+        $cache = $dir . '/cdn-' . md5($url) . '.img';
+        if (is_file($cache) && filesize($cache) > 0) return (string)file_get_contents($cache);
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_USERAGENT      => 'AtlantArmourKP/1.0',
+        ]);
+        $body = curl_exec($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        if ($code < 200 || $code >= 300 || !$body) return null;
+
+        @file_put_contents($cache, $body);
+        return (string)$body;
+    }
+
+    private static function mimeOf(string $ref, string $binary): string {
+        $ext = strtolower(pathinfo(parse_url($ref, PHP_URL_PATH) ?: $ref, PATHINFO_EXTENSION));
+        return match (true) {
+            $ext === 'png'  => 'image/png',
+            $ext === 'webp' => 'image/webp',
+            $ext === 'gif'  => 'image/gif',
+            in_array($ext, ['jpg', 'jpeg'], true) => 'image/jpeg',
+            // The CDN hides the extension behind a query string — sniff the header
+            str_starts_with($binary, "\x89PNG") => 'image/png',
+            default => 'image/jpeg',
+        };
     }
 }

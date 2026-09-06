@@ -4,6 +4,9 @@
  */
 require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/crm.php';
+require_once ROOT . '/lib/parser.php';
+require_once ROOT . '/lib/matcher.php';
+require_once ROOT . '/lib/request_items.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -81,7 +84,33 @@ switch ($action) {
             "SELECT id, moysklad_id, name, sum, state_name, synced_at FROM orders WHERE request_id=? ORDER BY id DESC",
             [$id]
         );
+        // «Подходящие позиции» — built once from the parsed letter, edited by hand
+        // afterwards. Matching here is local only: opening a card costs no model call.
+        $req['items'] = RequestItems::ensure($id);
         jsonData($req);
+
+    // ---- Matched catalog positions of a request (module 008) ----
+
+    case 'items':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        jsonData(['items' => RequestItems::ensure($id)]);
+
+    case 'items_save':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $input = getInput();
+        jsonData(['items' => RequestItems::save($id, (array)($input['items'] ?? []))]);
+
+    case 'items_rematch':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        // `smart=1` lets the model normalize the wording first — costs a call
+        $useLlm = ($_GET['smart'] ?? '0') === '1';
+        jsonData(['items' => RequestItems::rematch($id, $useLlm)]);
 
     case 'create':
         $manager = requireAuth();
@@ -90,7 +119,6 @@ switch ($action) {
         if (!$text) jsonError('Text is required');
 
         // Parse via LLM
-        require_once ROOT . '/lib/parser.php';
         $parsed = RequestParser::parse($text);
 
         // Company card: INN → email domain → name (FR-034)
@@ -124,6 +152,9 @@ switch ($action) {
             'subject'    => 'Запрос добавлен вручную',
             'email_from' => $parsed['contact_email'] ?? null,
         ]);
+
+        // Pre-fill the matched-positions table right away — no model call here
+        RequestItems::ensure($requestId);
 
         // Notify
         require_once ROOT . '/lib/notifier.php';
