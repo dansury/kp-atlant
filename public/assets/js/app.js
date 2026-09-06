@@ -153,6 +153,7 @@ const App = {
             <a href="#new" data-page="new">+ Новый</a>
             <a href="#counterparties" data-page="counterparties">Компании</a>
             <a href="#mail" data-page="mail">Почта<span id="mailBadge"></span></a>
+            <a href="#boards" data-page="boards">Доски</a>
             <a href="#settings" data-page="settings">Настройки<span id="logBadge"></span></a>
             <a href="#notifications" data-page="notifications">Уведомления<span id="notifBadge"></span></a>
         `;
@@ -210,7 +211,9 @@ const App = {
                 case 'counterparty': return this.pageCounterparty(params[0]);
                 case 'notifications': return this.pageNotifications();
                 case 'settings': return this.pageSettings(params[0]);
-                case 'mail': return this.pageMail(params[0]);
+                case 'mail': return this.pageMail(params[0] ? decodeURIComponent(params[0]) : null, params[1]);
+                case 'boards': return this.pageBoards();
+                case 'board': return this.pageBoard(params[0]);
                 // Bookmarks and links from before the merge still work
                 case 'admin': location.replace('#settings/' + (params[0] || '')); return;
                 default: return this.pageRequests();
@@ -387,10 +390,14 @@ const App = {
     renderMatchedItems(requestId, items) {
         const card = document.getElementById('matchCard');
         if (!card) return;
+        this.matchRequestId = requestId;
+        const open = items.filter(i => i.needs_choice).length;
         card.innerHTML = `
             <div class="card__title">Подходящие позиции</div>
-            <p class="muted">Позиции каталога, из которых соберётся КП. Начните печатать название —
+            <p class="muted">Подбираются сами при открытии карточки. Начните печатать название —
                подскажет локальная база товаров.</p>
+            ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
+                выберите нужный, автоподбор сам не решает.</div>` : ''}
             <div id="matchRows">${items.map(i => this.matchRow(i)).join('')}</div>
             ${items.length ? '' : '<p class="muted" id="matchEmpty">Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
             <div class="flex flex--wrap" style="margin-top:10px">
@@ -405,22 +412,57 @@ const App = {
         this.updateMatchTotal();
     },
 
+    // Where a candidate came from: the words of the letter, its meaning, or both
+    matchSourceLabel(source) {
+        return {words: 'по словам', meaning: 'по смыслу', both: 'по словам и смыслу'}[source] || '';
+    },
+
+    /**
+     * The «равнозначные» block. Two catalog rows within MATCH_EQUAL_DELTA of each
+     * other are not a match and a runner-up — they are a question, and the card
+     * asks it here instead of quietly taking the first one.
+     */
+    matchChoice(i) {
+        const options = [
+            ...(i.moysklad_product_id ? [{
+                moysklad_id: i.moysklad_product_id, name: i.product_name, article: i.article,
+                unit: i.unit, price: i.price, stock: i.stock, score: i.match_confidence,
+                source: i.match_source,
+            }] : []),
+            ...(i.variants || []),
+        ];
+        if (!options.length) return '';
+        return `
+            <div class="choice">
+                <div class="choice__title">Равнозначные варианты — выберите один</div>
+                ${options.map(v => `
+                    <button type="button" class="choice__opt" onclick="App.chooseMatch(${i.id || 0}, '${this.jsStr(v.moysklad_id)}', this)">
+                        <span class="choice__name">${this.esc(v.name)}</span>
+                        <span class="muted">${this.fmtMoney(v.price)}${v.stock !== null && v.stock !== undefined ? ` · остаток ${v.stock}` : ''}
+                            ${v.score ? ` · ${Math.round(v.score * 100)}%` : ''}
+                            ${v.source ? ` · ${this.matchSourceLabel(v.source)}` : ''}</span>
+                    </button>`).join('')}
+            </div>`;
+    },
+
     matchRow(i = {}) {
         const conf = i.match_confidence ? Math.round(i.match_confidence * 100) : null;
+        const src = this.matchSourceLabel(i.match_source);
         return `
-            <div class="match-row" data-match-row>
+            <div class="match-row ${i.needs_choice ? 'match-row--choice' : ''}" data-match-row>
                 <input type="hidden" data-field="id" value="${this.esc(i.id || '')}">
                 <input type="hidden" data-field="raw_name" value="${this.esc(i.raw_name || '')}">
                 <input type="hidden" data-field="moysklad_product_id" value="${this.esc(i.moysklad_product_id || '')}">
                 <input type="hidden" data-field="article" value="${this.esc(i.article || '')}">
                 <input type="hidden" data-field="stock" value="${i.stock ?? ''}">
+                <input type="hidden" data-field="needs_choice" value="${i.needs_choice ? 1 : 0}">
                 <div class="match-row__name">
-                    ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}</div>` : ''}
+                    ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}</div>` : ''}
                     <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
                            value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
                     <div class="suggest" hidden></div>
-                    ${(i.variants || []).length ? `<div class="muted">ещё похожие:
-                        ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : ''}
+                    ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted">ещё похожие:
+                        ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
                 </div>
                 <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
                        placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal()">
@@ -434,6 +476,31 @@ const App = {
                 <button class="btn btn--outline btn--sm" title="Убрать строку"
                         onclick="this.closest('[data-match-row]').remove(); App.updateMatchTotal()">×</button>
             </div>`;
+    },
+
+    // The manager answered the «равнозначные» question — the line stops asking
+    async chooseMatch(itemId, moyskladId, btn) {
+        if (!itemId) {
+            // A row that was never saved has no id yet: fill it in place
+            const row = btn.closest('[data-match-row]');
+            const name = btn.querySelector('.choice__name').textContent;
+            const set = (f, v) => { const el = row.querySelector(`[data-field="${f}"]`); if (el) el.value = v; };
+            set('product_name', name);
+            set('moysklad_product_id', moyskladId);
+            set('needs_choice', 0);
+            row.querySelector('[data-field="is_confirmed"]').checked = true;
+            row.classList.remove('match-row--choice');
+            btn.closest('.choice').remove();
+            this.updateMatchTotal();
+            return;
+        }
+        try {
+            const res = await this.api(`requests.php?action=items_choose&id=${this.matchRequestId}`, {
+                method: 'POST', body: {item_id: itemId, moysklad_id: moyskladId},
+            });
+            this.renderMatchedItems(this.matchRequestId, res.items || []);
+            this.toast('Позиция выбрана', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     addMatchRow() {
@@ -1390,6 +1457,7 @@ const App = {
                 <button class="btn btn--primary" id="catalogImportBtn" onclick="App.importCatalog()">Загрузить файл</button>
                 <div id="catalogImportResult" style="margin-top:12px"></div>
             </div>
+            <div class="card" id="vectorCard"><div class="loading">Проверяем векторный индекс...</div></div>
             <div class="card">
                 <div class="card__title">Проверить поиск</div>
                 <p class="muted">То же, что подставляется в «Подходящие позиции» на карточке запроса.</p>
@@ -1402,6 +1470,7 @@ const App = {
             </div>
         `;
         this.loadCatalogStats();
+        this.loadVectorStats();
         try {
             const s = await this.api('admin.php?action=settings');
             const col = (s.items || []).find(i => i.key === 'CATALOG_PRICE_COLUMN');
@@ -1427,6 +1496,76 @@ const App = {
         } catch (err) {
             card.innerHTML = `<div class="card__title">Что сейчас в базе</div><p class="no">${this.esc(err.message)}</p>`;
         }
+    },
+
+    // ---- Catalog vectors: the «по смыслу» half of the match (module 009) ----
+
+    async loadVectorStats() {
+        const card = document.getElementById('vectorCard');
+        if (!card) return;
+        try {
+            const d = await this.api('products.php?action=vector_stats');
+            const done = d.total ? Math.round(100 * Math.min(d.indexed, d.total) / d.total) : 0;
+            card.innerHTML = `
+                <div class="card__title">Векторный поиск по каталогу</div>
+                <p class="muted">Эмбеддинги Yandex Cloud позволяют подобрать позицию по смыслу, а не только
+                   по совпадению слов: «броник скрытого ношения» находит «Бронежилет скрытого ношения».
+                   Индекс строится шагами и продолжается с того места, где остановился.</p>
+                ${!d.configured ? '<p class="no">Не заданы ключ и Folder ID Yandex — подбор работает только по словам. Задайте их в «Настройки → Нейросети».</p>'
+                    : (!d.enabled ? '<p class="no">Векторный поиск выключен в «Настройки → Все параметры → Подбор позиций».</p>' : '')}
+                <p>Векторизовано: <strong>${d.indexed}</strong> из ${d.total}
+                   ${d.pending ? ` · ждёт обработки: ${d.pending}` : ' · всё актуально'}
+                   ${d.dim ? ` · размерность ${d.dim}` : ''}</p>
+                <div class="progress"><div class="progress__bar" style="width:${done}%"></div></div>
+                <p class="muted">Модель: ${this.esc(d.model)}${d.updated_at ? ` · обновлён ${this.fmtDate(d.updated_at)}` : ''}</p>
+                <div class="flex flex--wrap">
+                    <button class="btn btn--primary btn--sm" id="vecBtn" onclick="App.vectorIndex()"
+                            ${d.configured ? '' : 'disabled'}>Векторизовать каталог</button>
+                    <button class="btn btn--outline btn--sm" onclick="App.vectorReset()">Очистить индекс</button>
+                </div>
+                <div id="vectorProgress" class="muted" style="margin-top:8px"></div>
+            `;
+        } catch (err) {
+            card.innerHTML = `<div class="card__title">Векторный поиск по каталогу</div><p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    /**
+     * The indexing loop lives in the browser: each request does one bounded step
+     * on the server and says how much is left. That is what keeps a 1 200-position
+     * catalog from ever needing a request longer than the host allows.
+     */
+    async vectorIndex() {
+        const btn = document.getElementById('vecBtn');
+        const out = document.getElementById('vectorProgress');
+        if (btn) { btn.disabled = true; btn.textContent = 'Векторизуем...'; }
+        let indexed = 0, failed = 0, steps = 0;
+        try {
+            while (steps < 200) {
+                const r = (await this.api('products.php?action=vector_index', {method: 'POST', body: {}})).report;
+                indexed += r.indexed; failed += r.failed; steps++;
+                if (out) out.textContent = `шаг ${steps}: обработано ${indexed}, осталось ${r.left}`
+                    + (failed ? `, неудач ${failed}` : '');
+                if (r.done) break;
+                // A step that moved nothing will not move anything next time either
+                if (r.indexed === 0) { this.toast('Шаг без прогресса — проверьте ключ Yandex и логи', 'error'); break; }
+            }
+            this.toast(`Векторизовано позиций: ${indexed}` + (failed ? `, не удалось: ${failed}` : ''), failed ? 'info' : 'success');
+        } catch (err) {
+            this.toast(err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Векторизовать каталог'; }
+            this.loadVectorStats();
+        }
+    },
+
+    async vectorReset() {
+        if (!confirm('Очистить векторный индекс? Его придётся построить заново.')) return;
+        try {
+            const r = await this.api('products.php?action=vector_reset', {method: 'POST', body: {}});
+            this.toast(`Индекс очищен (${r.removed})`, 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+        this.loadVectorStats();
     },
 
     async importCatalog() {
@@ -1480,18 +1619,21 @@ const App = {
         if (!q) return;
         out.innerHTML = '<p class="muted">Ищем...</p>';
         try {
-            const d = await this.api('products.php?action=search&limit=15&q=' + encodeURIComponent(q));
+            // The same call the request card makes: words, meaning and the score
+            const d = await this.api('products.php?action=match_preview&q=' + encodeURIComponent(q));
             out.innerHTML = d.items.length ? `
-                ${d.from_api ? '<p class="muted">В локальной базе не нашлось — показан ответ МойСклад.</p>' : ''}
+                <p class="muted">${d.vector ? 'Подбор идёт по словам и по смыслу.' : 'Векторный индекс выключен — подбор только по словам.'}</p>
                 <table class="table">
-                    <thead><tr><th>Наименование</th><th>Артикул</th><th class="price">Цена</th><th class="num">Остаток</th></tr></thead>
+                    <thead><tr><th>Наименование</th><th>Артикул</th><th class="price">Цена</th><th class="num">Остаток</th><th>Совпадение</th></tr></thead>
                     <tbody>${d.items.map(i => `<tr>
                         <td>${this.esc(i.name)}${i.characteristics ? `<div class="muted">${this.esc(i.characteristics)}</div>` : ''}</td>
-                        <td class="muted">${this.esc(i.article || i.code || '')}</td>
+                        <td class="muted">${this.esc(i.article || '')}</td>
                         <td class="price">${this.fmtMoney(i.price)}</td>
                         <td class="num">${i.stock ?? '—'}</td>
+                        <td class="muted">${Math.round(i.score * 100)}% · ${this.matchSourceLabel(i.source)}
+                            <div class="muted">слова ${Math.round(i.lexical * 100)}%${i.vector !== null ? ` · смысл ${Math.round(i.vector * 100)}%` : ''}</div></td>
                     </tr>`).join('')}</tbody>
-                </table>` : '<p class="muted">Ничего не найдено.</p>';
+                </table>` : '<p class="muted">Ничего не найдено — попробуйте другую формулировку или постройте векторный индекс.</p>';
         } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
@@ -1732,8 +1874,14 @@ const App = {
 
     // ==== Mail: the archive of every incoming and outgoing letter (module 004) ====
 
-    async pageMail(id) {
-        if (id) return this.pageMailMessage(id);
+    // ==== Mail: a mail client over the company mailboxes (modules 004, 010) ====
+    // Letters are grouped into conversations by subject («Re:» and «Fwd:» stripped),
+    // so an answer sent from Gmail sits in the same thread as the Yandex original.
+
+    async pageMail(id, sub) {
+        if (id === 'msg') return this.pageMailMessage(sub);
+        if (id) return this.pageMailThread(id);
+
         const state = this.mailState = this.mailState || {direction: '', mailbox_id: '', q: '', offset: 0};
         const qs = new URLSearchParams({
             limit: 50, offset: state.offset,
@@ -1742,7 +1890,7 @@ const App = {
             ...(state.q ? {q: state.q} : {}),
             ...(state.unread ? {unread: 1} : {}),
         });
-        const d = await this.api('mail.php?action=list&' + qs);
+        const d = await this.api('mail.php?action=threads&' + qs);
         const tab = (key, label) => `<button class="btn btn--sm ${state.direction === key && !state.unread ? 'btn--primary' : 'btn--outline'}"
             onclick="App.mailFilter({direction:'${key}',unread:0})">${label}</button>`;
 
@@ -1750,6 +1898,7 @@ const App = {
             <div class="flex flex--between" style="margin-bottom:16px">
                 <h2>Почта</h2>
                 <div class="flex">
+                    <a href="#boards" class="btn btn--outline">▦ Доски</a>
                     <button class="btn btn--outline" onclick="App.mailSync()">⟳ Синхронизировать</button>
                     <button class="btn btn--primary" onclick="App.mailCompose()">✉ Написать</button>
                 </div>
@@ -1761,39 +1910,53 @@ const App = {
                 ${this.manager.is_admin ? '<a href="#settings/mail">Добавить ящик</a>' : 'Обратитесь к администратору.'}</div>` : ''}
             <div class="card card--inline">
                 ${tab('', 'Все')}${tab('in', 'Входящие')}${tab('out', 'Исходящие')}
-                <button class="btn btn--sm ${state.unread ? 'btn--primary' : 'btn--outline'}" onclick="App.mailFilter({unread:1,direction:'in'})">Непрочитанные</button>
+                <button class="btn btn--sm ${state.unread ? 'btn--primary' : 'btn--outline'}" onclick="App.mailFilter({unread:1,direction:''})">Непрочитанные</button>
                 <select id="mailBox" onchange="App.mailFilter({mailbox_id:this.value})">
                     <option value="">Все ящики</option>
                     ${(d.mailboxes || []).map(b => `<option value="${b.id}" ${String(state.mailbox_id) === String(b.id) ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
                 </select>
                 <input type="text" id="mailQ" placeholder="Поиск по теме, адресу и тексту" value="${this.esc(state.q)}"
                        style="max-width:320px" onkeydown="if(event.key==='Enter')App.mailFilter({q:this.value})">
-                <span class="muted">Всего: ${d.total}</span>
+                <span class="muted">Переписок: ${d.total}</span>
             </div>
-            <div class="card">
-                <table class="table">
-                    <thead><tr><th></th><th>Тема</th><th>Кто</th><th>Компания</th><th>Ящик</th><th>Дата</th></tr></thead>
-                    <tbody>
-                        ${d.items.map(m => `
-                            <tr style="cursor:pointer" onclick="location.hash='mail/${m.id}'" class="${m.direction === 'in' && !m.is_read ? 'row--unread' : ''}">
-                                <td>${m.direction === 'in' ? '📥' : '📤'}${m.has_attachment ? ' 📎' : ''}</td>
-                                <td>${this.esc(m.subject) || '<em>без темы</em>'}
-                                    <div class="muted">${this.esc((m.preview || '').slice(0, 110))}</div></td>
-                                <td>${this.esc(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}</td>
-                                <td>${m.counterparty_id ? `<a href="#counterparty/${m.counterparty_id}" onclick="event.stopPropagation()">${this.esc(m.counterparty_name)}</a>` : '—'}</td>
-                                <td class="muted">${this.esc(m.mailbox_name) || '—'}</td>
-                                <td class="muted">${this.fmtDate(m.date_at)}</td>
-                            </tr>
-                        `).join('')}
-                        ${d.items.length === 0 ? '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">Писем нет</td></tr>' : ''}
-                    </tbody>
-                </table>
-                <div class="flex flex--between" style="margin-top:12px">
+            <div class="card card--flush">
+                <div class="mlist">
+                    ${d.items.map(t => this.threadRow(t)).join('')}
+                    ${d.items.length === 0 ? '<div class="mlist__empty">Писем нет</div>' : ''}
+                </div>
+                <div class="flex flex--between" style="padding:12px 16px">
                     <button class="btn btn--sm btn--outline" ${state.offset === 0 ? 'disabled' : ''} onclick="App.mailPage(-1)">← Новее</button>
                     <button class="btn btn--sm btn--outline" ${state.offset + 50 >= d.total ? 'disabled' : ''} onclick="App.mailPage(1)">Старее →</button>
                 </div>
             </div>
         `;
+    },
+
+    /**
+     * One conversation in the list: subject in normal size, everything else in
+     * the small grey type of a mail client, and the «Re:» count as a bubble —
+     * «Тема · 4» is how you tell a live discussion from a one-off letter.
+     */
+    threadRow(t) {
+        const who = [...new Set((t.participants || []).slice(0, 3))].join(', ');
+        return `
+            <div class="mrow ${t.unread ? 'mrow--unread' : ''}" onclick="location.hash='mail/${encodeURIComponent(t.thread_key)}'">
+                <div class="mrow__dir">${t.last_direction === 'in' ? '📥' : '📤'}${t.has_attachment ? '<span class="mrow__clip">📎</span>' : ''}</div>
+                <div class="mrow__main">
+                    <div class="mrow__subject">
+                        ${this.esc(t.subject) || '<em>без темы</em>'}
+                        ${t.count > 1 ? `<span class="mrow__count" title="писем в переписке">${t.count}</span>` : ''}
+                        ${t.unread ? `<span class="pill pill--danger">${t.unread}</span>` : ''}
+                    </div>
+                    <div class="mrow__meta">
+                        ${this.esc(who)}
+                        ${t.counterparty_id ? ` · <a href="#counterparty/${t.counterparty_id}" onclick="event.stopPropagation()">${this.esc(t.counterparty_name)}</a>` : ''}
+                        ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
+                    </div>
+                    <div class="mrow__preview">${this.esc(t.preview)}</div>
+                </div>
+                <div class="mrow__date">${this.fmtDate(t.last_at)}</div>
+            </div>`;
     },
 
     mailFilter(patch) {
@@ -1818,12 +1981,92 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
+    /**
+     * The conversation itself: every letter of the thread from every mailbox, in
+     * order. The last one is open, the earlier ones are folded the way a mail
+     * client folds them.
+     */
+    async pageMailThread(key) {
+        const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key));
+        const t = d.thread;
+        const reply = d.reply || {};
+        this.mailThread = {key, reply, subject: t.subject};
+
+        document.getElementById('app').innerHTML = `
+            <div class="flex flex--between" style="margin-bottom:12px">
+                <div>
+                    <h2 style="margin-bottom:2px">${this.esc(t.subject)}</h2>
+                    <div class="muted" style="font-size:12px">
+                        писем: ${t.count} · входящих ${t.in_count} · исходящих ${t.out_count}
+                        ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
+                        ${t.counterparty_id ? ` · <a href="#counterparty/${t.counterparty_id}">${this.esc(t.counterparty_name)}</a>` : ''}
+                        ${t.request_id ? ` · <a href="#request/${t.request_id}">Запрос #${t.request_id}</a>` : ''}
+                    </div>
+                </div>
+                <div class="flex">
+                    <a href="#mail" class="btn btn--outline btn--sm">← К списку</a>
+                    <button class="btn btn--outline btn--sm" onclick="App.boardPick('${this.jsStr(key)}')">▦ В доску</button>
+                    ${reply.reply_to_id ? `<button class="btn btn--outline btn--sm" onclick="App.mailCompose(${reply.reply_to_id}, true, '${this.jsStr(key)}')">Создать ответ</button>` : ''}
+                    <button class="btn btn--primary btn--sm" onclick="App.mailCompose(${reply.reply_to_id || 'null'}, false, '${this.jsStr(key)}')">Ответить</button>
+                </div>
+            </div>
+            <div id="threadPlacement"></div>
+            <div class="thread">
+                ${d.messages.map((m, i) => this.threadMessage(m, i === d.messages.length - 1)).join('')}
+            </div>
+        `;
+        this.loadThreadPlacement(key);
+    },
+
+    threadMessage(m, open) {
+        const sentBad = m.direction === 'out' && m.sent_state === 'failed';
+        return `
+            <div class="tmsg ${m.direction === 'in' ? 'tmsg--in' : 'tmsg--out'}" data-tmsg>
+                <div class="tmsg__head" onclick="this.parentElement.classList.toggle('tmsg--open')">
+                    <span class="tmsg__who">${this.esc(m.from_name || m.from_email || '—')}</span>
+                    <span class="muted">${m.direction === 'in' ? '→ нам' : '→ ' + this.esc(m.to_emails)}</span>
+                    <span class="chip chip--box">${this.esc(m.mailbox_name || 'без ящика')}</span>
+                    ${m.folder ? `<span class="muted tmsg__folder">${this.esc(m.folder)}</span>` : ''}
+                    ${m.has_attachment ? '<span>📎</span>' : ''}
+                    ${sentBad ? '<span class="badge badge--warning" title="Копия не попала в «Отправленные» на сервере">нет в «Отправленных»</span>' : ''}
+                    <span class="tmsg__date muted">${this.fmtDate(m.date_at)}</span>
+                </div>
+                <div class="tmsg__body">
+                    ${m.cc_emails ? `<div class="muted" style="margin-bottom:6px">Копия: ${this.esc(m.cc_emails)}</div>` : ''}
+                    <div class="msg__body">${this.esc(m.body_text)}</div>
+                    ${(m.attachments || []).length ? `<div class="msg__files">
+                        ${m.attachments.map(a => `<a class="chip" href="/api/mail.php?action=attachment&id=${a.id}" target="_blank">📎 ${this.esc(a.filename)}</a>`).join('')}
+                    </div>` : ''}
+                    <div class="flex" style="margin-top:8px">
+                        <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id}, false, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Ответить на это письмо</button>
+                        ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id}, true, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Создать ответ</button>` : ''}
+                    </div>
+                </div>
+            </div>`.replace('class="tmsg ', open ? 'class="tmsg tmsg--open ' : 'class="tmsg ');
+    },
+
+    // Which board this conversation already sits on
+    async loadThreadPlacement(key) {
+        const box = document.getElementById('threadPlacement');
+        if (!box) return;
+        try {
+            const d = await this.api('boards.php?action=placement&thread_key=' + encodeURIComponent(key));
+            box.innerHTML = (d.items || []).length ? `<div class="card card--inline">
+                <span class="muted">На досках:</span>
+                ${d.items.map(p => `<a class="chip" href="#board/${p.board_id}" style="border-color:${this.esc(p.color || '#ccc')}">
+                    ${this.esc(p.board_name)} · ${this.esc(p.column_title)}</a>`).join('')}
+            </div>` : '';
+        } catch { box.innerHTML = ''; }
+    },
+
+    // A single letter, for links that point at one message rather than a thread
     async pageMailMessage(id) {
         const m = await this.api(`mail.php?action=get&id=${id}`);
         document.getElementById('app').innerHTML = `
             <div class="flex flex--between" style="margin-bottom:16px">
                 <h2>${this.esc(m.subject) || 'Без темы'}</h2>
                 <div class="flex">
+                    ${m.thread_key ? `<a href="#mail/${encodeURIComponent(m.thread_key)}" class="btn btn--outline btn--sm">Вся переписка</a>` : ''}
                     <a href="#mail" class="btn btn--outline btn--sm">← К списку</a>
                     ${m.direction === 'in' ? `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id}, true)">Создать ответ</button>` : ''}
                     <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>
@@ -1840,6 +2083,8 @@ const App = {
                     : 'не определена'}
                    ${m.request_id ? ` · <a href="#request/${m.request_id}">Запрос #${m.request_id}</a>` : ''}</p>
                 ${m.error ? `<p class="no">Ошибка обработки: ${this.esc(m.error)}</p>` : ''}
+                ${m.direction === 'out' && m.sent_state === 'failed'
+                    ? '<p class="no">Копия письма не попала в «Отправленные» на почтовом сервере — смотрите «Настройки → Почта».</p>' : ''}
                 <hr style="margin:12px 0">
                 <div class="msg__body" style="max-height:none">${this.esc(m.body_text)}</div>
                 ${(m.attachments || []).length ? `
@@ -1848,6 +2093,251 @@ const App = {
                     </div>` : ''}
             </div>
         `;
+    },
+
+
+    // ==== Kanban boards (module 010) ====
+    // Trello, without Trello: named boards, columns you rename, and letters you
+    // drag by hand. A card carries a whole conversation, not one letter.
+
+    async pageBoards() {
+        const d = await this.api('boards.php?action=list');
+        document.getElementById('app').innerHTML = `
+            <div class="flex flex--between" style="margin-bottom:16px">
+                <h2>Доски</h2>
+                <button class="btn btn--primary" onclick="App.boardCreate()">+ Новая доска</button>
+            </div>
+            <div class="grid grid--3">
+                ${d.items.map(b => `
+                    <div class="board-tile" onclick="location.hash='board/${b.id}'">
+                        <div class="board-tile__name">${this.esc(b.name)}</div>
+                        <div class="muted">карточек: ${b.cards}</div>
+                    </div>`).join('')}
+            </div>
+        `;
+    },
+
+    async boardCreate() {
+        const name = prompt('Название доски', 'Работа с письмами');
+        if (name === null) return;
+        try {
+            const r = await this.api('boards.php?action=board_save', {method: 'POST', body: {name}});
+            location.hash = 'board/' + r.id;
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async pageBoard(id) {
+        const b = await this.api(`boards.php?action=get&id=${id}`);
+        this.board = b;
+        document.getElementById('app').innerHTML = `
+            <div class="flex flex--between" style="margin-bottom:12px">
+                <div class="flex">
+                    <a href="#boards" class="btn btn--outline btn--sm">← Доски</a>
+                    <h2 style="margin:0">${this.esc(b.name)}</h2>
+                    <button class="btn btn--outline btn--sm" onclick="App.boardRename(${b.id})">Переименовать</button>
+                </div>
+                <div class="flex">
+                    <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn(${b.id})">+ Колонка</button>
+                    <button class="btn btn--outline btn--sm" onclick="App.boardDelete(${b.id})">Удалить доску</button>
+                </div>
+            </div>
+            <div class="board" id="board">
+                ${b.columns.map(c => this.boardColumn(c)).join('')}
+            </div>
+        `;
+        this.boardBindDnd();
+    },
+
+    boardColumn(c) {
+        return `
+            <div class="bcol" data-col="${c.id}" style="--col:${this.esc(c.color || '#8a8f98')}">
+                <div class="bcol__head">
+                    <span class="bcol__title" onclick="App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')">${this.esc(c.title)}</span>
+                    <span class="bcol__count">${c.cards.length}</span>
+                    <button class="bcol__x" title="Удалить колонку" onclick="App.boardDeleteColumn(${c.id})">×</button>
+                </div>
+                <div class="bcol__cards" data-drop="${c.id}">
+                    ${c.cards.map(card => this.boardCard(card)).join('')}
+                </div>
+                <button class="bcol__add" onclick="App.boardAddCard(${c.id})">+ карточка</button>
+            </div>`;
+    },
+
+    boardCard(card) {
+        const t = card.thread || {};
+        return `
+            <div class="bcard" draggable="true" data-card="${card.id}">
+                <div class="bcard__title">${this.esc(card.title)}</div>
+                ${card.note ? `<div class="bcard__note">${this.esc(card.note)}</div>` : ''}
+                <div class="bcard__meta">
+                    ${t.count ? `<span class="chip">писем ${t.count}</span>` : ''}
+                    ${t.unread ? `<span class="pill pill--danger">${t.unread}</span>` : ''}
+                    ${t.counterparty_name ? `<span class="chip">${this.esc(t.counterparty_name)}</span>` : ''}
+                    ${(t.mailboxes || []).map(n => `<span class="chip chip--box">${this.esc(n)}</span>`).join('')}
+                    ${t.last_at ? `<span class="muted">${this.fmtDate(t.last_at, false)}</span>` : ''}
+                </div>
+                <div class="bcard__actions">
+                    ${card.thread_key ? `<a href="#mail/${encodeURIComponent(card.thread_key)}">открыть переписку</a>` : ''}
+                    ${card.request_id ? `<a href="#request/${card.request_id}">запрос #${card.request_id}</a>` : ''}
+                    <a onclick="App.boardCardNote(${card.id})">заметка</a>
+                    <a onclick="App.boardCardDelete(${card.id})">убрать</a>
+                </div>
+            </div>`;
+    },
+
+    /**
+     * Drag and drop with the browser's own HTML5 API — no library on a page that
+     * has none. The card being dragged is shown where it would land, so a drop
+     * is never a surprise.
+     */
+    boardBindDnd() {
+        const board = document.getElementById('board');
+        if (!board) return;
+        let dragged = null;
+
+        board.addEventListener('dragstart', e => {
+            const card = e.target.closest('.bcard');
+            if (!card) return;
+            dragged = card;
+            card.classList.add('bcard--dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', card.dataset.card);
+        });
+
+        board.addEventListener('dragend', () => {
+            if (dragged) dragged.classList.remove('bcard--dragging');
+            board.querySelectorAll('.bcol__cards--over').forEach(el => el.classList.remove('bcol__cards--over'));
+            dragged = null;
+        });
+
+        board.addEventListener('dragover', e => {
+            const drop = e.target.closest('[data-drop]');
+            if (!drop || !dragged) return;
+            e.preventDefault();
+            drop.classList.add('bcol__cards--over');
+
+            // Insert before the first card whose middle is below the cursor
+            const after = [...drop.querySelectorAll('.bcard:not(.bcard--dragging)')]
+                .find(el => e.clientY < el.getBoundingClientRect().top + el.offsetHeight / 2);
+            if (after) drop.insertBefore(dragged, after);
+            else drop.appendChild(dragged);
+        });
+
+        board.addEventListener('dragleave', e => {
+            const drop = e.target.closest('[data-drop]');
+            if (drop && !drop.contains(e.relatedTarget)) drop.classList.remove('bcol__cards--over');
+        });
+
+        board.addEventListener('drop', async e => {
+            const drop = e.target.closest('[data-drop]');
+            if (!drop || !dragged) return;
+            e.preventDefault();
+            drop.classList.remove('bcol__cards--over');
+
+            const cardId = Number(dragged.dataset.card);
+            const columnId = Number(drop.dataset.drop);
+            const position = [...drop.querySelectorAll('.bcard')].indexOf(dragged);
+            this.boardRecount();
+            try {
+                await this.api('boards.php?action=card_move', {method: 'POST', body: {id: cardId, column_id: columnId, position}});
+            } catch (err) {
+                this.toast(err.message, 'error');
+                this.pageBoard(this.board.id);   // the server said no — show what it really holds
+            }
+        });
+    },
+
+    boardRecount() {
+        document.querySelectorAll('.bcol').forEach(col => {
+            const n = col.querySelectorAll('.bcard').length;
+            const badge = col.querySelector('.bcol__count');
+            if (badge) badge.textContent = n;
+        });
+    },
+
+    async boardRename(id) {
+        const name = prompt('Название доски', this.board.name);
+        if (name === null) return;
+        await this.api('boards.php?action=board_save', {method: 'POST', body: {id, name}});
+        this.pageBoard(id);
+    },
+
+    async boardDelete(id) {
+        if (!confirm('Удалить доску вместе с карточками? Письма останутся в почте.')) return;
+        await this.api('boards.php?action=board_delete', {method: 'POST', body: {id}});
+        location.hash = 'boards';
+    },
+
+    async boardAddColumn(boardId) {
+        const title = prompt('Название колонки', 'Новая колонка');
+        if (title === null) return;
+        await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: boardId, title}});
+        this.pageBoard(boardId);
+    },
+
+    async boardRenameColumn(id, current) {
+        const title = prompt('Название колонки', current);
+        if (title === null) return;
+        await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, id, title}});
+        this.pageBoard(this.board.id);
+    },
+
+    async boardDeleteColumn(id) {
+        if (!confirm('Удалить колонку вместе с карточками?')) return;
+        await this.api('boards.php?action=column_delete', {method: 'POST', body: {id}});
+        this.pageBoard(this.board.id);
+    },
+
+    async boardAddCard(columnId) {
+        const title = prompt('Название карточки', '');
+        if (title === null || !title.trim()) return;
+        await this.api('boards.php?action=card_add', {method: 'POST', body: {column_id: columnId, title}});
+        this.pageBoard(this.board.id);
+    },
+
+    async boardCardNote(id) {
+        const note = prompt('Заметка на карточке', '');
+        if (note === null) return;
+        await this.api('boards.php?action=card_save', {method: 'POST', body: {id, note}});
+        this.pageBoard(this.board.id);
+    },
+
+    async boardCardDelete(id) {
+        if (!confirm('Убрать карточку с доски? Письма останутся в почте.')) return;
+        await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
+        this.pageBoard(this.board.id);
+    },
+
+    // «В доску» from a conversation: pick the board and the column to drop it in
+    async boardPick(threadKey) {
+        const d = await this.api('boards.php?action=targets');
+        if (!d.items.length) {
+            this.toast('Сначала создайте доску', 'error');
+            location.hash = 'boards';
+            return;
+        }
+        this.modal('Положить переписку в доску', `
+            <div class="board-pick">
+                ${d.items.map(b => `
+                    <div class="board-pick__board">
+                        <div class="board-pick__name">${this.esc(b.name)}</div>
+                        <div class="flex flex--wrap">
+                            ${b.columns.map(c => `<button class="btn btn--outline btn--sm"
+                                style="border-color:${this.esc(c.color || '#ccc')}"
+                                onclick="App.boardPut(${c.id}, '${this.jsStr(threadKey)}')">${this.esc(c.title)}</button>`).join('')}
+                        </div>
+                    </div>`).join('')}
+            </div>
+        `);
+    },
+
+    async boardPut(columnId, threadKey) {
+        try {
+            await this.api('boards.php?action=card_add', {method: 'POST', body: {column_id: columnId, thread_key: threadKey}});
+            this.closeModal();
+            this.toast('Переписка на доске', 'success');
+            this.loadThreadPlacement(threadKey);
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // Model list for the reply window, loaded once per session
@@ -1883,11 +2373,14 @@ const App = {
         </select>`;
     },
 
-    // $generate=true — the manager pressed «Создать ответ»: draft the text right away
-    async mailCompose(replyToId, generate) {
+    // $generate=true — the manager pressed «Создать ответ»: draft the text right away.
+    // $threadKey keeps the answer in the conversation it belongs to, whichever
+    // mailbox it is sent from.
+    async mailCompose(replyToId, generate, threadKey) {
         const d = await this.api('mail.php?action=list&limit=1');
         let src = null;
         if (replyToId) src = await this.api(`mail.php?action=get&id=${replyToId}`);
+        this.composeThread = threadKey || (src && src.thread_key) || null;
         await this.loadCategories();
         const llm = await this.loadLlmModels();
         const subject = src ? (src.subject || '').replace(/^(Re:\s*)?/i, 'Re: ') : '';
@@ -1896,8 +2389,9 @@ const App = {
             <div class="form-group">
                 <label>Отправить из ящика</label>
                 <select id="cmpBox">
-                    ${(d.mailboxes || []).map(b => `<option value="${b.id}" ${src && src.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
+                    ${(d.mailboxes || []).map(b => `<option value="${b.id}" ${src && src.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}${b.email ? ' — ' + this.esc(b.email) : ''}</option>`).join('')}
                 </select>
+                <div class="muted">Ответить можно из любого ящика — письмо всё равно останется в этой же переписке.</div>
             </div>
             <div class="form-group"><label>Кому</label><input type="text" id="cmpTo" value="${this.esc(to)}"></div>
             <div class="form-group"><label>Копия (через запятую)</label><input type="text" id="cmpCc"></div>
@@ -1957,12 +2451,18 @@ const App = {
             text: document.getElementById('cmpText').value,
             mailbox_id: document.getElementById('cmpBox').value || null,
             reply_to_id: replyToId || null,
+            thread_key: this.composeThread || null,
         };
         try {
-            await this.api('mail.php?action=send', {method: 'POST', body});
+            const res = await this.api('mail.php?action=send', {method: 'POST', body});
             this.closeModal();
-            this.toast('Письмо отправлено', 'success');
-            this.pageMail();
+            // «Отправлено» is only half the news when the copy never reached the
+            // server's «Отправленные» — the manager hears it now, not in a month
+            if (res.warning) this.toast(res.warning, 'error');
+            else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
+            const key = this.composeThread;
+            this.composeThread = null;
+            if (key) this.pageMailThread(key); else this.pageMail();
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -2426,6 +2926,8 @@ const App = {
                                         <button class="btn btn--sm btn--outline" onclick="App.editMailbox(${b.id})">Изменить</button>
                                         <button class="btn btn--sm btn--outline" onclick="App.syncMailbox(${b.id})">Забрать почту</button>
                                         <button class="btn btn--sm btn--outline" onclick="App.backfillMailbox(${b.id})">Скачать весь архив</button>
+                                        <button class="btn btn--sm btn--outline" onclick="App.checkSentFolder(${b.id})"
+                                                title="Найти на сервере настоящую папку «Отправленные»">Отправленные</button>
                                         <a class="btn btn--sm btn--outline" href="api/admin.php?action=mailbox_export&id=${b.id}">Выгрузить .mbox</a>
                                     </td>
                                 </tr>`).join('')}
@@ -2436,11 +2938,59 @@ const App = {
                         кнопку можно нажать повторно — загрузка продолжится с того же места. Старые письма попадают в архив,
                         но запросы КП из них не создаются.</p>
                 </div>
+                <div class="card">
+                    <div class="card__title">Цепочки писем</div>
+                    <p class="muted">Письма собираются в переписки по теме без «Re:» и «Fwd:» — так ответ,
+                       отправленный с другого ящика, виден в той же цепочке. Пересоберите группировку, если
+                       темы писем чинились после загрузки архива.</p>
+                    <button class="btn btn--outline btn--sm" onclick="App.rethreadMail()">Пересобрать цепочки</button>
+                </div>
                 <div id="mailboxForm"></div>
             `;
             this.mailboxes = d.items;
             this.mailboxBlank = d.blank;
         } catch (err) { this.adminFail(err); }
+    },
+
+    async rethreadMail() {
+        this.toast('Пересобираем цепочки...', 'info');
+        try {
+            const r = await this.api('admin.php?action=mail_rethread', {method: 'POST', body: {}});
+            this.toast(`Писем сгруппировано: ${r.threaded}`, 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
+     * «Отправленные» of a mailbox. The copy of an outgoing letter used to vanish
+     * because the folder in the settings did not exist on the server — this
+     * prints the server's own folder list and fixes the name in place.
+     */
+    async checkSentFolder(id) {
+        this.toast('Смотрим папки на сервере...', 'info');
+        try {
+            const r = (await this.api('admin.php?action=mailbox_sent_check', {method: 'POST', body: {id}})).result;
+            this.modal('Папка «Отправленные»', `
+                <p>Используется: <strong>${this.esc(r.resolved || 'не найдена')}</strong>
+                   ${r.fixed ? `<span class="badge badge--sent">исправлено, было «${this.esc(r.configured)}»</span>` : ''}</p>
+                <p class="muted">Папки на сервере: ${r.folders.map(f => `<span class="chip">${this.esc(f)}</span>`).join(' ')}</p>
+                <div class="card__title" style="margin-top:12px">Последние отправленные</div>
+                <table class="table">
+                    <thead><tr><th>Тема</th><th>Кому</th><th>Копия на сервере</th><th>Дата</th></tr></thead>
+                    <tbody>${r.recent.map(m => `<tr>
+                        <td>${this.esc(m.subject) || '<em>без темы</em>'}</td>
+                        <td class="muted">${this.esc(m.to_emails)}</td>
+                        <td>${m.sent_state === 'appended'
+                            ? `<span class="ok">в «${this.esc(m.folder)}»</span>`
+                            : (m.sent_state === 'off' ? '<span class="muted">копирование выключено</span>'
+                               : `<span class="no">${this.esc(m.sent_state || 'неизвестно')}</span>`)}</td>
+                        <td class="muted">${this.fmtDate(m.date_at)}</td>
+                    </tr>`).join('')}
+                    ${r.recent.length ? '' : '<tr><td colspan="4" class="muted">Из этого ящика ещё ничего не отправляли</td></tr>'}
+                    </tbody>
+                </table>
+            `);
+            this.adminMail();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     editMailbox(id) {

@@ -91,6 +91,47 @@ try {
         case 'mail_repair_encoding':
             jsonOk(['result' => MailArchive::repairEncoding()]);
 
+        // Rebuild the «одна тема — одна переписка» grouping over the whole archive
+        case 'mail_rethread':
+            require_once ROOT . '/lib/mail_threads.php';
+            jsonOk(['threaded' => MailThreads::backfill(true)]);
+
+        /**
+         * Where a mailbox's «Отправленные» really is. The copy of an outgoing
+         * letter used to vanish because the folder in the settings did not exist
+         * on the server, and nothing said so — this prints the server's own list
+         * and the name the code will use.
+         */
+        case 'mailbox_sent_check': {
+            $box = mailboxFromInput($input);
+            if (!EmailReader::available()) jsonError('На сервере нет расширения PHP imap');
+            try {
+                $reader = new EmailReader(Mailboxes::cfg($box));
+                $reader->connect($box['imap_folder_in'] ?: 'INBOX');
+                $folders = $reader->folders();
+                $resolved = $reader->findSentFolder((string)($box['imap_folder_sent'] ?? ''));
+                $reader->close();
+            } catch (Throwable $e) {
+                Logger::exception('mail', $e, ['mailbox_id' => $box['id'] ?? null]);
+                jsonError('IMAP: ' . $e->getMessage());
+            }
+            $configured = (string)($box['imap_folder_sent'] ?? '');
+            if ($resolved && $resolved !== $configured && !empty($box['id'])) {
+                Db::update('mailboxes', ['imap_folder_sent' => $resolved], 'id=?', [$box['id']]);
+            }
+            jsonOk(['result' => [
+                'folders'    => $folders,
+                'configured' => $configured,
+                'resolved'   => $resolved,
+                'fixed'      => $resolved && $resolved !== $configured,
+                'recent'     => Db::all(
+                    "SELECT id, subject, to_emails, date_at, sent_state, folder FROM mail_messages
+                     WHERE direction='out' AND mailbox_id=? ORDER BY id DESC LIMIT 10",
+                    [(int)($box['id'] ?? 0)]
+                ),
+            ]]);
+        }
+
         case 'test_imap':
             $box = mailboxFromInput($input);
             try {

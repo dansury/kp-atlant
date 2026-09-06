@@ -28,6 +28,25 @@ KP, a match or a draft depend on the API being reachable — a dead token must d
 catalog, not to an error. Stock never comes from the file. Prices and names for a client-facing
 document come from `products_cache`, never from a model.
 
+## Matching positions
+A line of a letter gets its catalog row by itself — `RequestItems::ensure()` runs on the
+first open of the card and costs no model call. What must never happen by itself is a choice
+between equally good candidates: `ProductMatcher` marks such a line `needs_choice` and the
+card asks. Do not lower that to «берём первый». Semantic search (`Embeddings`, Yandex Cloud)
+is an optional second opinion: every code path must give the same answer with no key, no
+index and a dead API, only worse. Indexing is always batched (`curl_multi`), time-budgeted
+and resumable through `text_hash` — never write a loop that embeds the whole catalog in one
+request.
+
+## Mail
+Letters live in threads, not rows: `MailThreads::keyFor()` groups them by the subject with
+«Re:»/«Fwd:» stripped, so an answer sent from Gmail belongs to the Yandex conversation.
+Anything that archives a letter must set `thread_key`, and an answer must inherit the thread
+of the letter it answers, whichever mailbox it leaves from. A copy in the IMAP
+«Отправленные» is not optional and not silent: `Mailer::send()` resolves the real folder and
+records the outcome in `mail_messages.sent_state` — a failure is `Logger::error()` and a
+visible warning, never a swallowed warning.
+
 ## Interface
 There is ONE «Настройки» item in the header: everything lives under `#settings/<tab>`, admin-only
 tabs hidden from a plain manager. Do not add a second top-level entry for a settings screen.

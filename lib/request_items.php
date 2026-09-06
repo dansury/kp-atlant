@@ -1,11 +1,15 @@
 <?php
 /**
- * «Подходящие позиции» of a request (module 008).
+ * «Подходящие позиции» of a request (modules 008 and 009).
  *
  * Next to what the letter literally says («Распознанные позиции») there is a
  * second table: the catalog rows a manager confirmed those lines mean. The KP
  * is built from THIS table, so a wrong guess is fixed once, on the request card,
  * instead of being corrected again in every generated proposal.
+ *
+ * The rows appear by themselves the first time the card is opened. What does NOT
+ * happen by itself is a choice between equally good candidates: such a line is
+ * stored with `needs_choice = 1` and the card asks instead of guessing.
  */
 final class RequestItems {
 
@@ -59,6 +63,9 @@ final class RequestItems {
                 'stock'               => $best['stock'] ?? null,
                 'match_confidence'    => $best['score'] ?? null,
                 'match_variants'      => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
+                'needs_choice'        => !empty($m['needs_choice']) ? 1 : 0,
+                'match_source'        => $m['match_source'] ?? null,
+                'is_confirmed'        => !empty($m['is_confirmed']) ? 1 : 0,
                 'updated_at'          => date('Y-m-d H:i:s'),
             ], 'id=?', [$row['id']]);
         }
@@ -85,6 +92,8 @@ final class RequestItems {
                 'price'               => (float)($row['price'] ?? 0),
                 'stock'               => isset($row['stock']) && $row['stock'] !== '' ? (int)$row['stock'] : null,
                 'is_confirmed'        => !empty($row['is_confirmed']) ? 1 : 0,
+                // A row the manager saved is answered: the choice prompt goes away
+                'needs_choice'        => (!empty($row['is_confirmed']) || $prodName !== '') ? 0 : (int)($row['needs_choice'] ?? 0),
                 'notes'               => trim((string)($row['notes'] ?? '')) ?: null,
                 'updated_at'          => date('Y-m-d H:i:s'),
             ];
@@ -121,6 +130,7 @@ final class RequestItems {
                 'raw_name'     => (string)($row['raw_name'] ?? ''),
                 'quantity'     => (float)($row['quantity'] ?? 1),
                 'is_confirmed' => (int)($row['is_confirmed'] ?? 0) === 1,
+                'needs_choice' => (int)($row['needs_choice'] ?? 0) === 1,
                 'notes'        => $row['notes'] ?? null,
                 'variants'     => $row['variants'] ?? [],
                 'match'        => $hasProduct ? [
@@ -136,6 +146,37 @@ final class RequestItems {
             ];
         }
         return $out;
+    }
+
+    /**
+     * The manager answered the «равнозначные позиции» question: one of the
+     * candidates becomes the row and the question is closed.
+     */
+    public static function choose(int $requestId, int $itemId, string $productId): array {
+        $row = Db::one("SELECT * FROM request_items WHERE id=? AND request_id=?", [$itemId, $requestId]);
+        if (!$row) throw new RuntimeException('Строка не найдена');
+
+        $p = Db::one("SELECT moysklad_id, name, article, unit, price, stock FROM products_cache WHERE moysklad_id=?", [$productId]);
+        if (!$p) throw new RuntimeException('Позиция каталога не найдена');
+
+        Db::update('request_items', [
+            'moysklad_product_id' => $p['moysklad_id'],
+            'product_name'        => $p['name'],
+            'article'             => $p['article'],
+            'unit'                => $p['unit'] ?: 'шт.',
+            'price'               => (float)$p['price'],
+            'stock'               => $p['stock'],
+            'is_confirmed'        => 1,
+            'needs_choice'        => 0,
+            'updated_at'          => date('Y-m-d H:i:s'),
+        ], 'id=?', [$itemId]);
+
+        return self::all($requestId);
+    }
+
+    /** How many lines of a request are still waiting for that answer. */
+    public static function openChoices(int $requestId): int {
+        return (int)Db::val("SELECT COUNT(*) FROM request_items WHERE request_id=? AND needs_choice=1", [$requestId]);
     }
 
     /** ProductMatcher output → table rows. */
@@ -154,6 +195,8 @@ final class RequestItems {
                 'stock'               => $best['stock'] ?? null,
                 'match_confidence'    => $best['score'] ?? null,
                 'match_variants'      => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
+                'needs_choice'        => !empty($m['needs_choice']) ? 1 : 0,
+                'match_source'        => $m['match_source'] ?? null,
                 'is_confirmed'        => !empty($m['is_confirmed']) ? 1 : 0,
                 'notes'               => ($best && (int)($best['stock'] ?? 0) === 0) ? 'под заказ' : null,
             ];

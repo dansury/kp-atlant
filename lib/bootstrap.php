@@ -768,6 +768,80 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '10')");
         $current = 10;
     }
+
+    // v11 — modules 009 and 010: catalog vectors, an equal-candidates choice on
+    // the request card, mail threads across mailboxes and the kanban boards
+    if ($current < 11) {
+        // One embedding per catalog row. The vector is stored normalized as
+        // packed float32, so a cosine score is a plain dot product and 1 200
+        // positions weigh about 1 MB instead of 12 MB of JSON.
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS product_vectors (
+            product_id TEXT PRIMARY KEY,
+            model TEXT NOT NULL DEFAULT '',
+            dim INTEGER NOT NULL DEFAULT 0,
+            text_hash TEXT NOT NULL DEFAULT '',
+            vec BLOB NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_pvec_hash ON product_vectors(text_hash);
+SQL);
+
+        // A line whose best candidates are equally good is not a match — it is a
+        // question for the manager, and the card has to say so instead of
+        // silently picking the first row.
+        Db::ensureColumn('request_items', 'needs_choice', 'INTEGER', '0');
+        Db::ensureColumn('request_items', 'match_source', 'TEXT');
+
+        // Mail threads: everything with the same subject after «Re:»/«Fwd:» is
+        // one conversation, whichever mailbox it arrived in or was answered from
+        Db::ensureColumn('mail_messages', 'thread_key', 'TEXT');
+        Db::ensureColumn('mail_messages', 'thread_subject', 'TEXT');
+        // Whether the copy actually landed in the IMAP «Отправленные» folder
+        Db::ensureColumn('mail_messages', 'sent_state', 'TEXT');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_mail_thread ON mail_messages(thread_key, date_at)");
+
+        // Kanban: boards of columns, a card points at a mail thread
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS boards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS board_columns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            color TEXT,
+            position INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_bcolumns ON board_columns(board_id, position);
+        CREATE TABLE IF NOT EXISTS board_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            column_id INTEGER NOT NULL REFERENCES board_columns(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL DEFAULT 0,
+            thread_key TEXT,
+            mail_message_id INTEGER REFERENCES mail_messages(id) ON DELETE SET NULL,
+            request_id INTEGER REFERENCES requests(id) ON DELETE SET NULL,
+            title TEXT NOT NULL DEFAULT '',
+            note TEXT,
+            manager_id INTEGER REFERENCES managers(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            moved_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_bcards ON board_cards(column_id, position);
+        CREATE INDEX IF NOT EXISTS idx_bcards_thread ON board_cards(thread_key);
+SQL);
+
+        // Existing archive: give every letter its thread key at once, so the mail
+        // page opens threaded on the first run after the upgrade
+        require_once __DIR__ . '/mail_threads.php';
+        MailThreads::backfill();
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '11')");
+        $current = 11;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

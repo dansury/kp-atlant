@@ -10,6 +10,8 @@
 | Классификация писем и ответ по типу запроса | `specs/006-email-triage/spec.md` | Implemented |
 | PWA и web push для администраторов | `specs/007-pwa-push/spec.md` | Implemented |
 | Каталог, подходящие позиции, выбор модели | `specs/008-catalog-and-matching/spec.md` | Implemented |
+| Векторный подбор позиций и выбор равнозначных | `specs/009-catalog-vectors/spec.md` | Implemented |
+| Почтовая программа: цепочки, «Отправленные», доски | `specs/010-mail-client-boards/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
