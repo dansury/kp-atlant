@@ -128,17 +128,19 @@ class MoySklad {
                 $category = $mapped['category'] ?? '';
                 $isAddon = ($addonCategory !== '' && $category === $addonCategory) ? 1 : 0;
 
-                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, code, price, stock, reserved, unit, description, category, is_addon, product_type, source, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'product', 'moysklad', datetime('now'))
+                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, code, price, prices_json, stock, reserved, unit, description, category, is_addon, product_type, source, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'product', 'moysklad', datetime('now'))
                     ON CONFLICT(moysklad_id) DO UPDATE SET
                         name=excluded.name, name_normalized=excluded.name_normalized,
                         article=excluded.article, code=excluded.code, price=excluded.price,
+                        prices_json=excluded.prices_json,
                         stock=excluded.stock, reserved=excluded.reserved,
                         unit=excluded.unit, description=excluded.description,
                         category=excluded.category, is_addon=excluded.is_addon,
                         source='moysklad', updated_at=datetime('now')", [
                     $mapped['id'], $mapped['name'], $normalized,
                     $mapped['article'], $mapped['code'], $mapped['price'],
+                    $mapped['prices'] ? json_encode($mapped['prices'], JSON_UNESCAPED_UNICODE) : null,
                     $mapped['stock'], $mapped['reserved'],
                     $mapped['unit'], $mapped['description'], $category, $isAddon,
                 ]);
@@ -618,16 +620,21 @@ class MoySklad {
     }
 
     private static function mapProduct(array $p): array {
-        // Extract first sale price
-        $price = 0;
-        if (!empty($p['salePrices'])) {
-            foreach ($p['salePrices'] as $sp) {
-                if (($sp['priceType']['name'] ?? '') === 'Цена продажи' || true) {
-                    $price = ($sp['value'] ?? 0) / 100; // kopeks → rubles
-                    break;
-                }
-            }
+        // Every sale price MoySklad has for this product, by type name — a
+        // product commonly carries several («Цена продажи», «Розничная цена»,
+        // opt/wholesale…), and which one is canonical is a choice the settings
+        // layer makes (Catalog::priceFor), not something to guess here.
+        $prices = [];
+        foreach ($p['salePrices'] ?? [] as $sp) {
+            $name = (string)($sp['priceType']['name'] ?? '');
+            if ($name === '') continue;
+            $prices[$name] = ($sp['value'] ?? 0) / 100; // kopeks → rubles
         }
+
+        $wanted = (string)Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '');
+        $price = ($wanted !== '' && array_key_exists($wanted, $prices))
+            ? $prices[$wanted]
+            : (float)(reset($prices) ?: 0);
 
         return [
             'id' => self::extractId($p['id'] ?? $p['meta']['href'] ?? ''),
@@ -635,6 +642,7 @@ class MoySklad {
             'article' => $p['article'] ?? '',
             'code' => $p['code'] ?? '',
             'price' => $price,
+            'prices' => $prices,
             'stock' => 0, // filled from stock report
             'reserved' => 0,
             'unit' => $p['uom']['name'] ?? 'шт.',

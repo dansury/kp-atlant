@@ -173,7 +173,7 @@ switch ($action) {
 
         $input = getInput();
         $fields = [];
-        foreach (['name','inn','contact_person','contact_email','contact_phone','notes','moysklad_id'] as $f) {
+        foreach (['name','inn','contact_person','contact_email','contact_phone','notes','moysklad_id','default_price_type'] as $f) {
             if (array_key_exists($f, $input)) $fields[$f] = $input[$f];
         }
         if (isset($fields['name'])) $fields['name_normalized'] = normalizeCompanyName($fields['name']);

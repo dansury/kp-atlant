@@ -9,6 +9,7 @@ require_once ROOT . '/lib/mailsync.php';
 require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/triage.php';
 require_once ROOT . '/lib/mail_threads.php';
+require_once ROOT . '/lib/attachments.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -234,6 +235,15 @@ try {
                 'to'              => (string)$msg['from_email'],
             ]);
 
+        case 'mark_spam':
+            // «Спам»: files the letter as spam, moves it into the mailbox's own
+            // Spam/Junk folder on the server, and remembers the sender
+            $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!$id) jsonError('Не указано письмо');
+            $res = MailSync::markAsSpam($id);
+            Logger::info('mail', "Письмо #$id отмечено как спам менеджером", ['manager_id' => (int)$manager['id']]);
+            jsonOk($res);
+
         case 'categories':
             // For the «тип запроса» selector in the reply dialog
             jsonData(['categories' => array_map(
@@ -256,7 +266,7 @@ try {
             $path = ROOT . '/' . $a['path'];
             if (!is_file($path)) jsonError('File missing on disk', 404);
             header('Content-Type: ' . ($a['mime'] ?: 'application/octet-stream'));
-            header('Content-Disposition: attachment; filename="' . rawurlencode($a['filename']) . '"');
+            header('Content-Disposition: ' . Attachments::contentDisposition($a['filename']));
             header('Content-Length: ' . filesize($path));
             readfile($path);
             exit;

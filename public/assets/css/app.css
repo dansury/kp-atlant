@@ -1,9 +1,9 @@
 /* Atlant Armour KP — styles */
 :root {
-    --bg: #f5f5f5; --surface: #fff; --text: #222; --text-muted: #666;
-    --primary: #2d5016; --primary-light: #3a6b1e; --primary-bg: #eef5e9;
-    --border: #ddd; --danger: #c00; --warning: #e68a00; --success: #2d7d2d;
-    --radius: 6px; --shadow: 0 1px 3px rgba(0,0,0,.1);
+    --bg: #f4f4f5; --surface: #fff; --text: #222; --text-muted: #6b6f76;
+    --primary: #a3241c; --primary-light: #c22e22; --primary-bg: #fbebe9;
+    --border: #e0e0e2; --danger: #c0392b; --warning: #c9711c; --success: #3f8a4a;
+    --radius: 8px; --shadow: 0 1px 3px rgba(0,0,0,.08);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; font-size: 14px; }
@@ -26,6 +26,7 @@ body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: v
 .card__title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
 
 /* Tables */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th { text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--border); font-weight: 600; color: var(--text-muted); font-size: 12px; text-transform: uppercase; }
 .table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -67,7 +68,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 
 /* Badges */
 .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-.badge--new { background: #e3f2fd; color: #1565c0; }
+.badge--new { background: #ececed; color: #4b4f56; }
 .badge--draft { background: #fff3e0; color: #e65100; }
 .badge--sent { background: var(--primary-bg); color: var(--primary); }
 .badge--confirmed { background: #e8f5e9; color: var(--success); }
@@ -95,7 +96,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 .toast { padding: 10px 16px; border-radius: var(--radius); color: #fff; font-size: 13px; animation: slideIn .3s; max-width: 350px; }
 .toast--success { background: var(--success); }
 .toast--error { background: var(--danger); }
-.toast--info { background: #1565c0; }
+.toast--info { background: #4b4f56; }
 @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
 
 /* Login */
@@ -123,7 +124,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 
 /* Request type + unanswered badges */
 .badge--order { background: #fdecea; color: #b3261e; }
-.badge--kp { background: #e3f2fd; color: #1565c0; }
+.badge--kp { background: #ececed; color: #4b4f56; }
 /* Triage categories that never become a request — muted, they need no attention */
 .badge--muted { background: var(--bg); color: var(--text-muted); }
 .badge--unanswered { margin-left: 6px; }
@@ -150,7 +151,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .msg__subject { font-weight: 600; margin-bottom: 4px; }
 .msg__body { white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
 .msg__files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.msg--in { background: #fff; border-left: 3px solid #1565c0; }
+.msg--in { background: #fff; border-left: 3px solid #9aa0a6; }
 .msg--out { background: var(--primary-bg); border-left: 3px solid var(--primary); margin-left: 24px; }
 .msg--note { background: #fffdf3; border-left: 3px solid var(--warning); }
 .msg--system { font-style: italic; }
@@ -199,7 +200,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .card--alert { border-left: 3px solid var(--danger); }
 
 /* Mail list */
-.row--unread td { font-weight: 600; background: #f7fbff; }
+.row--unread td { font-weight: 600; background: #f7f5f4; }
 .row--off td { opacity: .55; }
 
 @media (max-width: 768px) {
@@ -209,13 +210,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 
 /* «Подходящие позиции» on a request card: two lines per position — the name over
    the full width of the card (it is the long field), the numbers under it */
-.match-row { display: grid; grid-template-columns: 76px 66px 100px minmax(0,1fr) auto auto;
+.match-row { display: grid; grid-template-columns: 76px 66px 90px minmax(0,130px) minmax(0,1fr) auto auto;
              gap: 6px; align-items: center; padding-bottom: 10px; margin-bottom: 10px;
              border-bottom: 1px solid var(--border); }
 .match-row input[type="text"], .match-row input[type="number"] { width: 100%; }
 .match-row__name { grid-column: 1 / -1; position: relative; min-width: 0; }
 .match-row__name .muted { font-size: 12px; margin-bottom: 2px; }
 .match-row label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.price-opts-slot:empty { display: none; }
+.price-opts { font-size: 12px; padding: 6px 8px; }
 
 /* Catalog autocomplete under the position name */
 .suggest { position: absolute; z-index: 30; left: 0; right: 0; top: 100%;
@@ -316,3 +319,49 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bcard__actions a:hover { color: var(--primary); }
 .board-pick__board { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .board-pick__name { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+
+/* Cross-board / requests search result rows */
+.search-hit { padding: 8px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.search-hit:last-child { border-bottom: none; }
+.search-hit:hover { background: var(--primary-bg); }
+
+/* ==== Mobile: large touch targets, nothing wider than the screen ====
+   Every `.table` scrolls inside itself (the page never does), buttons and
+   form fields grow to a comfortable tap size, and the multi-column strips
+   that work fine on a desktop (match-row, board columns) stack or narrow
+   instead of pushing the page sideways. */
+@media (max-width: 640px) {
+    html, body { overflow-x: hidden; }
+    .main { padding: 0 12px; margin: 12px auto; }
+    .card { padding: 14px; }
+
+    .btn { padding: 12px 16px; font-size: 15px; min-height: 44px; }
+    .btn--sm { padding: 9px 12px; font-size: 13px; min-height: 40px; }
+
+    input[type="text"], input[type="email"], input[type="password"], input[type="number"],
+    textarea, select {
+        font-size: 16px; /* keeps iOS Safari from zooming in on focus */
+        padding: 11px 12px;
+    }
+
+    .header { padding: 10px 12px; }
+    .header__nav { overflow-x: visible; flex-wrap: wrap; }
+    .header__nav a { padding: 9px 12px; }
+
+    /* A table never forces the page to scroll — it scrolls inside its own box */
+    .table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .table thead, .table tbody { display: table; width: 100%; min-width: 100%; }
+
+    /* «Подходящие позиции»: one wide row of six fields becomes two columns
+       that stack, instead of a row wider than the phone */
+    .match-row { grid-template-columns: 1fr 1fr; }
+    .match-row__name, .price-opts-slot, .match-row label, .match-row > button:last-child {
+        grid-column: 1 / -1;
+    }
+
+    /* Kanban: one column at a time, swiped between, rather than a strip of
+       narrow ones that only a horizontal scroll can reach */
+    .bcol { flex: 0 0 84vw; }
+
+    .grid--3 { grid-template-columns: 1fr; }
+}

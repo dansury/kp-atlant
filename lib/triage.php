@@ -90,7 +90,18 @@ final class Triage {
         if ($from !== '' && self::senderMatches($from)) {
             return ['category' => 'service', 'reason' => "Отправитель $from в списке служебных"];
         }
+        if ($from !== '' && self::spamSenderMatches($from)) {
+            return ['category' => 'spam', 'reason' => "Отправитель $from ранее отмечен кнопкой «Спам»"];
+        }
         return null;
+    }
+
+    /** Exact address against TRIAGE_SPAM_SENDERS — filled in by the «Спам» button, not edited by hand. */
+    private static function spamSenderMatches(string $email): bool {
+        foreach (preg_split('/[\s,]+/', (string)Settings::get('TRIAGE_SPAM_SENDERS', '')) ?: [] as $addr) {
+            if (mb_strtolower(trim($addr)) === $email) return true;
+        }
+        return false;
     }
 
     /** Sender against TRIAGE_SERVICE_SENDERS: `*.yandex.ru`, `no-reply@*`, `sweb.ru`. */

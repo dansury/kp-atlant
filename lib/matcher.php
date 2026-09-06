@@ -9,6 +9,7 @@
  *      picked silently: the line is marked `needs_choice` and the card asks.
  */
 require_once __DIR__ . '/embeddings.php';
+require_once __DIR__ . '/catalog.php';
 
 class ProductMatcher {
 
@@ -24,7 +25,7 @@ class ProductMatcher {
      * model call, so the card matches by name (and by vectors, which are already
      * built) and the manager asks for the smarter pass with a button.
      */
-    public static function matchItems(array $parsedItems, bool $useLlm = true): array {
+    public static function matchItems(array $parsedItems, bool $useLlm = true, ?int $counterpartyId = null): array {
         if (empty($parsedItems)) return [];
 
         // Stage 1: LLM normalize names
@@ -64,7 +65,7 @@ class ProductMatcher {
         $results = [];
         foreach ($parsedItems as $index => $item) {
             $searchName = $names[$index];
-            $candidates = self::findCandidates($searchName, $maxShown, $queryVectors[$index] ?? null);
+            $candidates = self::findCandidates($searchName, $maxShown, $queryVectors[$index] ?? null, $counterpartyId);
 
             $result = [
                 'raw_name' => $item['name'],
@@ -116,7 +117,7 @@ class ProductMatcher {
      * $queryVector lets a caller that already embedded the phrase (a whole letter
      * embedded in one batch) skip the per-phrase request.
      */
-    public static function findCandidates(string $query, int $maxResults = 3, ?array $queryVector = null): array {
+    public static function findCandidates(string $query, int $maxResults = 3, ?array $queryVector = null, ?int $counterpartyId = null): array {
         $normQuery = self::normalize($query);
         if ($normQuery === '') return [];
 
@@ -161,11 +162,13 @@ class ProductMatcher {
             $qualifies = $combined >= $minScore || ($vec !== null && $vec >= self::VEC_STRONG);
             if (!$qualifies) continue;
 
+            $prices = Catalog::decodePrices($p['prices_json'] ?? null);
             $scored[] = [
                 'moysklad_id' => $p['moysklad_id'],
                 'name'        => $p['name'],
                 'article'     => $p['article'],
-                'price'       => (float)$p['price'],
+                'price'       => Catalog::priceFor($p, $counterpartyId),
+                'prices'      => $prices,
                 'stock'       => (int)$p['stock'],
                 'reserved'    => (int)$p['reserved'],
                 'unit'        => $p['unit'],
@@ -192,7 +195,7 @@ class ProductMatcher {
     private static function catalog(): array {
         if (self::$catalog !== null) return self::$catalog;
         $rows = Db::all(
-            "SELECT moysklad_id, name, name_normalized, article, price, stock, reserved, unit,
+            "SELECT moysklad_id, name, name_normalized, article, price, prices_json, stock, reserved, unit,
                     characteristics, product_type
              FROM products_cache WHERE is_archived IS NOT 1"
         );

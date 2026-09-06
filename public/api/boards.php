@@ -93,6 +93,14 @@ try {
             jsonData(['items' => Boards::threadPlacement($key), 'boards' => Boards::all()]);
         }
 
+        // Search across every board at once — card title/note, the mail thread
+        // behind it and the request it came from
+        case 'search': {
+            $q = trim((string)($_GET['q'] ?? ''));
+            if (mb_strlen($q) < 2) jsonError('Слишком короткий запрос');
+            jsonData(['items' => Boards::search($q)]);
+        }
+
         // Board + column list for the «положить в доску» picker
         case 'targets': {
             $out = [];

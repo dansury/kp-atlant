@@ -460,31 +460,47 @@ final class MailArchive {
 
     /**
      * Re-read letters archived before the header decoder learned about charsets.
-     * Rows that still hold their original bytes come back readable; a subject the
-     * old code had already stripped to nothing cannot be recovered here — only a
-     * re-download of the mailbox brings it back.
+     * Rows that still hold their original bytes come back readable. A subject
+     * already turned into replacement characters («�») is structurally valid
+     * UTF-8 — mb_check_encoding() sees nothing wrong with it — so that case is
+     * re-decoded from the message's own stored raw headers (module 006 kept
+     * them for the triage prefilter) instead; a letter archived before that
+     * column existed has no raw headers to fall back to and stays as it is.
      * @return array{checked:int,fixed:int}
      */
     public static function repairEncoding(): array {
         $fields = ['subject', 'from_name', 'to_emails', 'cc_emails', 'body_text', 'body_html'];
         $checked = 0;
         $fixed = 0;
+        $fixedSubjectByMessage = []; // mail_messages.id => corrected subject, for requests/notifications below
 
-        foreach (Db::all("SELECT id, " . implode(', ', $fields) . " FROM mail_messages") as $row) {
+        foreach (Db::all("SELECT id, request_id, headers, " . implode(', ', $fields) . " FROM mail_messages") as $row) {
             $checked++;
             $upd = [];
             foreach ($fields as $f) {
                 $value = (string)($row[$f] ?? '');
-                if ($value === '' || mb_check_encoding($value, 'UTF-8')) continue;
-                $repaired = utf8Text($value);
-                if ($repaired !== '' && $repaired !== $value) $upd[$f] = $repaired;
+                if ($value === '') continue;
+
+                $repaired = null;
+                if (!mb_check_encoding($value, 'UTF-8')) {
+                    $repaired = utf8Text($value);
+                }
+                if (($repaired === null || self::looksMojibake($repaired)) && in_array($f, ['subject', 'from_name'], true)) {
+                    $fromHeader = self::headerDerived((string)($row['headers'] ?? ''), $f);
+                    if ($fromHeader !== null && !self::looksMojibake($fromHeader)) $repaired = $fromHeader;
+                }
+                if ($repaired !== null && $repaired !== '' && $repaired !== $value) $upd[$f] = $repaired;
             }
             if (!$upd) continue;
             Db::update('mail_messages', $upd, 'id=?', [$row['id']]);
             $fixed++;
+            if (isset($upd['subject']) && !empty($row['request_id'])) {
+                $fixedSubjectByMessage[(int)$row['request_id']] = $upd['subject'];
+            }
         }
 
-        // The request card shows the subject of the letter it came from
+        // The request card, and the notification already sent about it, both
+        // copied the subject verbatim from the letter above at the time
         foreach (Db::all("SELECT id, email_subject, email_from, raw_text FROM requests") as $row) {
             $upd = [];
             foreach (['email_subject', 'email_from', 'raw_text'] as $f) {
@@ -493,11 +509,50 @@ final class MailArchive {
                 $repaired = utf8Text($value);
                 if ($repaired !== '' && $repaired !== $value) $upd[$f] = $repaired;
             }
+            if (isset($fixedSubjectByMessage[(int)$row['id']]) && self::looksMojibake((string)($upd['email_subject'] ?? $row['email_subject']))) {
+                $upd['email_subject'] = $fixedSubjectByMessage[(int)$row['id']];
+            }
             if ($upd) { Db::update('requests', $upd, 'id=?', [$row['id']]); $fixed++; }
+
+            if (isset($upd['email_subject'])) {
+                foreach (Db::all("SELECT id, body FROM notifications WHERE ref_type='request' AND ref_id=?", [$row['id']]) as $n) {
+                    if (self::looksMojibake((string)($n['body'] ?? ''))) {
+                        Db::update('notifications', ['body' => $upd['email_subject']], 'id=?', [$n['id']]);
+                    }
+                }
+            }
         }
 
         Logger::info('mail', "Кодировка писем перечитана: исправлено $fixed из $checked");
         return ['checked' => $checked, 'fixed' => $fixed];
+    }
+
+    /** A string full of «�» or «?» in place of letters — data already lost, not just mis-tagged. */
+    private static function looksMojibake(string $s): bool {
+        if ($s === '') return false;
+        if (str_contains($s, "\u{FFFD}")) return true;
+        $len = mb_strlen($s);
+        if ($len < 4) return false;
+        return (substr_count($s, '?') / $len) > 0.25;
+    }
+
+    /** Subject/From-display-name re-decoded straight from the message's own raw headers. */
+    private static function headerDerived(string $rawHeaders, string $field): ?string {
+        if ($rawHeaders === '') return null;
+        $header = $field === 'subject' ? 'Subject' : ($field === 'from_name' ? 'From' : '');
+        if ($header === '') return null;
+
+        $raw = EmailReader::headerValue($rawHeaders, $header);
+        if ($raw === '') return null;
+        $decoded = trim(EmailReader::decodeMime($raw));
+        if ($decoded === '') return null;
+
+        if ($field === 'from_name') {
+            // «Имя» <addr@host> — only the display name is what we store separately
+            if (!preg_match('/^"?(.*?)"?\s*<[^>]*>\s*$/u', $decoded, $m)) return null;
+            $decoded = trim($m[1]);
+        }
+        return $decoded !== '' ? $decoded : null;
     }
 
     public static function markRead(int $id, bool $read = true): void {

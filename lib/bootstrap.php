@@ -842,6 +842,20 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '11')");
         $current = 11;
     }
+
+    // v12 — multiple MoySklad price types, per-counterparty price default, spam marking
+    if ($current < 12) {
+        // Every sale price MoySklad knows for a product, so a manager can pick
+        // one instead of being stuck with whichever the sync happened to grab
+        Db::ensureColumn('products_cache', 'prices_json', 'TEXT');
+
+        // Which of those price types this counterparty gets by default — falls
+        // back to CATALOG_DEFAULT_PRICE_TYPE (settings) when unset
+        Db::ensureColumn('counterparties', 'default_price_type', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '12')");
+        $current = 12;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

@@ -11,6 +11,8 @@
  * happen by itself is a choice between equally good candidates: such a line is
  * stored with `needs_choice = 1` and the card asks instead of guessing.
  */
+require_once __DIR__ . '/catalog.php';
+
 final class RequestItems {
 
     /** Rows of a request; built from the parsed letter the first time it is opened. */
@@ -18,20 +20,34 @@ final class RequestItems {
         $rows = self::all($requestId);
         if ($rows) return $rows;
 
-        $req = Db::one("SELECT parsed_json FROM requests WHERE id=?", [$requestId]);
+        $req = Db::one("SELECT parsed_json, counterparty_id FROM requests WHERE id=?", [$requestId]);
         $parsed = $req && $req['parsed_json'] ? (json_decode($req['parsed_json'], true) ?: []) : [];
         $items = $parsed['items'] ?? [];
         if (!$items) return [];
 
-        self::write($requestId, self::fromMatches(ProductMatcher::matchItems($items, $useLlm)));
+        $counterpartyId = !empty($req['counterparty_id']) ? (int)$req['counterparty_id'] : null;
+        self::write($requestId, self::fromMatches(ProductMatcher::matchItems($items, $useLlm, $counterpartyId)));
         return self::all($requestId);
     }
 
     public static function all(int $requestId): array {
         $rows = Db::all("SELECT * FROM request_items WHERE request_id=? ORDER BY position, id", [$requestId]);
+
+        // Every price type the matched product has — the card offers it as a
+        // pick next to the price field («как руками, так и выбором»)
+        $ids = array_values(array_unique(array_filter(array_column($rows, 'moysklad_product_id'))));
+        $prices = [];
+        if ($ids) {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            foreach (Db::all("SELECT moysklad_id, prices_json FROM products_cache WHERE moysklad_id IN ($placeholders)", $ids) as $p) {
+                $prices[$p['moysklad_id']] = Catalog::decodePrices($p['prices_json']);
+            }
+        }
+
         foreach ($rows as &$row) {
             $row['variants'] = $row['match_variants'] ? (json_decode($row['match_variants'], true) ?: []) : [];
             unset($row['match_variants']);
+            $row['price_options'] = $prices[$row['moysklad_product_id']] ?? [];
         }
         return $rows;
     }
@@ -44,11 +60,12 @@ final class RequestItems {
         $existing = self::all($requestId);
         if (!$existing) return self::ensure($requestId, $useLlm);
 
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
         $queries = array_map(fn($r) => [
             'name' => ($r['raw_name'] !== '' ? $r['raw_name'] : (string)$r['product_name']),
             'qty'  => $r['quantity'],
         ], $existing);
-        $matches = ProductMatcher::matchItems($queries, $useLlm);
+        $matches = ProductMatcher::matchItems($queries, $useLlm, $counterpartyId);
 
         foreach ($existing as $i => $row) {
             if ((int)$row['is_confirmed'] === 1) continue;
@@ -156,15 +173,16 @@ final class RequestItems {
         $row = Db::one("SELECT * FROM request_items WHERE id=? AND request_id=?", [$itemId, $requestId]);
         if (!$row) throw new RuntimeException('Строка не найдена');
 
-        $p = Db::one("SELECT moysklad_id, name, article, unit, price, stock FROM products_cache WHERE moysklad_id=?", [$productId]);
+        $p = Db::one("SELECT moysklad_id, name, article, unit, price, prices_json, stock FROM products_cache WHERE moysklad_id=?", [$productId]);
         if (!$p) throw new RuntimeException('Позиция каталога не найдена');
 
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
         Db::update('request_items', [
             'moysklad_product_id' => $p['moysklad_id'],
             'product_name'        => $p['name'],
             'article'             => $p['article'],
             'unit'                => $p['unit'] ?: 'шт.',
-            'price'               => (float)$p['price'],
+            'price'               => Catalog::priceFor($p, $counterpartyId),
             'stock'               => $p['stock'],
             'is_confirmed'        => 1,
             'needs_choice'        => 0,
