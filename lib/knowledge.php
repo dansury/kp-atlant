@@ -104,7 +104,7 @@ final class Knowledge {
         ], $picked);
     }
 
-    /** State of the local copy for «Админ → База знаний». */
+    /** State of the local copy for «Настройки → База знаний». */
     public static function status(): array {
         $docs = Db::all("SELECT path, title, tags, size, updated_at FROM knowledge_docs ORDER BY path");
         return [

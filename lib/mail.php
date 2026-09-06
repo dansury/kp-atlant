@@ -426,6 +426,48 @@ final class MailArchive {
         return $row;
     }
 
+    /**
+     * Re-read letters archived before the header decoder learned about charsets.
+     * Rows that still hold their original bytes come back readable; a subject the
+     * old code had already stripped to nothing cannot be recovered here — only a
+     * re-download of the mailbox brings it back.
+     * @return array{checked:int,fixed:int}
+     */
+    public static function repairEncoding(): array {
+        $fields = ['subject', 'from_name', 'to_emails', 'cc_emails', 'body_text', 'body_html'];
+        $checked = 0;
+        $fixed = 0;
+
+        foreach (Db::all("SELECT id, " . implode(', ', $fields) . " FROM mail_messages") as $row) {
+            $checked++;
+            $upd = [];
+            foreach ($fields as $f) {
+                $value = (string)($row[$f] ?? '');
+                if ($value === '' || mb_check_encoding($value, 'UTF-8')) continue;
+                $repaired = utf8Text($value);
+                if ($repaired !== '' && $repaired !== $value) $upd[$f] = $repaired;
+            }
+            if (!$upd) continue;
+            Db::update('mail_messages', $upd, 'id=?', [$row['id']]);
+            $fixed++;
+        }
+
+        // The request card shows the subject of the letter it came from
+        foreach (Db::all("SELECT id, email_subject, email_from, raw_text FROM requests") as $row) {
+            $upd = [];
+            foreach (['email_subject', 'email_from', 'raw_text'] as $f) {
+                $value = (string)($row[$f] ?? '');
+                if ($value === '' || mb_check_encoding($value, 'UTF-8')) continue;
+                $repaired = utf8Text($value);
+                if ($repaired !== '' && $repaired !== $value) $upd[$f] = $repaired;
+            }
+            if ($upd) { Db::update('requests', $upd, 'id=?', [$row['id']]); $fixed++; }
+        }
+
+        Logger::info('mail', "Кодировка писем перечитана: исправлено $fixed из $checked");
+        return ['checked' => $checked, 'fixed' => $fixed];
+    }
+
     public static function markRead(int $id, bool $read = true): void {
         Db::update('mail_messages', ['is_read' => $read ? 1 : 0], 'id=?', [$id]);
     }

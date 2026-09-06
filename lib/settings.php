@@ -18,8 +18,12 @@ final class Settings {
         'LLM_PROVIDER_PRIORITY' => ['llm', 'Порядок провайдеров', 'text', false, 'yandex', 'Через запятую: yandex, openrouter'],
         'LLM_TIMEOUT_SEC'       => ['llm', 'Таймаут запроса, сек', 'int', false, 30, ''],
         'LLM_TEMPERATURE'       => ['llm', 'Температура по умолчанию', 'text', false, '0.3', ''],
+        'LLM_MODEL_PICKER'      => ['llm', 'Выбор модели в окне ответа', 'bool', false, 1, 'Менеджер выбирает нейросеть прямо при создании ответа; выключено — работает цепочка провайдеров'],
+        'LLM_PROXY'             => ['llm', 'Прокси для запросов к нейросетям', 'text', false, '', 'http://host:port или socks5h://host:port. Нужен, когда API провайдера завёрнут фильтром на пути'],
+        'LLM_PROXY_AUTH'        => ['llm', 'Логин:пароль прокси', 'secret', true, '', 'user:password, если прокси с авторизацией'],
         'OPENROUTER_API_KEY'    => ['llm', 'Ключ OpenRouter', 'secret', true, '', ''],
         'OPENROUTER_MODEL'      => ['llm', 'Модель OpenRouter', 'model:openrouter', false, 'google/gemini-2.5-flash', ''],
+        'OPENROUTER_BASE_URL'   => ['llm', 'Адрес API OpenRouter', 'text', false, 'https://openrouter.ai/api/v1', 'Свой зеркальный адрес, если основной недоступен'],
         'YANDEX_API_KEY'        => ['llm', 'Ключ Yandex', 'secret', true, '', ''],
         'YANDEX_FOLDER_ID'      => ['llm', 'Folder ID Yandex', 'text', false, '', ''],
         'YANDEX_MODEL'          => ['llm', 'Модель Yandex', 'model:yandex', false, 'yandexgpt/latest', ''],
@@ -50,8 +54,10 @@ final class Settings {
         'PUSH_VAPID_SUBJECT'=> ['push', 'Контакт для push-сервиса', 'text', false, '', 'mailto:… — по нему push-сервис свяжется при проблемах'],
 
         // --- MoySklad ---
-        'MOYSKLAD_TOKEN'  => ['moysklad', 'Токен МойСклад', 'secret', true, '', ''],
+        'MOYSKLAD_TOKEN'  => ['moysklad', 'Токен МойСклад', 'secret', true, '', 'Профиль сотрудника в МойСклад → «Токен доступа». При смене пароля сотрудника токен отзывается'],
         'MOYSKLAD_ORG_ID' => ['moysklad', 'ID организации', 'text', false, '', ''],
+        'CATALOG_PRICE_COLUMN' => ['moysklad', 'Колонка цены в импорте Excel', 'text', false, 'Цена: Опт безнал', 'Название колонки выгрузки МойСклад, из которой брать цену КП'],
+        'CATALOG_IMPORT_ARCHIVED' => ['moysklad', 'Импортировать архивные позиции', 'bool', false, 0, 'Строки с «Архивный: да» обычно в КП не нужны'],
 
         // --- Mail defaults (a new mailbox is pre-filled from these) ---
         'IMAP_HOST'       => ['mail', 'IMAP сервер', 'text', false, '', ''],

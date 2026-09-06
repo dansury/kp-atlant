@@ -318,13 +318,31 @@ class EmailReader {
         };
     }
 
+    /**
+     * MIME-encoded header → UTF-8.
+     *
+     * imap_mime_header_decode() decodes the base64/QP wrapper but leaves every
+     * chunk in ITS OWN charset and reports it separately. Concatenating the raw
+     * chunks produced a string that was part UTF-8 and part windows-1251, which
+     * survived neither the archive nor json_encode: subjects reached the browser
+     * as a row of «?» boxes. Each chunk is converted before it is joined.
+     */
     private function decodeMime(string $str): string {
-        $decoded = imap_mime_header_decode($str);
+        if (trim($str) === '') return '';
+        $parts = imap_mime_header_decode($str);
+        if (!$parts) return utf8Text($str);
+
         $result = '';
-        foreach ($decoded as $part) {
-            $result .= $part->text;
+        foreach ($parts as $part) {
+            $text = (string)($part->text ?? '');
+            $charset = strtoupper(trim((string)($part->charset ?? 'default')));
+            // «default» means the chunk was not encoded at all: ASCII, or the
+            // 8-bit bytes some clients drop into a header raw
+            $result .= in_array($charset, ['DEFAULT', 'UTF-8', 'US-ASCII', 'ASCII', ''], true)
+                ? utf8Text($text)
+                : $this->toUtf8($text, $charset);
         }
-        return $result;
+        return utf8Text($result);
     }
 
     public function close(): void {

@@ -138,10 +138,18 @@ try {
                 'email_rules'     => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
                 'tov'             => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
             ];
+            // The manager may pick the model right in the reply window. The choice
+            // holds for this one request; it never becomes a stored setting, and
+            // a hand-picked model answers alone — no silent fallback to another.
+            $modelSpec = trim((string)($input['model'] ?? ''));
+            if ($modelSpec !== '' && (string)Settings::get('LLM_MODEL_PICKER', '1') === '1') {
+                LLM::useModelSpec($modelSpec);
+            }
+
             // A draft prepared at sync time (TRIAGE_AUTO_DRAFT) is used once and
             // cleared — pressing the button again must regenerate, not repeat.
             $text = '';
-            if (empty($input['category']) && trim((string)($msg['draft_text'] ?? '')) !== '') {
+            if (empty($input['category']) && $modelSpec === '' && trim((string)($msg['draft_text'] ?? '')) !== '') {
                 $text = (string)$msg['draft_text'];
                 Db::update('mail_messages', ['draft_text' => null], 'id=?', [$id]);
             } else {
@@ -160,8 +168,10 @@ try {
                 }
             }
 
+            $used = LLM::currentModel();
             Logger::info('mail', "Черновик ответа на письмо #$id создан (" . Triage::label($category) . ')', [
                 'mail_message_id' => $id, 'manager_id' => (int)$manager['id'], 'prompt' => $promptKey,
+                'model' => $used['provider'] . ':' . $used['model'],
             ]);
             jsonData([
                 'mail_message_id' => $id,
@@ -169,6 +179,8 @@ try {
                 'category'        => $category,
                 'category_label'  => Triage::label($category),
                 'prompt'          => $promptKey,
+                'model'           => $used['model'],
+                'provider'        => $used['provider'],
                 'subject'         => preg_replace('/^(Re:\s*)?/iu', 'Re: ', (string)$msg['subject']),
                 'to'              => (string)$msg['from_email'],
             ]);

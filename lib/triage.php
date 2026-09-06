@@ -217,7 +217,7 @@ final class Triage {
         return mb_strlen($text) > $max ? mb_substr($text, 0, $max) . "\n[...]" : $text;
     }
 
-    /** Counts for «Админ → Обзор»: what the mailbox actually consists of. */
+    /** Counts for «Настройки → Обзор»: what the mailbox actually consists of. */
     public static function stats(int $days = 30): array {
         $rows = Db::all(
             "SELECT category, COUNT(*) AS n FROM mail_messages

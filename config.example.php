@@ -28,6 +28,13 @@ return [
     'LLM_TIMEOUT_SEC'       => 30,
     'OPENROUTER_API_KEY'    => '',
     'OPENROUTER_MODEL'      => 'google/gemini-2.5-flash',
+    // Свой адрес API — если основной недоступен с этого хостинга
+    'OPENROUTER_BASE_URL'   => 'https://openrouter.ai/api/v1',
+    // Прокси для запросов к нейросетям. Нужен, когда API провайдера отвечает
+    // «Access denied by security policy» при рабочем ключе: значит, запрос
+    // заворачивает фильтр по дороге, а не сам провайдер
+    'LLM_PROXY'             => '',   // http://host:port или socks5h://host:port
+    'LLM_PROXY_AUTH'        => '',   // user:password, если прокси с авторизацией
     'YANDEX_API_KEY'        => '',
     'YANDEX_FOLDER_ID'      => '',
     'YANDEX_MODEL'          => 'yandexgpt/latest',

@@ -24,7 +24,7 @@ final class Push {
         return (int)Settings::get('PUSH_ENABLED', 1) === 1 && function_exists('openssl_pkey_derive');
     }
 
-    /** Why push is unavailable, for «Админ → Обзор». '' when everything is fine. */
+    /** Why push is unavailable, for «Настройки → Обзор». '' when everything is fine. */
     public static function unavailableReason(): string {
         if (!function_exists('openssl_pkey_derive')) {
             return 'В PHP нет openssl_pkey_derive — расширение openssl собрано без поддержки ECDH';
