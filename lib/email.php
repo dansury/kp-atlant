@@ -197,6 +197,37 @@ class EmailReader {
         return (bool)@imap_append($this->imap, $this->mailboxRef($folder), $rawMessage, "\\Seen");
     }
 
+    /**
+     * The account's real «Отправленные» folder.
+     *
+     * A copy of an outgoing letter kept going nowhere because the folder written
+     * in the mailbox settings did not exist on the server: Yandex calls it
+     * «Отправленные», Gmail «[Gmail]/Отправленные», cPanel «INBOX.Sent». The
+     * name is therefore matched against what IMAP LIST actually reports, and the
+     * configured one is trusted only when the server confirms it.
+     */
+    public function findSentFolder(string $configured = ''): ?string {
+        $folders = $this->folders();
+        if (!$folders) return $configured !== '' ? $configured : null;
+
+        $eq = fn(string $a, string $b) => mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+        foreach ($folders as $f) {
+            if ($configured !== '' && $eq($f, $configured)) return $f;
+        }
+
+        // Known names first, then anything whose last segment looks like «sent»
+        $known = ['Отправленные', 'Sent', 'INBOX.Sent', 'Sent Items', 'Sent Messages',
+                  '[Gmail]/Отправленные', '[Gmail]/Sent Mail', 'INBOX.Отправленные'];
+        foreach ($known as $name) {
+            foreach ($folders as $f) if ($eq($f, $name)) return $f;
+        }
+        foreach ($folders as $f) {
+            $leaf = mb_strtolower((string)preg_replace('#^.*[/.]#u', '', $f));
+            if (in_array($leaf, ['sent', 'отправленные', 'sent mail', 'sent items'], true)) return $f;
+        }
+        return $configured !== '' ? $configured : null;
+    }
+
     private function addr(?object $a): string {
         if (!$a || empty($a->mailbox) || empty($a->host)) return '';
         return $a->mailbox . '@' . $a->host;
@@ -353,6 +384,7 @@ class EmailReader {
 class EmailSender {
     private array $cfg;
     public ?string $lastRawMessage = null;   // MIME source of the last message, for IMAP APPEND
+    public ?string $lastMessageId = null;    // its Message-ID: the archive dedups the Sent sync by it
 
     public function __construct(array $cfg) {
         $this->cfg = $cfg;
@@ -384,7 +416,7 @@ class EmailSender {
         }
 
         self::deliver($mail, $dialog);
-        $this->lastRawMessage = $mail->getSentMIMEMessage();
+        $this->remember($mail);
     }
 
     // Send plain text notification
@@ -395,7 +427,20 @@ class EmailSender {
         $mail->Subject = $subject;
         $mail->Body = $text;
         self::deliver($mail, $dialog);
+        $this->remember($mail);
+    }
+
+    /**
+     * Keep the sent message and its Message-ID. Without the id the copy that the
+     * next IMAP sync pulls back out of «Отправленные» looks like a different
+     * letter, and the thread shows every answer twice.
+     */
+    private function remember(PHPMailer $mail): void {
         $this->lastRawMessage = $mail->getSentMIMEMessage();
+        $this->lastMessageId = null;
+        if (preg_match('/^Message-ID:\s*(<[^>]+>)/mi', (string)$this->lastRawMessage, $m)) {
+            $this->lastMessageId = trim($m[1]);
+        }
     }
 
     /** Send, and turn PHPMailer's terse failure into something an admin can act on. */

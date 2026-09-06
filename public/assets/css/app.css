@@ -233,3 +233,86 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .photo--on { border-color: var(--primary); opacity: 1; }
 .photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .photo input { position: absolute; top: 4px; left: 4px; z-index: 2; }
+
+/* ==== Mail client: threads (module 010) ====
+   A mail program's list is small type: the subject leads, everything else —
+   who wrote, from which mailbox, the first line — is grey and half a size down. */
+.card--flush { padding: 0; overflow: hidden; }
+.mlist { display: flex; flex-direction: column; }
+.mlist__empty { padding: 30px; text-align: center; color: var(--text-muted); }
+.mrow { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; gap: 8px;
+        padding: 8px 16px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12px; }
+.mrow:hover { background: var(--primary-bg); }
+.mrow--unread { background: #fbfbf5; }
+.mrow--unread .mrow__subject { font-weight: 700; }
+.mrow__dir { font-size: 14px; white-space: nowrap; }
+.mrow__clip { margin-left: 2px; }
+.mrow__main { min-width: 0; }
+.mrow__subject { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* «Тема · 4» — how many letters the conversation already holds */
+.mrow__count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px;
+               background: var(--border); color: var(--text-muted); font-size: 11px; text-align: center; font-weight: 600; }
+.mrow__meta { color: var(--text-muted); margin-top: 1px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mrow__meta a { color: var(--primary); }
+.mrow__preview { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.mrow__date { color: var(--text-muted); white-space: nowrap; }
+.chip--box { padding: 0 6px; font-size: 11px; background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary); }
+
+/* One conversation, every mailbox, oldest first */
+.thread { display: flex; flex-direction: column; gap: 8px; }
+.tmsg { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.tmsg--in { border-left: 3px solid var(--primary); }
+.tmsg--out { border-left: 3px solid var(--border); }
+.tmsg__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+              padding: 8px 14px; cursor: pointer; font-size: 12px; }
+.tmsg__head:hover { background: var(--primary-bg); }
+.tmsg__who { font-weight: 600; font-size: 13px; }
+.tmsg__folder { font-size: 11px; }
+.tmsg__date { margin-left: auto; }
+.tmsg__body { display: none; padding: 0 14px 14px; font-size: 13px; }
+.tmsg--open .tmsg__body { display: block; }
+
+/* ==== Matched positions: the «равнозначные» question (module 009) ==== */
+.note--choice { background: #fff8e6; border: 1px solid #f0d79a; border-radius: var(--radius);
+                padding: 8px 12px; font-size: 12px; margin-bottom: 10px; }
+.match-row--choice { background: #fffdf5; border-left: 3px solid var(--warning); padding-left: 8px; }
+.choice { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.choice__title { font-size: 12px; font-weight: 600; color: var(--warning); }
+.choice__opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+               text-align: left; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+               background: #fff; cursor: pointer; font: inherit; }
+.choice__opt:hover { border-color: var(--primary); background: var(--primary-bg); }
+.choice__name { font-size: 13px; }
+
+/* Vector index progress */
+.progress { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 6px 0; }
+.progress__bar { height: 100%; background: var(--primary); transition: width .2s; }
+
+/* ==== Kanban boards (module 010) ==== */
+.board-tile { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+              padding: 16px; cursor: pointer; border-top: 3px solid var(--primary); }
+.board-tile:hover { box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+.board-tile__name { font-weight: 600; margin-bottom: 4px; }
+.board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 12px; }
+.bcol { flex: 0 0 270px; background: #ebecf0; border-radius: 8px; padding: 8px; border-top: 3px solid var(--col); }
+.bcol__head { display: flex; align-items: center; gap: 6px; padding: 2px 4px 8px; }
+.bcol__title { font-weight: 600; font-size: 13px; cursor: pointer; flex: 1; }
+.bcol__count { font-size: 11px; color: var(--text-muted); }
+.bcol__x { border: none; background: none; cursor: pointer; color: var(--text-muted); font-size: 15px; line-height: 1; }
+.bcol__x:hover { color: var(--danger); }
+.bcol__cards { display: flex; flex-direction: column; gap: 6px; min-height: 24px; border-radius: 6px; }
+.bcol__cards--over { background: #dfe1e6; outline: 2px dashed var(--primary); outline-offset: 2px; }
+.bcol__add { width: 100%; margin-top: 6px; padding: 6px; border: none; background: none; cursor: pointer;
+             color: var(--text-muted); font-size: 12px; text-align: left; border-radius: 6px; }
+.bcol__add:hover { background: #dfe1e6; color: var(--text); }
+.bcard { background: #fff; border-radius: 6px; box-shadow: 0 1px 2px rgba(9,30,66,.25); padding: 8px 10px; cursor: grab; }
+.bcard:hover { background: #f7f8f9; }
+.bcard--dragging { opacity: .5; cursor: grabbing; }
+.bcard__title { font-size: 13px; font-weight: 500; margin-bottom: 4px; word-break: break-word; }
+.bcard__note { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.bcard__meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; }
+.bcard__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 11px; }
+.bcard__actions a { color: var(--text-muted); cursor: pointer; text-decoration: none; }
+.bcard__actions a:hover { color: var(--primary); }
+.board-pick__board { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.board-pick__name { font-weight: 600; font-size: 13px; margin-bottom: 6px; }

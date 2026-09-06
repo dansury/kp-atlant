@@ -8,6 +8,7 @@ require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/mailsync.php';
 require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/triage.php';
+require_once ROOT . '/lib/mail_threads.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -32,6 +33,45 @@ try {
                 Mailboxes::forManager($manager)
             );
             jsonData($data);
+
+        // ---- Threads (module 010): one conversation, every mailbox ----
+
+        case 'threads':
+            $data = MailThreads::query([
+                'mailbox_id'      => $_GET['mailbox_id'] ?? null,
+                'direction'       => $_GET['direction'] ?? null,
+                'counterparty_id' => $_GET['counterparty_id'] ?? null,
+                'unread'          => !empty($_GET['unread']),
+                'category'        => $_GET['category'] ?? null,
+                'q'               => trim((string)($_GET['q'] ?? '')),
+                'limit'           => $_GET['limit'] ?? 50,
+                'offset'          => $_GET['offset'] ?? 0,
+            ]);
+            $data['mailboxes'] = array_map(
+                fn($b) => ['id' => $b['id'], 'name' => $b['name'], 'email' => $b['email'], 'last_error' => $b['last_error']],
+                Mailboxes::forManager($manager)
+            );
+            jsonData($data);
+
+        case 'thread':
+            $key = trim((string)($_GET['key'] ?? ''));
+            if ($key === '') jsonError('Не указана цепочка');
+            $summary = MailThreads::summary($key);
+            if (!$summary) jsonError('Цепочка не найдена', 404);
+            $messages = MailThreads::messages($key);
+            // Plain text only — no remote content and no scripts from a letter
+            foreach ($messages as &$m) unset($m['body_html']);
+            unset($m);
+            MailThreads::markRead($key);
+            jsonData([
+                'thread'    => $summary,
+                'messages'  => $messages,
+                'reply'     => MailThreads::replyContext($key),
+                'mailboxes' => array_map(
+                    fn($b) => ['id' => $b['id'], 'name' => $b['name'], 'email' => $b['email']],
+                    Mailboxes::forManager($manager)
+                ),
+            ]);
 
         case 'get':
             $msg = MailArchive::get((int)($_GET['id'] ?? 0));
@@ -58,12 +98,16 @@ try {
             $replyTo = null;
             $counterpartyId = isset($input['counterparty_id']) ? (int)$input['counterparty_id'] : null;
             $requestId = isset($input['request_id']) ? (int)$input['request_id'] : null;
+            $threadKey = trim((string)($input['thread_key'] ?? '')) ?: null;
             if (!empty($input['reply_to_id'])) {
                 $src = MailArchive::get((int)$input['reply_to_id']);
                 if ($src) {
                     $replyTo = $src['message_id'] ?: null;
                     $counterpartyId = $counterpartyId ?: ($src['counterparty_id'] ? (int)$src['counterparty_id'] : null);
                     $requestId = $requestId ?: ($src['request_id'] ? (int)$src['request_id'] : null);
+                    // An answer stays in the thread it answers, whichever mailbox
+                    // it leaves from — the manager may pick any of them
+                    $threadKey = $threadKey ?: ($src['thread_key'] ?: null);
                 }
             }
 
@@ -78,6 +122,7 @@ try {
                 'counterparty_id' => $counterpartyId,
                 'request_id'      => $requestId,
                 'in_reply_to'     => $replyTo,
+                'thread_key'      => $threadKey,
             ]);
 
             // The company chat shows the same message, so nothing is invisible there
@@ -90,7 +135,11 @@ try {
                     'event_type' => 'mail_sent',
                 ]);
             }
-            jsonOk($res);
+            // «Отправлено» is not the whole truth when the copy never reached the
+            // server's «Отправленные» — say so instead of letting it be found later
+            jsonOk($res + ['warning' => $res['sent_state'] === 'failed'
+                ? 'Письмо ушло, но копия не попала в «Отправленные»: ' . (string)$res['sent_error']
+                : null]);
 
         case 'draft_reply':
             // «Создать ответ»: the draft is generated here and only here — the mail

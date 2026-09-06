@@ -59,6 +59,22 @@ final class Settings {
         'CATALOG_PRICE_COLUMN' => ['moysklad', 'Колонка цены в импорте Excel', 'text', false, 'Цена: Опт безнал', 'Название колонки выгрузки МойСклад, из которой брать цену КП'],
         'CATALOG_IMPORT_ARCHIVED' => ['moysklad', 'Импортировать архивные позиции', 'bool', false, 0, 'Строки с «Архивный: да» обычно в КП не нужны'],
 
+        // --- Matching and catalog vectors (module 009) ---
+        'MATCH_MIN_SCORE'      => ['match', 'Порог совпадения', 'text', false, '0.6', 'Ниже него позиция каталога не предлагается вовсе'],
+        'MATCH_AUTO_CONFIRM'   => ['match', 'Порог автоподтверждения', 'text', false, '0.88', 'Выше него позиция подставляется сама и помечается «ок»'],
+        'MATCH_EQUAL_DELTA'    => ['match', 'Разница «равнозначных», доли', 'text', false, '0.05', 'Кандидаты в пределах этой разницы считаются равнозначными — менеджер выбирает сам'],
+        'MATCH_VECTOR_WEIGHT'  => ['match', 'Вес векторного поиска', 'text', false, '0.5', '0 — только слова, 1 — только смысл. Работает при включённой векторизации'],
+        'MATCH_CANDIDATES'     => ['match', 'Сколько вариантов показывать', 'int', false, 5, ''],
+        'VECTOR_ENABLED'       => ['match', 'Векторный поиск по каталогу', 'bool', false, 1, 'Эмбеддинги Yandex Cloud. Без ключа Yandex подбор молча остаётся словесным'],
+        'VECTOR_MODEL_DOC'     => ['match', 'Модель эмбеддингов каталога', 'text', false, 'text-search-doc', 'emb://<folder>/<модель>/latest'],
+        'VECTOR_MODEL_QUERY'   => ['match', 'Модель эмбеддингов запроса', 'text', false, 'text-search-query', ''],
+        'VECTOR_BATCH'         => ['match', 'Позиций в одной пачке', 'int', false, 20, 'Пачка уходит параллельно через curl_multi. Больше — быстрее, но легче упереться в лимит'],
+        'VECTOR_PAUSE_MS'      => ['match', 'Пауза между пачками, мс', 'int', false, 100, 'Страховка от rate limit'],
+        'VECTOR_BUDGET_SEC'    => ['match', 'Лимит времени на шаг, сек', 'int', false, 20, 'Шаг останавливается по времени, следующий продолжает с того же места'],
+        'VECTOR_RETRIES'       => ['match', 'Повторов при ошибке', 'int', false, 3, 'На 429 и 5xx позиция уходит в повтор с нарастающей паузой'],
+        'VECTOR_TIMEOUT_SEC'   => ['match', 'Таймаут запроса, сек', 'int', false, 20, ''],
+        'VECTOR_ENDPOINT'      => ['match', 'Адрес API эмбеддингов', 'text', false, '', 'Пусто — стандартный адрес Yandex Cloud. Свой нужен, когда API доступен только через зеркало'],
+
         // --- Mail defaults (a new mailbox is pre-filled from these) ---
         'IMAP_HOST'       => ['mail', 'IMAP сервер', 'text', false, '', ''],
         'IMAP_PORT'       => ['mail', 'IMAP порт', 'int', false, 993, ''],
@@ -81,6 +97,7 @@ final class Settings {
         'MAIL_BODY_MAX_KB'   => ['mail', 'Максимум тела письма, КБ', 'int', false, 512, ''],
         'MAIL_BACKFILL_BATCH'   => ['mail', 'Писем за один шаг скачивания архива', 'int', false, 100, 'Скачивание всей почты идёт шагами — на дешёвом хостинге ставьте меньше'],
         'MAIL_BACKFILL_SECONDS' => ['mail', 'Лимит времени на шаг, сек', 'int', false, 20, 'Шаг прерывается по времени, следующий продолжает с того же места'],
+        'MAIL_THREADS'       => ['mail', 'Показывать письма цепочками', 'bool', false, 1, 'Письма с одной темой (с «Re:» и без) собираются в одну переписку по всем ящикам'],
 
         // --- Notifications ---
         'FALLBACK_EMAIL'        => ['notify', 'Почта для эскалации', 'text', false, '', 'Куда уходит письмо о необработанном запросе'],
@@ -99,6 +116,7 @@ final class Settings {
         'general'  => 'Общие',
         'llm'      => 'Нейросети',
         'moysklad' => 'МойСклад',
+        'match'    => 'Подбор позиций',
         'knowledge' => 'База знаний (вики)',
         'triage'   => 'Разбор входящей почты',
         'push'     => 'Push-уведомления',

@@ -87,6 +87,7 @@ switch ($action) {
         // «Подходящие позиции» — built once from the parsed letter, edited by hand
         // afterwards. Matching here is local only: opening a card costs no model call.
         $req['items'] = RequestItems::ensure($id);
+        $req['open_choices'] = RequestItems::openChoices($id);
         jsonData($req);
 
     // ---- Matched catalog positions of a request (module 008) ----
@@ -103,6 +104,19 @@ switch ($action) {
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         $input = getInput();
         jsonData(['items' => RequestItems::save($id, (array)($input['items'] ?? []))]);
+
+    case 'items_choose':
+        // The manager answered «какая из равнозначных» — the line stops asking
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $input = getInput();
+        try {
+            $items = RequestItems::choose($id, (int)($input['item_id'] ?? 0), (string)($input['moysklad_id'] ?? ''));
+        } catch (Throwable $e) {
+            jsonError($e->getMessage(), 400);
+        }
+        jsonData(['items' => $items]);
 
     case 'items_rematch':
         requireAuth();

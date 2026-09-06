@@ -130,6 +130,40 @@ switch ($action) {
         echo $img['bytes'];
         exit;
 
+    // ---- Catalog vectors (module 009) ----
+
+    // One resumable step of the indexing: the panel calls it in a loop and shows
+    // how much is left, so a 1 200-position catalog never needs one long request
+    case 'vector_index':
+        requireAdmin();
+        require_once ROOT . '/lib/embeddings.php';
+        $report = Embeddings::indexCatalog([
+            'budget' => (int)($_GET['budget'] ?? Settings::get('VECTOR_BUDGET_SEC', 20)),
+        ]);
+        if ($report['error']) jsonError($report['error'], 400);
+        jsonOk(['report' => $report]);
+
+    case 'vector_stats':
+        requireAuth();
+        require_once ROOT . '/lib/embeddings.php';
+        jsonData(Embeddings::stats());
+
+    case 'vector_reset':
+        requireAdmin();
+        require_once ROOT . '/lib/embeddings.php';
+        jsonOk(['removed' => Embeddings::reset()]);
+
+    // What the request card will see for a phrase — words, meaning and the score
+    case 'match_preview':
+        requireAuth();
+        require_once ROOT . '/lib/matcher.php';
+        $q = trim((string)($_GET['q'] ?? ''));
+        if (mb_strlen($q) < 2) jsonData(['items' => []]);
+        jsonData([
+            'items'  => ProductMatcher::findCandidates($q, max(2, (int)Settings::get('MATCH_CANDIDATES', 5))),
+            'vector' => Embeddings::enabled(),
+        ]);
+
     default:
         jsonError('Unknown action', 400);
 }

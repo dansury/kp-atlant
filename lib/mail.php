@@ -5,6 +5,7 @@
  * The service behaves like a thin mail client on top of the company mailboxes.
  */
 require_once __DIR__ . '/email.php';
+require_once __DIR__ . '/mail_threads.php';
 
 /**
  * Ready-made settings of the mail services people actually use here.
@@ -313,17 +314,30 @@ final class MailArchive {
      * a three-year-old letter is history, not a new КП request.
      */
     public static function storeIncoming(array $box, array $msg, string $direction = 'in', bool $markProcessed = false): int {
-        if (self::exists((int)$box['id'], $msg['folder'] ?? 'INBOX', (int)$msg['uid'], (string)($msg['message_id'] ?? ''))) return 0;
+        if (self::exists((int)$box['id'], $msg['folder'] ?? 'INBOX', (int)$msg['uid'], (string)($msg['message_id'] ?? ''), $direction)) return 0;
 
         $limit = max(16, (int)Settings::get('MAIL_BODY_MAX_KB', 512)) * 1024;
+        // The conversation this letter belongs to is decided on the way in, so a
+        // Gmail answer to a Yandex letter is already in the right thread when the
+        // page opens (module 010)
+        $subject = self::utf8($msg['subject'] ?? '');
+        $thread = MailThreads::keyFor([
+            'subject'     => $subject,
+            'message_id'  => $msg['message_id'] ?? '',
+            'in_reply_to' => $msg['in_reply_to'] ?? '',
+            'from_email'  => $msg['from'] ?? '',
+            'date_at'     => $msg['date'] ?? '',
+        ]);
         return Db::insert('mail_messages', [
             'mailbox_id'   => (int)$box['id'],
+            'thread_key'    => $thread,
+            'thread_subject'=> MailThreads::displaySubject($subject),
             'direction'    => $direction,
             'folder'       => $msg['folder'] ?? 'INBOX',
             'uid'          => (int)($msg['uid'] ?? 0),
             'message_id'   => $msg['message_id'] ?? null,
             'in_reply_to'  => $msg['in_reply_to'] ?? null,
-            'subject'      => self::utf8($msg['subject'] ?? ''),
+            'subject'      => $subject,
             'from_email'   => $msg['from'] ?? '',
             'from_name'    => self::utf8($msg['from_name'] ?? ''),
             'to_emails'    => self::utf8($msg['to'] ?? ''),
@@ -341,8 +355,21 @@ final class MailArchive {
 
     /** Store a message the service itself sent. */
     public static function storeOutgoing(array $o): int {
+        $subject = (string)($o['subject'] ?? '');
+        // An answer sent from any mailbox lands in the same thread as the letter
+        // it answers — that is what «переписка со всех ящиков в одной цепочке» is
+        $thread = (string)($o['thread_key'] ?? '') ?: MailThreads::keyFor([
+            'subject'     => $subject,
+            'message_id'  => $o['message_id'] ?? '',
+            'in_reply_to' => $o['in_reply_to'] ?? '',
+            'from_email'  => $o['from_email'] ?? '',
+            'date_at'     => date('Y-m-d H:i:s'),
+        ]);
         return Db::insert('mail_messages', [
             'mailbox_id'      => $o['mailbox_id'] ?? null,
+            'thread_key'      => $thread,
+            'thread_subject'  => MailThreads::displaySubject($subject),
+            'sent_state'      => $o['sent_state'] ?? null,
             'direction'       => 'out',
             'folder'          => $o['folder'] ?? 'SENT',
             'uid'             => 0,
@@ -374,10 +401,15 @@ final class MailArchive {
         return utf8Text($s);
     }
 
-    private static function exists(int $mailboxId, string $folder, int $uid, string $messageId): bool {
+    private static function exists(int $mailboxId, string $folder, int $uid, string $messageId, string $direction = 'in'): bool {
         if ($uid > 0 && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND folder=? AND uid=?", [$mailboxId, $folder, $uid])) return true;
         // The same message can arrive twice (INBOX + Sent sync, or a re-created mailbox)
         if ($messageId !== '' && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND folder=?", [$mailboxId, $messageId, $folder])) return true;
+        // A letter WE sent is already in the archive under folder «SENT» or under
+        // whatever the server calls it; pulling it back out of «Отправленные»
+        // must not show the same answer twice in the thread
+        if ($direction === 'out' && $messageId !== ''
+            && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND direction='out'", [$mailboxId, $messageId])) return true;
         return false;
     }
 
@@ -555,8 +587,19 @@ final class Mailer {
             throw $e;
         }
 
+        // The copy goes into «Отправленные» BEFORE the row is archived, so the
+        // archive can say whether it landed there — «все отправленные письма
+        // должны быть видны в отправленных на почтовом сервере», and when they
+        // are not, the manager has to hear about it instead of finding out weeks
+        // later from a client.
+        $sent = self::appendToSent($box, $cfg, $sender->lastRawMessage ?? '');
+
         $archiveId = MailArchive::storeOutgoing([
             'mailbox_id'      => $box['id'] ?? null,
+            'sent_state'      => $sent['state'],
+            'thread_key'      => $o['thread_key'] ?? null,
+            'folder'          => $sent['folder'] ?: 'SENT',
+            'message_id'      => $sender->lastMessageId,
             'subject'         => $subject,
             'from_email'      => $cfg['SMTP_FROM_EMAIL'] ?: $cfg['SMTP_USER'],
             'from_name'       => $cfg['SMTP_FROM_NAME'],
@@ -571,20 +614,63 @@ final class Mailer {
             'in_reply_to'     => $o['in_reply_to'] ?? null,
         ]);
 
-        // A copy in the IMAP Sent folder — so the manager sees it in Outlook too
-        if ($box && Settings::get('MAIL_APPEND_SENT', 1) && $sender->lastRawMessage && EmailReader::available()) {
-            try {
-                $reader = new EmailReader($cfg);
-                $reader->connect($box['imap_folder_in'] ?: 'INBOX');
-                $reader->appendSent($sender->lastRawMessage, $box['imap_folder_sent'] ?: 'INBOX.Sent');
-                $reader->close();
-            } catch (Throwable $e) {
-                Logger::warning('mail', 'Не удалось положить копию в «Отправленные»: ' . $e->getMessage(), ['mailbox_id' => $box['id']]);
-            }
-        }
+        Logger::info('mail', "Письмо отправлено: $to", ['subject' => $subject, 'mailbox_id' => $box['id'] ?? null,
+            'archive_id' => $archiveId, 'sent_folder' => $sent['folder'], 'sent_state' => $sent['state']]);
+        return [
+            'archive_id'  => $archiveId,
+            'mailbox_id'  => $box['id'] ?? null,
+            'sent_state'  => $sent['state'],
+            'sent_folder' => $sent['folder'],
+            'sent_error'  => $sent['error'],
+        ];
+    }
 
-        Logger::info('mail', "Письмо отправлено: $to", ['subject' => $subject, 'mailbox_id' => $box['id'] ?? null, 'archive_id' => $archiveId]);
-        return ['archive_id' => $archiveId, 'mailbox_id' => $box['id'] ?? null];
+    /**
+     * Copy an outgoing message into the mailbox's IMAP «Отправленные».
+     *
+     * Failing quietly was the bug: the letter left, the copy did not, and the
+     * folder in Yandex stayed empty while the archive claimed everything was
+     * fine. The folder written in the settings is now checked against the
+     * server's real list, the working name is remembered on the mailbox, and a
+     * failure is an error in the log and a line in the archive row.
+     *
+     * @return array{state:string,folder:string,error:?string}
+     */
+    private static function appendToSent(?array $box, array $cfg, string $raw): array {
+        if (!$box)  return ['state' => 'skipped', 'folder' => '', 'error' => 'нет настроенного ящика'];
+        if ((string)Settings::get('MAIL_APPEND_SENT', 1) !== '1') {
+            return ['state' => 'off', 'folder' => '', 'error' => null];
+        }
+        if ($raw === '')                return ['state' => 'skipped', 'folder' => '', 'error' => 'нет исходного письма'];
+        if (!EmailReader::available())  return ['state' => 'failed', 'folder' => '', 'error' => 'на сервере нет расширения PHP imap'];
+
+        $configured = (string)($box['imap_folder_sent'] ?? '');
+        try {
+            $reader = new EmailReader($cfg);
+            $reader->connect($box['imap_folder_in'] ?: 'INBOX');
+            $folder = $reader->findSentFolder($configured) ?? '';
+            if ($folder === '') {
+                $reader->close();
+                throw new RuntimeException('на сервере не нашлась папка «Отправленные»');
+            }
+            $ok = $reader->appendSent($raw, $folder);
+            $reader->close();
+
+            if (!$ok) throw new RuntimeException('сервер не принял копию в «' . $folder . '»');
+
+            // The name that worked is worth keeping: the next send skips the search
+            if ($folder !== $configured) {
+                Db::update('mailboxes', ['imap_folder_sent' => $folder], 'id=?', [$box['id']]);
+                Logger::info('mail', "Папка «Отправленные» ящика «{$box['name']}» уточнена: $folder",
+                    ['mailbox_id' => $box['id'], 'was' => $configured]);
+            }
+            return ['state' => 'appended', 'folder' => $folder, 'error' => null];
+        } catch (Throwable $e) {
+            Logger::error('mail', 'Копия письма не попала в «Отправленные»: ' . $e->getMessage(),
+                ['mailbox_id' => $box['id'], 'folder' => $configured]);
+            Db::update('mailboxes', ['last_error' => 'Отправленные: ' . $e->getMessage()], 'id=?', [$box['id']]);
+            return ['state' => 'failed', 'folder' => $configured, 'error' => $e->getMessage()];
+        }
     }
 
     /** No mailbox configured yet — fall back to the SMTP keys of the settings layer. */
