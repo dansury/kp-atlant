@@ -289,8 +289,9 @@ try {
             $boxes = Mailboxes::all();
             jsonData([
                 'llm'        => LLM::status(),
-                // Where model requests go out and how fresh the OpenRouter list is
-                'llm_route'  => LLM::routeLabel(),
+                // Where model requests go out and how fresh the OpenRouter list is —
+                // per provider now that the proxy toggle is (item 6)
+                'llm_route'  => ['openrouter' => LLM::routeLabel('openrouter'), 'yandex' => LLM::routeLabel('yandex')],
                 'llm_catalog'=> ['count' => count(LLM::openRouterCache()['models'] ?? []),
                                  'synced_at' => LLM::openRouterCache()['synced_at'] ?? null],
                 'log'        => Logger::counts(),

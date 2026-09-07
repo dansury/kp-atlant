@@ -145,15 +145,13 @@ const App = {
     // Render navigation
     renderNav() {
         const nav = document.getElementById('nav');
-        // One «Настройки» for everything: the split between it and a separate
-        // «Админ» meant two menu items with the same name and no way to guess
-        // which one held the setting you were after
+        // «Запросы», «Почта», «Компании» и «Доски» used to be four separate
+        // top-level tabs over the same underlying conversations — now one
+        // «Письма» item, with the single board as its home view and the rest
+        // reachable as tabs inside it (#mail/...). One «Настройки» item stays
+        // the same way for the same reason.
         nav.innerHTML = `
-            <a href="#requests" data-page="requests">Запросы</a>
-            <a href="#new" data-page="new">+ Новый</a>
-            <a href="#counterparties" data-page="counterparties">Компании</a>
-            <a href="#mail" data-page="mail">Почта<span id="mailBadge"></span></a>
-            <a href="#boards" data-page="boards">Доски</a>
+            <a href="#mail" data-page="mail">Письма<span id="mailBadge"></span></a>
             <a href="#settings" data-page="settings">Настройки<span id="logBadge"></span></a>
             <a href="#notifications" data-page="notifications">Уведомления<span id="notifBadge"></span></a>
         `;
@@ -190,8 +188,16 @@ const App = {
     },
 
     // Router
+    //
+    // «Письма» (#mail/...) is the merger of what used to be four top-level
+    // sections — Запросы, Почта, Компании, Доски (item 2 of the mobile/UX
+    // pass). The single board is the home view (#mail with no sub-route); the
+    // rest are internal sub-routes, exactly the way #settings/<tab> already
+    // works. Every pre-merge bookmark (#requests, #board/7, a bare
+    // #mail/<thread_key>, …) still resolves — via a same-tick redirect — to
+    // its new #mail/... address, so nothing a manager had saved breaks.
     route() {
-        const hash = location.hash.slice(1) || 'requests';
+        const hash = location.hash.slice(1) || 'mail';
         const [page, ...params] = hash.split('/');
         document.querySelectorAll('.header__nav a').forEach(a => {
             a.classList.toggle('active', a.dataset.page === (page === 'admin' ? 'settings' : page));
@@ -203,20 +209,37 @@ const App = {
 
         const open = () => {
             switch (page) {
-                case 'requests': return this.pageRequests();
-                case 'new': return this.pageNewRequest();
-                case 'request': return this.pageRequest(params[0]);
-                case 'proposal': return this.pageProposal(params[0]);
-                case 'counterparties': return this.pageCounterparties();
-                case 'counterparty': return this.pageCounterparty(params[0]);
+                case 'mail': {
+                    const seg = params[0] || '';
+                    if (!seg || seg === 'board') return this.pageMailBoard();
+                    if (seg === 'inbox') return this.pageMailInbox();
+                    if (seg === 't') return this.pageMailThread(decodeURIComponent(params[1] || ''));
+                    if (seg === 'msg') return this.pageMailMessage(params[1]);
+                    if (seg === 'requests') return this.pageRequests();
+                    if (seg === 'new') return this.pageNewRequest();
+                    if (seg === 'request') return this.pageRequest(params[1]);
+                    if (seg === 'proposal') return this.pageProposal(params[1]);
+                    if (seg === 'companies') return this.pageCounterparties();
+                    if (seg === 'company') return this.pageCounterparty(params[1]);
+                    // A thread key always contains ":" (module 010's s:.../m:...
+                    // keys) so it can never collide with a reserved word above —
+                    // this is a bookmark from before threads got their own #mail/t/ prefix
+                    location.replace('#mail/t/' + encodeURIComponent(decodeURIComponent(seg)));
+                    return;
+                }
                 case 'notifications': return this.pageNotifications();
                 case 'settings': return this.pageSettings(params[0]);
-                case 'mail': return this.pageMail(params[0] ? decodeURIComponent(params[0]) : null, params[1]);
-                case 'boards': return this.pageBoards();
-                case 'board': return this.pageBoard(params[0]);
                 // Bookmarks and links from before the merge still work
+                case 'requests': location.replace('#mail/requests'); return;
+                case 'new': location.replace('#mail/new'); return;
+                case 'request': location.replace('#mail/request/' + (params[0] || '')); return;
+                case 'proposal': location.replace('#mail/proposal/' + (params[0] || '')); return;
+                case 'counterparties': location.replace('#mail/companies'); return;
+                case 'counterparty': location.replace('#mail/company/' + (params[0] || '')); return;
+                case 'boards': location.replace('#mail/board'); return;
+                case 'board': location.replace('#mail/board'); return; // exactly one board now
                 case 'admin': location.replace('#settings/' + (params[0] || '')); return;
-                default: return this.pageRequests();
+                default: return this.pageMailBoard();
             }
         };
         // Whatever the page throws, the user sees the reason and a retry button —
@@ -235,26 +258,50 @@ const App = {
             </div>`;
     },
 
+    // ==== «Письма»: one nav item, four merged sections as internal tabs ====
+    // Follows the same idea as #settings/<tab> (claude.md: one top-level entry,
+    // routes inside it) — the board is the home view, the rest (inbox, the
+    // requests/КП pipeline, companies) are tabs of the same section rather than
+    // four things a manager had to remember to check separately.
+    mailTabs: [
+        ['board',     'Доска',      '#mail/board'],
+        ['inbox',     'Входящие',   '#mail/inbox'],
+        ['requests',  'Запросы',    '#mail/requests'],
+        ['companies', 'Компании',   '#mail/companies'],
+    ],
+
+    // $extra — buttons/controls that belong next to the «Письма» title on this tab
+    mailShellHtml(active, extra = '') {
+        return `
+            <div class="flex flex--between flex--wrap" style="margin-bottom:6px;gap:10px">
+                <h2 style="margin:0">Письма</h2>
+                <div class="flex flex--wrap" style="gap:8px">${extra}</div>
+            </div>
+            <div class="tabs">
+                ${this.mailTabs.map(([k, l, href]) => `<a href="${href}" class="tab ${active === k ? 'tab--active' : ''}">${l}</a>`).join('')}
+            </div>
+            <div id="mailBody"><div class="loading">Загрузка...</div></div>
+        `;
+    },
+
     // === Pages ===
 
     // Requests list
     async pageRequests(q) {
         q = q || '';
+        document.getElementById('app').innerHTML = this.mailShellHtml('requests',
+            `<a href="#mail/new" class="btn btn--primary">+ Новый запрос</a>`);
         const data = await this.api('requests.php?action=list' + (q ? '&q=' + encodeURIComponent(q) : ''));
         const statusBadge = s => {
             const map = {new:'new',processing:'draft',draft_ready:'draft',sent:'sent',ordered:'confirmed',closed:'sent'};
             const labels = {new:'Новый',processing:'Обработка',draft_ready:'Черновик',sent:'Отправлен',ordered:'Заказ создан',closed:'Закрыт'};
             return `<span class="badge badge--${map[s]||'new'}">${labels[s]||s}</span>`;
         };
-        document.getElementById('app').innerHTML = `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
-                <h2 style="margin:0">Запросы и заказы</h2>
-                <div class="flex" style="gap:8px">
-                    <input type="text" id="reqSearch" placeholder="Поиск по контрагенту, контакту, теме…" value="${this.esc(q)}"
-                           style="min-width:220px" onkeydown="if(event.key==='Enter')App.pageRequests(this.value.trim())">
-                    <button class="btn btn--outline" onclick="App.pageRequests(document.getElementById('reqSearch').value.trim())">Найти</button>
-                    <a href="#new" class="btn btn--primary">+ Новый запрос</a>
-                </div>
+        document.getElementById('mailBody').innerHTML = `
+            <div class="flex flex--wrap" style="margin-bottom:12px;gap:8px">
+                <input type="text" id="reqSearch" placeholder="Поиск по контрагенту, контакту, теме…" value="${this.esc(q)}"
+                       style="min-width:220px" onkeydown="if(event.key==='Enter')App.pageRequests(this.value.trim())">
+                <button class="btn btn--outline" onclick="App.pageRequests(document.getElementById('reqSearch').value.trim())">Найти</button>
             </div>
             <div class="card">
                 <div class="table-scroll">
@@ -263,7 +310,7 @@ const App = {
                     <tbody>
                         ${data.items.map(r => `
                             <tr class="${r.answer_state && r.answer_state.unanswered ? 'row--unanswered row--' + r.answer_state.level : ''}"
-                                style="cursor:pointer" onclick="location.hash='request/${r.id}'">
+                                style="cursor:pointer" onclick="location.hash='mail/request/${r.id}'">
                                 <td class="num">${r.id}</td>
                                 <td>${this.esc(r.counterparty_name) || '—'} ${this.answerBadge(r.answer_state)}</td>
                                 <td>${this.esc(r.contact_person) || '<span class="muted">—</span>'}</td>
@@ -286,7 +333,10 @@ const App = {
     // New request (manual paste, US2)
     pageNewRequest() {
         document.getElementById('app').innerHTML = `
-            <h2 style="margin-bottom:16px">Новый запрос</h2>
+            <div class="flex" style="margin-bottom:16px;gap:10px">
+                <a href="#mail/requests" class="btn btn--outline btn--sm">← Запросы</a>
+                <h2 style="margin:0">Новый запрос</h2>
+            </div>
             <div class="card">
                 <form id="newRequestForm">
                     <div class="form-group">
@@ -312,7 +362,7 @@ const App = {
                     text, counterparty_name: document.getElementById('reqCounterparty').value.trim()
                 }});
                 App.toast('Запрос создан', 'success');
-                location.hash = `request/${r.id}`;
+                location.hash = `mail/request/${r.id}`;
             } catch (err) {
                 App.toast(err.message, 'error');
                 btn.disabled = false; btn.textContent = 'Создать запрос и сформировать КП';
@@ -333,9 +383,12 @@ const App = {
                 ? `<button class="btn btn--primary" id="genBtn" onclick="App.generateKP(${req.id})">Сформировать КП</button>` : '');
 
         app.innerHTML = `
-            <div class="flex flex--between" style="margin-bottom:16px">
-                <h2>${isOrder ? 'Заказ' : 'Запрос'} #${req.id} ${this.typeBadge(req.type)}</h2>
-                <div class="flex">
+            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
+                <div class="flex flex--wrap" style="gap:10px">
+                    <a href="#mail/requests" class="btn btn--outline btn--sm">← Запросы</a>
+                    <h2 style="margin:0">${isOrder ? 'Заказ' : 'Запрос'} #${req.id} ${this.typeBadge(req.type)}</h2>
+                </div>
+                <div class="flex flex--wrap">
                     ${!req.manager_id ? `<button class="btn btn--outline" onclick="App.assignRequest(${req.id})">Взять в работу</button>` : ''}
                     ${req.mail_message_id ? `<button class="btn btn--outline" onclick="App.mailCompose(${req.mail_message_id}, true)">Создать ответ</button>` : ''}
                     ${actions}
@@ -378,7 +431,7 @@ const App = {
                     ${req.email_from ? `<p><strong>От:</strong> ${this.esc(req.email_from)}</p>` : ''}
                     ${req.email_subject ? `<p><strong>Тема:</strong> ${this.esc(req.email_subject)}</p>` : ''}
                     <p><strong>Контрагент:</strong> ${req.counterparty_id
-                        ? `<a href="#counterparty/${req.counterparty_id}">${this.esc(req.counterparty_name) || 'без названия'}</a>`
+                        ? `<a href="#mail/company/${req.counterparty_id}">${this.esc(req.counterparty_name) || 'без названия'}</a>`
                         : 'не определён'}${req.counterparty_inn ? ' · ИНН ' + this.esc(req.counterparty_inn) : ''}</p>
                     <hr style="margin:10px 0">
                     <pre style="white-space:pre-wrap;font-size:13px">${this.esc(req.raw_text)}</pre>
@@ -662,7 +715,7 @@ const App = {
                 <div class="card__title">Вложения</div>
                 ${list.map(a => `
                     <div class="flex flex--between" style="padding:6px 0;border-bottom:1px solid var(--border)">
-                        <a href="/api/requests.php?action=attachment&id=${a.id}" target="_blank">📎 ${this.esc(a.filename)}</a>
+                        ${this.attachmentLink(a, 'requests.php')}
                         <span class="muted">${Math.round((a.size || 0) / 1024)} КБ · ${status[a.extract_status] || a.extract_status}</span>
                     </div>
                 `).join('')}
@@ -680,7 +733,7 @@ const App = {
                 <div class="card__title">Документы</div>
                 ${proposals.map(p => `
                     <div class="flex flex--between" style="padding:6px 0">
-                        <a href="#proposal/${p.id}">КП ${this.esc(p.number) || '#' + p.id}</a>
+                        <a href="#mail/proposal/${p.id}">КП ${this.esc(p.number) || '#' + p.id}</a>
                         <span class="muted">${this.esc(p.status)} · ${this.fmtDate(p.created_at, false)}</span>
                     </div>
                 `).join('')}
@@ -796,7 +849,7 @@ const App = {
             }
             const p = await this.api(`proposals.php?action=generate&request_id=${requestId}`, {method:'POST'});
             this.toast('КП сформировано', 'success');
-            location.hash = `proposal/${p.id}`;
+            location.hash = `mail/proposal/${p.id}`;
         } catch (err) {
             this.toast(err.message, 'error');
             if (btn) { btn.disabled = false; btn.textContent = 'Сформировать КП'; }
@@ -807,7 +860,7 @@ const App = {
     async assignRequest(id) {
         await this.api(`requests.php?action=assign&id=${id}`, {method:'POST'});
         this.toast('Запрос взят в работу', 'success');
-        location.hash = `request/${id}`;
+        location.hash = `mail/request/${id}`;
     },
 
     // Proposal editor
@@ -822,9 +875,12 @@ const App = {
         const addons = proposal.addons || [];
 
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between" style="margin-bottom:16px">
-                <h2>КП #${this.esc(proposal.number) || id}</h2>
-                <div class="flex">
+            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
+                <div class="flex flex--wrap" style="gap:10px">
+                    ${proposal.request_id ? `<a href="#mail/request/${proposal.request_id}" class="btn btn--outline btn--sm">← Запрос #${proposal.request_id}</a>` : ''}
+                    <h2 style="margin:0">КП #${this.esc(proposal.number) || id}</h2>
+                </div>
+                <div class="flex flex--wrap">
                     <button class="btn btn--outline" onclick="App.refreshPreview(${id})">Обновить PDF</button>
                     <button class="btn btn--primary" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
                 </div>
@@ -1123,8 +1179,8 @@ const App = {
 
     // Counterparties list — unanswered first (FR-038)
     async pageCounterparties() {
-        document.getElementById('app').innerHTML = `
-            <h2 style="margin-bottom:16px">Компании</h2>
+        document.getElementById('app').innerHTML = this.mailShellHtml('companies');
+        document.getElementById('mailBody').innerHTML = `
             <div class="card">
                 <div class="form-group">
                     <input type="text" id="cpSearch" placeholder="Поиск по названию, ИНН или домену..." oninput="App.searchCounterparties()">
@@ -1146,7 +1202,7 @@ const App = {
                 <thead><tr><th>Компания</th><th>ИНН</th><th>Контакт</th><th>Последнее письмо</th></tr></thead>
                 <tbody>${items.map(c => `
                     <tr class="${c.answer_state && c.answer_state.unanswered ? 'row--unanswered row--' + c.answer_state.level : ''}"
-                        style="cursor:pointer" onclick="location.hash='counterparty/${c.id}'">
+                        style="cursor:pointer" onclick="location.hash='mail/company/${c.id}'">
                         <td>${this.esc(c.name)} ${this.answerBadge(c.answer_state)}</td>
                         <td>${this.esc(c.inn) || '—'}</td>
                         <td>${this.esc(c.contact_person) || this.esc(c.contact_email) || '—'}</td>
@@ -1177,9 +1233,12 @@ const App = {
         try {
             const cp = await this.api(`counterparties.php?action=get&id=${id}`);
             document.getElementById('app').innerHTML = `
-                <div class="flex flex--between" style="margin-bottom:16px">
-                    <h2>${this.esc(cp.name)} ${this.answerBadge(cp.answer_state)}</h2>
-                    <div class="flex">
+                <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
+                    <div class="flex flex--wrap" style="gap:10px">
+                        <a href="#mail/companies" class="btn btn--outline btn--sm">← Компании</a>
+                        <h2 style="margin:0">${this.esc(cp.name)} ${this.answerBadge(cp.answer_state)}</h2>
+                    </div>
+                    <div class="flex flex--wrap">
                         <button class="btn btn--outline" id="syncBtn" onclick="App.syncCompany(${cp.id})">Обновить из МойСклад</button>
                         ${cp.moysklad_id ? `<a class="btn btn--outline" target="_blank"
                             href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">Открыть в МойСклад ↗</a>` : ''}
@@ -1204,7 +1263,7 @@ const App = {
 
             // Returning from the MoySklad tab refreshes the card (FR-030)
             this.onTabVisible = () => {
-                if (location.hash === `#counterparty/${cp.id}`) this.syncCompany(cp.id, true);
+                if (location.hash === `#mail/company/${cp.id}`) this.syncCompany(cp.id, true);
             };
             this.syncCompany(cp.id, true);
         } catch (err) { this.toast(err.message, 'error'); }
@@ -1312,9 +1371,7 @@ const App = {
                 const who = m.direction === 'in'
                     ? (this.esc(m.email_from) || 'клиент')
                     : (m.direction === 'out' ? 'мы → ' + (this.esc(m.email_to) || 'клиент') : (this.esc(m.manager_name) || 'система'));
-                const files = (m.attachments || []).map(a =>
-                    `<a class="chip" target="_blank" href="/api/requests.php?action=attachment&id=${a.id}">📎 ${this.esc(a.filename)}</a>`
-                ).join('');
+                const files = (m.attachments || []).map(a => this.attachmentLink(a, 'requests.php')).join('');
                 return `
                     <div class="msg ${cls} ${m.event_type ? 'msg--system' : ''}">
                         <div class="msg__head">
@@ -1324,7 +1381,7 @@ const App = {
                         ${m.subject ? `<div class="msg__subject">${this.esc(m.subject)}</div>` : ''}
                         <div class="msg__body">${this.esc(m.body)}</div>
                         ${files ? `<div class="msg__files">${files}</div>` : ''}
-                        ${m.request_id ? `<a class="muted" href="#request/${m.request_id}">→ запрос #${m.request_id}</a>` : ''}
+                        ${m.request_id ? `<a class="muted" href="#mail/request/${m.request_id}">→ запрос #${m.request_id}</a>` : ''}
                     </div>`;
             }).join('') : '<p class="muted">Переписки пока нет</p>';
 
@@ -1389,7 +1446,7 @@ const App = {
             const r = await this.api(`invoices.php?action=send&id=${invoiceId}`, {method: 'POST', body: {to, subject}});
             this.closeModal();
             this.toast('Счёт отправлен на ' + r.sent_to, 'success');
-            const m = location.hash.match(/counterparty\/(\d+)/);
+            const m = location.hash.match(/company\/(\d+)/);
             if (m) this.syncCompany(Number(m[1]), true);
         } catch (err) { this.toast(err.message, 'error'); }
     },
@@ -1400,7 +1457,7 @@ const App = {
         try {
             const r = await this.api(`counterparties.php?action=split&id=${id}`, {method: 'POST', body: {email}});
             this.toast('Карточка разделена', 'success');
-            location.hash = `counterparty/${r.id}`;
+            location.hash = `mail/company/${r.id}`;
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -1418,7 +1475,7 @@ const App = {
                             <small style="color:var(--text-muted)">${new Date(n.created_at).toLocaleString('ru-RU')}</small>
                         </div>
                         <div class="flex">
-                            ${n.ref_type === 'request' ? `<a href="#request/${n.ref_id}" class="btn btn--sm btn--outline">Открыть</a>` : ''}
+                            ${n.ref_type === 'request' ? `<a href="#mail/request/${n.ref_id}" class="btn btn--sm btn--outline">Открыть</a>` : ''}
                             <button class="btn btn--sm btn--outline" onclick="App.readNotif(${n.id}, this)">✓</button>
                         </div>
                     </div>
@@ -1939,10 +1996,11 @@ const App = {
     // Letters are grouped into conversations by subject («Re:» and «Fwd:» stripped),
     // so an answer sent from Gmail sits in the same thread as the Yandex original.
 
-    async pageMail(id, sub) {
-        if (id === 'msg') return this.pageMailMessage(sub);
-        if (id) return this.pageMailThread(id);
-
+    async pageMailInbox() {
+        document.getElementById('app').innerHTML = this.mailShellHtml('inbox', `
+            <button class="btn btn--outline" onclick="App.mailSync()">⟳ Синхронизировать</button>
+            <button class="btn btn--primary" onclick="App.mailCompose()">✉ Написать</button>
+        `);
         const state = this.mailState = this.mailState || {direction: '', mailbox_id: '', q: '', offset: 0};
         const qs = new URLSearchParams({
             limit: 50, offset: state.offset,
@@ -1955,15 +2013,7 @@ const App = {
         const tab = (key, label) => `<button class="btn btn--sm ${state.direction === key && !state.unread ? 'btn--primary' : 'btn--outline'}"
             onclick="App.mailFilter({direction:'${key}',unread:0})">${label}</button>`;
 
-        document.getElementById('app').innerHTML = `
-            <div class="flex flex--between" style="margin-bottom:16px">
-                <h2>Почта</h2>
-                <div class="flex">
-                    <a href="#boards" class="btn btn--outline">▦ Доски</a>
-                    <button class="btn btn--outline" onclick="App.mailSync()">⟳ Синхронизировать</button>
-                    <button class="btn btn--primary" onclick="App.mailCompose()">✉ Написать</button>
-                </div>
-            </div>
+        document.getElementById('mailBody').innerHTML = `
             ${(d.mailboxes || []).filter(b => b.last_error).map(b => `
                 <div class="card card--alert"><strong>${this.esc(b.name)}</strong>: ${this.esc(b.last_error)}</div>
             `).join('')}
@@ -2001,7 +2051,7 @@ const App = {
     threadRow(t) {
         const who = [...new Set((t.participants || []).slice(0, 3))].join(', ');
         return `
-            <div class="mrow ${t.unread ? 'mrow--unread' : ''}" onclick="location.hash='mail/${encodeURIComponent(t.thread_key)}'">
+            <div class="mrow ${t.unread ? 'mrow--unread' : ''}" onclick="location.hash='mail/t/${encodeURIComponent(t.thread_key)}'">
                 <div class="mrow__dir">${t.last_direction === 'in' ? '📥' : '📤'}${t.has_attachment ? '<span class="mrow__clip">📎</span>' : ''}</div>
                 <div class="mrow__main">
                     <div class="mrow__subject">
@@ -2011,7 +2061,7 @@ const App = {
                     </div>
                     <div class="mrow__meta">
                         ${this.esc(who)}
-                        ${t.counterparty_id ? ` · <a href="#counterparty/${t.counterparty_id}" onclick="event.stopPropagation()">${this.esc(t.counterparty_name)}</a>` : ''}
+                        ${t.counterparty_id ? ` · <a href="#mail/company/${t.counterparty_id}" onclick="event.stopPropagation()">${this.esc(t.counterparty_name)}</a>` : ''}
                         ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
                     </div>
                     <div class="mrow__preview">${this.esc(t.preview)}</div>
@@ -2022,12 +2072,12 @@ const App = {
 
     mailFilter(patch) {
         this.mailState = Object.assign(this.mailState || {}, patch, {offset: 0});
-        this.pageMail();
+        this.pageMailInbox();
     },
 
     mailPage(dir) {
         this.mailState.offset = Math.max(0, (this.mailState.offset || 0) + dir * 50);
-        this.pageMail();
+        this.pageMailInbox();
     },
 
     async mailSync() {
@@ -2038,7 +2088,7 @@ const App = {
             const errors = (r.report || []).filter(x => x.error);
             if (errors.length) this.toast(errors.map(e => `${e.name}: ${e.error}`).join('; '), 'error');
             else this.toast(`Загружено писем: ${total}`, 'success');
-            this.pageMail();
+            this.pageMailInbox();
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -2054,20 +2104,20 @@ const App = {
         this.mailThread = {key, reply, subject: t.subject};
 
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between" style="margin-bottom:12px">
+            <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
                 <div>
                     <h2 style="margin-bottom:2px">${this.esc(t.subject)}</h2>
                     <div class="muted" style="font-size:12px">
                         писем: ${t.count} · входящих ${t.in_count} · исходящих ${t.out_count}
                         ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
-                        ${t.counterparty_id ? ` · <a href="#counterparty/${t.counterparty_id}">${this.esc(t.counterparty_name)}</a>` : ''}
-                        ${t.request_id ? ` · <a href="#request/${t.request_id}">Запрос #${t.request_id}</a>` : ''}
+                        ${t.counterparty_id ? ` · <a href="#mail/company/${t.counterparty_id}">${this.esc(t.counterparty_name)}</a>` : ''}
+                        ${t.request_id ? ` · <a href="#mail/request/${t.request_id}">Запрос #${t.request_id}</a>` : ''}
                     </div>
                 </div>
-                <div class="flex">
-                    <a href="#mail" class="btn btn--outline btn--sm">← К списку</a>
+                <div class="flex flex--wrap">
+                    <a href="#mail/inbox" class="btn btn--outline btn--sm">← К списку</a>
                     <button class="btn btn--outline btn--sm" onclick="App.boardPick('${this.jsStr(key)}')">▦ В доску</button>
-                    ${reply.reply_to_id ? `<button class="btn btn--outline btn--sm" onclick="App.mailCompose(${reply.reply_to_id}, true, '${this.jsStr(key)}')">Создать ответ</button>` : ''}
+                    ${reply.reply_to_id ? `<button class="btn btn--outline btn--sm" onclick="App.mailCreateReply(${reply.reply_to_id}, ${reply.request_id || 'null'}, '${this.jsStr(key)}')">Создать ответ</button>` : ''}
                     <button class="btn btn--primary btn--sm" onclick="App.mailCompose(${reply.reply_to_id || 'null'}, false, '${this.jsStr(key)}')">Ответить</button>
                 </div>
             </div>
@@ -2094,13 +2144,13 @@ const App = {
                 </div>
                 <div class="tmsg__body">
                     ${m.cc_emails ? `<div class="muted" style="margin-bottom:6px">Копия: ${this.esc(m.cc_emails)}</div>` : ''}
-                    <div class="msg__body">${this.esc(m.body_text)}</div>
+                    ${this.msgBodyHtml(m)}
                     ${(m.attachments || []).length ? `<div class="msg__files">
-                        ${m.attachments.map(a => `<a class="chip" href="/api/mail.php?action=attachment&id=${a.id}" target="_blank">📎 ${this.esc(a.filename)}</a>`).join('')}
+                        ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
                     </div>` : ''}
-                    <div class="flex" style="margin-top:8px">
+                    <div class="flex flex--wrap" style="margin-top:8px">
                         <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id}, false, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Ответить на это письмо</button>
-                        ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id}, true, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Создать ответ</button>` : ''}
+                        ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm" onclick="App.mailCreateReply(${m.id}, ${m.request_id || 'null'}, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Создать ответ</button>` : ''}
                         ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                     </div>
                 </div>
@@ -2114,9 +2164,9 @@ const App = {
         try {
             const d = await this.api('boards.php?action=placement&thread_key=' + encodeURIComponent(key));
             box.innerHTML = (d.items || []).length ? `<div class="card card--inline">
-                <span class="muted">На досках:</span>
-                ${d.items.map(p => `<a class="chip" href="#board/${p.board_id}" style="border-color:${this.esc(p.color || '#ccc')}">
-                    ${this.esc(p.board_name)} · ${this.esc(p.column_title)}</a>`).join('')}
+                <span class="muted">На доске:</span>
+                ${d.items.map(p => `<a class="chip" href="#mail/board" style="border-color:${this.esc(p.color || '#ccc')}">
+                    ${this.esc(p.column_title)}</a>`).join('')}
             </div>` : '';
         } catch { box.innerHTML = ''; }
     },
@@ -2125,12 +2175,12 @@ const App = {
     async pageMailMessage(id) {
         const m = await this.api(`mail.php?action=get&id=${id}`);
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between" style="margin-bottom:16px">
-                <h2>${this.esc(m.subject) || 'Без темы'}</h2>
-                <div class="flex">
-                    ${m.thread_key ? `<a href="#mail/${encodeURIComponent(m.thread_key)}" class="btn btn--outline btn--sm">Вся переписка</a>` : ''}
-                    <a href="#mail" class="btn btn--outline btn--sm">← К списку</a>
-                    ${m.direction === 'in' ? `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id}, true)">Создать ответ</button>` : ''}
+            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
+                <h2 style="margin:0">${this.esc(m.subject) || 'Без темы'}</h2>
+                <div class="flex flex--wrap">
+                    ${m.thread_key ? `<a href="#mail/t/${encodeURIComponent(m.thread_key)}" class="btn btn--outline btn--sm">Вся переписка</a>` : ''}
+                    <a href="#mail/inbox" class="btn btn--outline btn--sm">← К списку</a>
+                    ${m.direction === 'in' ? `<button class="btn btn--primary btn--sm" onclick="App.mailCreateReply(${m.id}, ${m.request_id || 'null'}, '${this.jsStr(m.thread_key || '')}')">Создать ответ</button>` : ''}
                     <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>
                     ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                 </div>
@@ -2142,102 +2192,39 @@ const App = {
                 ${m.cc_emails ? `<p><strong>Копия:</strong> ${this.esc(m.cc_emails)}</p>` : ''}
                 <p class="muted">${this.esc(m.mailbox_name) || ''} · ${this.esc(m.folder)} · ${this.fmtDate(m.date_at)}</p>
                 <p><strong>Компания:</strong> ${m.counterparty_id
-                    ? `<a href="#counterparty/${m.counterparty_id}">${this.esc(m.counterparty_name)}</a>`
+                    ? `<a href="#mail/company/${m.counterparty_id}">${this.esc(m.counterparty_name)}</a>`
                     : 'не определена'}
-                   ${m.request_id ? ` · <a href="#request/${m.request_id}">Запрос #${m.request_id}</a>` : ''}</p>
+                   ${m.request_id ? ` · <a href="#mail/request/${m.request_id}">Запрос #${m.request_id}</a>` : ''}</p>
                 ${m.error ? `<p class="no">Ошибка обработки: ${this.esc(m.error)}</p>` : ''}
                 ${m.direction === 'out' && m.sent_state === 'failed'
                     ? '<p class="no">Копия письма не попала в «Отправленные» на почтовом сервере — смотрите «Настройки → Почта».</p>' : ''}
                 <hr style="margin:12px 0">
-                <div class="msg__body" style="max-height:none">${this.esc(m.body_text)}</div>
+                ${this.msgBodyHtml(m, true)}
                 ${(m.attachments || []).length ? `
                     <div class="msg__files">
-                        ${m.attachments.map(a => `<a class="chip" href="/api/mail.php?action=attachment&id=${a.id}" target="_blank">📎 ${this.esc(a.filename)}</a>`).join('')}
+                        ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
                     </div>` : ''}
             </div>
         `;
     },
 
 
-    // ==== Kanban boards (module 010) ====
-    // Trello, without Trello: named boards, columns you rename, and letters you
-    // drag by hand. A card carries a whole conversation, not one letter.
+    // ==== The board (module 010) ====
+    // Trello, without Trello: columns you rename, and letters you drag by
+    // hand. Exactly one board — «У нас только одна Доска» (item 2) — so this
+    // is the home view of «Письма», not a list you pick a board out of. A card
+    // carries a whole conversation, not one letter.
 
-    async pageBoards() {
-        const d = await this.api('boards.php?action=list');
-        document.getElementById('app').innerHTML = `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
-                <h2 style="margin:0">Доски</h2>
-                <div class="flex" style="gap:8px">
-                    <input type="text" id="boardsSearch" placeholder="Поиск по всем доскам…" style="min-width:220px"
-                           onkeydown="if(event.key==='Enter')App.boardsSearch()">
-                    <button class="btn btn--outline" onclick="App.boardsSearch()">Найти</button>
-                    <button class="btn btn--primary" onclick="App.boardCreate()">+ Новая доска</button>
-                </div>
-            </div>
-            <div id="boardsSearchResult"></div>
-            <div class="grid grid--3" id="boardsGrid">
-                ${d.items.map(b => `
-                    <div class="board-tile" onclick="location.hash='board/${b.id}'">
-                        <div class="board-tile__name">${this.esc(b.name)}</div>
-                        <div class="muted">карточек: ${b.cards}</div>
-                    </div>`).join('')}
-            </div>
-        `;
-    },
-
-    // Search across every board at once — a card's title/note, its mail thread
-    // and the request behind it
-    async boardsSearch() {
-        const input = document.getElementById('boardsSearch');
-        const q = (input ? input.value : '').trim();
-        const box = document.getElementById('boardsSearchResult');
-        const grid = document.getElementById('boardsGrid');
-        if (!box) return;
-        if (q.length < 2) { box.innerHTML = ''; if (grid) grid.hidden = false; return; }
-        box.innerHTML = '<div class="loading">Ищем...</div>';
-        if (grid) grid.hidden = true;
-        try {
-            const d = await this.api('boards.php?action=search&q=' + encodeURIComponent(q));
-            box.innerHTML = !d.items.length ? '<p class="muted">Ничего не найдено</p>' : `
-                <div class="card">
-                    ${d.items.map(c => `
-                        <div class="search-hit" onclick="location.hash='board/${c.board_id}'">
-                            <div><strong>${this.esc(c.title)}</strong>
-                                <span class="muted">— ${this.esc(c.board_name)} / ${this.esc(c.column_title)}</span></div>
-                            ${c.note ? `<div class="muted">${this.esc(c.note)}</div>` : ''}
-                        </div>
-                    `).join('')}
-                </div>`;
-        } catch (err) { box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
-    },
-
-    async boardCreate() {
-        const name = prompt('Название доски', 'Работа с письмами');
-        if (name === null) return;
-        try {
-            const r = await this.api('boards.php?action=board_save', {method: 'POST', body: {name}});
-            location.hash = 'board/' + r.id;
-        } catch (err) { this.toast(err.message, 'error'); }
-    },
-
-    async pageBoard(id) {
-        const b = await this.api(`boards.php?action=get&id=${id}`);
+    async pageMailBoard() {
+        document.getElementById('app').innerHTML = this.mailShellHtml('board', `
+            <input type="text" id="boardFilter" placeholder="Поиск по доске…" style="min-width:180px"
+                   oninput="App.boardFilter(this.value)">
+            <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn()">+ Колонка</button>
+        `);
+        const list = await this.api('boards.php?action=list');
+        const b = await this.api(`boards.php?action=get&id=${list.items[0].id}`);
         this.board = b;
-        document.getElementById('app').innerHTML = `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
-                <div class="flex flex--wrap" style="gap:8px">
-                    <a href="#boards" class="btn btn--outline btn--sm">← Доски</a>
-                    <h2 style="margin:0">${this.esc(b.name)}</h2>
-                    <button class="btn btn--outline btn--sm" onclick="App.boardRename(${b.id})">Переименовать</button>
-                </div>
-                <div class="flex flex--wrap" style="gap:8px">
-                    <input type="text" id="boardFilter" placeholder="Поиск по доске…" style="min-width:180px"
-                           oninput="App.boardFilter(this.value)">
-                    <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn(${b.id})">+ Колонка</button>
-                    <button class="btn btn--outline btn--sm" onclick="App.boardDelete(${b.id})">Удалить доску</button>
-                </div>
-            </div>
+        document.getElementById('mailBody').innerHTML = `
             <div class="board" id="board">
                 ${b.columns.map(c => this.boardColumn(c)).join('')}
             </div>
@@ -2283,8 +2270,8 @@ const App = {
                     ${t.last_at ? `<span class="muted">${this.fmtDate(t.last_at, false)}</span>` : ''}
                 </div>
                 <div class="bcard__actions">
-                    ${card.thread_key ? `<a href="#mail/${encodeURIComponent(card.thread_key)}">открыть переписку</a>` : ''}
-                    ${card.request_id ? `<a href="#request/${card.request_id}">запрос #${card.request_id}</a>` : ''}
+                    ${card.thread_key ? `<a href="#mail/t/${encodeURIComponent(card.thread_key)}">открыть переписку</a>` : ''}
+                    ${card.request_id ? `<a href="#mail/request/${card.request_id}">запрос #${card.request_id}</a>` : ''}
                     <a onclick="App.boardCardNote(${card.id})">заметка</a>
                     <a onclick="App.boardCardDelete(${card.id})">убрать</a>
                 </div>
@@ -2348,7 +2335,7 @@ const App = {
                 await this.api('boards.php?action=card_move', {method: 'POST', body: {id: cardId, column_id: columnId, position}});
             } catch (err) {
                 this.toast(err.message, 'error');
-                this.pageBoard(this.board.id);   // the server said no — show what it really holds
+                this.pageMailBoard();   // the server said no — show what it really holds
             }
         });
     },
@@ -2361,78 +2348,59 @@ const App = {
         });
     },
 
-    async boardRename(id) {
-        const name = prompt('Название доски', this.board.name);
-        if (name === null) return;
-        await this.api('boards.php?action=board_save', {method: 'POST', body: {id, name}});
-        this.pageBoard(id);
-    },
-
-    async boardDelete(id) {
-        if (!confirm('Удалить доску вместе с карточками? Письма останутся в почте.')) return;
-        await this.api('boards.php?action=board_delete', {method: 'POST', body: {id}});
-        location.hash = 'boards';
-    },
-
-    async boardAddColumn(boardId) {
+    async boardAddColumn() {
         const title = prompt('Название колонки', 'Новая колонка');
         if (title === null) return;
-        await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: boardId, title}});
-        this.pageBoard(boardId);
+        await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, title}});
+        this.pageMailBoard();
     },
 
     async boardRenameColumn(id, current) {
         const title = prompt('Название колонки', current);
         if (title === null) return;
         await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, id, title}});
-        this.pageBoard(this.board.id);
+        this.pageMailBoard();
     },
 
     async boardDeleteColumn(id) {
         if (!confirm('Удалить колонку вместе с карточками?')) return;
         await this.api('boards.php?action=column_delete', {method: 'POST', body: {id}});
-        this.pageBoard(this.board.id);
+        this.pageMailBoard();
     },
 
     async boardAddCard(columnId) {
         const title = prompt('Название карточки', '');
         if (title === null || !title.trim()) return;
         await this.api('boards.php?action=card_add', {method: 'POST', body: {column_id: columnId, title}});
-        this.pageBoard(this.board.id);
+        this.pageMailBoard();
     },
 
     async boardCardNote(id) {
         const note = prompt('Заметка на карточке', '');
         if (note === null) return;
         await this.api('boards.php?action=card_save', {method: 'POST', body: {id, note}});
-        this.pageBoard(this.board.id);
+        this.pageMailBoard();
     },
 
     async boardCardDelete(id) {
         if (!confirm('Убрать карточку с доски? Письма останутся в почте.')) return;
         await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
-        this.pageBoard(this.board.id);
+        this.pageMailBoard();
     },
 
-    // «В доску» from a conversation: pick the board and the column to drop it in
+    // «В доску» from a conversation: only one board, so this just picks the
+    // column — no board-list to choose from any more (item 2)
     async boardPick(threadKey) {
         const d = await this.api('boards.php?action=targets');
-        if (!d.items.length) {
-            this.toast('Сначала создайте доску', 'error');
-            location.hash = 'boards';
-            return;
-        }
-        this.modal('Положить переписку в доску', `
+        const b = d.items[0];
+        if (!b) { this.toast('Доска пока недоступна', 'error'); return; }
+        this.modal('Положить переписку на доску', `
             <div class="board-pick">
-                ${d.items.map(b => `
-                    <div class="board-pick__board">
-                        <div class="board-pick__name">${this.esc(b.name)}</div>
-                        <div class="flex flex--wrap">
-                            ${b.columns.map(c => `<button class="btn btn--outline btn--sm"
-                                style="border-color:${this.esc(c.color || '#ccc')}"
-                                onclick="App.boardPut(${c.id}, '${this.jsStr(threadKey)}')">${this.esc(c.title)}</button>`).join('')}
-                        </div>
-                    </div>`).join('')}
+                <div class="flex flex--wrap">
+                    ${b.columns.map(c => `<button class="btn btn--outline btn--sm"
+                        style="border-color:${this.esc(c.color || '#ccc')}"
+                        onclick="App.boardPut(${c.id}, '${this.jsStr(threadKey)}')">${this.esc(c.title)}</button>`).join('')}
+                </div>
             </div>
         `);
     },
@@ -2489,6 +2457,134 @@ const App = {
             this.toast('Отмечено как спам', 'success');
             this.route();
         } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ==== «Создать ответ»: the full КП assembly when there is one to reuse ====
+    // Item 3: a letter that already produced a `requests` row (any category
+    // that isn't spam/service/a supplier's own offer — see Triage::CATEGORIES)
+    // gets the exact same «Подходящие позиции» + «Сформировать КП» flow as the
+    // Запросы tab, instead of a bare text reply. Plain correspondence, which
+    // never got a request row, keeps the plain AI-drafted reply.
+    mailCreateReply(messageId, requestId, threadKey) {
+        if (requestId) { location.hash = `mail/request/${requestId}`; return; }
+        this.mailCompose(messageId, true, threadKey);
+    },
+
+    // ==== Rendering an email body: HTML sanitized server-side, shown inside a
+    // sandboxed iframe with no allow-scripts so a sanitizer gap still can't run
+    // anything; plain text keeps the old escaped/pre-wrapped rendering (item 4) ====
+    msgBodyHtml(m, tall) {
+        if (m.body_html && m.body_html.trim() !== '') {
+            return this.htmlPreviewFrame(m.body_html, {maxHeight: tall ? 2000 : 1200});
+        }
+        return `<div class="msg__body"${tall ? ' style="max-height:none"' : ''}>${this.esc(m.body_text)}</div>`;
+    },
+
+    // Auto-sized iframe for HTML we do not fully trust: an email body (item 4)
+    // or a client-side DOCX/XLSX-to-HTML conversion (item 5). No allow-scripts
+    // in the sandbox — even a gap in sanitizeHtml() or a bug in the docx/xlsx
+    // converter still cannot execute anything here. allow-same-origin is safe
+    // to add precisely because scripts never run, and is only there so this
+    // page may read the frame's scrollHeight to size it.
+    htmlPreviewFrame(innerHtml, {bg = '#fff', maxHeight = 2000} = {}) {
+        const doc = `<!doctype html><html><head><meta charset="utf-8"><style>
+            html,body{margin:0;padding:10px;background:${bg};color:#1a1a1a;
+                font:14px/1.55 -apple-system,'Segoe UI',Roboto,sans-serif;
+                word-wrap:break-word;overflow-wrap:break-word;}
+            img{max-width:100%;height:auto}
+            table{border-collapse:collapse;max-width:100%}
+            td,th{border:1px solid #ddd;padding:4px 6px;font-size:12px;text-align:left}
+            a{color:#8a2a24}
+            </style></head><body>${innerHtml}</body></html>`;
+        return `<iframe class="html-frame" data-maxh="${maxHeight}" sandbox="allow-same-origin allow-popups"
+                    onload="App.sizeFrame(this)" srcdoc="${this.esc(doc)}"></iframe>`;
+    },
+
+    sizeFrame(iframe) {
+        try {
+            const h = iframe.contentWindow.document.documentElement.scrollHeight;
+            const max = Number(iframe.dataset.maxh) || 2000;
+            iframe.style.height = Math.min(max, Math.max(80, h + 24)) + 'px';
+        } catch { iframe.style.height = '400px'; }
+    },
+
+    // ==== Attachment preview: images/PDF natively, DOCX/XLSX via a small
+    // client-side library, everything else falls back to opening the file
+    // (item 5). Read-only — nothing here can save changes back to the file. ====
+
+    // One clickable attachment: preview inline for the types we can render,
+    // otherwise straight to the file (still not a separate "download" step —
+    // the browser handles anything it doesn't recognize with its own Save As).
+    attachmentLink(a, endpoint) {
+        const url = `/api/${endpoint}?action=attachment&id=${a.id}`;
+        const ext = (a.filename.split('.').pop() || '').toLowerCase();
+        const previewable = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf', 'doc', 'docx', 'xls', 'xlsx'].includes(ext);
+        return previewable
+            ? `<a class="chip" href="${url}&inline=1" onclick="event.preventDefault();App.previewAttachment(${a.id},'${this.jsStr(a.filename)}','${endpoint}')">📎 ${this.esc(a.filename)}</a>`
+            : `<a class="chip" href="${url}" target="_blank">📎 ${this.esc(a.filename)}</a>`;
+    },
+
+    // One <script> tag loaded once per session, however many previews ask for it
+    loadLib(url) {
+        this._libs = this._libs || {};
+        if (!this._libs[url]) {
+            this._libs[url] = new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = url;
+                s.onload = () => resolve();
+                s.onerror = () => reject(new Error('Не удалось загрузить библиотеку предпросмотра'));
+                document.head.appendChild(s);
+            });
+        }
+        return this._libs[url];
+    },
+
+    async previewAttachment(id, filename, endpoint) {
+        const url = `/api/${endpoint}?action=attachment&id=${id}&inline=1`;
+        const ext = (filename.split('.').pop() || '').toLowerCase();
+        this.modal(filename, `
+            <div id="previewBody" class="preview-body"><div class="loading">Загрузка предпросмотра...</div></div>
+            <div class="flex" style="margin-top:10px">
+                <a class="btn btn--outline btn--sm" href="${url}" target="_blank" rel="noopener">Открыть в новой вкладке</a>
+            </div>
+        `);
+        const box = document.getElementById('modal');
+        if (box) box.querySelector('.modal__box').classList.add('modal__box--wide');
+        const body = document.getElementById('previewBody');
+        try {
+            if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+                body.innerHTML = `<img src="${url}" alt="${this.esc(filename)}" style="max-width:100%;display:block;margin:0 auto">`;
+            } else if (ext === 'pdf') {
+                body.innerHTML = `<iframe class="pdf-frame preview-frame" src="${url}"></iframe>`;
+            } else if (ext === 'docx') {
+                // mammoth.js — pinned version, loaded from CDN (no build step / no npm in this repo)
+                await this.loadLib('https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js');
+                const res = await fetch(`/api/${endpoint}?action=attachment&id=${id}`, {credentials: 'same-origin'});
+                if (!res.ok) throw new Error('Не удалось загрузить файл');
+                const buf = await res.arrayBuffer();
+                const out = await window.mammoth.convertToHtml({arrayBuffer: buf});
+                body.innerHTML = this.htmlPreviewFrame(out.value, {maxHeight: 1800});
+            } else if (ext === 'xlsx' || ext === 'xls') {
+                // SheetJS community edition — pinned version, loaded from CDN
+                await this.loadLib('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+                const res = await fetch(`/api/${endpoint}?action=attachment&id=${id}`, {credentials: 'same-origin'});
+                if (!res.ok) throw new Error('Не удалось загрузить файл');
+                const buf = await res.arrayBuffer();
+                const wb = window.XLSX.read(buf, {type: 'array'});
+                const html = wb.SheetNames.map(name => `
+                    <h4 style="margin:0 0 6px">${this.esc(name)}</h4>
+                    ${window.XLSX.utils.sheet_to_html(wb.Sheets[name], {editable: false})}
+                `).join('<hr style="margin:14px 0">');
+                body.innerHTML = this.htmlPreviewFrame(html, {maxHeight: 1800});
+            } else if (ext === 'doc') {
+                body.innerHTML = `<p class="muted">Предпросмотр старого формата .doc не поддерживается —
+                    откройте файл в новой вкладке или скачайте его.</p>`;
+            } else {
+                body.innerHTML = `<p class="muted">Предпросмотр для этого типа файла недоступен — откройте файл в новой вкладке.</p>`;
+            }
+        } catch (err) {
+            body.innerHTML = `<p class="no">Не удалось построить предпросмотр: ${this.esc(err.message)}</p>`;
+        }
     },
 
     // $threadKey keeps the answer in the conversation it belongs to, whichever
@@ -2579,7 +2675,7 @@ const App = {
             else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
             const key = this.composeThread;
             this.composeThread = null;
-            if (key) this.pageMailThread(key); else this.pageMail();
+            if (key) location.hash = 'mail/t/' + encodeURIComponent(key); else this.pageMailInbox();
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -2931,17 +3027,28 @@ const App = {
 
                 <div class="card">
                     <div class="card__title">Доступ к API</div>
-                    <p class="muted">Сейчас запросы идут <strong>${this.esc(d.llm_route || 'напрямую')}</strong>.
+                    <p class="muted">Сейчас запросы к OpenRouter идут <strong>${this.esc((d.llm_route && d.llm_route.openrouter) || 'напрямую')}</strong>,
+                       к Yandex — <strong>${this.esc((d.llm_route && d.llm_route.yandex) || 'напрямую')}</strong>.
                        Если провайдер отвечает «Access denied by security policy» или подобным, при живом ключе —
-                       значит, до него запрос не доходит: его завернул фильтр по дороге. Тогда нужен прокси
-                       вне фильтрации либо свой зеркальный адрес API.</p>
+                       значит, до него запрос не доходит: его завернул фильтр по дороге. Прокси теперь включается
+                       отдельно для каждого провайдера — адрес общий, переключатель свой.</p>
                     <div class="grid grid--2">
-                        <div class="form-group"><label>Прокси</label>
+                        <div class="form-group"><label>Адрес прокси</label>
                             <input type="text" id="set_LLM_PROXY" value="${this.esc(val('LLM_PROXY'))}"
                                    placeholder="http://host:port или socks5h://host:port"></div>
                         <div class="form-group"><label>Логин:пароль прокси</label>
                             <input type="password" id="set_LLM_PROXY_AUTH"
                                    placeholder="${secret('LLM_PROXY_AUTH').filled ? 'задан — оставьте пустым' : 'если прокси без авторизации — пусто'}"></div>
+                        <div class="form-group"><label>Прокси для OpenRouter</label>
+                            <select id="set_LLM_PROXY_OPENROUTER" title="OpenRouter обычно недоступен напрямую с российского хостинга">
+                                <option value="1" ${val('LLM_PROXY_OPENROUTER') !== '0' ? 'selected' : ''}>Включён</option>
+                                <option value="0" ${val('LLM_PROXY_OPENROUTER') === '0' ? 'selected' : ''}>Выключен — идти напрямую</option>
+                            </select></div>
+                        <div class="form-group"><label>Прокси для Yandex Foundation Models</label>
+                            <select id="set_LLM_PROXY_YANDEX" title="Yandex Cloud обычно доступен напрямую с российского хостинга">
+                                <option value="1" ${val('LLM_PROXY_YANDEX') === '1' ? 'selected' : ''}>Включён</option>
+                                <option value="0" ${val('LLM_PROXY_YANDEX') !== '1' ? 'selected' : ''}>Выключен — идти напрямую</option>
+                            </select></div>
                         <div class="form-group" style="grid-column:span 2"><label>Адрес API OpenRouter</label>
                             <input type="text" id="set_OPENROUTER_BASE_URL" value="${this.esc(val('OPENROUTER_BASE_URL'))}"
                                    placeholder="https://openrouter.ai/api/v1"></div>

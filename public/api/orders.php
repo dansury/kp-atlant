@@ -90,7 +90,7 @@ switch ($action) {
                 'counterparty_id' => $cp['moysklad_id'],
                 'organization_id' => orgId(),
                 'positions'       => $positions,
-                'description'     => "КП №{$proposal['number']}, CRM: $appUrl/#proposal/$proposalId",
+                'description'     => "КП №{$proposal['number']}, CRM: $appUrl/#mail/proposal/$proposalId",
             ]);
         } catch (MoySkladPermissionException $e) {
             jsonError('МойСклад: нет прав на создание заказов', 403);
@@ -155,7 +155,7 @@ switch ($action) {
         if (!$positions) jsonError('Ни одна позиция не найдена в каталоге МойСклад. Обновите каталог или создайте КП вручную.');
 
         $appUrl = rtrim($cfg['APP_URL'] ?? '', '/');
-        $note = "Заказ по письму от {$req['email_from']}, CRM: $appUrl/#request/$requestId";
+        $note = "Заказ по письму от {$req['email_from']}, CRM: $appUrl/#mail/request/$requestId";
         if ($unmatched) $note .= "\nНе найдено в каталоге: " . implode('; ', $unmatched);
 
         try {

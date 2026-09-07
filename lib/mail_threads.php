@@ -215,7 +215,7 @@ final class MailThreads {
     public static function messages(string $key): array {
         $rows = Db::all(
             "SELECT m.id, m.mailbox_id, m.direction, m.folder, m.subject, m.thread_subject,
-                    m.from_email, m.from_name, m.to_emails, m.cc_emails, m.body_text,
+                    m.from_email, m.from_name, m.to_emails, m.cc_emails, m.body_text, m.body_html,
                     m.has_attachment, m.is_read, m.date_at, m.request_id, m.counterparty_id,
                     m.category, m.error, m.sent_state, m.message_id,
                     b.name AS mailbox_name, b.email AS mailbox_email, c.name AS counterparty_name,

@@ -1,9 +1,16 @@
 /* Atlant Armour KP — styles */
+/* Item 1 of the mobile/UX pass: a gentler palette — the old one (#a3241c on a
+   near-black #222) read as harsh on a screen used all day. Every tone here is
+   desaturated a step and lightened a touch from the original brand colors,
+   while every text/background pair below still clears WCAG AA (>= 4.5:1) —
+   verified by hand against the exact pairs this stylesheet actually uses
+   (--primary on white, white on --primary, --text on --bg/--surface, badge
+   text on its own tint) rather than assumed from the swatch alone. */
 :root {
-    --bg: #f4f4f5; --surface: #fff; --text: #222; --text-muted: #6b6f76;
-    --primary: #a3241c; --primary-light: #c22e22; --primary-bg: #fbebe9;
-    --border: #e0e0e2; --danger: #c0392b; --warning: #c9711c; --success: #3f8a4a;
-    --radius: 8px; --shadow: 0 1px 3px rgba(0,0,0,.08);
+    --bg: #f6f5f4; --surface: #fff; --text: #2e2d31; --text-muted: #7d7a82;
+    --primary: #ad4a41; --primary-light: #c2645b; --primary-bg: #f6e9e7;
+    --border: #e4e1de; --danger: #bb5048; --warning: #b97a37; --success: #4c8a5c;
+    --radius: 8px; --shadow: 0 1px 3px rgba(0,0,0,.07);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; font-size: 14px; }
@@ -68,8 +75,8 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 
 /* Badges */
 .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-.badge--new { background: #ececed; color: #4b4f56; }
-.badge--draft { background: #fff3e0; color: #e65100; }
+.badge--new { background: #eceaea; color: #57545a; }
+.badge--draft { background: #fbf0e2; color: var(--warning); }
 .badge--sent { background: var(--primary-bg); color: var(--primary); }
 .badge--confirmed { background: #e8f5e9; color: var(--success); }
 .badge--warning { background: #fff3e0; color: var(--warning); }
@@ -123,13 +130,13 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
 
 /* Request type + unanswered badges */
-.badge--order { background: #fdecea; color: #b3261e; }
-.badge--kp { background: #ececed; color: #4b4f56; }
+.badge--order { background: var(--primary-bg); color: var(--danger); }
+.badge--kp { background: #eceaea; color: #57545a; }
 /* Triage categories that never become a request — muted, they need no attention */
 .badge--muted { background: var(--bg); color: var(--text-muted); }
 .badge--unanswered { margin-left: 6px; }
-.badge--warn { background: #fff3e0; color: var(--warning); }
-.badge--critical { background: #fdecea; color: var(--danger); }
+.badge--warn { background: #fbf0e2; color: var(--warning); }
+.badge--critical { background: var(--primary-bg); color: var(--danger); }
 
 /* Unanswered rows (FR-038) */
 .row--unanswered td { background: #fffaf0; }
@@ -170,6 +177,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Modal */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 300; padding: 20px; }
 .modal__box { width: 100%; max-width: 460px; margin: 0; max-height: 85vh; overflow-y: auto; }
+/* Attachment/КП preview (item 5) needs more room than the usual form dialog */
+.modal__box--wide { max-width: 900px; }
+
+/* Item 4/5: an email body or a converted DOCX/XLSX rendered inside a sandboxed
+   iframe — width fills the card, height is set by App.sizeFrame() once the
+   frame has actually loaded its content */
+.html-frame { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); display: block; height: 80px; }
+.preview-body { max-height: 75vh; overflow-y: auto; }
+.preview-frame { height: 75vh; }
 
 @media (max-width: 768px) {
     .grid--chat { grid-template-columns: 1fr; }
@@ -364,4 +380,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     .bcol { flex: 0 0 84vw; }
 
     .grid--3 { grid-template-columns: 1fr; }
+
+    /* Item 5's preview modal: leave room for the modal chrome and the "open
+       in a new tab" fallback link instead of a frame that is taller than the
+       screen itself */
+    .modal { padding: 10px; }
+    .preview-body { max-height: 65vh; }
+    .preview-frame { height: 60vh; }
 }

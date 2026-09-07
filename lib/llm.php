@@ -216,7 +216,7 @@ class LLM {
             'model'    => self::modelOf($provider),
             'answer'   => mb_substr(trim($answer), 0, 200),
             'ms'       => (int)round((microtime(true) - $started) * 1000),
-            'route'    => self::routeLabel(),
+            'route'    => self::routeLabel($provider),
         ];
     }
 
@@ -240,7 +240,7 @@ class LLM {
         return [
             'provider'    => $provider,
             'url'         => $url,
-            'route'       => self::routeLabel(),
+            'route'       => self::routeLabel($provider),
             'http_code'   => $code,
             'curl_error'  => $err,
             'body_head'   => mb_substr(trim($body), 0, 300),
@@ -251,9 +251,28 @@ class LLM {
     }
 
     /** «напрямую» / «через прокси …» — printed next to every probe result. */
-    public static function routeLabel(): string {
+    public static function routeLabel(string $provider): string {
+        $p = self::proxyFor($provider);
+        return $p === null ? 'напрямую' : 'через прокси ' . preg_replace('~^\w+://~', '', $p['proxy']);
+    }
+
+    /**
+     * Proxy address + credentials for one provider's requests, or null when
+     * this provider talks to its API directly (item 6 of the mobile/UX pass).
+     * Both providers share one proxy address and one set of credentials
+     * (LLM_PROXY / LLM_PROXY_AUTH) — only whether it is actually used is
+     * per-provider: OpenRouter is typically blocked from a Russian IP, so its
+     * toggle defaults on; Yandex Cloud is usually reachable directly from a
+     * Russian host, so its toggle defaults off.
+     */
+    public static function proxyFor(string $provider): ?array {
+        $toggleKey = $provider === 'yandex' ? 'LLM_PROXY_YANDEX' : 'LLM_PROXY_OPENROUTER';
+        $default = $provider === 'yandex' ? 0 : 1;
+        $enabled = (int)(self::$cfg[$toggleKey] ?? $default) === 1;
+        if (!$enabled) return null;
         $proxy = trim((string)(self::$cfg['LLM_PROXY'] ?? ''));
-        return $proxy === '' ? 'напрямую' : 'через прокси ' . preg_replace('~^\w+://~', '', $proxy);
+        if ($proxy === '') return null;
+        return ['proxy' => $proxy, 'auth' => trim((string)(self::$cfg['LLM_PROXY_AUTH'] ?? ''))];
     }
 
     // Text completion — returns plain string
@@ -391,19 +410,18 @@ class LLM {
      * itself is reachable only through one — without it the request is answered
      * by the filter on the way, not by the provider.
      */
-    private static function applyTransport(\CurlHandle $ch): void {
-        $proxy = trim((string)(self::$cfg['LLM_PROXY'] ?? ''));
-        if ($proxy === '') return;
+    private static function applyTransport(\CurlHandle $ch, string $provider): void {
+        $p = self::proxyFor($provider);
+        if ($p === null) return;
 
-        curl_setopt($ch, CURLOPT_PROXY, $proxy);
+        curl_setopt($ch, CURLOPT_PROXY, $p['proxy']);
         curl_setopt($ch, CURLOPT_HTTPPROXYTUNNEL, true);
         // socks5h:// in the URL makes cURL resolve the host on the proxy side —
         // the point of the exercise when local DNS is the thing being poisoned
-        if (str_starts_with($proxy, 'socks5h://') || str_starts_with($proxy, 'socks5://')) {
+        if (str_starts_with($p['proxy'], 'socks5h://') || str_starts_with($p['proxy'], 'socks5://')) {
             curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
         }
-        $auth = trim((string)(self::$cfg['LLM_PROXY_AUTH'] ?? ''));
-        if ($auth !== '') curl_setopt($ch, CURLOPT_PROXYUSERPWD, $auth);
+        if ($p['auth'] !== '') curl_setopt($ch, CURLOPT_PROXYUSERPWD, $p['auth']);
     }
 
     private static function timeout(): int {
@@ -420,7 +438,7 @@ class LLM {
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_USERAGENT      => 'AtlantArmourKP/1.0',
         ]);
-        self::applyTransport($ch);
+        self::applyTransport($ch, $provider);
         $resp = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err  = curl_error($ch);
@@ -443,7 +461,7 @@ class LLM {
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_USERAGENT => 'AtlantArmourKP/1.0',
         ]);
-        self::applyTransport($ch);
+        self::applyTransport($ch, $provider);
         $resp = curl_exec($ch);
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
@@ -492,12 +510,13 @@ class LLM {
         $head = "$provider returned HTTP $code" . ($detail !== '' ? ": $detail" : '');
         if ($curlError !== '') $head = "cURL error ($provider): $curlError";
 
-        $route = self::routeLabel();
+        $route = self::routeLabel($provider);
         if (self::looksIntercepted($code, $body)) {
+            $toggle = $provider === 'yandex' ? 'LLM_PROXY_YANDEX' : 'LLM_PROXY_OPENROUTER';
             return $head . '. Так отвечает не сам провайдер, а фильтр на пути запроса '
                  . "($route): ключ здесь ни при чём. Помогает прокси вне фильтрации — "
-                 . '«Настройки → Нейросети → Доступ к API» (LLM_PROXY), либо свой зеркальный '
-                 . 'адрес API в OPENROUTER_BASE_URL.';
+                 . "«Настройки → Нейросети → Доступ к API» (адрес в LLM_PROXY, включить для $provider — $toggle), "
+                 . 'либо свой зеркальный адрес API в OPENROUTER_BASE_URL.';
         }
         if ($code === 401) return $head . '. Ключ неверный, отозван или скопирован не целиком.';
         if ($code === 402) return $head . '. На счёте провайдера нет средств.';

@@ -24,8 +24,20 @@ final class Boards {
                                       JOIN board_cards d ON d.column_id = c.id
                                       WHERE c.board_id = b.id) AS cards
                          FROM boards b ORDER BY b.position, b.id");
+        // «Письма» (item 2) treats the board as always there — one letter
+        // program, not a list you might find empty. An account with none yet
+        // gets the usual КП pipeline columns instead of a dead end.
+        if (!$rows) {
+            self::createBoard('Письма');
+            return self::all();
+        }
         foreach ($rows as &$r) $r['cards'] = (int)$r['cards'];
         return $rows;
+    }
+
+    /** The single board this office works on — always exists (see all()). */
+    public static function singleton(): array {
+        return self::all()[0];
     }
 
     /** The board with its columns and cards — one request paints the whole page. */

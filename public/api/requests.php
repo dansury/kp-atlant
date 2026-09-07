@@ -243,7 +243,7 @@ switch ($action) {
         )]);
 
     case 'attachment':
-        // Download one attachment (feed and request card)
+        // Download, or preview inline (item 5), one attachment (feed and request card)
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         $a = Db::one("SELECT * FROM attachments WHERE id=?", [$id]);
@@ -251,8 +251,15 @@ switch ($action) {
         $path = ROOT . '/' . $a['path'];
         if (!is_file($path)) jsonError('File missing on disk', 404);
 
-        header('Content-Type: ' . ($a['mime'] ?: 'application/octet-stream'));
-        header('Content-Disposition: ' . Attachments::contentDisposition($a['filename']));
+        $mime = (string)($a['mime'] ?: 'application/octet-stream');
+        // Only types a browser can display, never run, may be served inline —
+        // the MIME is attacker-controlled (it comes from the letter), so a file
+        // claiming text/html or image/svg+xml always forces a download instead
+        $inlineSafe = in_array($mime, ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'], true);
+        $inline = $inlineSafe && !empty($_GET['inline']);
+        header('Content-Type: ' . $mime);
+        header('Content-Disposition: ' . Attachments::contentDisposition($a['filename'], $inline));
+        header('X-Content-Type-Options: nosniff');
         header('Content-Length: ' . filesize($path));
         readfile($path);
         exit;
