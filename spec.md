@@ -12,6 +12,7 @@
 | Каталог, подходящие позиции, выбор модели | `specs/008-catalog-and-matching/spec.md` | Implemented |
 | Векторный подбор позиций и выбор равнозначных | `specs/009-catalog-vectors/spec.md` | Implemented |
 | Почтовая программа: цепочки, «Отправленные», доски | `specs/010-mail-client-boards/spec.md` | Implemented |
+| Одна доска: компания = карточка, письма и запросы внутри | `specs/011-unified-board/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |

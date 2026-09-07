@@ -26,6 +26,14 @@ switch ($action) {
                               WHERE p.id=?", [$id]);
         if (!$proposal) jsonError('Not found', 404);
         $proposal['items'] = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$id]);
+        // Which positions are analogues rather than what was asked for — the
+        // editor asks the manager to explain exactly those (module 011)
+        $swaps = [];
+        foreach (KpContent::substitutions($proposal['items']) as $sw) $swaps[$sw['requested']] = true;
+        foreach ($proposal['items'] as &$it) {
+            $it['is_substitution'] = isset($swaps[trim((string)($it['requested_name'] ?? ''))]);
+        }
+        unset($it);
         $proposal['addons'] = Db::all("SELECT * FROM proposal_addons WHERE proposal_id=? ORDER BY position", [$id]);
         jsonData($proposal);
 
@@ -66,6 +74,11 @@ switch ($action) {
             'execution_days' => (int)(Db::val("SELECT value FROM settings WHERE key='default_execution_days'") ?: 30),
             'validity_days' => (int)(Db::val("SELECT value FROM settings WHERE key='default_validity_days'") ?: 14),
             'conditions_text' => Db::val("SELECT value FROM settings WHERE key='default_conditions_text'") ?: '',
+            // «Чтобы всё, что мы дописываем, система учитывала»: whatever the
+            // manager typed around the table last time is already here, so a
+            // house rule is written once instead of retyped on every КП
+            'pre_table_text'  => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='pre_table' ORDER BY id DESC LIMIT 1") ?: ''),
+            'post_table_text' => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='post_table' ORDER BY id DESC LIMIT 1") ?: ''),
         ]);
 
         // Insert items
@@ -75,6 +88,10 @@ switch ($action) {
                 'proposal_id' => $proposalId,
                 'position' => $i + 1,
                 'product_name' => $match ? $match['name'] : $m['raw_name'],
+                // What the client actually wrote. An analogue offered instead of
+                // the asked-for brand is only visible against this line, and the
+                // КП has to say so out loud (module 011).
+                'requested_name' => $m['raw_name'] ?? null,
                 'moysklad_product_id' => $match['moysklad_id'] ?? null,
                 'unit' => $match['unit'] ?? 'шт.',
                 'quantity' => $m['quantity'],
@@ -94,6 +111,11 @@ switch ($action) {
         $corrections = Db::all(
             "SELECT auto_text, manager_text FROM corrections WHERE field='cover_letter' ORDER BY created_at DESC LIMIT 5"
         );
+        // How this office has explained an analogue before — the model repeats
+        // the manager's own wording instead of inventing a new apology
+        $pastSwaps = Db::all(
+            "SELECT auto_text, manager_text FROM corrections WHERE field='item_substitution' ORDER BY created_at DESC LIMIT 8"
+        );
         $orgName = '';
         if ($req['counterparty_id']) {
             $cp = Db::one("SELECT name FROM counterparties WHERE id=?", [$req['counterparty_id']]);
@@ -101,7 +123,8 @@ switch ($action) {
         }
 
         $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
-        $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections);
+        $swaps = KpContent::substitutions($items);
+        $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections, $swaps, $pastSwaps);
         Db::update('proposals', ['cover_letter' => $coverLetter], 'id=?', [$proposalId]);
 
         // Pull descriptions, specs and photos for the product cards (FR-040, FR-042)
@@ -196,19 +219,40 @@ switch ($action) {
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
         if (!$proposal) jsonError('Not found', 404);
 
-        // Save corrections (US4)
-        if ($proposal['cover_letter'] && $proposal['cover_letter_final']
-            && $proposal['cover_letter'] !== $proposal['cover_letter_final']) {
+        // Save corrections (US4). Everything the manager wrote by hand is a
+        // lesson: the letter he rewrote, the paragraphs he added around the
+        // table, and every position where he offered an analogue instead of the
+        // brand the client asked for (module 011).
+        $learn = function (string $field, string $auto, string $text, array $ctx = []) use ($proposal, $manager) {
+            if (trim($text) === '' || trim($auto) === trim($text)) return;
+            // Confirming the same КП twice must not teach the same lesson twice
+            // «IS» rather than «=»: a manual КП has no request, and NULL = NULL is not a match
+            if (Db::one("SELECT id FROM corrections WHERE field=? AND auto_text=? AND manager_text=? AND request_id IS ? LIMIT 1",
+                        [$field, $auto, $text, $proposal['request_id']])) return;
             Db::insert('corrections', [
-                'request_id' => $proposal['request_id'],
-                'field' => 'cover_letter',
-                'auto_text' => $proposal['cover_letter'],
-                'manager_text' => $proposal['cover_letter_final'],
-                'manager_id' => $manager['id'],
-                'context_json' => json_encode([
-                    'counterparty_id' => $proposal['counterparty_id'],
-                ], JSON_UNESCAPED_UNICODE),
+                'request_id'   => $proposal['request_id'],
+                'field'        => $field,
+                'auto_text'    => $auto,
+                'manager_text' => $text,
+                'manager_id'   => $manager['id'],
+                'context_json' => json_encode($ctx + ['counterparty_id' => $proposal['counterparty_id']], JSON_UNESCAPED_UNICODE),
             ]);
+        };
+
+        if ($proposal['cover_letter'] && $proposal['cover_letter_final']) {
+            $learn('cover_letter', (string)$proposal['cover_letter'], (string)$proposal['cover_letter_final']);
+        }
+        // The previous КП is what these were generated from — a paragraph that
+        // did not change is not a correction and must not be learned twice
+        $prev = Db::one("SELECT pre_table_text, post_table_text FROM proposals
+                         WHERE id<>? AND status<>'draft' ORDER BY id DESC LIMIT 1", [$id]);
+        $learn('pre_table',  (string)($prev['pre_table_text'] ?? ''),  (string)$proposal['pre_table_text']);
+        $learn('post_table', (string)($prev['post_table_text'] ?? ''), (string)$proposal['post_table_text']);
+
+        foreach (KpContent::substitutions(Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$id])) as $s) {
+            $learn('item_substitution', $s['requested'],
+                   $s['offered'] . ($s['note'] !== '' ? ' — ' . $s['note'] : ''),
+                   ['proposal_id' => $id]);
         }
 
         // Regenerate final PDF

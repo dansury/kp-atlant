@@ -25,8 +25,18 @@ class RequestParser {
         return $parsed;
     }
 
-    // Generate cover letter for KP
-    public static function generateCoverLetter(array $items, string $orgName, string $tov, array $corrections = []): string {
+    /**
+     * Cover letter for a КП.
+     *
+     * $substitutions — positions where we offer an analogue instead of what was
+     * asked for; the letter must name them, because a client who asked for one
+     * manufacturer and gets a price list of another reads it as a mistake.
+     * $pastSubstitutions — how the manager explained such a swap before, so the
+     * wording is the office's own and not the model's invention (module 011).
+     */
+    public static function generateCoverLetter(array $items, string $orgName, string $tov,
+                                               array $corrections = [], array $substitutions = [],
+                                               array $pastSubstitutions = []): string {
         $itemList = implode("\n", array_map(
             fn($i) => "- {$i['product_name']} ({$i['quantity']} {$i['unit']})",
             $items
@@ -38,6 +48,21 @@ class RequestParser {
             $fewShot = "\n\nПримеры корректур менеджера (учитывай стиль):\n";
             foreach ($examples as $c) {
                 $fewShot .= "Было: {$c['auto_text']}\nСтало: {$c['manager_text']}\n\n";
+            }
+        }
+
+        if ($substitutions) {
+            $fewShot .= "\n\nВ этом КП есть замены на аналоги — назови их в письме прямо, "
+                      . "одной фразой на позицию, без извинений:\n";
+            foreach (array_slice($substitutions, 0, 8) as $s) {
+                $fewShot .= "Просили: {$s['requested']} → предлагаем: {$s['offered']}"
+                          . ($s['note'] !== '' ? " ({$s['note']})" : '') . "\n";
+            }
+        }
+        if ($pastSubstitutions) {
+            $fewShot .= "\nТак менеджер объяснял замены раньше — держись этих формулировок:\n";
+            foreach (array_slice($pastSubstitutions, 0, 5) as $c) {
+                $fewShot .= "Просили: {$c['auto_text']} → писали: {$c['manager_text']}\n";
             }
         }
 

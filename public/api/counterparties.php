@@ -5,6 +5,7 @@
  */
 require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/crm.php';
+require_once ROOT . '/lib/mail_threads.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -82,6 +83,39 @@ switch ($action) {
         $cp['merged_cards'] = Db::all("SELECT id, name FROM counterparties WHERE merged_into_id=?", [$id]);
         $cp['suggested_email'] = Crm::primaryEmail($id);
         jsonData($cp);
+    }
+
+    /**
+     * Every conversation this company ever had, newest first (module 011).
+     * The company card is where mail is read now — there is no separate mail
+     * list to switch to — so the request behind each thread and its КП come
+     * back with it, and the card can be painted from one answer.
+     */
+    case 'threads': {
+        requireAuth();
+        $id = Crm::rootId((int)($_GET['id'] ?? 0));
+        $ids = array_map(fn($r) => (int)$r['id'],
+            Db::all("SELECT id FROM counterparties WHERE id=? OR merged_into_id=?", [$id, $id]));
+
+        $items = [];
+        foreach ($ids as $cpId) {
+            foreach (MailThreads::query(['counterparty_id' => $cpId, 'limit' => 100])['items'] as $t) {
+                $items[$t['thread_key']] = $t;
+            }
+        }
+        $items = array_values($items);
+        usort($items, fn($a, $b) => strcmp((string)$b['last_at'], (string)$a['last_at']));
+
+        // The КП that answered each request, so the thread row can link straight to it
+        foreach ($items as &$t) {
+            $t['proposal'] = $t['request_id']
+                ? Db::one("SELECT id, number, status, sent_at FROM proposals WHERE request_id=? ORDER BY id DESC LIMIT 1", [$t['request_id']])
+                : null;
+            // They wrote last → we owe an answer. Bold on the card, dim once answered.
+            $t['unanswered'] = $t['last_direction'] === 'in';
+        }
+        unset($t);
+        jsonData(['items' => $items]);
     }
 
     // Unified company feed (FR-033)

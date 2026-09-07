@@ -856,6 +856,54 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '12')");
         $current = 12;
     }
+
+    // v13 — module 011: one board of company cards. A card is the company, not
+    // a letter, and every conversation the company ever sent hangs on it.
+    if ($current < 13) {
+        // The card points at a company; thread_key stays for a letter that has
+        // no company yet (an unknown sender lands on the board all the same)
+        Db::ensureColumn('board_cards', 'counterparty_id', 'INTEGER REFERENCES counterparties(id)');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_bcards_cp ON board_cards(counterparty_id)");
+
+        // Which column new mail falls into. Named rather than «the first one»,
+        // so renaming or reordering the columns cannot break the intake.
+        Db::ensureColumn('board_columns', 'kind', 'TEXT');
+        Db::q("UPDATE board_columns SET kind='inbox' WHERE kind IS NULL AND title='Входящие'");
+        // A board whose intake column was renamed away: the leftmost one takes over
+        foreach (Db::all("SELECT id FROM boards") as $b) {
+            if (Db::val("SELECT COUNT(*) FROM board_columns WHERE board_id=? AND kind='inbox'", [$b['id']])) continue;
+            $first = Db::one("SELECT id FROM board_columns WHERE board_id=? ORDER BY position, id LIMIT 1", [$b['id']]);
+            if ($first) Db::update('board_columns', ['kind' => 'inbox'], 'id=?', [$first['id']]);
+        }
+
+        // What the client asked for, next to what we actually offered — the
+        // pair a substituted analogue is learned from
+        Db::ensureColumn('proposal_items', 'requested_name', 'TEXT');
+
+        // What the manager changed by hand is what the model has to learn. The
+        // v1 CHECK knew four fields; an analogue offered instead of the asked-for
+        // brand is a fifth, so the constraint is rebuilt rather than worked around.
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS corrections_v13 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER REFERENCES requests(id),
+            field TEXT NOT NULL CHECK(field IN ('cover_letter','pre_table','post_table','conditions','item_substitution','reply')),
+            auto_text TEXT NOT NULL,
+            manager_text TEXT NOT NULL,
+            context_json TEXT,
+            manager_id INTEGER REFERENCES managers(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+SQL);
+        Db::q("INSERT INTO corrections_v13 (id, request_id, field, auto_text, manager_text, context_json, manager_id, created_at)
+               SELECT id, request_id, field, auto_text, manager_text, context_json, manager_id, created_at FROM corrections");
+        Db::q("DROP TABLE corrections");
+        Db::pdo()->exec("ALTER TABLE corrections_v13 RENAME TO corrections");
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_corrections_field ON corrections(field, id)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '13')");
+        $current = 13;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
