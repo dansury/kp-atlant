@@ -333,6 +333,41 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bcard__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 11px; }
 .bcard__actions a { color: var(--text-muted); cursor: pointer; text-decoration: none; }
 .bcard__actions a:hover { color: var(--primary); }
+.note--swap { background: #fdf3e3; border: 1px solid #f0dcbb; color: var(--warning);
+              border-radius: var(--radius); padding: 6px 8px; margin: 6px 0; font-size: 12px; }
+/* Module 011 — a card is a company, and the board says out loud who is waiting.
+   Unanswered: bold, a coloured edge, full-strength text. Answered: normal
+   weight, dimmed — the same language the conversation list uses. */
+.bcard--unanswered { border-left: 3px solid var(--danger); }
+.bcard--unanswered .bcard__title { font-weight: 700; }
+.bcard--hot { background: #fffdf3; box-shadow: 0 1px 3px rgba(187,80,72,.35); }
+.bcard--answered { border-left: 3px solid transparent; }
+.bcard--answered .bcard__title, .bcard--answered .bcard__subject { color: var(--text-muted); font-weight: 500; }
+.bcard--answered .bcard__meta { opacity: .75; }
+.bcard__title a { color: inherit; text-decoration: none; }
+.bcard__title a:hover { text-decoration: underline; }
+.bcard__subject { font-size: 12px; color: var(--text-muted); margin-bottom: 4px;
+                  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.bcol__kind { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted);
+              border: 1px solid var(--border); border-radius: 8px; padding: 0 5px; background: #fff; }
+.chip--work { background: #fdf3e3; border-color: #f0dcbb; color: var(--warning); }
+.chip--new { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary); }
+.chip--kp { background: #eaf4ec; border-color: #cfe4d4; color: var(--success); }
+
+/* The company card: conversations open in place, so the row and its letters
+   are one block — a thread never takes the manager off the company. */
+.mrow--answered .mrow__subject { color: var(--text-muted); font-weight: 400; }
+.mrow--unanswered .mrow__subject { font-weight: 700; }
+.mrow--answered .mrow__preview, .mrow--answered .mrow__meta { opacity: .8; }
+.mrow--thread { display: block; padding: 10px 16px; }
+/* Only the header of a conversation reacts to the pointer — once the letters
+   are open under it, highlighting the whole block just hides the letters */
+.mrow--thread:hover { background: transparent; }
+.mrow--thread .mrow__main { cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.mrow--thread .mrow__main:hover { background: var(--primary-bg); }
+.thread-inline { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+.thread-inline .thread { max-height: 60vh; overflow-y: auto; }
+
 .board-pick__board { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .board-pick__name { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
 

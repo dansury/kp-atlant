@@ -53,6 +53,60 @@ class KpContent {
     // MoySklad descriptions are free text. Managers write them with the same
     // headings the sample KP uses, so split on those and fall back to
     // "everything is description" when the headings are absent.
+    /**
+     * Positions where we offer something other than what was asked for.
+     *
+     * A client asks for one manufacturer's plate carrier and we have an
+     * equivalent of our own — the КП has to say so in the manager's own words,
+     * and every such pair is remembered so the next letter says it the same way
+     * (module 011). Comparison is deliberately crude: normalized text, no model
+     * call, because this runs on every КП.
+     *
+     * @param array $items rows of proposal_items
+     * @return array<int,array{requested:string,offered:string,note:string}>
+     */
+    public static function substitutions(array $items): array {
+        $out = [];
+        foreach ($items as $it) {
+            $asked  = trim((string)($it['requested_name'] ?? ''));
+            $given  = trim((string)($it['product_name'] ?? ''));
+            if ($asked === '' || $given === '') continue;
+            if (self::sameProduct($asked, $given)) continue;
+            $out[] = [
+                'requested' => $asked,
+                'offered'   => $given,
+                'note'      => trim((string)($it['notes'] ?? '')),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * «БЖ Кираса-5» and «Бронежилет Кираса 5» are the same position; «Шлем 6Б47»
+     * answered with «Шлем Атлант АШ-1» is a swap. The model code decides: a
+     * client who names one is asking for that exact thing, and offering another
+     * has to be explained. Everything else falls back to word overlap.
+     */
+    private static function sameProduct(string $a, string $b): bool {
+        $tokens = function (string $v): array {
+            $v = mb_strtolower(str_replace(['«', '»', '"'], ' ', $v));
+            $v = (string)preg_replace('/[^\p{L}\p{N}]+/u', ' ', $v);
+            return array_values(array_filter(explode(' ', trim($v)), fn($t) => $t !== ''));
+        };
+        $asked = $tokens($a);
+        $given = $tokens($b);
+        if (!$asked || !$given) return true;
+
+        // A model code — «6б47», «ач-2м», «5а» — must survive the swap
+        $isCode = fn(string $t) => mb_strlen($t) >= 2 && preg_match('/\d/u', $t);
+        foreach ($asked as $t) {
+            if ($isCode($t) && !in_array($t, $given, true)) return false;
+        }
+
+        $common = count(array_intersect($asked, $given));
+        return $common / count($asked) >= 0.5;
+    }
+
     public static function splitDescription(string $text): array {
         $out = ['description' => trim($text), 'specs' => '', 'included' => ''];
         if (trim($text) === '') return $out;

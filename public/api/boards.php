@@ -20,9 +20,19 @@ try {
             jsonData(['items' => Boards::all()]);
 
         case 'get': {
-            $board = Boards::get((int)($_GET['id'] ?? 0));
+            $id = (int)($_GET['id'] ?? 0) ?: (int)Boards::singleton()['id'];
+            // Opening the board IS the intake: every company that wrote to us is
+            // already in «Входящие» by the time the page paints (module 011)
+            $sync = isset($_GET['sync']) && !$_GET['sync'] ? ['created' => 0, 'upgraded' => 0] : Boards::sync($id);
+            $board = Boards::get($id);
             if (!$board) jsonError('Доска не найдена', 404);
-            jsonData($board);
+            jsonData($board + ['sync' => $sync]);
+        }
+
+        // Pull new mail onto the board without repainting everything else
+        case 'sync': {
+            $id = (int)($input['board_id'] ?? 0) ?: (int)Boards::singleton()['id'];
+            jsonOk(Boards::sync($id, true));
         }
 
         case 'board_save': {
@@ -41,7 +51,8 @@ try {
             $boardId = (int)($input['board_id'] ?? 0);
             if (!$boardId) jsonError('Не указана доска');
             $id = Boards::saveColumn($boardId, (int)($input['id'] ?? 0) ?: null,
-                                     (string)($input['title'] ?? ''), $input['color'] ?? null);
+                                     (string)($input['title'] ?? ''), $input['color'] ?? null,
+                                     !empty($input['kind']) ? (string)$input['kind'] : null);
             jsonOk(['id' => $id]);
         }
 
@@ -57,6 +68,7 @@ try {
             $columnId = (int)($input['column_id'] ?? 0);
             if (!$columnId) jsonError('Не указана колонка');
             $id = Boards::addCard($columnId, [
+                'counterparty_id' => $input['counterparty_id'] ?? null,
                 'thread_key'      => $input['thread_key'] ?? '',
                 'mail_message_id' => $input['mail_message_id'] ?? null,
                 'request_id'      => $input['request_id'] ?? null,
@@ -82,6 +94,8 @@ try {
         // Where a thread already sits — the mail page shows it, and «в доску»
         // moves the existing card instead of making a second one
         case 'placement': {
+            $cp  = (int)($_GET['counterparty_id'] ?? 0);
+            if ($cp) jsonData(['items' => Boards::companyPlacement($cp), 'boards' => Boards::all()]);
             $key = trim((string)($_GET['thread_key'] ?? ''));
             if ($key === '') jsonData(['items' => [], 'boards' => Boards::all()]);
             jsonData(['items' => Boards::threadPlacement($key), 'boards' => Boards::all()]);
@@ -102,7 +116,7 @@ try {
                 $out[] = [
                     'id'      => (int)$b['id'],
                     'name'    => $b['name'],
-                    'columns' => Db::all("SELECT id, title, color FROM board_columns WHERE board_id=? ORDER BY position, id", [$b['id']]),
+                    'columns' => Db::all("SELECT id, title, color, kind FROM board_columns WHERE board_id=? ORDER BY position, id", [$b['id']]),
                 ];
             }
             jsonData(['items' => $out]);

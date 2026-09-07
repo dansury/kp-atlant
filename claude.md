@@ -51,6 +51,15 @@ visible warning, never a swallowed warning.
 There is ONE «Настройки» item in the header: everything lives under `#settings/<tab>`, admin-only
 tabs hidden from a plain manager. Do not add a second top-level entry for a settings screen.
 
+## Board
+«Письма» is ONE board and a card on it is a COMPANY (module 011) — its letters, its requests
+and its КП are things you open the card to see, never a second list beside it. New mail puts
+itself there: `Boards::sync()` runs on every open of the board, so nothing waits for a manager
+to press «в доску». Do not add a screen that lists letters, requests or companies as a sibling
+of the board, and do not make a card carry one letter again. A card with an unanswered letter
+is bold and rises inside its column; an answered one dims and keeps the order it was dragged
+into — the column itself is the manager's decision and code never changes it.
+
 ## Configuration
 Never read `config.php` directly. `config.php` holds DEFAULTS only and is optional; the effective value is `Settings::get('KEY')` (DB override → config.php → built-in default), and `$cfg` from bootstrap is already that merged array. A new setting must be declared in `Settings::SPEC` so the admin panel can show and override it. Secrets go through `Crypt` and never reach the browser.
 

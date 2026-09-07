@@ -258,27 +258,21 @@ const App = {
             </div>`;
     },
 
-    // ==== «Письма»: one nav item, four merged sections as internal tabs ====
-    // Follows the same idea as #settings/<tab> (claude.md: one top-level entry,
-    // routes inside it) — the board is the home view, the rest (inbox, the
-    // requests/КП pipeline, companies) are tabs of the same section rather than
-    // four things a manager had to remember to check separately.
-    mailTabs: [
-        ['board',     'Доска',      '#mail/board'],
-        ['inbox',     'Входящие',   '#mail/inbox'],
-        ['requests',  'Запросы',    '#mail/requests'],
-        ['companies', 'Компании',   '#mail/companies'],
-    ],
-
-    // $extra — buttons/controls that belong next to the «Письма» title on this tab
+    // ==== «Письма»: one board, and nothing else to switch between ====
+    // Companies, requests and letters used to be three lists that had to be
+    // cross-checked by hand (module 011). They are one object now — a company
+    // card on the board — so the section has no tabs at all: the board IS the
+    // page. The old lists stay reachable by URL for a link somebody saved, and
+    // each of them opens with a way back to the board.
     mailShellHtml(active, extra = '') {
+        const titles = {board: 'Письма', inbox: 'Архив писем', requests: 'Запросы', companies: 'Компании'};
         return `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:6px;gap:10px">
-                <h2 style="margin:0">Письма</h2>
+            <div class="flex flex--between flex--wrap" style="margin-bottom:10px;gap:10px">
+                <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
+                    ${active === 'board' ? '' : '<a href="#mail" class="btn btn--outline btn--sm">← На доску</a>'}
+                    <h2 style="margin:0">${titles[active] || 'Письма'}</h2>
+                </div>
                 <div class="flex flex--wrap" style="gap:8px">${extra}</div>
-            </div>
-            <div class="tabs">
-                ${this.mailTabs.map(([k, l, href]) => `<a href="${href}" class="tab ${active === k ? 'tab--active' : ''}">${l}</a>`).join('')}
             </div>
             <div id="mailBody"><div class="loading">Загрузка...</div></div>
         `;
@@ -996,6 +990,16 @@ const App = {
                     <strong>${this.esc(it.product_name)}</strong>
                     <span class="note">${photos} фото</span>
                 </div>
+                ${it.is_substitution ? `
+                    <div class="note note--swap">
+                        Аналог: просили «${this.esc(it.requested_name)}». Что напишем клиенту про замену —
+                        попадёт в сопроводительное письмо и запомнится для следующих КП.
+                    </div>
+                    <div class="form-group">
+                        <label>Пояснение к замене</label>
+                        <input type="text" data-field="notes" value="${this.esc(it.notes || '')}"
+                               placeholder="аналог по классу защиты, наш производитель, срок поставки короче">
+                    </div>` : ''}
                 <div class="form-group">
                     <label>Описание</label>
                     <textarea rows="3" data-field="description_text">${this.esc(it.description_text || '')}</textarea>
@@ -1227,45 +1231,173 @@ const App = {
         } catch {}
     },
 
-    // Company card: chat, contacts, orders, invoices (US9, US10)
+    /**
+     * The company card — the one place a company lives (module 011).
+     *
+     * It used to be three screens: a company card here, its letters in the mail
+     * list, its requests in a third table. Now the card IS the correspondence:
+     * every conversation the company ever sent, each one a request with the КП
+     * that answered it, the реквизиты we know, and the счета МойСклад made from
+     * them. Nothing about this company is anywhere else.
+     */
     async pageCounterparty(id) {
         document.getElementById('app').innerHTML = `<div class="loading">Загрузка...</div>`;
-        try {
-            const cp = await this.api(`counterparties.php?action=get&id=${id}`);
-            document.getElementById('app').innerHTML = `
-                <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
-                    <div class="flex flex--wrap" style="gap:10px">
-                        <a href="#mail/companies" class="btn btn--outline btn--sm">← Компании</a>
-                        <h2 style="margin:0">${this.esc(cp.name)} ${this.answerBadge(cp.answer_state)}</h2>
-                    </div>
-                    <div class="flex flex--wrap">
-                        <button class="btn btn--outline" id="syncBtn" onclick="App.syncCompany(${cp.id})">Обновить из МойСклад</button>
-                        ${cp.moysklad_id ? `<a class="btn btn--outline" target="_blank"
-                            href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">Открыть в МойСклад ↗</a>` : ''}
-                    </div>
+        const cp = await this.api(`counterparties.php?action=get&id=${id}`);
+        this.company = cp;
+        document.getElementById('app').innerHTML = `
+            <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
+                <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
+                    <a href="#mail" class="btn btn--outline btn--sm">← На доску</a>
+                    <h2 style="margin:0">${this.esc(cp.name)}</h2>
+                    ${this.answerBadge(cp.answer_state)}
                 </div>
-                <div class="grid grid--chat">
-                    <div>
-                        <div class="card">
-                            <div class="card__title">История компании</div>
-                            <div id="chatFeed" class="chat"><div class="loading">Загрузка...</div></div>
-                            <div class="chat__composer">
-                                <textarea id="noteText" rows="2" placeholder="Заметка для коллег (клиенту не уходит)..."></textarea>
-                                <button class="btn btn--outline" onclick="App.addNote(${cp.id})">Добавить заметку</button>
-                            </div>
+                <div class="flex flex--wrap">
+                    <button class="btn btn--primary btn--sm" onclick="App.mailCompose(null, false, '', '${this.jsStr(cp.suggested_email || cp.contact_email || '')}')">✉ Написать</button>
+                    <button class="btn btn--outline btn--sm" id="syncBtn" onclick="App.syncCompany(${cp.id})">Обновить из МойСклад</button>
+                    ${cp.moysklad_id ? `<a class="btn btn--outline btn--sm" target="_blank"
+                        href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">МойСклад ↗</a>` : ''}
+                </div>
+            </div>
+            <div id="cardPlacement"></div>
+            <div class="grid grid--chat">
+                <div>
+                    <div class="card card--flush">
+                        <div class="card__title" style="padding:12px 16px 0">Переписка</div>
+                        <div id="cpThreads"><div class="loading">Загрузка...</div></div>
+                    </div>
+                    <div class="card">
+                        <div class="card__title">Заметки и события</div>
+                        <div id="chatFeed" class="chat"><div class="loading">Загрузка...</div></div>
+                        <div class="chat__composer">
+                            <textarea id="noteText" rows="2" placeholder="Заметка для коллег (клиенту не уходит)..."></textarea>
+                            <button class="btn btn--outline" onclick="App.addNote(${cp.id})">Добавить заметку</button>
                         </div>
                     </div>
-                    <div id="companySide">${this.companySide(cp)}</div>
                 </div>
-            `;
-            this.loadChat(cp.id);
-            this.loadCounterpartyPriceTypes(cp);
+                <div id="companySide">${this.companySide(cp)}</div>
+            </div>
+        `;
+        this.loadCompanyThreads(cp.id);
+        this.loadCardPlacement(cp.id);
+        this.loadChat(cp.id);
+        this.loadCounterpartyPriceTypes(cp);
 
-            // Returning from the MoySklad tab refreshes the card (FR-030)
-            this.onTabVisible = () => {
-                if (location.hash === `#mail/company/${cp.id}`) this.syncCompany(cp.id, true);
-            };
-            this.syncCompany(cp.id, true);
+        // Returning from the MoySklad tab refreshes the card (FR-030)
+        this.onTabVisible = () => {
+            if (location.hash === `#mail/company/${cp.id}`) this.syncCompany(cp.id, true);
+        };
+        this.syncCompany(cp.id, true);
+    },
+
+    /**
+     * Every conversation of the company, newest first. Unanswered rows are bold
+     * — the client wrote last and nobody replied; answered rows go to normal
+     * weight and dimmed text, which is the whole read/unread language of the
+     * card. A row opens in place: the letters load under it, the card stays.
+     */
+    async loadCompanyThreads(id) {
+        const box = document.getElementById('cpThreads');
+        if (!box) return;
+        try {
+            const d = await this.api(`counterparties.php?action=threads&id=${id}`);
+            this.companyThreads = d.items || [];
+            box.innerHTML = this.companyThreads.length
+                ? `<div class="mlist">${this.companyThreads.map(t => this.companyThreadRow(t)).join('')}</div>`
+                : '<div class="mlist__empty">Писем от этой компании ещё нет</div>';
+        } catch (err) {
+            box.innerHTML = `<div class="mlist__empty">Переписка не загрузилась: ${this.esc(err.message)}</div>`;
+        }
+    },
+
+    companyThreadRow(t) {
+        const cls = ['mrow', 'mrow--thread', t.unanswered ? 'mrow--unanswered' : 'mrow--answered'];
+        if (t.unread) cls.push('mrow--unread');
+        const kp = t.proposal
+            ? `<a class="chip chip--kp" href="#mail/proposal/${t.proposal.id}" onclick="event.stopPropagation()">КП ${this.esc(t.proposal.number || '#' + t.proposal.id)}</a>`
+            : (t.request_id ? `<a class="chip" href="#mail/request/${t.request_id}" onclick="event.stopPropagation()">запрос #${t.request_id}</a>` : '');
+        return `
+            <div class="${cls.join(' ')}" data-thread="${this.esc(t.thread_key)}">
+                <div class="mrow__main" onclick="App.toggleCompanyThread('${this.jsStr(t.thread_key)}')">
+                    <div class="mrow__subject">
+                        ${t.last_direction === 'in' ? '📥' : '📤'}
+                        ${this.esc(t.subject) || '<em>без темы</em>'}
+                        ${t.count > 1 ? `<span class="mrow__count" title="писем в переписке">${t.count}</span>` : ''}
+                        ${t.unread ? `<span class="pill pill--danger">${t.unread}</span>` : ''}
+                    </div>
+                    <div class="mrow__meta">
+                        ${t.category ? this.categoryBadge(t.category, App.categoryLabels[t.category]) : ''}
+                        ${kp}
+                        ${t.unanswered ? '<span class="badge badge--unanswered">ждёт ответа</span>' : ''}
+                        ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
+                        <span class="muted">${this.fmtDate(t.last_at)}</span>
+                    </div>
+                    <div class="mrow__preview">${this.esc(t.preview)}</div>
+                </div>
+                <div class="thread-inline" id="th_${this.esc(this.threadDomId(t.thread_key))}" hidden></div>
+            </div>`;
+    },
+
+    // A thread key is base64-ish («s:9f8c…»), an element id may not be
+    threadDomId(key) {
+        return String(key).replace(/[^a-zA-Z0-9]/g, '_');
+    },
+
+    /** Open a conversation right inside the company card — no page change. */
+    async toggleCompanyThread(key) {
+        const box = document.getElementById('th_' + this.threadDomId(key));
+        if (!box) return;
+        if (!box.hidden) { box.hidden = true; return; }
+        box.hidden = false;
+        if (box.dataset.loaded) return;
+        box.innerHTML = '<div class="loading">Загрузка писем...</div>';
+        try {
+            const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key));
+            this.mailThread = {key, reply: d.reply || {}, subject: d.thread.subject};
+            const reply = d.reply || {};
+            box.innerHTML = `
+                <div class="thread">
+                    ${d.messages.map((m, i) => this.threadMessage(m, i === d.messages.length - 1)).join('')}
+                </div>
+                <div class="flex flex--wrap" style="padding:8px 0">
+                    ${reply.reply_to_id ? `<button class="btn btn--primary btn--sm"
+                        onclick="App.mailCreateReply(${reply.reply_to_id}, ${reply.request_id || 'null'}, '${this.jsStr(key)}')">✨ Составить ответ</button>` : ''}
+                    <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${reply.reply_to_id || 'null'}, false, '${this.jsStr(key)}')">Ответить вручную</button>
+                    ${reply.request_id ? `<a class="btn btn--outline btn--sm" href="#mail/request/${reply.request_id}">Позиции и КП →</a>` : ''}
+                    <a class="btn btn--outline btn--sm" href="#mail/t/${encodeURIComponent(key)}">Открыть отдельно</a>
+                </div>`;
+            box.dataset.loaded = '1';
+            // Opening a conversation is reading it — the card stops shouting
+            const row = box.closest('.mrow');
+            if (row) { row.classList.remove('mrow--unread'); row.querySelectorAll('.pill--danger').forEach(p => p.remove()); }
+        } catch (err) {
+            box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    /** Where this company sits on the board, and a one-click move to a column. */
+    async loadCardPlacement(id) {
+        const box = document.getElementById('cardPlacement');
+        if (!box) return;
+        try {
+            const d = await this.api('boards.php?action=placement&counterparty_id=' + id);
+            const t = await this.api('boards.php?action=targets');
+            const columns = (t.items[0] || {}).columns || [];
+            const here = (d.items || [])[0];
+            box.innerHTML = `<div class="card card--inline">
+                <span class="muted">Этап:</span>
+                ${columns.map(c => `<button class="btn btn--sm ${here && here.column_id == c.id ? 'btn--primary' : 'btn--outline'}"
+                    style="border-color:${this.esc(c.color || '#ccc')}"
+                    onclick="App.moveCompanyCard(${id}, ${c.id})">${this.esc(c.title)}</button>`).join('')}
+            </div>`;
+        } catch { box.innerHTML = ''; }
+    },
+
+    async moveCompanyCard(counterpartyId, columnId) {
+        try {
+            await this.api('boards.php?action=card_add', {method: 'POST',
+                body: {column_id: columnId, counterparty_id: counterpartyId}});
+            this.toast('Карточка перемещена', 'success');
+            this.loadCardPlacement(counterpartyId);
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -2050,8 +2182,11 @@ const App = {
      */
     threadRow(t) {
         const who = [...new Set((t.participants || []).slice(0, 3))].join(', ');
+        // Answered conversations step back — normal weight, dimmed; the ones
+        // still waiting on us stay bold. Same language as the board (module 011).
+        const state = t.last_direction === 'in' ? 'mrow--unanswered' : 'mrow--answered';
         return `
-            <div class="mrow ${t.unread ? 'mrow--unread' : ''}" onclick="location.hash='mail/t/${encodeURIComponent(t.thread_key)}'">
+            <div class="mrow ${state} ${t.unread ? 'mrow--unread' : ''}" onclick="location.hash='mail/t/${encodeURIComponent(t.thread_key)}'">
                 <div class="mrow__dir">${t.last_direction === 'in' ? '📥' : '📤'}${t.has_attachment ? '<span class="mrow__clip">📎</span>' : ''}</div>
                 <div class="mrow__main">
                     <div class="mrow__subject">
@@ -2209,20 +2344,25 @@ const App = {
     },
 
 
-    // ==== The board (module 010) ====
-    // Trello, without Trello: columns you rename, and letters you drag by
-    // hand. Exactly one board — «У нас только одна Доска» (item 2) — so this
-    // is the home view of «Письма», not a list you pick a board out of. A card
-    // carries a whole conversation, not one letter.
+    // ==== The board (modules 010 + 011) ====
+    // Trello, without Trello: columns you rename, and companies you drag by
+    // hand. Exactly one board, and it is the whole section — a card is a
+    // COMPANY with all of its correspondence on it, so there is nothing else to
+    // switch to. Every company that writes to us is already in «Входящие» when
+    // the page opens; the manager only decides which column it moves on to.
 
     async pageMailBoard() {
         document.getElementById('app').innerHTML = this.mailShellHtml('board', `
-            <input type="text" id="boardFilter" placeholder="Поиск по доске…" style="min-width:180px"
+            <input type="text" id="boardFilter" placeholder="Поиск по доске…" style="flex:0 1 220px;min-width:150px"
                    oninput="App.boardFilter(this.value)">
+            <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
+            <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
             <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn()">+ Колонка</button>
+            <a href="#mail/inbox" class="btn btn--outline btn--sm" title="Плоский архив всех писем">Архив</a>
         `);
-        const list = await this.api('boards.php?action=list');
-        const b = await this.api(`boards.php?action=get&id=${list.items[0].id}`);
+        // action=get syncs first: the intake is not a button somebody remembers
+        // to press, it is what opening the board means
+        const b = await this.api('boards.php?action=get');
         this.board = b;
         document.getElementById('mailBody').innerHTML = `
             <div class="board" id="board">
@@ -2230,15 +2370,29 @@ const App = {
             </div>
         `;
         this.boardBindDnd();
+        const added = (b.sync && (b.sync.created || b.sync.upgraded)) || 0;
+        if (added) this.toast(`Новых карточек на доске: ${added}`, 'success');
     },
 
-    // Client-side filter over the cards already on the page — every request of
+    // Fetch mail from the servers, then pull whatever arrived onto the board
+    async boardSync() {
+        this.toast('Синхронизация почты...', 'info');
+        try {
+            const r = await this.api('mail.php?action=sync', {method: 'POST', body: {}});
+            const errors = (r.report || []).filter(x => x.error);
+            if (errors.length) this.toast(errors.map(e => `${e.name}: ${e.error}`).join('; '), 'error');
+        } catch (err) { this.toast(err.message, 'error'); }
+        this.pageMailBoard();
+    },
+
+    // Client-side filter over the cards already on the page — every company on
     // this board, not just the one column being looked at
     boardFilter(q) {
         q = q.trim().toLowerCase();
         document.querySelectorAll('.bcard').forEach(card => {
             card.hidden = !(!q || card.textContent.toLowerCase().includes(q));
         });
+        this.boardRecount();
     },
 
     boardColumn(c) {
@@ -2246,6 +2400,7 @@ const App = {
             <div class="bcol" data-col="${c.id}" style="--col:${this.esc(c.color || '#8a8f98')}">
                 <div class="bcol__head">
                     <span class="bcol__title" onclick="App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')">${this.esc(c.title)}</span>
+                    ${c.kind === 'inbox' ? '<span class="bcol__kind" title="Сюда сами падают новые письма">авто</span>' : ''}
                     <span class="bcol__count">${c.cards.length}</span>
                     <button class="bcol__x" title="Удалить колонку" onclick="App.boardDeleteColumn(${c.id})">×</button>
                 </div>
@@ -2256,26 +2411,52 @@ const App = {
             </div>`;
     },
 
+    /**
+     * A card is a company: its name, what it last wrote about, and whether the
+     * ball is on our side. Unanswered is loud — bold, coloured edge, top of the
+     * column; answered goes quiet — normal weight and dimmed — so a column of
+     * forty cards still says at a glance which three need a person.
+     */
     boardCard(card) {
+        const c = card.company || {};
         const t = card.thread || {};
+        const cls = ['bcard'];
+        if (card.hot) cls.push('bcard--hot');
+        if (card.unanswered) cls.push('bcard--unanswered'); else cls.push('bcard--answered');
+        const href = card.counterparty_id
+            ? `#mail/company/${card.counterparty_id}`
+            : (card.thread_key ? `#mail/t/${encodeURIComponent(card.thread_key)}` : '');
+        const letters = c.letters || t.count || 0;
+        const subject = c.subject || t.subject || '';
+        const kp = c.proposal_status ? this.proposalBadge(c.proposal_status) : '';
         return `
-            <div class="bcard" draggable="true" data-card="${card.id}">
-                <div class="bcard__title">${this.esc(card.title)}</div>
+            <div class="${cls.join(' ')}" draggable="true" data-card="${card.id}">
+                <div class="bcard__title">
+                    ${href ? `<a href="${href}">${this.esc(card.title)}</a>` : this.esc(card.title)}
+                    ${card.unread ? `<span class="pill pill--danger" title="непрочитанных писем">${card.unread}</span>` : ''}
+                </div>
+                ${subject ? `<div class="bcard__subject">${this.esc(subject)}</div>` : ''}
                 ${card.note ? `<div class="bcard__note">${this.esc(card.note)}</div>` : ''}
                 <div class="bcard__meta">
-                    ${t.count ? `<span class="chip">писем ${t.count}</span>` : ''}
-                    ${t.unread ? `<span class="pill pill--danger">${t.unread}</span>` : ''}
-                    ${t.counterparty_name ? `<span class="chip">${this.esc(t.counterparty_name)}</span>` : ''}
-                    ${(t.mailboxes || []).map(n => `<span class="chip chip--box">${this.esc(n)}</span>`).join('')}
-                    ${t.last_at ? `<span class="muted">${this.fmtDate(t.last_at, false)}</span>` : ''}
+                    ${letters ? `<span class="chip">писем ${letters}</span>` : ''}
+                    ${c.requests_open ? `<span class="chip chip--work">запросов ${c.requests_open}</span>` : ''}
+                    ${kp}
+                    ${card.kind === 'thread' ? '<span class="chip chip--new" title="Отправитель ещё не привязан к компании">новый адрес</span>' : ''}
+                    ${card.last_at ? `<span class="muted">${this.fmtDate(card.last_at, false)}</span>` : ''}
                 </div>
                 <div class="bcard__actions">
-                    ${card.thread_key ? `<a href="#mail/t/${encodeURIComponent(card.thread_key)}">открыть переписку</a>` : ''}
-                    ${card.request_id ? `<a href="#mail/request/${card.request_id}">запрос #${card.request_id}</a>` : ''}
+                    ${href ? `<a href="${href}">открыть</a>` : ''}
                     <a onclick="App.boardCardNote(${card.id})">заметка</a>
                     <a onclick="App.boardCardDelete(${card.id})">убрать</a>
                 </div>
             </div>`;
+    },
+
+    proposalBadge(status) {
+        const map = {draft: ['КП черновик', 'badge--draft'], confirmed: ['КП готово', 'badge--draft'],
+                     sent: ['КП отправлено', 'badge--sent'], accepted: ['КП принято', 'badge--confirmed']};
+        const [label, cls] = map[status] || [status, 'badge--new'];
+        return `<span class="badge ${cls}">${this.esc(label)}</span>`;
     },
 
     /**
@@ -2589,7 +2770,8 @@ const App = {
 
     // $threadKey keeps the answer in the conversation it belongs to, whichever
     // mailbox it is sent from.
-    async mailCompose(replyToId, generate, threadKey) {
+    // $toOverride — writing to a company from its card, with nothing to reply to
+    async mailCompose(replyToId, generate, threadKey, toOverride) {
         const d = await this.api('mail.php?action=list&limit=1');
         let src = null;
         if (replyToId) src = await this.api(`mail.php?action=get&id=${replyToId}`);
@@ -2597,7 +2779,7 @@ const App = {
         await this.loadCategories();
         const llm = await this.loadLlmModels();
         const subject = src ? (src.subject || '').replace(/^(Re:\s*)?/i, 'Re: ') : '';
-        const to = src ? (src.direction === 'in' ? src.from_email : src.to_emails) : '';
+        const to = src ? (src.direction === 'in' ? src.from_email : src.to_emails) : (toOverride || '');
         this.modal(replyToId ? 'Ответ' : 'Новое письмо', `
             <div class="form-group">
                 <label>Отправить из ящика</label>
