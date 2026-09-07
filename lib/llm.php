@@ -19,8 +19,10 @@ class LLM {
             ['id' => 'llama/latest',          'label' => 'Llama 70B',                 'group' => 'Открытые модели'],
             ['id' => 'llama-lite/latest',     'label' => 'Llama 8B',                  'group' => 'Открытые модели'],
             ['id' => 'qwen3-235b-a22b-fp8/latest', 'label' => 'Qwen3 235B',           'group' => 'Открытые модели'],
-            ['id' => 'gpt-oss-120b/latest',   'label' => 'GPT-OSS 120B',              'group' => 'Открытые модели'],
-            ['id' => 'gpt-oss-20b/latest',    'label' => 'GPT-OSS 20B',               'group' => 'Открытые модели'],
+            // gpt-oss is a "common instance" model: Yandex serves it without a
+            // /latest version segment — gpt://<folder>/gpt-oss-120b, not .../latest.
+            ['id' => 'gpt-oss-120b',          'label' => 'GPT-OSS 120B',              'group' => 'Открытые модели'],
+            ['id' => 'gpt-oss-20b',           'label' => 'GPT-OSS 20B',               'group' => 'Открытые модели'],
         ],
         'openrouter' => [
             ['id' => 'anthropic/claude-sonnet-4.5',       'label' => 'Claude Sonnet 4.5',      'group' => 'Anthropic'],
