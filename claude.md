@@ -51,6 +51,16 @@ visible warning, never a swallowed warning.
 There is ONE «Настройки» item in the header: everything lives under `#settings/<tab>`, admin-only
 tabs hidden from a plain manager. Do not add a second top-level entry for a settings screen.
 
+The screen wears the shop's own skin (atlant-armour.ru): a light chrome bar carrying the red
+wordmark — never a red bar — white blocks standing on a warm charcoal stage, one vivid brand red,
+and corners that are all but square. Because the page is dark and the blocks are white, ink is a
+token, not a constant: `--text`, `--text-muted`, `--border` and `--accent-ink` are declared for the
+stage in `:root` and restated on every light block, which must also restate `color: var(--text)` —
+redeclaring the property alone leaves `color` inherited from `body`. A new block that has its own
+light background belongs in that selector list. Red TEXT always goes through `--accent-ink`;
+`--primary` is for fills, borders and rules only, and putting it on text breaks contrast on both
+the white and the dark side.
+
 ## Board
 «Письма» is ONE board and a card on it is a COMPANY (module 011) — its letters, its requests
 and its КП are things you open the card to see, never a second list beside it. New mail puts

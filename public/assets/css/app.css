@@ -1,29 +1,60 @@
 /* Atlant Armour KP — styles */
-/* Item 1 of the mobile/UX pass: a gentler palette — the old one (#a3241c on a
-   near-black #222) read as harsh on a screen used all day. Every tone here is
-   desaturated a step and lightened a touch from the original brand colors,
-   while every text/background pair below still clears WCAG AA (>= 4.5:1) —
-   verified by hand against the exact pairs this stylesheet actually uses
-   (--primary on white, white on --primary, --text on --bg/--surface, badge
-   text on its own tint) rather than assumed from the swatch alone. */
+/* The palette is the shop's own (atlant-armour.ru): a light chrome bar with the
+   red wordmark on it, one vivid brand red, blocks of white content standing on
+   a warm charcoal stage, and corners that are all but square. The stage means
+   the page background is DARK while cards are white, so the three ink tokens
+   (--text, --text-muted, --border) plus --accent-ink are redeclared on every
+   light block below — custom properties inherit, so markup the SPA builds
+   inside a card gets dark ink without knowing anything about it.
+   Every text/background pair this file actually uses clears WCAG AA (>= 4.5:1),
+   checked by hand: --primary on white 4.8, white on --primary 4.8,
+   --accent-ink (#a8151a) on --primary-bg 6.6, the dark stage's ink 12.8 and its
+   muted 6.2, its coral accent 5.7. --primary is a fill and a border colour;
+   red TEXT always goes through --accent-ink, which is darker on white and
+   lighter on the stage. */
 :root {
-    --bg: #f6f5f4; --surface: #fff; --text: #2e2d31; --text-muted: #7d7a82;
-    --primary: #ad4a41; --primary-light: #c2645b; --primary-bg: #f6e9e7;
-    --border: #e4e1de; --danger: #bb5048; --warning: #b97a37; --success: #4c8a5c;
-    --radius: 8px; --shadow: 0 1px 3px rgba(0,0,0,.07);
+    /* Brand */
+    --primary: #e11d22; --primary-light: #f03a3f; --primary-bg: #fdeceb;
+    --danger: #cf1a20; --warning: #b97a37; --success: #4c8a5c;
+    /* Surfaces */
+    --bg: #22221f; --surface: #fff; --surface-2: #ecebe8;
+    --chrome: #f1f0ee; --chrome-border: #dcdad5;
+    /* Ink — these four are the stage's; light blocks override them */
+    --text: #eae8e3; --text-muted: #a5a19a; --border: #4d4d46; --accent-ink: #f4736a;
+    --radius: 3px; --shadow: 0 1px 2px rgba(0,0,0,.16);
+}
+/* Every light block restates the ink, so its contents read dark. `color` has to
+   be reapplied here too: redeclaring --text only changes what var(--text)
+   resolves to inside the block, while `color` itself is still the inherited
+   computed value from body — the stage's light ink. */
+.header, .card, .board-tile, .bcol, .bcard, .mlist, .tmsg, .suggest, .chip, .choice__opt {
+    --text: #1c1c1a; --text-muted: #6f6d68; --border: #e2e0dc; --accent-ink: #a8151a;
+    color: var(--text);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; font-size: 14px; }
+h1, h2, h3 { font-weight: 700; letter-spacing: -.01em; }
+h2 { font-size: 20px; }
 
 /* Header */
-.header { display: flex; align-items: center; gap: 20px; padding: 10px 20px; background: var(--primary); color: #fff; position: sticky; top: 0; z-index: 100; }
-.header__logo { font-size: 18px; font-weight: 700; white-space: nowrap; }
-.header__sub { font-weight: 300; opacity: .7; }
-.header__nav { display: flex; gap: 4px; flex: 1; }
-.header__nav a { color: rgba(255,255,255,.8); text-decoration: none; padding: 6px 12px; border-radius: var(--radius); font-size: 13px; }
-.header__nav a:hover, .header__nav a.active { background: rgba(255,255,255,.15); color: #fff; }
-.header__user { font-size: 13px; white-space: nowrap; }
-.header__user a { color: rgba(255,255,255,.7); margin-left: 10px; cursor: pointer; }
+.header { display: flex; align-items: center; gap: 20px; padding: 8px 20px; background: var(--chrome); color: var(--text);
+          border-bottom: 1px solid var(--chrome-border); position: sticky; top: 0; z-index: 100; }
+/* The wordmark keeps the shop's bright red: at 19px/800 it is WCAG "large
+   text", so 4.2:1 on the chrome is enough — the "КП" beside it is not, and
+   takes the muted ink (4.5:1) instead of a dimmed --text. */
+.header__logo { display: flex; align-items: center; gap: 8px; font-size: 19px; font-weight: 800;
+                letter-spacing: .01em; color: var(--primary); white-space: nowrap; }
+.header__mark { width: 26px; height: 17px; flex: none; fill: currentColor; }
+.header__sub { color: var(--text-muted); font-weight: 500; font-size: 15px; }
+.header__nav { display: flex; gap: 2px; flex: 1; }
+/* Nav reads as the shop's tab strip: quiet until active, then red with a red edge */
+.header__nav a { color: var(--text-muted); text-decoration: none; padding: 8px 12px; font-size: 13px;
+                 border-bottom: 2px solid transparent; }
+.header__nav a:hover { color: var(--text); }
+.header__nav a.active { color: var(--accent-ink); border-bottom-color: var(--primary); font-weight: 600; }
+.header__user { font-size: 13px; white-space: nowrap; color: var(--text-muted); }
+.header__user a { color: var(--text-muted); margin-left: 10px; cursor: pointer; }
+.header__user a:hover { color: var(--accent-ink); }
 
 /* Layout */
 .main { max-width: 1100px; margin: 20px auto; padding: 0 20px; }
@@ -56,7 +87,7 @@ body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: v
 .btn--primary { background: var(--primary); color: #fff; }
 .btn--primary:hover { background: var(--primary-light); }
 .btn--outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
-.btn--outline:hover { border-color: var(--primary); color: var(--primary); }
+.btn--outline:hover { border-color: var(--primary); color: var(--accent-ink); }
 .btn--danger { background: var(--danger); color: #fff; }
 .btn--sm { padding: 4px 10px; font-size: 12px; }
 .btn--block { width: 100%; justify-content: center; }
@@ -74,10 +105,10 @@ textarea { resize: vertical; min-height: 80px; }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-bg); }
 
 /* Badges */
-.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600; }
 .badge--new { background: #eceaea; color: #57545a; }
 .badge--draft { background: #fbf0e2; color: var(--warning); }
-.badge--sent { background: var(--primary-bg); color: var(--primary); }
+.badge--sent { background: var(--primary-bg); color: var(--accent-ink); }
 .badge--confirmed { background: #e8f5e9; color: var(--success); }
 .badge--warning { background: #fff3e0; color: var(--warning); }
 
@@ -103,7 +134,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 .toast { padding: 10px 16px; border-radius: var(--radius); color: #fff; font-size: 13px; animation: slideIn .3s; max-width: 350px; }
 .toast--success { background: var(--success); }
 .toast--error { background: var(--danger); }
-.toast--info { background: #4b4f56; }
+.toast--info { background: #2b2b27; }
 @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
 
 /* Login */
@@ -133,7 +164,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .badge--order { background: var(--primary-bg); color: var(--danger); }
 .badge--kp { background: #eceaea; color: #57545a; }
 /* Triage categories that never become a request — muted, they need no attention */
-.badge--muted { background: var(--bg); color: var(--text-muted); }
+.badge--muted { background: var(--surface-2); color: var(--text-muted); }
 .badge--unanswered { margin-left: 6px; }
 .badge--warn { background: #fbf0e2; color: var(--warning); }
 .badge--critical { background: var(--primary-bg); color: var(--danger); }
@@ -167,8 +198,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .chat__composer .btn { white-space: nowrap; }
 
 /* Attachment chips */
-.chip { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 12px; font-size: 12px; text-decoration: none; color: var(--text); background: #fff; }
-.chip:hover { border-color: var(--primary); color: var(--primary); }
+.chip { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 2px; font-size: 12px; text-decoration: none; color: var(--text); background: #fff; }
+.chip:hover { border-color: var(--primary); color: var(--accent-ink); }
 
 /* Invoice block */
 .invoice { padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -198,8 +229,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Tab strip of the admin console */
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
 .tab { padding: 8px 14px; font-size: 13px; text-decoration: none; color: var(--text-muted); border-bottom: 2px solid transparent; }
-.tab:hover { color: var(--primary); }
-.tab--active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.tab:hover { color: var(--accent-ink); }
+.tab--active { color: var(--accent-ink); border-bottom-color: var(--primary); font-weight: 600; }
 
 /* One setting row: label + source, the field, the reset button */
 .setting { display: grid; grid-template-columns: 1fr 320px auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -209,7 +240,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .setting__actions { min-width: 90px; text-align: right; }
 
 /* Counter next to a nav item */
-.pill { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: rgba(255,255,255,.25); font-size: 11px; text-align: center; }
+.pill { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 2px; background: rgba(0,0,0,.08); font-size: 11px; text-align: center; }
 .pill--danger { background: var(--danger); color: #fff; }
 
 /* A card that reports a problem */
@@ -269,13 +300,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .mrow__main { min-width: 0; }
 .mrow__subject { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 /* «Тема · 4» — how many letters the conversation already holds */
-.mrow__count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px;
+.mrow__count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 2px;
                background: var(--border); color: var(--text-muted); font-size: 11px; text-align: center; font-weight: 600; }
 .mrow__meta { color: var(--text-muted); margin-top: 1px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.mrow__meta a { color: var(--primary); }
+.mrow__meta a { color: var(--accent-ink); }
 .mrow__preview { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 .mrow__date { color: var(--text-muted); white-space: nowrap; }
-.chip--box { padding: 0 6px; font-size: 11px; background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary); }
+.chip--box { padding: 0 6px; font-size: 11px; background: var(--primary-bg); border-color: var(--primary-bg); color: var(--accent-ink); }
 
 /* One conversation, every mailbox, oldest first */
 .thread { display: flex; flex-direction: column; gap: 8px; }
@@ -313,26 +344,26 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .board-tile:hover { box-shadow: 0 2px 8px rgba(0,0,0,.15); }
 .board-tile__name { font-weight: 600; margin-bottom: 4px; }
 .board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 12px; }
-.bcol { flex: 0 0 270px; background: #ebecf0; border-radius: 8px; padding: 8px; border-top: 3px solid var(--col); }
+.bcol { flex: 0 0 270px; background: #e6e4e0; border-radius: var(--radius); padding: 8px; border-top: 3px solid var(--col); }
 .bcol__head { display: flex; align-items: center; gap: 6px; padding: 2px 4px 8px; }
 .bcol__title { font-weight: 600; font-size: 13px; cursor: pointer; flex: 1; }
 .bcol__count { font-size: 11px; color: var(--text-muted); }
 .bcol__x { border: none; background: none; cursor: pointer; color: var(--text-muted); font-size: 15px; line-height: 1; }
 .bcol__x:hover { color: var(--danger); }
-.bcol__cards { display: flex; flex-direction: column; gap: 6px; min-height: 24px; border-radius: 6px; }
-.bcol__cards--over { background: #dfe1e6; outline: 2px dashed var(--primary); outline-offset: 2px; }
+.bcol__cards { display: flex; flex-direction: column; gap: 6px; min-height: 24px; border-radius: var(--radius); }
+.bcol__cards--over { background: #d8d5cf; outline: 2px dashed var(--primary); outline-offset: 2px; }
 .bcol__add { width: 100%; margin-top: 6px; padding: 6px; border: none; background: none; cursor: pointer;
-             color: var(--text-muted); font-size: 12px; text-align: left; border-radius: 6px; }
-.bcol__add:hover { background: #dfe1e6; color: var(--text); }
-.bcard { background: #fff; border-radius: 6px; box-shadow: 0 1px 2px rgba(9,30,66,.25); padding: 8px 10px; cursor: grab; }
-.bcard:hover { background: #f7f8f9; }
+             color: var(--text-muted); font-size: 12px; text-align: left; border-radius: var(--radius); }
+.bcol__add:hover { background: #d8d5cf; color: var(--text); }
+.bcard { background: #fff; border-radius: var(--radius); box-shadow: 0 1px 2px rgba(0,0,0,.18); padding: 8px 10px; cursor: grab; }
+.bcard:hover { background: #faf9f7; }
 .bcard--dragging { opacity: .5; cursor: grabbing; }
 .bcard__title { font-size: 13px; font-weight: 500; margin-bottom: 4px; word-break: break-word; }
 .bcard__note { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
 .bcard__meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; }
 .bcard__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 11px; }
 .bcard__actions a { color: var(--text-muted); cursor: pointer; text-decoration: none; }
-.bcard__actions a:hover { color: var(--primary); }
+.bcard__actions a:hover { color: var(--accent-ink); }
 .note--swap { background: #fdf3e3; border: 1px solid #f0dcbb; color: var(--warning);
               border-radius: var(--radius); padding: 6px 8px; margin: 6px 0; font-size: 12px; }
 /* Module 011 — a card is a company, and the board says out loud who is waiting.
@@ -340,7 +371,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    weight, dimmed — the same language the conversation list uses. */
 .bcard--unanswered { border-left: 3px solid var(--danger); }
 .bcard--unanswered .bcard__title { font-weight: 700; }
-.bcard--hot { background: #fffdf3; box-shadow: 0 1px 3px rgba(187,80,72,.35); }
+.bcard--hot { background: #fffdf3; box-shadow: 0 1px 3px rgba(207,26,32,.35); }
 .bcard--answered { border-left: 3px solid transparent; }
 .bcard--answered .bcard__title, .bcard--answered .bcard__subject { color: var(--text-muted); font-weight: 500; }
 .bcard--answered .bcard__meta { opacity: .75; }
@@ -349,9 +380,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bcard__subject { font-size: 12px; color: var(--text-muted); margin-bottom: 4px;
                   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .bcol__kind { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted);
-              border: 1px solid var(--border); border-radius: 8px; padding: 0 5px; background: #fff; }
+              border: 1px solid var(--border); border-radius: 2px; padding: 0 5px; background: #fff; }
 .chip--work { background: #fdf3e3; border-color: #f0dcbb; color: var(--warning); }
-.chip--new { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary); }
+.chip--new { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--accent-ink); }
 .chip--kp { background: #eaf4ec; border-color: #cfe4d4; color: var(--success); }
 
 /* The company card: conversations open in place, so the row and its letters
@@ -395,9 +426,20 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
         padding: 11px 12px;
     }
 
-    .header { padding: 10px 12px; }
-    .header__nav { overflow-x: visible; flex-wrap: wrap; }
-    .header__nav a { padding: 9px 12px; }
+    /* The shop puts its sections in a light bar pinned to the bottom of the
+       phone; the same nav links, moved there, with the top bar left to the
+       logo and the user. Content gets the bar's height back as padding. */
+    body { padding-bottom: 56px; }
+    .header { padding: 8px 12px; }
+    .header__nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 110; order: 0; width: auto;
+                   background: var(--chrome); border-top: 1px solid var(--chrome-border);
+                   flex-wrap: nowrap; overflow-x: auto; gap: 0;
+                   padding: 0 4px env(safe-area-inset-bottom, 0); }
+    .header__nav a { flex: 1 0 auto; min-width: 64px; text-align: center; font-size: 11px;
+                     padding: 9px 8px; border-bottom: none; border-top: 2px solid transparent; }
+    .header__nav a.active { border-top-color: var(--primary); }
+    .header__user { margin-left: auto; }
+    .toast-container { bottom: 68px; top: auto; }
 
     /* A table never forces the page to scroll — it scrolls inside its own box */
     .table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
