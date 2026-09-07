@@ -60,8 +60,13 @@ try {
             $summary = MailThreads::summary($key);
             if (!$summary) jsonError('Цепочка не найдена', 404);
             $messages = MailThreads::messages($key);
-            // Plain text only — no remote content and no scripts from a letter
-            foreach ($messages as &$m) unset($m['body_html']);
+            // HTML is sanitized (allowlist, no scripts, no remote stylesheets) and
+            // rendered client-side inside a sandboxed iframe — plain text stays the
+            // fallback for a letter that has no HTML part at all
+            foreach ($messages as &$m) {
+                $safe = MailArchive::sanitizeHtml((string)($m['body_html'] ?? ''));
+                if ($safe !== '') $m['body_html'] = $safe; else unset($m['body_html']);
+            }
             unset($m);
             MailThreads::markRead($key);
             jsonData([
@@ -77,7 +82,9 @@ try {
         case 'get':
             $msg = MailArchive::get((int)($_GET['id'] ?? 0));
             if (!$msg) jsonError('Not found', 404);
-            unset($msg['body_html'], $msg['headers']);   // plain text only — no remote content, no scripts, no raw headers
+            unset($msg['headers']);   // raw headers never need to reach the browser
+            $safeHtml = MailArchive::sanitizeHtml((string)($msg['body_html'] ?? ''));
+            if ($safeHtml !== '') $msg['body_html'] = $safeHtml; else unset($msg['body_html']);
             MailArchive::markRead((int)$msg['id']);
             jsonData($msg);
 
@@ -265,8 +272,19 @@ try {
             if (!$a) jsonError('Not found', 404);
             $path = ROOT . '/' . $a['path'];
             if (!is_file($path)) jsonError('File missing on disk', 404);
-            header('Content-Type: ' . ($a['mime'] ?: 'application/octet-stream'));
-            header('Content-Disposition: ' . Attachments::contentDisposition($a['filename']));
+            $mime = (string)($a['mime'] ?: 'application/octet-stream');
+            // Item 5: inline preview without a download. An attachment's MIME
+            // comes from the letter itself (attacker-controlled) — a file
+            // claiming text/html or image/svg+xml served inline would execute
+            // in our own origin, so «inline» is honoured only for types a
+            // browser can merely display, never run. DOCX/XLSX preview reads
+            // the bytes through fetch() client-side and never navigates here,
+            // so it needs no inline disposition at all.
+            $inlineSafe = in_array($mime, ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'], true);
+            $inline = $inlineSafe && !empty($_GET['inline']);
+            header('Content-Type: ' . $mime);
+            header('Content-Disposition: ' . Attachments::contentDisposition($a['filename'], $inline));
+            header('X-Content-Type-Options: nosniff');
             header('Content-Length: ' . filesize($path));
             readfile($path);
             exit;

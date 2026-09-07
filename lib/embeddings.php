@@ -306,14 +306,14 @@ final class Embeddings {
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_USERAGENT      => 'AtlantArmourKP/1.0',
         ]);
-        // The same filtered network the model calls go through (module 008)
-        $proxy = trim((string)Settings::get('LLM_PROXY', ''));
-        if ($proxy !== '') {
-            curl_setopt($ch, CURLOPT_PROXY, $proxy);
+        // The same proxy the model calls use, gated by the same per-provider
+        // toggle (item 6) — embeddings always talk to Yandex Cloud
+        $p = LLM::proxyFor('yandex');
+        if ($p !== null) {
+            curl_setopt($ch, CURLOPT_PROXY, $p['proxy']);
             curl_setopt($ch, CURLOPT_HTTPPROXYTUNNEL, true);
-            if (str_starts_with($proxy, 'socks5')) curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
-            $auth = trim((string)Settings::get('LLM_PROXY_AUTH', ''));
-            if ($auth !== '') curl_setopt($ch, CURLOPT_PROXYUSERPWD, $auth);
+            if (str_starts_with($p['proxy'], 'socks5')) curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
+            if ($p['auth'] !== '') curl_setopt($ch, CURLOPT_PROXYUSERPWD, $p['auth']);
         }
         return $ch;
     }

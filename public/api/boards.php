@@ -14,16 +14,10 @@ $input   = in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT'], true) ? getInpu
 try {
     switch ($action) {
 
-        case 'list': {
-            $boards = Boards::all();
-            // An account with no boards yet gets the usual КП pipeline, so the
-            // page is never an empty screen with a single button on it
-            if (!$boards) {
-                Boards::createBoard('Работа с письмами');
-                $boards = Boards::all();
-            }
-            jsonData(['items' => $boards]);
-        }
+        case 'list':
+            // Boards::all() creates the one board itself when there is none yet
+            // (item 2 — «Письма» always has exactly one board to open)
+            jsonData(['items' => Boards::all()]);
 
         case 'get': {
             $board = Boards::get((int)($_GET['id'] ?? 0));

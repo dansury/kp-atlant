@@ -299,10 +299,11 @@ class Attachments {
      * browser actually reads a non-ASCII name from; the quoted `filename=` next
      * to it is an ASCII fallback for anything older.
      */
-    public static function contentDisposition(string $filename): string {
+    public static function contentDisposition(string $filename, bool $inline = false): string {
         $ascii = preg_replace('/[^\x20-\x7E]/', '_', $filename) ?? 'attachment';
         $ascii = str_replace('"', "'", $ascii);
-        return 'attachment; filename="' . $ascii . '"; filename*=UTF-8\'\'' . rawurlencode($filename);
+        $kind = $inline ? 'inline' : 'attachment';
+        return $kind . '; filename="' . $ascii . '"; filename*=UTF-8\'\'' . rawurlencode($filename);
     }
 
     private static function sanitizeFilename(string $name): string {

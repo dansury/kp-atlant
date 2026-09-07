@@ -401,6 +401,109 @@ final class MailArchive {
         return utf8Text($s);
     }
 
+    /**
+     * Sanitize an HTML email body for display (item 4 of the mobile/UX pass).
+     *
+     * An email body is attacker-controlled content: this strips every script
+     * vector down to an explicit tag/attribute allowlist. It is still rendered
+     * client-side inside a sandboxed `<iframe>` with no `allow-scripts` — so a
+     * bug here is defense in depth, not the only guard, but it keeps the output
+     * free of dead weight (no remote stylesheets, no forms, no event handlers).
+     */
+    public static function sanitizeHtml(string $html): string {
+        $html = trim($html);
+        if ($html === '') return '';
+
+        $allowedTags = ['a', 'b', 'strong', 'i', 'em', 'u', 's', 'p', 'br', 'div', 'span',
+            'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'ul', 'ol', 'li',
+            'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'img', 'blockquote', 'pre', 'code',
+            'hr', 'font', 'center', 'small', 'sub', 'sup', 'caption', 'col', 'colgroup'];
+        $deniedTags = ['script', 'style', 'iframe', 'frame', 'frameset', 'object', 'embed',
+            'form', 'input', 'button', 'textarea', 'select', 'option', 'link', 'base',
+            'meta', 'applet', 'audio', 'video', 'svg', 'math', 'noscript', 'template'];
+        $globalAttrs = ['style', 'align', 'valign', 'width', 'height', 'colspan', 'rowspan',
+            'border', 'cellpadding', 'cellspacing', 'bgcolor', 'color', 'class'];
+        $tagAttrs = [
+            'a'   => ['href', 'title', 'name'],
+            'img' => ['src', 'alt', 'title'],
+            'td'  => ['colspan', 'rowspan'],
+            'th'  => ['colspan', 'rowspan'],
+        ];
+
+        libxml_use_internal_errors(true);
+        $doc = new \DOMDocument();
+        // A stray "<?xml encoding" PI keeps DOMDocument from guessing a
+        // different charset and mangling multi-byte (Cyrillic) text
+        $doc->loadHTML(
+            '<?xml encoding="UTF-8"?><div id="atlant-root">' . $html . '</div>',
+            LIBXML_NOERROR | LIBXML_NOWARNING | LIBXML_NONET
+        );
+        libxml_clear_errors();
+
+        $root = $doc->getElementById('atlant-root');
+        if (!$root) return '';
+
+        self::sanitizeNode($root, $allowedTags, $deniedTags, $globalAttrs, $tagAttrs);
+
+        $out = '';
+        foreach (iterator_to_array($root->childNodes) as $child) {
+            $out .= $doc->saveHTML($child);
+        }
+        return trim($out);
+    }
+
+    /** Recursive allowlist walk used by sanitizeHtml(). */
+    private static function sanitizeNode(\DOMNode $node, array $allowedTags, array $deniedTags,
+                                          array $globalAttrs, array $tagAttrs): void {
+        foreach (iterator_to_array($node->childNodes) as $child) {
+            if ($child instanceof \DOMComment || $child instanceof \DOMProcessingInstruction) {
+                $node->removeChild($child);
+                continue;
+            }
+            if (!$child instanceof \DOMElement) continue; // text nodes are always safe as-is
+
+            $tag = strtolower($child->tagName);
+            if (in_array($tag, $deniedTags, true)) {
+                $node->removeChild($child);
+                continue;
+            }
+            if (!in_array($tag, $allowedTags, true)) {
+                // Unknown tag — sanitize whatever it hides *first* (its children
+                // are about to be promoted to this level and must not carry a
+                // live <script>/on*= of their own out with them), then keep
+                // just the cleaned content and drop the wrapper itself
+                self::sanitizeNode($child, $allowedTags, $deniedTags, $globalAttrs, $tagAttrs);
+                while ($child->firstChild) $node->insertBefore($child->firstChild, $child);
+                $node->removeChild($child);
+                continue;
+            }
+
+            $allowed = array_merge($tagAttrs[$tag] ?? [], $globalAttrs);
+            foreach (iterator_to_array($child->attributes ?? []) as $attr) {
+                $name = strtolower($attr->name);
+                if (str_starts_with($name, 'on') || !in_array($name, $allowed, true)) {
+                    $child->removeAttribute($attr->name);
+                    continue;
+                }
+                $value = trim($attr->value);
+                if (in_array($name, ['href', 'src'], true)) {
+                    $safe = (bool)preg_match('#^(https?:|mailto:)#i', $value)
+                        || ($name === 'src' && preg_match('#^data:image/(png|jpe?g|gif|webp);base64,#i', $value));
+                    if (!$safe) { $child->removeAttribute($attr->name); continue; }
+                }
+                if ($name === 'style' && preg_match('/expression\s*\(|javascript:|-moz-binding|behaviou?r\s*:|@import/i', $value)) {
+                    $child->removeAttribute('style');
+                }
+            }
+            if ($tag === 'a') {
+                $child->setAttribute('target', '_blank');
+                $child->setAttribute('rel', 'noopener noreferrer nofollow');
+            }
+
+            self::sanitizeNode($child, $allowedTags, $deniedTags, $globalAttrs, $tagAttrs);
+        }
+    }
+
     private static function exists(int $mailboxId, string $folder, int $uid, string $messageId, string $direction = 'in'): bool {
         if ($uid > 0 && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND folder=? AND uid=?", [$mailboxId, $folder, $uid])) return true;
         // The same message can arrive twice (INBOX + Sent sync, or a re-created mailbox)
