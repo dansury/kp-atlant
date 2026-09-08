@@ -904,6 +904,38 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '13')");
         $current = 13;
     }
+
+    // v14 — «Удалить письмо». The row leaves the archive for good, so a tombstone
+    // remembers which UID / Message-ID was thrown away: without it the next sync
+    // would happily download the same letter again the minute it is deleted.
+    if ($current < 14) {
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS mail_deleted (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mailbox_id INTEGER,
+            folder TEXT NOT NULL DEFAULT '',
+            uid INTEGER NOT NULL DEFAULT 0,
+            message_id TEXT,
+            direction TEXT,
+            subject TEXT,
+            from_email TEXT,
+            date_at TEXT,
+            manager_id INTEGER REFERENCES managers(id),
+            server_state TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_mail_deleted_uid ON mail_deleted(mailbox_id, folder, uid);
+        CREATE INDEX IF NOT EXISTS idx_mail_deleted_mid ON mail_deleted(mailbox_id, message_id);
+SQL);
+
+        // Where a notification leads. Until now the target was guessed from
+        // ref_type, so a new letter could only open the request built from it —
+        // a push about mail now opens the letter itself.
+        Db::ensureColumn('notifications', 'url', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '14')");
+        $current = 14;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
@@ -1175,7 +1207,9 @@ function jsonOk(array $data = []): never {
 }
 
 function jsonError(string $msg, int $code = 400): never {
-    if (class_exists('Logger')) {
+    // A 401 is an open tab whose session ran out — ordinary traffic, not an
+    // incident. Logging it buried the journal under hundreds of «Unauthorized».
+    if (class_exists('Logger') && $code !== 401) {
         Logger::log($code >= 500 ? 'error' : 'warning', 'api', $msg, ['code' => $code]);
     }
     http_response_code($code);

@@ -232,7 +232,10 @@ final class MailSync {
 
         $orgName = $parsed['org_name'] ?? null;
         $title = Triage::label($category) . ($orgName ? " от $orgName" : ' от ' . $row['from_email']);
-        Notifier::notify('new_request', $title, $row['subject'], 'request', $requestId);
+        // The tap lands on the letter itself — that is what «пришло новое письмо»
+        // means; the request it created is one link away inside.
+        Notifier::notify('new_request', $title, $row['subject'], 'request', $requestId, null,
+                         '/#mail/msg/' . (int)$row['id']);
         return true;
     }
 
@@ -316,6 +319,124 @@ final class MailSync {
             ['mail_message_id' => $mailMessageId, 'moved' => $moved, 'move_error' => $moveError]);
 
         return ['moved' => $moved, 'move_error' => $moveError];
+    }
+
+    // ---- Delete ----
+
+    /**
+     * «Удалить письмо». Deleting has to mean the same thing on both sides, or it
+     * means nothing: the letter goes to the mailbox's own «Корзина» on the server
+     * and its row leaves the archive here. A tombstone keeps the UID, so the next
+     * sync does not cheerfully download the letter back into the panel.
+     *
+     * A conversation card left with no letters at all is removed from the board
+     * too — an empty card is only a dead link.
+     */
+    public static function deleteMessage(int $mailMessageId, ?int $managerId = null): array {
+        $row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$mailMessageId]);
+        if (!$row) throw new RuntimeException('Письмо не найдено');
+
+        [$serverState, $serverError] = self::removeFromServer($row);
+
+        Db::insert('mail_deleted', [
+            'mailbox_id'   => $row['mailbox_id'] !== null ? (int)$row['mailbox_id'] : null,
+            'folder'       => (string)($row['folder'] ?? ''),
+            'uid'          => (int)($row['uid'] ?? 0),
+            'message_id'   => $row['message_id'] ?: null,
+            'direction'    => $row['direction'] ?? null,
+            'subject'      => $row['subject'] ?? null,
+            'from_email'   => $row['from_email'] ?? null,
+            'date_at'      => $row['date_at'] ?? null,
+            'manager_id'   => $managerId,
+            'server_state' => $serverState,
+        ]);
+
+        self::dropAttachments($mailMessageId);
+        // The cards go first: `mail_message_id` is ON DELETE SET NULL, so once the
+        // row is gone there is nothing left to recognise the card by. A card built
+        // around this one letter goes with it; a company card only loses the
+        // pointer — the company itself has not been deleted.
+        Db::q("DELETE FROM board_cards WHERE mail_message_id=? AND counterparty_id IS NULL", [$mailMessageId]);
+        Db::q("DELETE FROM mail_messages WHERE id=?", [$mailMessageId]);
+
+        $threadKey = (string)($row['thread_key'] ?? '');
+        $threadEmpty = $threadKey !== '' && !Db::val("SELECT 1 FROM mail_messages WHERE thread_key=? LIMIT 1", [$threadKey]);
+        if ($threadEmpty) Db::q("DELETE FROM board_cards WHERE thread_key=? AND counterparty_id IS NULL", [$threadKey]);
+
+        Logger::info('mail', "Письмо #$mailMessageId удалено" . ($serverState === 'trashed' ? ' и перемещено в корзину на сервере' : ''),
+            ['mail_message_id' => $mailMessageId, 'manager_id' => $managerId,
+             'server_state' => $serverState, 'server_error' => $serverError]);
+
+        return [
+            'deleted'      => 1,
+            'thread_key'   => $threadKey ?: null,
+            'thread_empty' => $threadEmpty,
+            'server_state' => $serverState,
+            'server_error' => $serverError,
+        ];
+    }
+
+    /** The whole conversation at once — «удалить переписку» in the thread view. */
+    public static function deleteThread(string $threadKey, ?int $managerId = null): array {
+        $ids = array_column(Db::all("SELECT id FROM mail_messages WHERE thread_key=? ORDER BY id", [$threadKey]), 'id');
+        if (!$ids) throw new RuntimeException('Цепочка не найдена');
+
+        $deleted = 0;
+        $errors = [];
+        foreach ($ids as $id) {
+            try {
+                $res = self::deleteMessage((int)$id, $managerId);
+                $deleted++;
+                if (!empty($res['server_error'])) $errors[] = (string)$res['server_error'];
+            } catch (Throwable $e) {
+                $errors[] = $e->getMessage();
+                Logger::exception('mail', $e, ['mail_message_id' => $id, 'stage' => 'delete_thread']);
+            }
+        }
+        Db::q("DELETE FROM board_cards WHERE thread_key=? AND counterparty_id IS NULL", [$threadKey]);
+
+        return ['deleted' => $deleted, 'server_error' => $errors ? implode('; ', array_unique($errors)) : null];
+    }
+
+    /**
+     * Put the letter in the server's Trash. Falls back to the IMAP \Deleted flag
+     * when the account has no such folder, and stays best-effort throughout: a
+     * mailbox that is unreachable right now must not block the deletion here.
+     * @return array{0:string,1:?string} [state, error]
+     */
+    private static function removeFromServer(array $row): array {
+        if ((int)($row['uid'] ?? 0) <= 0 || empty($row['mailbox_id'])) return ['local', null];
+        if (!EmailReader::available()) return ['local', 'Расширение PHP imap не установлено на сервере'];
+
+        $box = Mailboxes::get((int)$row['mailbox_id']);
+        if (!$box) return ['local', null];
+
+        $reader = null;
+        try {
+            $reader = new EmailReader(Mailboxes::cfg($box));
+            $reader->connect((string)($row['folder'] ?: 'INBOX'));
+            $trash = $reader->findTrashFolder();
+            if ($trash !== null && $trash !== (string)($row['folder'] ?: 'INBOX')) {
+                if ($reader->moveToFolder((int)$row['uid'], $trash)) return ['trashed', null];
+            }
+            // No Trash on the account (or the move was refused) — expunge it instead
+            if ($reader->deleteUid((int)$row['uid'])) return ['expunged', null];
+            return ['local', 'Почтовый сервер не удалил письмо — оно осталось в ящике'];
+        } catch (Throwable $e) {
+            Logger::exception('mail', $e, ['mail_message_id' => $row['id'], 'stage' => 'delete']);
+            return ['local', $e->getMessage()];
+        } finally {
+            if ($reader) { try { $reader->close(); } catch (Throwable $e) { /* already gone */ } }
+        }
+    }
+
+    /** Files of a deleted letter go with it — nothing else points at them. */
+    private static function dropAttachments(int $mailMessageId): void {
+        foreach (Db::all("SELECT id, path FROM attachments WHERE mail_message_id=?", [$mailMessageId]) as $a) {
+            $path = ROOT . '/' . ltrim((string)$a['path'], '/');
+            if ($a['path'] && is_file($path)) @unlink($path);
+            Db::q("DELETE FROM attachments WHERE id=?", [$a['id']]);
+        }
     }
 
     // ---- Full archive download (FR-053) ----

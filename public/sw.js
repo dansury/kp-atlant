@@ -4,7 +4,7 @@
    API responses are always fetched fresh and never cached. Scope = the
    directory this file is served from, so a subdirectory mount works too. */
 
-const VERSION = 'atlant-kp-shell-v1';
+const VERSION = 'atlant-kp-shell-v2';
 const BASE = new URL('.', self.location).pathname.replace(/\/+$/, '');
 const SHELL = [
   BASE + '/',
@@ -62,13 +62,23 @@ self.addEventListener('push', (e) => {
   }));
 });
 
+// Tapping a notification must land on the thing it is about — the new letter,
+// not just «the app». An already-open panel is steered there: navigate() first,
+// and a postMessage as the fallback, because a window this worker does not
+// control refuses navigate() outright.
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const target = (e.notification.data && e.notification.data.url) || (BASE + '/');
   e.waitUntil((async () => {
     const all = await clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const c of all) {
-      if ('focus' in c) { try { await c.navigate(target); } catch (err) { /* */ } return c.focus(); }
+    const open = all.filter((c) => new URL(c.url).origin === self.location.origin);
+    if (open.length) {
+      const c = open.find((w) => w.focused) || open[0];
+      try { await c.navigate(target); } catch (err) {
+        try { c.postMessage({ type: 'navigate', url: target }); } catch (err2) { /* nothing else to try */ }
+      }
+      if ('focus' in c) return c.focus();
+      return;
     }
     if (clients.openWindow) return clients.openWindow(target);
   })());

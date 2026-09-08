@@ -505,6 +505,9 @@ final class MailArchive {
     }
 
     private static function exists(int $mailboxId, string $folder, int $uid, string $messageId, string $direction = 'in'): bool {
+        // A letter the manager deleted must stay deleted: the row is gone, so the
+        // tombstone is the only thing standing between it and the next sync
+        if (self::wasDeleted($mailboxId, $folder, $uid, $messageId)) return true;
         if ($uid > 0 && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND folder=? AND uid=?", [$mailboxId, $folder, $uid])) return true;
         // The same message can arrive twice (INBOX + Sent sync, or a re-created mailbox)
         if ($messageId !== '' && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND folder=?", [$mailboxId, $messageId, $folder])) return true;
@@ -513,6 +516,15 @@ final class MailArchive {
         // must not show the same answer twice in the thread
         if ($direction === 'out' && $messageId !== ''
             && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND direction='out'", [$mailboxId, $messageId])) return true;
+        return false;
+    }
+
+    /** Was this letter thrown away by hand? (module 004, «Удалить») */
+    public static function wasDeleted(int $mailboxId, string $folder, int $uid, string $messageId): bool {
+        if ($uid > 0 && Db::val("SELECT 1 FROM mail_deleted WHERE mailbox_id=? AND folder=? AND uid=?",
+                                [$mailboxId, $folder, $uid])) return true;
+        if ($messageId !== '' && Db::val("SELECT 1 FROM mail_deleted WHERE mailbox_id=? AND message_id=?",
+                                         [$mailboxId, $messageId])) return true;
         return false;
     }
 
