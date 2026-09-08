@@ -101,12 +101,15 @@ final class Push {
             ? [$managerId]
             : array_column(Db::all("SELECT id FROM managers"), 'id');
 
+        // The tag is per-target, not per-kind: two new letters have to be two
+        // notifications, or the second one silently replaces the first and the
+        // tap opens the wrong letter.
         $payload = (string)json_encode([
             'title' => $title,
             'body'  => mb_substr($body, 0, 300),
             'url'   => self::appUrl($url),
             'kind'  => $kind,
-            'tag'   => $kind,
+            'tag'   => $kind . ':' . substr(md5($url), 0, 12),
         ], JSON_UNESCAPED_UNICODE);
 
         $sent = 0;

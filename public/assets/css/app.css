@@ -290,7 +290,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .card--flush { padding: 0; overflow: hidden; }
 .mlist { display: flex; flex-direction: column; }
 .mlist__empty { padding: 30px; text-align: center; color: var(--text-muted); }
-.mrow { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; gap: 8px;
+.mrow { display: grid; grid-template-columns: 38px minmax(0,1fr) auto auto; gap: 8px;
         padding: 8px 16px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12px; }
 .mrow:hover { background: var(--primary-bg); }
 .mrow--unread { background: #fbfbf5; }
@@ -306,6 +306,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .mrow__meta a { color: var(--accent-ink); }
 .mrow__preview { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 .mrow__date { color: var(--text-muted); white-space: nowrap; }
+/* Delete stays out of the way until the row is hovered — one stray tap must not
+   throw a conversation away, so it only appears where it is being aimed at */
+.mrow__del { border: 0; background: none; cursor: pointer; padding: 0 2px; font-size: 13px;
+             color: var(--text-muted); opacity: 0; align-self: start; line-height: 1.4; }
+.mrow:hover .mrow__del, .mrow__del:focus { opacity: 1; }
+.mrow__del:hover { color: var(--danger); }
+@media (hover: none) { .mrow__del { opacity: .55; } }
 .chip--box { padding: 0 6px; font-size: 11px; background: var(--primary-bg); border-color: var(--primary-bg); color: var(--accent-ink); }
 
 /* One conversation, every mailbox, oldest first */

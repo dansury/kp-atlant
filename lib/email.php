@@ -234,6 +234,49 @@ class EmailReader {
     }
 
     /**
+     * The account's Trash folder — the same matching game as Junk and Sent:
+     * Yandex says «Удалённые», Gmail «[Gmail]/Корзина», cPanel «INBOX.Trash».
+     */
+    public function findTrashFolder(string $configured = ''): ?string {
+        $folders = $this->folders();
+        if (!$folders) return $configured !== '' ? $configured : null;
+
+        $eq = fn(string $a, string $b) => mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+        foreach ($folders as $f) {
+            if ($configured !== '' && $eq($f, $configured)) return $f;
+        }
+
+        $known = ['Удалённые', 'Удаленные', 'Корзина', 'Trash', 'Deleted', 'Deleted Items',
+                  'Deleted Messages', '[Gmail]/Trash', '[Gmail]/Корзина', 'INBOX.Trash'];
+        foreach ($known as $name) {
+            foreach ($folders as $f) if ($eq($f, $name)) return $f;
+        }
+        foreach ($folders as $f) {
+            $leaf = mb_strtolower((string)preg_replace('#^.*[/.]#u', '', $f));
+            if (in_array($leaf, ['trash', 'корзина', 'удалённые', 'удаленные', 'deleted', 'deleted items'], true)) return $f;
+        }
+        return $configured !== '' ? $configured : null;
+    }
+
+    /** Move one message by UID into any folder. Returns false if the server refused. */
+    public function moveToFolder(int $uid, string $folder): bool {
+        $ok = @imap_mail_move($this->imap, (string)$uid, $folder, CP_UID);
+        if ($ok) @imap_expunge($this->imap);
+        return (bool)$ok;
+    }
+
+    /**
+     * Last resort when the account has no Trash folder at all: flag the message
+     * deleted and expunge it. Irreversible on the server, so it is only used
+     * when a move had nowhere to go.
+     */
+    public function deleteUid(int $uid): bool {
+        $ok = @imap_delete($this->imap, (string)$uid, FT_UID);
+        if ($ok) @imap_expunge($this->imap);
+        return (bool)$ok;
+    }
+
+    /**
      * The account's real «Отправленные» folder.
      *
      * A copy of an outgoing letter kept going nowhere because the folder written

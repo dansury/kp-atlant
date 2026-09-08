@@ -74,6 +74,31 @@ board — «в доску» moves the existing card instead.
 Dropping a card sends one `card_move`; if the server refuses, the board is re-read so the
 screen never disagrees with the database.
 
+## 4. Deleting a letter
+
+A mailbox nobody may clean out is not a mail program. «Удалить» has to mean the same thing on
+both sides, or it means nothing:
+
+- `MailSync::deleteMessage()` moves the letter into the mailbox's own Trash on the server
+  (`EmailReader::findTrashFolder()` matches «Удалённые» / «Корзина» / `[Gmail]/Trash` /
+  `INBOX.Trash` against what IMAP `LIST` reports, exactly as the Sent and Junk folders are
+  matched), then drops the row, its attachments and the board card built around it.
+  An account with no Trash folder at all falls back to the `\Deleted` flag plus an expunge.
+- The row is **gone**, not flagged: every list, thread, board and count stops showing it with
+  no filter to forget. What survives is a tombstone in `mail_deleted` — the UID and the
+  `Message-ID` — which `MailArchive::exists()` consults, so the next sync does not cheerfully
+  download the letter back the minute it is deleted.
+- A mail server that is unreachable, or has no imap extension on our side, never blocks the
+  deletion here: it is reported as a warning next to «Письмо удалено», never swallowed.
+- `MailSync::deleteThread()` is the same thing for the whole conversation, letter by letter,
+  and takes the thread's card off the board with it.
+- The button lives where the letter does: on the row in the list (the whole conversation),
+  in the thread header, on each letter inside a thread, and on `#mail/msg/<id>`. Every one of
+  them asks first — a conversation is not thrown away by a stray tap.
+
+Deleting a company card, a request or a КП is **not** part of this: the letter is the only
+thing removed, and the request it created keeps its own history.
+
 ## Settings added
 
 | Key | Meaning |
@@ -87,6 +112,11 @@ screen never disagrees with the database.
 - `mail_messages.thread_key`, `.thread_subject`, `.sent_state` + index on `(thread_key, date_at)`
 - `boards`, `board_columns`, `board_cards`
 
+## Schema v14 (deletion)
+
+- `mail_deleted(id, mailbox_id, folder, uid, message_id, direction, subject, from_email,
+  date_at, manager_id, server_state, created_at)` — tombstones of hand-deleted letters
+
 ## API
 
 | Action | Meaning |
@@ -94,6 +124,8 @@ screen never disagrees with the database.
 | `mail.php?action=threads` | conversation list (filters, paging, unread) |
 | `mail.php?action=thread&key=…` | every letter of one conversation + the reply context |
 | `mail.php?action=send` | accepts `thread_key`, returns `sent_state` / `sent_folder` / `warning` |
+| `mail.php?action=delete` | delete one letter (server Trash + archive row + tombstone) |
+| `mail.php?action=delete_thread` | delete the whole conversation |
 | `admin.php?action=mailbox_sent_check` | resolve and fix the IMAP «Отправленные» folder |
 | `admin.php?action=mail_rethread` | rebuild the grouping over the whole archive |
 | `boards.php?action=list\|get\|board_save\|board_delete` | boards |
