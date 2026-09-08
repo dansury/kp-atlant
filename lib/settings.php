@@ -28,7 +28,7 @@ final class Settings {
         'OPENROUTER_BASE_URL'   => ['llm', 'Адрес API OpenRouter', 'text', false, 'https://openrouter.ai/api/v1', 'Свой зеркальный адрес, если основной недоступен'],
         'YANDEX_API_KEY'        => ['llm', 'Ключ Yandex', 'secret', true, '', ''],
         'YANDEX_FOLDER_ID'      => ['llm', 'Folder ID Yandex', 'text', false, '', ''],
-        'YANDEX_MODEL'          => ['llm', 'Модель Yandex', 'model:yandex', false, 'yandexgpt/latest', ''],
+        'YANDEX_MODEL'          => ['llm', 'Модель Yandex', 'model:yandex', false, 'yandexgpt', 'Слаг без версии: /latest подставляется сам'],
 
         // --- Knowledge base (module 005): the company wiki from GitHub ---
         'KNOWLEDGE_ENABLED'      => ['knowledge', 'Использовать базу знаний', 'bool', false, 1, 'Вики компании подмешивается в промпты, когда относится к делу'],

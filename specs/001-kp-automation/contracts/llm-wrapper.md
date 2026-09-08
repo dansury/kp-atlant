@@ -16,7 +16,8 @@
 // OPENROUTER_MODEL => 'google/gemini-2.5-flash' (default)
 // YANDEX_API_KEY => '...'
 // YANDEX_FOLDER_ID => '...'
-// YANDEX_MODEL => 'yandexgpt/latest' (default)
+// YANDEX_MODEL => 'yandexgpt' (default; slug without a version —
+//                  the request is built as gpt://<folder>/<slug>/latest)
 // LLM_TIMEOUT_SEC => 30
 ```
 
