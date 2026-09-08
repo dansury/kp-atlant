@@ -37,7 +37,7 @@ return [
     'LLM_PROXY_AUTH'        => '',   // user:password, если прокси с авторизацией
     'YANDEX_API_KEY'        => '',
     'YANDEX_FOLDER_ID'      => '',
-    'YANDEX_MODEL'          => 'yandexgpt/latest',
+    'YANDEX_MODEL'          => 'yandexgpt',
 
     // --- База знаний (вики компании из GitHub, модуль 005) ---
     // Токен можно держать здесь ИЛИ вписать в «Админ → Настройки → База знаний»

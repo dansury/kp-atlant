@@ -936,6 +936,25 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '14')");
         $current = 14;
     }
+
+    // v15 — the saved Yandex model is a bare slug now: the version segment is
+    // added when the request is built (LLM::yandexModelUri). A value saved with
+    // its own «/latest» stays valid but no longer matches a catalog row, so the
+    // picker would show it as «своя модель» — strip it. gpt-oss is not served by
+    // the folder at all (HTTP 404 «unknown model»), so that pick goes back to the
+    // default instead of failing every letter.
+    if ($current < 15) {
+        $model = (string)(Db::val("SELECT value FROM settings WHERE key='cfg.YANDEX_MODEL'") ?? '');
+        if ($model !== '') {
+            $slug = preg_replace('~/latest$~', '', trim($model, " /"));   // «/rc» is a deliberate pick — keep it
+            if (str_starts_with($slug, 'gpt-oss')) $slug = 'yandexgpt';
+            if ($slug !== '' && $slug !== $model) {
+                Db::q("UPDATE settings SET value=? WHERE key='cfg.YANDEX_MODEL'", [$slug]);
+            }
+        }
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '15')");
+        $current = 15;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
