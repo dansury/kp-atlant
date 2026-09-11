@@ -42,6 +42,28 @@
     .disclaimer { font-size: 8.5pt; color: #666; font-style: italic; margin-top: 8px; }
     .warranty { margin-top: 15px; font-size: 10pt; }
 
+    /* Correspondence table: what was asked for vs what we answer with */
+    .match { margin: 15px 0 20px; }
+    .match__title { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
+    .match__note { font-size: 9.5pt; color: #555; margin-bottom: 6px; }
+    table.match-table { width: 100%; border-collapse: collapse; }
+    table.match-table th { background: #333; color: #fff; font-size: 8.5pt; padding: 5px 6px; text-align: center; }
+    table.match-table td { border: 1px solid #ccc; padding: 4px 6px; font-size: 9.5pt; vertical-align: top; }
+    table.match-table td.num { text-align: center; width: 26px; }
+    table.match-table td.qty { text-align: center; width: 46px; white-space: nowrap; }
+    table.match-table td.state { text-align: center; width: 70px; }
+    /* Bр5 red is the shop's accent and stays inside AA on white (#c00 on #fff ≈ 5.9:1) */
+    .swap { color: #c00; font-size: 8.5pt; }
+    .fits { font-size: 8.5pt; color: #333; margin-top: 2px; }
+    .fits li { margin: 0; }
+    .card__link { font-size: 9.5pt; margin-top: 6px; }
+    .card__link a { color: #c00; text-decoration: none; }
+
+    /* Requisites: the block that must be right, not plausible */
+    .req { margin-top: 22px; padding-top: 10px; border-top: 1px solid #ccc; font-size: 9pt; color: #333; }
+    .req__title { font-weight: bold; font-size: 9.5pt; margin-bottom: 4px; }
+    .req__row { margin: 2px 0; }
+
     /* Upsell block */
     .upsell { margin-top: 25px; padding-top: 12px; border-top: 1px solid #ccc; }
     .upsell__title { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
@@ -60,20 +82,35 @@
 <img src="<?= $logo ?>" class="logo" alt="Atlant Armour">
 <?php endif; ?>
 
+<?php
+    // The seller as the КП was signed: the frozen snapshot wins, and the live
+    // legal_entities row only fills what an older КП never captured (module 013)
+    $seller = ($requisites['seller'] ?? []) + [
+        'short_name' => $legal['short_name'] ?? '', 'full_name' => $legal['full_name'] ?? '',
+        'inn' => $legal['inn'] ?? '', 'kpp' => '', 'ogrn' => $legal['ogrn'] ?? '',
+        'ogrnip' => $legal['ogrnip'] ?? '', 'okpo' => '', 'legal_address' => '',
+        'address' => trim(($legal['city'] ?? '') . ', ' . ($legal['address'] ?? ''), ', '),
+        'phone' => $legal['phone'] ?? '', 'email' => $legal['email'] ?? '',
+        'signatory' => $legal['signatory_name'] ?? '', 'bank' => [],
+    ];
+    $sellerName = $seller['short_name'] !== '' ? $seller['short_name'] : $seller['full_name'];
+?>
 <div class="header">
-    <div class="entity-name">от: <?= htmlspecialchars($legal['short_name'] ?? $legal['full_name']) ?></div>
-    <div>ИНН <?= htmlspecialchars($legal['inn']) ?></div>
-    <?php if ($legal['ogrnip']): ?>
-    <div>ОГРНИП <?= htmlspecialchars($legal['ogrnip']) ?></div>
-    <?php elseif ($legal['ogrn']): ?>
-    <div>ОГРН <?= htmlspecialchars($legal['ogrn']) ?></div>
+    <div class="entity-name">от: <?= htmlspecialchars($sellerName) ?></div>
+    <div>ИНН <?= htmlspecialchars($seller['inn']) ?><?= $seller['kpp'] !== '' ? ' / КПП ' . htmlspecialchars($seller['kpp']) : '' ?></div>
+    <?php if ($seller['ogrnip'] !== ''): ?>
+    <div>ОГРНИП <?= htmlspecialchars($seller['ogrnip']) ?></div>
+    <?php elseif ($seller['ogrn'] !== ''): ?>
+    <div>ОГРН <?= htmlspecialchars($seller['ogrn']) ?></div>
     <?php endif; ?>
-    <div><?= htmlspecialchars(trim(($legal['city'] ?? '') . ', ' . ($legal['address'] ?? ''), ', ')) ?></div>
-    <?php if (!empty($legal['phone'])): ?>
-    <div><?= htmlspecialchars($legal['phone']) ?></div>
+    <?php if ($seller['address'] !== ''): ?>
+    <div><?= htmlspecialchars($seller['address']) ?></div>
     <?php endif; ?>
-    <?php if (!empty($legal['email'])): ?>
-    <div><?= htmlspecialchars($legal['email']) ?></div>
+    <?php if ($seller['phone'] !== ''): ?>
+    <div><?= htmlspecialchars($seller['phone']) ?></div>
+    <?php endif; ?>
+    <?php if ($seller['email'] !== ''): ?>
+    <div><?= htmlspecialchars($seller['email']) ?></div>
     <?php endif; ?>
 </div>
 
@@ -86,6 +123,62 @@
 <div class="intro">
     <?= nl2br(htmlspecialchars($introText)) ?>
 </div>
+
+<!-- Correspondence table (module 013): the request line by line, answered.
+     Printed when the request arrived as a table or a спецификация — the client
+     reads the answer in the same shape they asked the question. -->
+<?php if (!empty($showMatchTable)): ?>
+<div class="match">
+    <div class="match__title">Таблица соответствия запросу</div>
+    <div class="match__note">
+        <?= $matchTableNote !== ''
+            ? nl2br(htmlspecialchars($matchTableNote))
+            : 'Слева — позиции Вашего запроса, справа — что мы предлагаем по каждой из них.' ?>
+    </div>
+    <table class="match-table">
+    <thead>
+    <tr>
+        <th>№</th>
+        <th>Запрошено</th>
+        <th>Кол-во</th>
+        <th>Предлагаем</th>
+        <th>Артикул</th>
+        <th>Наличие</th>
+    </tr>
+    </thead>
+    <tbody>
+    <?php foreach ($matchTable as $row): ?>
+    <tr>
+        <td class="num"><?= $row['n'] ?></td>
+        <td><?= htmlspecialchars($row['requested']) ?></td>
+        <td class="qty"><?= $row['quantity'] ?> <?= htmlspecialchars($row['unit']) ?></td>
+        <td>
+            <?= htmlspecialchars($row['offered']) ?>
+            <?php if ($row['is_alternative']): ?>
+            <br><span class="swap">аналог<?= $row['note'] !== '' ? ': ' . htmlspecialchars($row['note']) : '' ?></span>
+            <?php endif; ?>
+            <?php if ($row['matched']): ?>
+            <!-- Exactly the requirements this position was PROVED to meet —
+                 nothing here is written by the model without evidence -->
+            <ul class="fits">
+                <?php foreach ($row['matched'] as $fit): ?>
+                <li>соответствует: <?= htmlspecialchars($fit['requirement']) ?><?php
+                    if ($fit['ours'] !== '') echo ' — ' . htmlspecialchars($fit['ours']); ?></li>
+                <?php endforeach; ?>
+            </ul>
+            <?php endif; ?>
+            <?php if ($row['differs']): ?>
+            <div class="fits">отличается: <?= htmlspecialchars(implode('; ', $row['differs'])) ?></div>
+            <?php endif; ?>
+        </td>
+        <td><?= htmlspecialchars($row['article']) ?></td>
+        <td class="state"><?= htmlspecialchars($row['availability']) ?></td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+    </table>
+</div>
+<?php endif; ?>
 
 <!-- Pre-table block (optional) -->
 <?php if (!empty($preTableText)): ?>
@@ -100,7 +193,7 @@
     <th>Наименование</th>
     <th>Ед.изм.</th>
     <th>Кол-во</th>
-    <th>Цена за ед., в т.ч. НДС <?= $vatRate ?>%</th>
+    <th>Цена за ед., <?= htmlspecialchars($vatStatement) ?></th>
     <th>Сумма</th>
 </tr>
 </thead>
@@ -125,7 +218,9 @@
 
 <!-- Total -->
 <div class="total-row">Итого: <?= $totalIsFrom ? 'от ' : '' ?><?= number_format($total, 2, ',', ' ') ?> руб.</div>
-<?php if ($showVatTotal): ?>
+<?php if (!$paysVat): ?>
+<div class="vat-row"><?= htmlspecialchars($vatStatement) ?></div>
+<?php elseif ($showVatTotal): ?>
 <div class="vat-row">в т.ч. НДС <?= $vatRate ?>%: <?= number_format($vatAmount, 2, ',', ' ') ?> руб.</div>
 <?php endif; ?>
 
@@ -133,12 +228,34 @@
 <?php foreach ($items as $i => $item): ?>
 <?php
     $hasCard = !empty($item['description_text']) || !empty($item['specs_text'])
-            || !empty($item['included_text']) || !empty($item['gallery']);
+            || !empty($item['included_text']) || !empty($item['gallery'])
+            || !empty($item['is_alternative'])
+            || (!empty($showSiteLink) && !empty($item['site_url']));
 ?>
 <?php if ($hasCard): ?>
 <div class="card">
     <?php if (count($items) > 1): ?>
     <div class="card__name"><?= $i + 1 ?>. <?= htmlspecialchars($item['product_name']) ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($item['is_alternative'])): ?>
+    <!-- Why this position stands where another was asked for, and what it was
+         proved to meet. Never «извините» — the facts and nothing else. -->
+    <div class="card__desc">
+        <span class="swap">Предлагается вместо «<?= htmlspecialchars((string)($item['requested_name'] ?? '')) ?>»<?php
+            if (trim((string)($item['alt_reason'] ?? '')) !== '') echo ': ' . htmlspecialchars($item['alt_reason']); ?>.</span>
+        <?php if (!empty($item['alt_matched'])): ?>
+        <ul class="fits">
+            <?php foreach ($item['alt_matched'] as $fit): ?>
+            <li>соответствует требованию «<?= htmlspecialchars($fit['requirement']) ?>»<?php
+                if ($fit['ours'] !== '') echo ' — ' . htmlspecialchars($fit['ours']); ?></li>
+            <?php endforeach; ?>
+        </ul>
+        <?php endif; ?>
+        <?php if (!empty($item['alt_differs'])): ?>
+        <div class="fits">отличается от запроса: <?= htmlspecialchars(implode('; ', $item['alt_differs'])) ?></div>
+        <?php endif; ?>
+    </div>
     <?php endif; ?>
 
     <?php if (!empty($item['description_text'])): ?>
@@ -164,6 +281,13 @@
     <?php if (!empty($item['included_text'])): ?>
     <div class="card__subtitle">Комплектация:</div>
     <div class="card__list"><?= nl2br(htmlspecialchars($item['included_text'])) ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($showSiteLink) && !empty($item['site_url'])): ?>
+    <!-- The product's own page on the shop, verified before it was cached -->
+    <div class="card__link">Подробнее на сайте:
+        <a href="<?= htmlspecialchars($item['site_url']) ?>"><?= htmlspecialchars($item['site_url']) ?></a>
+    </div>
     <?php endif; ?>
 </div>
 <?php endif; ?>
@@ -203,9 +327,47 @@
         <?php else: ?>
         _______________
         <?php endif; ?>
-        <div class="sign-name"><?= htmlspecialchars($legal['signatory_name'] ?? '') ?></div>
+        <div class="sign-name"><?= htmlspecialchars($seller['signatory'] !== '' ? $seller['signatory'] : ($legal['signatory_name'] ?? '')) ?></div>
     </div>
 </div>
+
+<!-- Requisites: from МойСклад, frozen on this КП at the moment it was made.
+     Nothing in this block is ever written by a model (module 013). -->
+<?php if (!empty($showRequisites) && !empty($requisites['seller'])): ?>
+<div class="req">
+    <div class="req__title">Реквизиты поставщика</div>
+    <div class="req__row"><?= htmlspecialchars($seller['full_name']) ?></div>
+    <?php if ($seller['legal_address'] !== ''): ?>
+    <div class="req__row">Юридический адрес: <?= htmlspecialchars($seller['legal_address']) ?></div>
+    <?php endif; ?>
+    <div class="req__row">
+        ИНН <?= htmlspecialchars($seller['inn']) ?><?php
+        if ($seller['kpp'] !== '')    echo ', КПП ' . htmlspecialchars($seller['kpp']);
+        if ($seller['ogrnip'] !== '') echo ', ОГРНИП ' . htmlspecialchars($seller['ogrnip']);
+        elseif ($seller['ogrn'] !== '') echo ', ОГРН ' . htmlspecialchars($seller['ogrn']);
+        if ($seller['okpo'] !== '')   echo ', ОКПО ' . htmlspecialchars($seller['okpo']); ?>
+    </div>
+    <?php if (!empty($seller['bank']['line'])): ?>
+    <div class="req__row">Банк: <?= htmlspecialchars($seller['bank']['line']) ?></div>
+    <?php endif; ?>
+    <div class="req__row">НДС: <?= htmlspecialchars($vatStatement) ?></div>
+
+    <?php if (!empty($requisites['contract'])): ?>
+    <div class="req__row">Договор: <?= htmlspecialchars($requisites['contract']['name']) ?><?php
+        if ($requisites['contract']['date'] !== '') echo ' от ' . htmlspecialchars($requisites['contract']['date']); ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($requisites['buyer'])): ?>
+    <div class="req__title" style="margin-top:8px">Покупатель</div>
+    <div class="req__row"><?= htmlspecialchars($requisites['buyer']['legal_title'] ?: $requisites['buyer']['name']) ?><?php
+        if (($requisites['buyer']['inn'] ?? '') !== '') echo ', ИНН ' . htmlspecialchars($requisites['buyer']['inn']);
+        if (($requisites['buyer']['kpp'] ?? '') !== '') echo ', КПП ' . htmlspecialchars($requisites['buyer']['kpp']); ?></div>
+    <?php if (($requisites['buyer']['legal_address'] ?? '') !== ''): ?>
+    <div class="req__row"><?= htmlspecialchars($requisites['buyer']['legal_address']) ?></div>
+    <?php endif; ?>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
 
 <!-- Upsell: modules the client can add now or later -->
 <?php if ($showUpsell && $addons): ?>
@@ -217,7 +379,7 @@
 
     <table class="addons">
     <thead>
-    <tr><th>№</th><th>Модуль</th><th>Ед.изм.</th><th>Цена за ед., в т.ч. НДС <?= $vatRate ?>%</th></tr>
+    <tr><th>№</th><th>Модуль</th><th>Ед.изм.</th><th>Цена за ед., <?= htmlspecialchars($vatStatement) ?></th></tr>
     </thead>
     <tbody>
     <?php foreach ($addons as $j => $addon): ?>

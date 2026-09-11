@@ -4,6 +4,9 @@
  * upsell modules. Everything here is best-effort — a missing description or
  * an unreachable image never blocks PDF generation.
  */
+require_once __DIR__ . '/bitrix.php';
+require_once __DIR__ . '/request_shape.php';
+
 class KpContent {
 
     // Fill description / specs / kit / photos for every item of a proposal.
@@ -46,6 +49,14 @@ class KpContent {
                 if ($images) $upd['images_json'] = json_encode($images, JSON_UNESCAPED_UNICODE);
             }
 
+            // The product's page on atlant-armour.ru (module 013). Resolved and
+            // verified once, here, so the PDF never waits on the site — and
+            // frozen on the item, so a reprint carries the link it was sent with.
+            if (empty($item['site_url']) && (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1) {
+                $url = Bitrix::productUrl($msId);
+                if ($url) $upd['site_url'] = $url;
+            }
+
             if ($upd) Db::update('proposal_items', $upd, 'id=?', [$item['id']]);
         }
     }
@@ -71,11 +82,18 @@ class KpContent {
             $asked  = trim((string)($it['requested_name'] ?? ''));
             $given  = trim((string)($it['product_name'] ?? ''));
             if ($asked === '' || $given === '') continue;
-            if (self::sameProduct($asked, $given)) continue;
+
+            // A position the matcher deliberately replaced because we could not
+            // ship the original already knows it is a swap, and knows why — the
+            // word-overlap guess below is only for the ones nobody labelled
+            $deliberate = (int)($it['is_alternative'] ?? 0) === 1;
+            if (!$deliberate && self::sameProduct($asked, $given)) continue;
+
             $out[] = [
                 'requested' => $asked,
                 'offered'   => $given,
-                'note'      => trim((string)($it['notes'] ?? '')),
+                'note'      => trim((string)($it['alt_reason'] ?? '')) ?: trim((string)($it['notes'] ?? '')),
+                'matched'   => self::matchedSpecs($it),
             ];
         }
         return $out;
@@ -105,6 +123,102 @@ class KpContent {
 
         $common = count(array_intersect($asked, $given));
         return $common / count($asked) >= 0.5;
+    }
+
+    /**
+     * The client's requirements this position was proved to meet.
+     * Stored by `Alternatives` when the swap was made and never recomputed —
+     * a КП must say the same thing on its second printing as on its first.
+     *
+     * @return array<int,array{requirement:string,ours:string}>
+     */
+    public static function matchedSpecs(array $item): array {
+        $decoded = json_decode((string)($item['alt_specs_json'] ?? ''), true);
+        if (!is_array($decoded)) return [];
+        $out = [];
+        foreach ((array)($decoded['matched'] ?? []) as $row) {
+            $requirement = trim((string)($row['requirement'] ?? ''));
+            if ($requirement === '') continue;
+            $out[] = ['requirement' => $requirement, 'ours' => trim((string)($row['ours'] ?? ''))];
+        }
+        return $out;
+    }
+
+    /** Requirements this position does NOT meet — named, not hidden. */
+    public static function unmatchedSpecs(array $item): array {
+        $decoded = json_decode((string)($item['alt_specs_json'] ?? ''), true);
+        if (!is_array($decoded)) return [];
+        return array_values(array_filter(
+            array_map('strval', (array)($decoded['differs'] ?? [])),
+            fn($v) => trim($v) !== ''
+        ));
+    }
+
+    /**
+     * «Таблица соответствия» — the block a КП opens with when the request
+     * arrived as a table (module 013).
+     *
+     * One row per line of the client's own specification, in their order, and
+     * next to it what we answer with: our position, its артикул, whether it is
+     * in stock, and — when it is not the thing they named — which of their
+     * requirements it meets. The client reads the answer the same way they
+     * wrote the question.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public static function matchTableRows(int $proposalId): array {
+        // The артикул lives on the catalog row, not on the КП line — a
+        // спецификация is read by it, so the table must carry it
+        $items = Db::all(
+            "SELECT i.*, p.article
+             FROM proposal_items i
+             LEFT JOIN products_cache p ON p.moysklad_id = i.moysklad_product_id
+             WHERE i.proposal_id=? ORDER BY i.position", [$proposalId]
+        );
+        $rows = [];
+        foreach ($items as $i => $item) {
+            $requested = trim((string)($item['requested_name'] ?? ''));
+            $offered   = trim((string)($item['product_name'] ?? ''));
+            $free      = (int)($item['stock_available'] ?? 0) - (int)($item['stock_reserved'] ?? 0);
+            $isAlt     = (int)($item['is_alternative'] ?? 0) === 1;
+
+            $rows[] = [
+                'n'          => $i + 1,
+                'requested'  => $requested !== '' ? $requested : $offered,
+                'quantity'   => $item['quantity'],
+                'unit'       => $item['unit'] ?: 'шт.',
+                'offered'    => $offered,
+                'article'    => (string)($item['article'] ?? ''),
+                'is_alternative' => $isAlt,
+                // «в наличии» / «под заказ» — the honest two-value answer a
+                // спецификация expects, taken from the free remainder
+                'availability' => $free > 0 ? 'в наличии' : 'под заказ',
+                'free'       => max(0, $free),
+                'matched'    => $isAlt ? self::matchedSpecs($item) : [],
+                'differs'    => $isAlt ? self::unmatchedSpecs($item) : [],
+                'note'       => trim((string)($item['alt_reason'] ?? '')) ?: trim((string)($item['notes'] ?? '')),
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * Does this КП carry the correspondence table?
+     *
+     * The manager's own switch wins; with none, the setting decides, and «auto»
+     * means «the request arrived as a table». Never a question, never a model
+     * call — the same letter produces the same document twice running.
+     */
+    public static function showMatchTable(array $proposal): bool {
+        if ($proposal['show_match_table'] !== null && $proposal['show_match_table'] !== '') {
+            return (int)$proposal['show_match_table'] === 1;
+        }
+        $mode = (string)Settings::get('KP_MATCH_TABLE', 'auto');
+        if ($mode === 'always') return true;
+        if ($mode === 'never')  return false;
+
+        $requestId = (int)($proposal['request_id'] ?? 0);
+        return $requestId > 0 && RequestShape::of($requestId) === RequestShape::TABLE;
     }
 
     public static function splitDescription(string $text): array {
@@ -244,6 +358,13 @@ class KpContent {
     public static function itemGallery(array $item, int $max = 5): array {
         $selected = json_decode((string)($item['selected_images'] ?? ''), true);
         $msId = (string)($item['moysklad_product_id'] ?? '');
+
+        // With no explicit pick the card carries the product's FIRST photo, as
+        // the manager asked (module 013) — `KP_CARD_PHOTOS`. A manager who
+        // ticked photos by hand meant those, and that choice is not capped here.
+        if (!is_array($selected)) {
+            $max = max(1, min($max, (int)Settings::get('KP_CARD_PHOTOS', 1)));
+        }
 
         // No catalog link (a hand-typed position) — only what is already on the item
         if ($msId === '') return self::imagesForPdf($item['images_json'] ?? null, $max);

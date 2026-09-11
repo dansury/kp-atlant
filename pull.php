@@ -14,7 +14,22 @@
 declare(strict_types=1);
 
 const CONFIG_FILE = 'pull-config.php';
-const ALWAYS_KEEP = ['pull.php', 'pull-config.php'];
+
+// Never copied over and never purged, whatever the operator typed into the form.
+//
+// `data/` holds the SQLite database — and with it EVERYTHING the service has
+// learned: the manager's corrections (`corrections`), the edited prompts
+// (`prompts`, `prompt_history`), the knowledge-base cache, the embedding index
+// and every setting made in the admin panel. None of it is in git, so it only
+// exists on the server. `storage/` holds the signature, the attachments and the
+// downloaded product photos.
+//
+// `data/.gitkeep` and `storage/*/.gitkeep` ARE in the repository, so without
+// this list the purge below would walk into those directories, find kp.db and
+// signature.png with no counterpart in the archive and delete them — a redeploy
+// would wipe the training data. Keeping them here is not advice in DEPLOY.md
+// that someone has to remember; it is the code refusing to do it.
+const ALWAYS_KEEP = ['pull.php', 'pull-config.php', 'config.php', 'data', 'storage'];
 
 const AUTH_COOKIE       = 'pull_auth';
 const AUTH_REMEMBER_TTL = 2592000; // "remember me" cookie lifetime: 30 days
@@ -182,6 +197,7 @@ term("copied {$copied} files");
 $deleted = null;
 if ($config['purge']) {
     term("purge: on — deleting everything that is no longer in the repository (irreversible)");
+    term("purge: never touches " . implode(', ', ALWAYS_KEEP));
     $deletedFiles = 0;
     $deletedDirs  = 0;
     purgeExtra($src, $target, $keep, $deletedFiles, $deletedDirs);
@@ -709,7 +725,8 @@ function render_setup_form(array $values = [], array $errors = []): void {
         $keep, 'pull.php, pull-config.php', false,
         [
             'Comma- or space-separated top-level filenames in this directory that must NOT be overwritten on pull.',
-            '<code>pull.php</code> and <code>pull-config.php</code> are always preserved automatically — list any other names here.',
+            '<code>pull.php</code>, <code>pull-config.php</code>, <code>config.php</code>, <code>data</code> and <code>storage</code> are always preserved automatically — list any other names here.',
+            'The database (<code>data/kp.db</code>) carries everything the service has learned: manager corrections, edited prompts, the knowledge cache and every admin setting. It is protected by the code, not by this field.',
             'Examples: <code>.htaccess</code>, <code>index.html</code>, uploaded media folder names.',
         ],
         true
@@ -791,7 +808,8 @@ function render_setup_done(array $config): void {
     echo "  subdir:   " . $h($config['subdir']) . "\n";
     echo "  timezone: " . $h($config['timezone']) . "\n";
     echo "  password: " . ($config['password_hash'] !== '' ? "set (asked before every pull)" : "not set (anyone with the URL can deploy)") . "\n";
-    echo "  purge:    " . ($config['purge'] ? "on — files missing from the repo are deleted, irreversibly" : "off — obsolete files stay in place") . "\n\n";
+    echo "  purge:    " . ($config['purge'] ? "on — files missing from the repo are deleted, irreversibly" : "off — obsolete files stay in place") . "\n";
+    echo "  always kept: " . $h(implode(', ', ALWAYS_KEEP)) . " (database, uploads and local config survive every deploy)\n\n";
     echo "# delete pull-config.php to re-run setup.\n";
     echo "</pre>";
     echo "<a class=\"btn\" href=\"pull.php\">$ run_pull_now</a>";

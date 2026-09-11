@@ -5,17 +5,76 @@
 use Mpdf\Mpdf;
 
 require_once __DIR__ . '/kp_content.php';
+require_once __DIR__ . '/requisites.php';
 
 class PdfGenerator {
 
     // Generate PDF for a proposal, return file path
     public static function generate(int $proposalId): string {
+        $html = self::html($proposalId);
+        $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1") ?: [];
+
+        // Generate PDF
+        $mpdf = new Mpdf([
+            'mode' => 'utf-8',
+            'format' => 'A4',
+            'margin_left' => 15,
+            'margin_right' => 15,
+            'margin_top' => 10,
+            'margin_bottom' => 15,
+            'default_font' => 'dejavusans',
+            'tempDir' => ROOT . '/data/tmp',
+        ]);
+        $mpdf->SetTitle('Коммерческое предложение');
+        $mpdf->SetAuthor($legal['short_name'] ?? 'Atlant Armour');
+        $mpdf->WriteHTML($html);
+
+        // Save to file
+        $dir = ROOT . '/data/kp';
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+
+        $proposal = Db::one("SELECT number FROM proposals WHERE id=?", [$proposalId]);
+        $number = $proposal['number'] ?: self::generateNumber();
+        $filename = "KP-$number.pdf";
+        $path = "$dir/$filename";
+        $mpdf->Output($path, \Mpdf\Output\Destination::FILE);
+
+        // Update proposal
+        Db::update('proposals', [
+            'number' => $number,
+            'pdf_path' => $path,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ], 'id=?', [$proposalId]);
+
+        return $path;
+    }
+
+    /**
+     * The document as HTML, before mPDF turns it into glyphs.
+     *
+     * Split out from generate() so what the client will read can be asserted on
+     * directly: a PDF stores Cyrillic as glyph indices, so nothing can be
+     * checked in the file itself. Same variables, same template — this IS the
+     * КП, one step earlier.
+     */
+    public static function html(int $proposalId): string {
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
         if (!$proposal) throw new RuntimeException("Proposal $proposalId not found");
 
         $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
         $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1");
         if (!$legal) throw new RuntimeException('No active legal entity configured');
+
+        // НДС, реквизиты, банк, адреса и договор — снимок, сделанный при
+        // создании КП (module 013). Печатается ровно то, с чем документ
+        // подписывали; сегодняшние изменения в МойСклад его не переписывают.
+        $requisites = Requisites::forProposal($proposalId);
+
+        // Таблица соответствия: запрос клиента слева, наш ответ справа.
+        // Появляется, когда запрос пришёл таблицей, — решение принято по письму.
+        $showMatchTable = KpContent::showMatchTable($proposal);
+        $matchTable = $showMatchTable ? KpContent::matchTableRows($proposalId) : [];
+        $matchTableNote = (string)($proposal['match_table_note'] ?? '');
 
         $maxImages = (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
         $addons = Db::all(
@@ -36,11 +95,19 @@ class PdfGenerator {
             $item['gallery'] = !empty($item['show_images'])
                 ? KpContent::itemGallery($item, $maxImages)
                 : [];
+            // An analogue carries its own evidence into the card
+            $item['alt_matched'] = KpContent::matchedSpecs($item);
+            $item['alt_differs'] = KpContent::unmatchedSpecs($item);
         }
         unset($item);
 
-        $vatRate = $proposal['vat_rate'] ?? 5;
-        $vatAmount = $total - ($total / (1 + $vatRate / 100));
+        // The rate is МойСклад's answer, not a house default: the организация
+        // says whether we charge VAT at all, and the catalog says at what rate
+        $vat = $requisites['vat'] ?? [];
+        $paysVat = !array_key_exists('pays_vat', $vat) || (bool)$vat['pays_vat'];
+        $vatRate = $paysVat ? (int)($vat['rate'] ?? ($proposal['vat_rate'] ?? 5)) : 0;
+        $vatStatement = (string)($vat['statement'] ?? ('в т.ч. НДС ' . $vatRate . '%'));
+        $vatAmount = ($paysVat && $vatRate > 0) ? $total - ($total / (1 + $vatRate / 100)) : 0.0;
 
         // Default intro
         $introText = $proposal['intro_text'] ?: sprintf(
@@ -106,6 +173,14 @@ class PdfGenerator {
             'total' => $total,
             'vatRate' => $vatRate,
             'vatAmount' => $vatAmount,
+            'paysVat' => $paysVat,
+            'vatStatement' => $vatStatement,
+            'requisites' => $requisites,
+            'showRequisites' => (int)Settings::get('KP_REQUISITES_BLOCK', 1) === 1,
+            'showMatchTable' => $showMatchTable && $matchTable,
+            'matchTable' => $matchTable,
+            'matchTableNote' => $matchTableNote,
+            'showSiteLink' => (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1,
             'showVatTotal' => (bool)($proposal['show_vat_total'] ?? false),
             'conditionsText' => $conditionsText,
             'executionDays' => $proposal['execution_days'] ?? 30,
@@ -126,40 +201,7 @@ class PdfGenerator {
         extract($templateVars);
         ob_start();
         include ROOT . '/templates/kp.html';
-        $html = ob_get_clean();
-
-        // Generate PDF
-        $mpdf = new Mpdf([
-            'mode' => 'utf-8',
-            'format' => 'A4',
-            'margin_left' => 15,
-            'margin_right' => 15,
-            'margin_top' => 10,
-            'margin_bottom' => 15,
-            'default_font' => 'dejavusans',
-            'tempDir' => ROOT . '/data/tmp',
-        ]);
-        $mpdf->SetTitle('Коммерческое предложение');
-        $mpdf->SetAuthor($legal['short_name'] ?? 'Atlant Armour');
-        $mpdf->WriteHTML($html);
-
-        // Save to file
-        $dir = ROOT . '/data/kp';
-        if (!is_dir($dir)) mkdir($dir, 0755, true);
-
-        $number = $proposal['number'] ?: self::generateNumber();
-        $filename = "KP-$number.pdf";
-        $path = "$dir/$filename";
-        $mpdf->Output($path, \Mpdf\Output\Destination::FILE);
-
-        // Update proposal
-        Db::update('proposals', [
-            'number' => $number,
-            'pdf_path' => $path,
-            'updated_at' => date('Y-m-d H:i:s'),
-        ], 'id=?', [$proposalId]);
-
-        return $path;
+        return (string)ob_get_clean();
     }
 
     // Preview: return PDF as string (for streaming)

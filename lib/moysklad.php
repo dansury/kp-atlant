@@ -128,8 +128,8 @@ class MoySklad {
                 $category = $mapped['category'] ?? '';
                 $isAddon = ($addonCategory !== '' && $category === $addonCategory) ? 1 : 0;
 
-                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, code, price, prices_json, stock, reserved, unit, description, category, is_addon, product_type, source, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'product', 'moysklad', datetime('now'))
+                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, code, price, prices_json, stock, reserved, unit, description, category, is_addon, vat, product_type, source, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'product', 'moysklad', datetime('now'))
                     ON CONFLICT(moysklad_id) DO UPDATE SET
                         name=excluded.name, name_normalized=excluded.name_normalized,
                         article=excluded.article, code=excluded.code, price=excluded.price,
@@ -137,12 +137,14 @@ class MoySklad {
                         stock=excluded.stock, reserved=excluded.reserved,
                         unit=excluded.unit, description=excluded.description,
                         category=excluded.category, is_addon=excluded.is_addon,
+                        vat=COALESCE(excluded.vat, products_cache.vat),
                         source='moysklad', updated_at=datetime('now')", [
                     $mapped['id'], $mapped['name'], $normalized,
                     $mapped['article'], $mapped['code'], $mapped['price'],
                     $mapped['prices'] ? json_encode($mapped['prices'], JSON_UNESCAPED_UNICODE) : null,
                     $mapped['stock'], $mapped['reserved'],
                     $mapped['unit'], $mapped['description'], $category, $isAddon,
+                    $mapped['vat'],
                 ]);
                 $count++;
             }
@@ -343,6 +345,104 @@ class MoySklad {
             'name' => $o['name'] ?? '',
             'inn'  => $o['inn'] ?? '',
         ], $data['rows']);
+    }
+
+    /**
+     * The организация as a legal entity (module 013): everything a КП has to
+     * print about us — requisites, addresses, the bank account and whether we
+     * charge VAT at all. `expand=accounts` brings the bank accounts along, so
+     * the whole block costs one request.
+     *
+     * $id null → the account's first organization, which is what a one-company
+     * МойСклад has and what «Настройки → ID организации» is left empty for.
+     */
+    public static function getOrganizationFull(?string $id = null): ?array {
+        $data = $id
+            ? self::get("/entity/organization/$id?expand=accounts")
+            : (self::get('/entity/organization?limit=1&expand=accounts')['rows'][0] ?? null);
+        if (!$data) return null;
+
+        // The default account is the one invoices are issued against; МойСклад
+        // marks exactly one, and a company with a single account marks none
+        $accounts = $data['accounts']['rows'] ?? [];
+        $account = null;
+        foreach ($accounts as $row) {
+            if (!empty($row['isDefault'])) { $account = $row; break; }
+        }
+        $account = $account ?? ($accounts[0] ?? null);
+
+        return [
+            'id'             => self::extractId($data['id'] ?? $data['meta']['href'] ?? ''),
+            'name'           => $data['name'] ?? '',
+            'legal_title'    => $data['legalTitle'] ?? '',
+            'company_type'   => $data['companyType'] ?? '',
+            'inn'            => $data['inn'] ?? '',
+            'kpp'            => $data['kpp'] ?? '',
+            'ogrn'           => $data['ogrn'] ?? '',
+            'ogrnip'         => $data['ogrnip'] ?? '',
+            'okpo'           => $data['okpo'] ?? '',
+            'legal_address'  => $data['legalAddress'] ?? '',
+            'actual_address' => $data['actualAddress'] ?? '',
+            'phone'          => $data['phone'] ?? '',
+            'email'          => $data['email'] ?? '',
+            // «Плательщик НДС» — the flag that decides whether a КП says
+            // «в т.ч. НДС 5%» or «НДС не облагается». Absent means yes.
+            'pays_vat'       => !array_key_exists('payerVat', $data) || (bool)$data['payerVat'],
+            'signatory'      => $data['director'] ?? $data['chiefAccountant'] ?? '',
+            'account'        => $account ? [
+                'account'      => $account['accountNumber'] ?? '',
+                'bank_name'    => $account['bankName'] ?? '',
+                'bic'          => $account['bankLocation'] ?? '',
+                'corr_account' => $account['correspondentAccount'] ?? '',
+            ] : [],
+        ];
+    }
+
+    /** The buyer as a legal entity — the other half of the same block. */
+    public static function getCounterpartyFull(string $id): ?array {
+        $data = self::get("/entity/counterparty/$id");
+        if (!$data) return null;
+        return [
+            'id'             => $id,
+            'name'           => $data['name'] ?? '',
+            'legal_title'    => $data['legalTitle'] ?? '',
+            'inn'            => $data['inn'] ?? '',
+            'kpp'            => $data['kpp'] ?? '',
+            'ogrn'           => $data['ogrn'] ?? '',
+            'ogrnip'         => $data['ogrnip'] ?? '',
+            'okpo'           => $data['okpo'] ?? '',
+            'legal_address'  => $data['legalAddress'] ?? '',
+            'actual_address' => $data['actualAddress'] ?? '',
+            'phone'          => $data['phone'] ?? '',
+            'email'          => $data['email'] ?? '',
+        ];
+    }
+
+    /**
+     * Договоры between this buyer and us, newest first.
+     * A КП that names the contract it is issued under saves the client a
+     * question, and the number must be the real one — so it is read here, never
+     * composed.
+     */
+    public static function getContracts(string $counterpartyId, ?string $organizationId = null): array {
+        $conditions = ['agent=' . self::$base . "/entity/counterparty/$counterpartyId"];
+        if ($organizationId) $conditions[] = 'organization=' . self::$base . "/entity/organization/$organizationId";
+
+        $data = self::get('/entity/contract?filter=' . urlencode(implode(';', $conditions)) . '&limit=50');
+        if (!$data || empty($data['rows'])) return [];
+
+        $rows = array_map(fn($c) => [
+            'id'     => self::extractId($c['id'] ?? $c['meta']['href'] ?? ''),
+            'name'   => $c['name'] ?? '',
+            'moment' => $c['moment'] ?? '',
+            'type'   => $c['contractType'] ?? '',
+            'archived' => (bool)($c['archived'] ?? false),
+        ], $data['rows']);
+
+        // An archived contract is not the one we are selling under today
+        $rows = array_values(array_filter($rows, fn($r) => !$r['archived']));
+        usort($rows, fn($a, $b) => strcmp((string)$b['moment'], (string)$a['moment']));
+        return $rows;
     }
 
     // Full order with positions, agent and state (FR-027)
@@ -648,6 +748,11 @@ class MoySklad {
             'unit' => $p['uom']['name'] ?? 'шт.',
             'description' => $p['description'] ?? '',
             'category' => $p['productFolder']['name'] ?? '',
+            // The VAT of a КП line is the product's own, not a house default —
+            // `vatEnabled: false` is «без НДС» and is not the same as a 0% rate
+            'vat' => array_key_exists('vat', $p)
+                ? (($p['vatEnabled'] ?? true) ? (int)$p['vat'] : 0)
+                : null,
         ];
     }
 

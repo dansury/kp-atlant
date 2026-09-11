@@ -54,6 +54,32 @@ try {
                 'ok_any'      => (bool)array_filter($perms),
             ]);
 
+        // Реквизиты, НДС и договор из МойСклад в КП (module 013)
+        case 'requisites_sync':
+            require_once ROOT . '/lib/requisites.php';
+            MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+            $legal = Requisites::syncOrganization();
+            jsonOk([
+                'legal_entity' => [
+                    'full_name'     => $legal['full_name'] ?? '',
+                    'inn'           => $legal['inn'] ?? '',
+                    'kpp'           => $legal['kpp'] ?? '',
+                    'legal_address' => $legal['legal_address'] ?? '',
+                    'bank_details'  => $legal['bank_details'] ?? '',
+                    'pays_vat'      => (int)($legal['pays_vat'] ?? 1) === 1,
+                    'synced_at'     => $legal['synced_at'] ?? '',
+                ],
+            ]);
+
+        // Ссылки на товары на сайте: что получится и на чём (module 013)
+        case 'bitrix_diagnose':
+            require_once ROOT . '/lib/bitrix.php';
+            jsonOk(['diag' => Bitrix::diagnose()]);
+
+        case 'bitrix_refresh_urls':
+            require_once ROOT . '/lib/bitrix.php';
+            jsonOk(['resolved' => Bitrix::refreshUrls(max(1, (int)($input['limit'] ?? 50)))]);
+
         case 'test_llm':
             $provider = (string)($input['provider'] ?? $_GET['provider'] ?? '');
             try {
