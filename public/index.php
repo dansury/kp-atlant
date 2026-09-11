@@ -15,7 +15,7 @@ $assetVer = max(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Atlant Armour — КП</title>
     <!-- Installable on a phone: manifest + icons + standalone chrome (module 007) -->
-    <meta name="theme-color" content="#f1f0ee">
+    <meta name="theme-color" content="#ffffff">
     <meta name="description" content="Разбор входящих запросов, коммерческие предложения и счета Atlant Armour.">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">

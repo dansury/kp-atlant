@@ -955,6 +955,34 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '15')");
         $current = 15;
     }
+
+    // v16 — a conversation is a subject WITH A PARTY: «Запрос КП» from three
+    // different companies stopped being one thread (module 012)
+    if ($current < 16) {
+        require_once __DIR__ . '/mail_threads.php';
+
+        // A card points at a thread by its key, and every key is about to
+        // change. Remember one letter per card first, so the card can be
+        // pointed at whatever that letter's conversation is called afterwards.
+        $cardKeys = [];
+        foreach (Db::all("SELECT id, thread_key FROM board_cards WHERE thread_key IS NOT NULL") as $card) {
+            $mid = Db::val("SELECT id FROM mail_messages WHERE thread_key=? ORDER BY date_at, id LIMIT 1", [$card['thread_key']]);
+            if ($mid) $cardKeys[(int)$card['id']] = (int)$mid;
+        }
+
+        MailThreads::backfill(true);
+
+        foreach ($cardKeys as $cardId => $messageId) {
+            $key = Db::val("SELECT thread_key FROM mail_messages WHERE id=?", [$messageId]);
+            if ($key) Db::update('board_cards', ['thread_key' => $key], 'id=?', [$cardId]);
+        }
+        // Re-splitting the archive can leave a company on the board twice over
+        // the same conversation; the intake decides again on the next open
+        Db::q("DELETE FROM settings WHERE key='board_sync_sig'");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '16')");
+        $current = 16;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
