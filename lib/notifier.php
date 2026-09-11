@@ -14,42 +14,54 @@ class Notifier {
         'followup'    => 'followup',
     ];
 
-    // Create notification for a manager (or all if manager_id=null)
-    public static function notify(string $type, string $title, ?string $body = null, ?string $refType = null, ?int $refId = null, ?int $managerId = null): int {
+    /**
+     * Create a notification for a manager (or all of them when $managerId is null).
+     *
+     * $url is where a tap should land — the letter, the request, the board card.
+     * A caller that knows better than the ref_type guess (mail sync knows the
+     * exact letter) passes it; everyone else gets the default target.
+     */
+    public static function notify(string $type, string $title, ?string $body = null, ?string $refType = null, ?int $refId = null, ?int $managerId = null, ?string $url = null): int {
+        $url = $url ?: self::defaultUrl($refType, $refId);
+
         // The bell in the header only rings while a tab is open — push is what
         // reaches the administrator's phone when it is not (module 007).
-        self::push($type, $title, (string)$body, $refType, $refId, $managerId);
+        self::push($type, $title, (string)$body, $url, $managerId);
 
+        $row = [
+            'type' => $type,
+            'title' => $title,
+            'body' => $body,
+            'ref_type' => $refType,
+            'ref_id' => $refId,
+            'url' => $url,
+        ];
         if ($managerId) {
-            return Db::insert('notifications', [
-                'manager_id' => $managerId,
-                'type' => $type,
-                'title' => $title,
-                'body' => $body,
-                'ref_type' => $refType,
-                'ref_id' => $refId,
-            ]);
+            return Db::insert('notifications', $row + ['manager_id' => $managerId]);
         }
         // Notify all managers
-        $managers = Db::all("SELECT id FROM managers");
         $lastId = 0;
-        foreach ($managers as $m) {
-            $lastId = Db::insert('notifications', [
-                'manager_id' => $m['id'],
-                'type' => $type,
-                'title' => $title,
-                'body' => $body,
-                'ref_type' => $refType,
-                'ref_id' => $refId,
-            ]);
+        foreach (Db::all("SELECT id FROM managers") as $m) {
+            $lastId = Db::insert('notifications', $row + ['manager_id' => (int)$m['id']]);
         }
         return $lastId;
     }
 
+    /** Where a notification leads when the caller did not say. */
+    private static function defaultUrl(?string $refType, ?int $refId): string {
+        if (!$refId) return '/';
+        return match ($refType) {
+            'request'      => '/#mail/request/' . $refId,
+            'mail'         => '/#mail/msg/' . $refId,
+            'proposal'     => '/#mail/proposal/' . $refId,
+            'counterparty' => '/#mail/company/' . $refId,
+            default        => '/',
+        };
+    }
+
     /** Mirror an in-app notification to the manager's devices. Never fatal. */
-    private static function push(string $type, string $title, string $body, ?string $refType, ?int $refId, ?int $managerId): void {
+    private static function push(string $type, string $title, string $body, string $url, ?int $managerId): void {
         try {
-            $url = ($refType === 'request' && $refId) ? '/#requests/' . $refId : '/';
             Push::notify(self::PUSH_KINDS[$type] ?? 'system', $title, $body, $url, $managerId);
         } catch (Throwable $e) {
             Logger::exception('push', $e, ['type' => $type]);
@@ -59,7 +71,7 @@ class Notifier {
     // Get unread notifications for a manager
     public static function getUnread(int $managerId): array {
         return Db::all(
-            "SELECT id, type, title, body, ref_type, ref_id, created_at FROM notifications WHERE manager_id=? AND is_read=0 ORDER BY created_at DESC",
+            "SELECT id, type, title, body, ref_type, ref_id, url, created_at FROM notifications WHERE manager_id=? AND is_read=0 ORDER BY created_at DESC",
             [$managerId]
         );
     }

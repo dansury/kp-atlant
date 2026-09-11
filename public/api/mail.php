@@ -251,6 +251,26 @@ try {
             Logger::info('mail', "Письмо #$id отмечено как спам менеджером", ['manager_id' => (int)$manager['id']]);
             jsonOk($res);
 
+        case 'delete':
+            // «Удалить»: out of the archive here and into «Корзина» on the server,
+            // so the letter does not come back with the next sync
+            $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!$id) jsonError('Не указано письмо');
+            $res = MailSync::deleteMessage($id, (int)$manager['id']);
+            jsonOk($res + ['warning' => $res['server_error']
+                ? 'Письмо удалено в панели, но на почтовом сервере осталось: ' . (string)$res['server_error']
+                : null]);
+
+        case 'delete_thread':
+            $key = trim((string)($input['thread_key'] ?? $_GET['thread_key'] ?? ''));
+            if ($key === '') jsonError('Не указана цепочка');
+            $res = MailSync::deleteThread($key, (int)$manager['id']);
+            Logger::info('mail', "Переписка удалена ({$res['deleted']} писем)",
+                         ['thread_key' => $key, 'manager_id' => (int)$manager['id']]);
+            jsonOk($res + ['warning' => $res['server_error']
+                ? 'Часть писем осталась на почтовом сервере: ' . (string)$res['server_error']
+                : null]);
+
         case 'categories':
             // For the «тип запроса» selector in the reply dialog
             jsonData(['categories' => array_map(

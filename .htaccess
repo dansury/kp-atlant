@@ -29,6 +29,11 @@
     RewriteRule ^reset_admin\.php$ - [F,L]
     RewriteRule ^_to_delete/ - [F,L]
     RewriteRule ^claude\.md$ - [F,L]
+
+    # Лендинг проекта: он живёт в корне только ради GitHub Pages, на домене
+    # заказчика его быть не должно. Корень "/" и так уходит в SPA правилом ниже,
+    # но прямой /index.html без этого отдавался бы вместо приложения.
+    RewriteRule ^index\.html$ - [F,L]
     RewriteRule ^spec\.md$ - [F,L]
     RewriteRule \.md$ - [F,L]
 

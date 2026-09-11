@@ -168,7 +168,11 @@ const App = {
                 this.unread = data.unread_count || 0;
                 const badge = document.getElementById('notifBadge');
                 if (badge) badge.innerHTML = this.unread > 0 ? `<span class="notif-dot"></span>` : '';
-            } catch {}
+            } catch (err) {
+                // The session expired under an open tab: polling on would only
+                // fill the log with «Unauthorized» every 30 seconds
+                if (err && err.status === 401) { this.stopPolling(); this.manager = null; this.renderLogin(); return; }
+            }
             // Unread mail and, for admins, fresh errors are visible from any page
             try {
                 const mail = await this.api('mail.php?action=list&limit=1');
@@ -185,6 +189,11 @@ const App = {
         };
         poll();
         this.pollTimer = setInterval(poll, 30000);
+    },
+
+    stopPolling() {
+        if (this.pollTimer) clearInterval(this.pollTimer);
+        this.pollTimer = null;
     },
 
     // Router
@@ -1757,26 +1766,40 @@ const App = {
     },
 
     // Notifications
+    //
+    // Push lives here, not only under «Настройки → Это устройство»: the switch
+    // belongs on the page the manager opens when уведомления не приходят.
     async pageNotifications() {
         const data = await this.api('notifications.php?action=poll');
         document.getElementById('app').innerHTML = `
             <h2 style="margin-bottom:16px">Уведомления</h2>
+            <div class="card" id="pushCard"><div class="loading">Загрузка...</div></div>
             <div class="card">
                 ${data.items.length ? data.items.map(n => `
                     <div class="flex flex--between" style="padding:10px 0;border-bottom:1px solid var(--border)">
                         <div>
-                            <strong>${n.title}</strong>
-                            ${n.body ? `<p style="color:var(--text-muted);font-size:13px">${n.body}</p>` : ''}
+                            <strong>${this.esc(n.title)}</strong>
+                            ${n.body ? `<p style="color:var(--text-muted);font-size:13px">${this.esc(n.body)}</p>` : ''}
                             <small style="color:var(--text-muted)">${new Date(n.created_at).toLocaleString('ru-RU')}</small>
                         </div>
                         <div class="flex">
-                            ${n.ref_type === 'request' ? `<a href="#mail/request/${n.ref_id}" class="btn btn--sm btn--outline">Открыть</a>` : ''}
+                            ${this.notifLink(n)}
                             <button class="btn btn--sm btn--outline" onclick="App.readNotif(${n.id}, this)">✓</button>
                         </div>
                     </div>
                 `).join('') : '<p style="color:var(--text-muted);text-align:center;padding:20px">Нет новых уведомлений</p>'}
             </div>
         `;
+        this.renderPushCard();
+    },
+
+    // Where a notification leads: the target the server recorded (the letter
+    // itself for new mail), with the old ref_type guess for rows written before
+    notifLink(n) {
+        const url = n.url || (n.ref_type === 'request' && n.ref_id ? '/#mail/request/' + n.ref_id : '');
+        const at = url.indexOf('#');
+        if (at < 0) return '';   // «/» leads nowhere in particular — no button for it
+        return `<a href="${this.esc(url.slice(at))}" class="btn btn--sm btn--outline">Открыть</a>`;
     },
 
     async readNotif(id, btn) {
@@ -2365,6 +2388,8 @@ const App = {
                     <div class="mrow__preview">${this.esc(t.preview)}</div>
                 </div>
                 <div class="mrow__date">${this.fmtDate(t.last_at)}</div>
+                <button class="mrow__del" title="Удалить переписку"
+                        onclick="event.stopPropagation();App.deleteThread('${this.jsStr(t.thread_key)}', ${t.count})">🗑</button>
             </div>`;
     },
 
@@ -2413,6 +2438,7 @@ const App = {
                 <div class="flex flex--wrap">
                     <a href="#mail/inbox" class="btn btn--outline btn--sm">← К списку</a>
                     <button class="btn btn--outline btn--sm" onclick="App.boardPick('${this.jsStr(key)}')">▦ В доску</button>
+                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteThread('${this.jsStr(key)}', ${t.count})">🗑 Удалить переписку</button>
                 </div>
             </div>
             <div id="threadPlacement"></div>
@@ -2452,6 +2478,7 @@ const App = {
                                 onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
                             Ответить на это письмо</button>
                         ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
+                        <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id})">🗑 Удалить</button>
                     </div>
                 </div>
             </div>`.replace('class="tmsg ', open ? 'class="tmsg tmsg--open ' : 'class="tmsg ');
@@ -2483,6 +2510,7 @@ const App = {
                         ? `<a href="#mail/t/${encodeURIComponent(m.thread_key)}" class="btn btn--primary btn--sm">Вся переписка и ответ →</a>`
                         : `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>`}
                     ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
+                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail/inbox'}')">🗑 Удалить</button>
                 </div>
             </div>
             <div class="card">
@@ -2803,6 +2831,37 @@ const App = {
             this.toast('Отмечено как спам', 'success');
             this.route();
         } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // «Удалить»: out of the archive here and into «Корзина» on the mail server,
+    // so the letter cannot come back with the next sync. $back is where to go
+    // when the page we are on is the letter that just disappeared.
+    async deleteMail(id, back) {
+        if (!confirm('Удалить письмо? Оно уйдёт в «Корзину» на почтовом сервере и исчезнет из панели.')) return;
+        try {
+            const r = await this.api('mail.php?action=delete', {method: 'POST', body: {id}});
+            // «Удалено» has to mean the same thing on both sides — say which one happened
+            const ok = r.server_state === 'trashed' ? 'Письмо удалено и перенесено в «Корзину»'
+                     : r.server_state === 'expunged' ? 'Письмо удалено с почтового сервера'
+                     : 'Письмо удалено из панели';
+            this.toast(r.warning || ok, r.warning ? 'error' : 'success');
+            this.goAfterDelete(r.thread_empty ? 'mail/inbox' : back);
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async deleteThread(key, count) {
+        const what = count > 1 ? `Удалить всю переписку (${count} писем)?` : 'Удалить переписку?';
+        if (!confirm(what + ' Письма уйдут в «Корзину» на почтовом сервере и исчезнут из панели.')) return;
+        try {
+            const r = await this.api('mail.php?action=delete_thread', {method: 'POST', body: {thread_key: key}});
+            this.toast(r.warning || `Удалено писем: ${r.deleted}`, r.warning ? 'error' : 'success');
+            this.goAfterDelete('mail/inbox');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    goAfterDelete(hash) {
+        if (!hash || location.hash.slice(1) === hash) this.route();
+        else location.hash = hash;
     },
 
     // ==== Rendering an email body: HTML sanitized server-side, shown inside a
@@ -4146,6 +4205,16 @@ Object.assign(App, {
     registerServiceWorker() {
         if (!('serviceWorker' in navigator)) return;
         navigator.serviceWorker.register('/sw.js').catch(e => { this.swError = e; });
+        // A tapped notification steers the open tab. The worker navigates the
+        // window itself when it may; when it may not, it asks us here instead.
+        navigator.serviceWorker.addEventListener('message', (e) => {
+            const d = e.data || {};
+            if (d.type !== 'navigate' || !d.url) return;
+            const at = String(d.url).indexOf('#');
+            if (at < 0) return;
+            const hash = String(d.url).slice(at);
+            if (location.hash === hash) this.route(); else location.hash = hash;
+        });
     },
 
     // Chrome fires this instead of installing on its own; keep it for the button

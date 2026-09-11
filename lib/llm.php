@@ -10,19 +10,23 @@ class LLM {
      * and «Обновить каталог OpenRouter» replaces this list with the live one.
      */
     public const CATALOG = [
+        // Yandex slugs are stored WITHOUT the version segment: the version is
+        // added when the request is built (gpt://<folder>/<slug>/latest), the way
+        // careerhack does it. A slug that carries its own version still works —
+        // «yandexgpt/rc» keeps the rc.
         'yandex' => [
-            ['id' => 'yandexgpt/latest',      'label' => 'YandexGPT Pro — latest',    'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt/rc',          'label' => 'YandexGPT Pro — RC',        'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-32k/latest',  'label' => 'YandexGPT Pro 32k',         'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-lite/latest', 'label' => 'YandexGPT Lite — дешевле',  'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-lite/rc',     'label' => 'YandexGPT Lite — RC',       'group' => 'YandexGPT'],
-            ['id' => 'llama/latest',          'label' => 'Llama 70B',                 'group' => 'Открытые модели'],
-            ['id' => 'llama-lite/latest',     'label' => 'Llama 8B',                  'group' => 'Открытые модели'],
-            ['id' => 'qwen3-235b-a22b-fp8/latest', 'label' => 'Qwen3 235B',           'group' => 'Открытые модели'],
-            // gpt-oss is a "common instance" model: Yandex serves it without a
-            // /latest version segment — gpt://<folder>/gpt-oss-120b, not .../latest.
-            ['id' => 'gpt-oss-120b',          'label' => 'GPT-OSS 120B',              'group' => 'Открытые модели'],
-            ['id' => 'gpt-oss-20b',           'label' => 'GPT-OSS 20B',               'group' => 'Открытые модели'],
+            ['id' => 'yandexgpt',             'label' => 'YandexGPT Pro',             'group' => 'YandexGPT'],
+            ['id' => 'yandexgpt-32k',         'label' => 'YandexGPT Pro 32k',         'group' => 'YandexGPT'],
+            ['id' => 'yandexgpt-lite',        'label' => 'YandexGPT Lite — дешевле',  'group' => 'YandexGPT'],
+            ['id' => 'llama',                 'label' => 'Llama 70B',                 'group' => 'Открытые модели'],
+            ['id' => 'llama-lite',            'label' => 'Llama 8B',                  'group' => 'Открытые модели'],
+            ['id' => 'llama-3.3-70b-instruct','label' => 'Llama 3.3 70B Instruct',    'group' => 'Открытые модели'],
+            ['id' => 'deepseek-r1',           'label' => 'DeepSeek R1',               'group' => 'Открытые модели'],
+            ['id' => 'deepseek-v3',           'label' => 'DeepSeek V3',               'group' => 'Открытые модели'],
+            ['id' => 'qwen3-235b-a22b-fp8',   'label' => 'Qwen3 235B',                'group' => 'Открытые модели'],
+            ['id' => 'qwen3-30b-a3b',         'label' => 'Qwen3 30B A3B',             'group' => 'Открытые модели'],
+            ['id' => 'gemma-3-27b-it',        'label' => 'Gemma 3 27B IT',            'group' => 'Открытые модели'],
+            ['id' => 'gemma-3-12b-it',        'label' => 'Gemma 3 12B IT',            'group' => 'Открытые модели'],
         ],
         'openrouter' => [
             ['id' => 'anthropic/claude-sonnet-4.5',       'label' => 'Claude Sonnet 4.5',      'group' => 'Anthropic'],
@@ -373,13 +377,24 @@ class LLM {
         return self::httpPost(self::openRouterBase() . '/chat/completions', $body, self::openRouterHeaders(), 'openrouter');
     }
 
+    /**
+     * Model address for Yandex: gpt://<folder>/<slug>/<version> — the same shape
+     * careerhack builds. The version segment is what the provider resolves the
+     * model by, so it is always there: «latest» unless the operator typed his own
+     * («yandexgpt/rc», «yandexgpt/deprecated»).
+     */
+    private static function yandexModelUri(string $folder, string $model): string {
+        $model = trim($model, " /") ?: 'yandexgpt';
+        if (!preg_match('~/(latest|rc|deprecated)$~', $model)) $model .= '/latest';
+        return "gpt://$folder/$model";
+    }
+
     // Yandex Foundation Models API call
     private static function callYandex(string $system, string $user, float $temp, bool $jsonMode): string {
         $key = self::$cfg['YANDEX_API_KEY'] ?? '';
         $folder = self::$cfg['YANDEX_FOLDER_ID'] ?? '';
         if (!$key || !$folder) throw new LLMException('YANDEX_API_KEY or YANDEX_FOLDER_ID not set');
-        $model = self::modelOf('yandex') ?: 'yandexgpt/latest';
-        $uri = "gpt://$folder/$model";
+        $uri = self::yandexModelUri($folder, self::modelOf('yandex'));
 
         $body = [
             'modelUri' => $uri,
