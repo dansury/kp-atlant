@@ -272,7 +272,7 @@ const App = {
                     ${active === 'board' ? '' : '<a href="#mail" class="btn btn--outline btn--sm">← На доску</a>'}
                     <h2 style="margin:0">${titles[active] || 'Письма'}</h2>
                 </div>
-                <div class="flex flex--wrap" style="gap:8px">${extra}</div>
+                <div class="flex flex--wrap" style="gap:8px;flex:1;justify-content:flex-end">${extra}</div>
             </div>
             <div id="mailBody"><div class="loading">Загрузка...</div></div>
         `;
@@ -443,29 +443,55 @@ const App = {
     // The KP is built from this table, so a wrong guess is corrected once, here,
     // and not again in every proposal generated afterwards.
 
-    renderMatchedItems(requestId, items) {
-        const card = document.getElementById('matchCard');
-        if (!card) return;
-        this.matchRequestId = requestId;
+    /**
+     * The table, wherever it is asked for. It used to live on the request page
+     * alone, behind fixed element ids; now the letter card draws the same table
+     * under the conversation it belongs to (module 012), so everything is
+     * scoped to the host block and several tables can be open at once.
+     *
+     * $host — the element to draw into (the request card by default)
+     * $opts.kp — render the «Сформировать КП» line of the letter card
+     */
+    renderMatchedItems(requestId, items, host, opts = {}) {
+        host = host || document.getElementById('matchCard');
+        if (!host) return;
+        host.dataset.matchHost = '1';
+        host.dataset.requestId = requestId;
         const open = items.filter(i => i.needs_choice).length;
-        card.innerHTML = `
-            <div class="card__title">Подходящие позиции</div>
+        host.innerHTML = `
+            <div class="card__title">Подходящие позиции ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}</div>
             <p class="muted">Подбираются сами при открытии карточки. Начните печатать название —
                подскажет локальная база товаров.</p>
             ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
                 выберите нужный, автоподбор сам не решает.</div>` : ''}
-            <div id="matchRows">${items.map(i => this.matchRow(i)).join('')}</div>
-            ${items.length ? '' : '<p class="muted" id="matchEmpty">Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
+            <div data-match-rows>${items.map(i => this.matchRow(i)).join('')}</div>
+            ${items.length ? '' : '<p class="muted" data-match-empty>Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
             <div class="flex flex--wrap" style="margin-top:10px">
-                <button class="btn btn--outline btn--sm" onclick="App.addMatchRow()">+ Позиция</button>
-                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(${requestId}, false)">Подобрать по каталогу</button>
-                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(${requestId}, true)"
+                <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
+                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
+                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
                         title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
-                <button class="btn btn--primary btn--sm" onclick="App.saveMatchedItems(${requestId})">Сохранить</button>
+                <button class="btn btn--outline btn--sm" onclick="App.saveMatchedItems(this)">Сохранить</button>
+                ${opts.kp ? this.matchKpButton(requestId, opts.kp) : ''}
             </div>
-            <div id="matchTotal" class="muted" style="margin-top:8px"></div>
+            <div data-match-total class="muted" style="margin-top:8px"></div>
         `;
-        this.updateMatchTotal();
+        this.updateMatchTotal(host);
+    },
+
+    /** «Сформировать КП» right under the positions — the next step, in place. */
+    matchKpButton(requestId, kp) {
+        if (kp.proposal_id) {
+            return `<a class="btn btn--primary btn--sm" href="#mail/proposal/${kp.proposal_id}">Открыть КП →</a>
+                    <button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId})"
+                            title="Собрать КП заново из этих позиций">Пересобрать КП</button>`;
+        }
+        return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId})">Сформировать КП</button>`;
+    },
+
+    /** The block one position belongs to — a page may hold several tables. */
+    matchHost(el) {
+        return (el && el.closest && el.closest('[data-match-host]')) || document.getElementById('matchCard');
     },
 
     // Where a candidate came from: the words of the letter, its meaning, or both
@@ -521,17 +547,17 @@ const App = {
                         ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
                 </div>
                 <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
-                       placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal()">
+                       placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal(this)">
                 <input type="text" data-field="unit" value="${this.esc(i.unit || 'шт.')}" placeholder="Ед." title="Единица измерения">
                 <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
-                       placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal()">
+                       placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal(this)">
                 <span class="price-opts-slot">${this.priceOptsSelect(i.price_options || {})}</span>
                 <input type="text" data-field="notes" value="${this.esc(i.notes || '')}" placeholder="Примечание">
                 <label title="Позиция подтверждена менеджером — автоподбор её больше не трогает">
                     <input type="checkbox" data-field="is_confirmed" ${i.is_confirmed ? 'checked' : ''}> ок
                 </label>
                 <button class="btn btn--outline btn--sm" title="Убрать строку"
-                        onclick="this.closest('[data-match-row]').remove(); App.updateMatchTotal()">×</button>
+                        onclick="const h=App.matchHost(this); this.closest('[data-match-row]').remove(); App.updateMatchTotal(h)">×</button>
             </div>`;
     },
 
@@ -550,11 +576,12 @@ const App = {
         if (!sel.value) return;
         const row = sel.closest('[data-match-row]');
         const price = row && row.querySelector('[data-field="price"]');
-        if (price) { price.value = sel.value; this.updateMatchTotal(); }
+        if (price) { price.value = sel.value; this.updateMatchTotal(sel); }
     },
 
     // The manager answered the «равнозначные» question — the line stops asking
     async chooseMatch(itemId, moyskladId, btn) {
+        const host = this.matchHost(btn);
         if (!itemId) {
             // A row that was never saved has no id yet: fill it in place
             const row = btn.closest('[data-match-row]');
@@ -566,22 +593,24 @@ const App = {
             row.querySelector('[data-field="is_confirmed"]').checked = true;
             row.classList.remove('match-row--choice');
             btn.closest('.choice').remove();
-            this.updateMatchTotal();
+            this.updateMatchTotal(host);
             return;
         }
+        const requestId = Number(host && host.dataset.requestId);
         try {
-            const res = await this.api(`requests.php?action=items_choose&id=${this.matchRequestId}`, {
+            const res = await this.api(`requests.php?action=items_choose&id=${requestId}`, {
                 method: 'POST', body: {item_id: itemId, moysklad_id: moyskladId},
             });
-            this.renderMatchedItems(this.matchRequestId, res.items || []);
+            this.renderMatchedItems(requestId, res.items || [], host, this.matchOpts(host));
             this.toast('Позиция выбрана', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    addMatchRow() {
-        const box = document.getElementById('matchRows');
+    addMatchRow(el) {
+        const host = this.matchHost(el);
+        const box = host && host.querySelector('[data-match-rows]');
         if (!box) return;
-        const empty = document.getElementById('matchEmpty');
+        const empty = host.querySelector('[data-match-empty]');
         if (empty) empty.remove();
         box.insertAdjacentHTML('beforeend', this.matchRow({quantity: 1, unit: 'шт.', price: 0}));
     },
@@ -647,8 +676,10 @@ const App = {
         }));
     },
 
-    collectMatchedItems() {
-        return [...document.querySelectorAll('[data-match-row]')].map(row => {
+    collectMatchedItems(el) {
+        const host = this.matchHost(el);
+        if (!host) return [];
+        return [...host.querySelectorAll('[data-match-row]')].map(row => {
             const out = {};
             row.querySelectorAll('[data-field]').forEach(el => {
                 out[el.dataset.field] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
@@ -659,10 +690,11 @@ const App = {
         });
     },
 
-    updateMatchTotal() {
-        const el = document.getElementById('matchTotal');
+    updateMatchTotal(from) {
+        const host = this.matchHost(from);
+        const el = host && host.querySelector('[data-match-total]');
         if (!el) return;
-        const rows = this.collectMatchedItems();
+        const rows = this.collectMatchedItems(host);
         const total = rows.reduce((s, r) => s + r.price * r.quantity, 0);
         const noPrice = rows.filter(r => !r.price).length;
         el.innerHTML = rows.length
@@ -671,30 +703,42 @@ const App = {
             : '';
     },
 
-    async saveMatchedItems(requestId, silent = false) {
+    // $from — any element of the table (a button of its own toolbar)
+    async saveMatchedItems(from, silent = false) {
+        const host = this.matchHost(from);
+        if (!host) return [];
+        const requestId = Number(host.dataset.requestId);
         const res = await this.api(`requests.php?action=items_save&id=${requestId}`, {
-            method: 'POST', body: {items: this.collectMatchedItems()},
+            method: 'POST', body: {items: this.collectMatchedItems(host)},
         });
         if (!silent) this.toast('Позиции сохранены', 'success');
-        this.renderMatchedItems(requestId, res.items || []);
+        this.renderMatchedItems(requestId, res.items || [], host, this.matchOpts(host));
         return res.items;
     },
 
-    async rematchItems(requestId, smart) {
+    async rematchItems(from, smart) {
+        const host = this.matchHost(from);
+        if (!host) return;
+        const requestId = Number(host.dataset.requestId);
+        const opts = this.matchOpts(host);
         // What the manager has already typed must survive the re-match
-        const pending = this.collectMatchedItems();
-        const card = document.getElementById('matchCard');
-        card.innerHTML = `<div class="card__title">Подходящие позиции</div>
+        const pending = this.collectMatchedItems(host);
+        host.innerHTML = `<div class="card__title">Подходящие позиции</div>
                           <div class="loading">${smart ? 'Спрашиваем нейросеть и подбираем...' : 'Подбираем по каталогу...'}</div>`;
         try {
             await this.api(`requests.php?action=items_save&id=${requestId}`, {method: 'POST', body: {items: pending}});
             const res = await this.api(`requests.php?action=items_rematch&id=${requestId}&smart=${smart ? 1 : 0}`, {method: 'POST'});
-            this.renderMatchedItems(requestId, res.items || []);
+            this.renderMatchedItems(requestId, res.items || [], host, opts);
             this.toast('Подбор обновлён — подтверждённые строки не тронуты', 'success');
         } catch (err) {
             this.toast(err.message, 'error');
-            this.renderMatchedItems(requestId, []);
+            this.renderMatchedItems(requestId, [], host, opts);
         }
+    },
+
+    // A redraw must not lose the letter card's «Сформировать КП» line
+    matchOpts(host) {
+        return host && host.dataset.kp ? {kp: JSON.parse(host.dataset.kp)} : {};
     },
 
     // Attachments of the incoming email (FR-021, FR-022)
@@ -837,9 +881,11 @@ const App = {
         if (btn) { btn.disabled = true; btn.textContent = 'Генерация...'; }
         try {
             // The KP is built from «Подходящие позиции» — send the table as it
-            // looks on screen, not as it was last saved
-            if (document.querySelector('[data-match-row]')) {
-                await this.saveMatchedItems(requestId, true);
+            // looks on screen, not as it was last saved. On the letter card
+            // several tables can be open, so take this request's own.
+            const host = document.querySelector(`[data-match-host][data-request-id="${requestId}"]`);
+            if (host && host.querySelector('[data-match-row]')) {
+                await this.saveMatchedItems(host, true);
             }
             const p = await this.api(`proposals.php?action=generate&request_id=${requestId}`, {method:'POST'});
             this.toast('КП сформировано', 'success');
@@ -1342,7 +1388,14 @@ const App = {
         return String(key).replace(/[^a-zA-Z0-9]/g, '_');
     },
 
-    /** Open a conversation right inside the company card — no page change. */
+    /**
+     * Open a conversation right inside the company card — no page change.
+     *
+     * Everything the letter needs is under it: the letters themselves, the
+     * catalog positions the request turned into (module 012 — the КП table used
+     * to live on a separate request page nobody could find), and the reply box
+     * at the very bottom. Reading and answering is one screen and no dialog.
+     */
     async toggleCompanyThread(key) {
         const box = document.getElementById('th_' + this.threadDomId(key));
         if (!box) return;
@@ -1352,26 +1405,136 @@ const App = {
         box.innerHTML = '<div class="loading">Загрузка писем...</div>';
         try {
             const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key));
-            this.mailThread = {key, reply: d.reply || {}, subject: d.thread.subject};
             const reply = d.reply || {};
             box.innerHTML = `
                 <div class="thread">
-                    ${d.messages.map((m, i) => this.threadMessage(m, i === d.messages.length - 1)).join('')}
+                    ${d.messages.map((m, i) => this.threadMessage(m, i === d.messages.length - 1, key)).join('')}
                 </div>
-                <div class="flex flex--wrap" style="padding:8px 0">
-                    ${reply.reply_to_id ? `<button class="btn btn--primary btn--sm"
-                        onclick="App.mailCreateReply(${reply.reply_to_id}, ${reply.request_id || 'null'}, '${this.jsStr(key)}')">✨ Составить ответ</button>` : ''}
-                    <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${reply.reply_to_id || 'null'}, false, '${this.jsStr(key)}')">Ответить вручную</button>
-                    ${reply.request_id ? `<a class="btn btn--outline btn--sm" href="#mail/request/${reply.request_id}">Позиции и КП →</a>` : ''}
-                    <a class="btn btn--outline btn--sm" href="#mail/t/${encodeURIComponent(key)}">Открыть отдельно</a>
-                </div>`;
+                <div data-thread-items></div>
+                ${this.threadComposer(key, reply, d.mailboxes || [])}
+            `;
             box.dataset.loaded = '1';
+            if (reply.request_id) this.loadThreadItems(box, reply.request_id);
             // Opening a conversation is reading it — the card stops shouting
             const row = box.closest('.mrow');
             if (row) { row.classList.remove('mrow--unread'); row.querySelectorAll('.pill--danger').forEach(p => p.remove()); }
         } catch (err) {
             box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
         }
+    },
+
+    /**
+     * The catalog positions of this letter, in the letter. The same table as on
+     * the request card — it is the same `request_items` — so a correction here
+     * is the one the КП is built from.
+     */
+    async loadThreadItems(box, requestId) {
+        const host = box.querySelector('[data-thread-items]');
+        if (!host) return;
+        host.className = 'card card--items';
+        host.innerHTML = '<div class="loading">Подбираем позиции по каталогу...</div>';
+        try {
+            const req = await this.api(`requests.php?action=get&id=${requestId}`);
+            const kp = {proposal_id: (req.proposals && req.proposals[0]) ? req.proposals[0].id : null};
+            host.dataset.kp = JSON.stringify(kp);
+            this.renderMatchedItems(requestId, req.items || [], host, {kp});
+        } catch (err) {
+            host.innerHTML = `<p class="no">Позиции не загрузились: ${this.esc(err.message)}</p>`;
+        }
+    },
+
+    /**
+     * The reply, at the bottom of the conversation where a mail program puts it.
+     * It used to be a dialog behind a button that stood next to a second button
+     * doing almost the same thing; now there is one box, already open, and the
+     * model writes into it instead of into a window of its own.
+     */
+    threadComposer(key, reply, mailboxes) {
+        const id = this.threadDomId(key);
+        return `
+            <div class="composer" data-composer="${this.esc(id)}">
+                <div class="composer__head">
+                    <span class="composer__title">Ответ</span>
+                    <span class="muted" data-cmp-target>кому: ${this.esc(reply.to || '')}</span>
+                    <select data-cmp-box title="Из какого ящика отправить">
+                        ${(mailboxes || []).map(b => `<option value="${b.id}" ${reply.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
+                    </select>
+                </div>
+                <input type="hidden" data-cmp-to value="${this.esc(reply.to || '')}">
+                <input type="hidden" data-cmp-reply value="${reply.reply_to_id || ''}">
+                <input type="text" data-cmp-subject value="${this.esc(reply.subject || '')}" placeholder="Тема">
+                <textarea data-cmp-text rows="5" placeholder="Ответьте клиенту — или попросите черновик у нейросети"></textarea>
+                <div class="composer__actions">
+                    <button class="btn btn--primary btn--sm" onclick="App.threadSend('${this.jsStr(key)}', this)">Отправить</button>
+                    ${reply.reply_to_id ? `<button class="btn btn--outline btn--sm" data-cmp-draft
+                        onclick="App.threadDraft('${this.jsStr(key)}', this)">✨ Черновик нейросетью</button>` : ''}
+                    <span class="muted" data-cmp-note></span>
+                </div>
+            </div>`;
+    },
+
+    composerOf(key) {
+        return document.querySelector(`[data-composer="${this.threadDomId(key)}"]`);
+    },
+
+    /** «Ответить на это письмо» — same box, just aimed at that letter. */
+    replyToMessage(key, messageId, to) {
+        const c = this.composerOf(key);
+        if (!c) return;
+        c.querySelector('[data-cmp-reply]').value = messageId;
+        if (to) c.querySelector('[data-cmp-to]').value = to;
+        const label = c.querySelector('[data-cmp-target]');
+        if (label) label.textContent = 'кому: ' + (to || '');
+        c.querySelector('[data-cmp-text]').focus();
+        c.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    },
+
+    async threadDraft(key, btn) {
+        const c = this.composerOf(key);
+        if (!c) return;
+        const area = c.querySelector('[data-cmp-text]');
+        const id = Number(c.querySelector('[data-cmp-reply]').value);
+        if (!id) { this.toast('Нечего отвечать — в переписке нет входящего письма', 'error'); return; }
+        btn.disabled = true;
+        const label = btn.textContent;
+        btn.textContent = 'Генерация...';
+        area.placeholder = 'Нейросеть готовит черновик ответа...';
+        try {
+            const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body: {id}});
+            area.value = r.text || '';
+            const subj = c.querySelector('[data-cmp-subject]');
+            if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
+            const note = c.querySelector('[data-cmp-note]');
+            if (note) note.textContent = 'черновик' + (r.model ? ` · ${r.model}` : '') + ' — проверьте перед отправкой';
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; btn.textContent = label; area.placeholder = ''; }
+    },
+
+    async threadSend(key, btn) {
+        const c = this.composerOf(key);
+        if (!c) return;
+        const text = c.querySelector('[data-cmp-text]').value;
+        if (!text.trim()) { this.toast('Письмо пустое', 'error'); return; }
+        btn.disabled = true;
+        try {
+            const res = await this.api('mail.php?action=send', {method: 'POST', body: {
+                to:          c.querySelector('[data-cmp-to]').value.trim(),
+                subject:     c.querySelector('[data-cmp-subject]').value.trim(),
+                text,
+                mailbox_id:  c.querySelector('[data-cmp-box]').value || null,
+                reply_to_id: Number(c.querySelector('[data-cmp-reply]').value) || null,
+                thread_key:  key,
+            }});
+            // «Отправлено» is only half the news when the copy never reached the
+            // server's «Отправленные» — the manager hears it now, not in a month
+            if (res.warning) this.toast(res.warning, 'error');
+            else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
+            // The answer belongs in the conversation it answers — reopen it
+            const box = document.getElementById('th_' + this.threadDomId(key));
+            if (box) { box.dataset.loaded = ''; box.hidden = true; this.toggleCompanyThread(key); }
+            if (this.company) this.loadCompanyThreads(this.company.id);
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
     },
 
     /** Where this company sits on the board, and a one-click move to a column. */
@@ -2236,8 +2399,6 @@ const App = {
         const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key));
         const t = d.thread;
         const reply = d.reply || {};
-        this.mailThread = {key, reply, subject: t.subject};
-
         document.getElementById('app').innerHTML = `
             <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
                 <div>
@@ -2252,19 +2413,22 @@ const App = {
                 <div class="flex flex--wrap">
                     <a href="#mail/inbox" class="btn btn--outline btn--sm">← К списку</a>
                     <button class="btn btn--outline btn--sm" onclick="App.boardPick('${this.jsStr(key)}')">▦ В доску</button>
-                    ${reply.reply_to_id ? `<button class="btn btn--outline btn--sm" onclick="App.mailCreateReply(${reply.reply_to_id}, ${reply.request_id || 'null'}, '${this.jsStr(key)}')">Создать ответ</button>` : ''}
-                    <button class="btn btn--primary btn--sm" onclick="App.mailCompose(${reply.reply_to_id || 'null'}, false, '${this.jsStr(key)}')">Ответить</button>
                 </div>
             </div>
             <div id="threadPlacement"></div>
             <div class="thread">
-                ${d.messages.map((m, i) => this.threadMessage(m, i === d.messages.length - 1)).join('')}
+                ${d.messages.map((m, i) => this.threadMessage(m, i === d.messages.length - 1, key)).join('')}
             </div>
+            <div data-thread-items></div>
+            ${this.threadComposer(key, reply, d.mailboxes || [])}
         `;
         this.loadThreadPlacement(key);
+        if (reply.request_id) this.loadThreadItems(document.getElementById('app'), reply.request_id);
     },
 
-    threadMessage(m, open) {
+    // $key — the conversation this letter is shown in, so «ответить» lands in
+    // the one composer at the bottom instead of opening a window of its own
+    threadMessage(m, open, key) {
         const sentBad = m.direction === 'out' && m.sent_state === 'failed';
         return `
             <div class="tmsg ${m.direction === 'in' ? 'tmsg--in' : 'tmsg--out'}" data-tmsg>
@@ -2284,8 +2448,9 @@ const App = {
                         ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
                     </div>` : ''}
                     <div class="flex flex--wrap" style="margin-top:8px">
-                        <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id}, false, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Ответить на это письмо</button>
-                        ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm" onclick="App.mailCreateReply(${m.id}, ${m.request_id || 'null'}, '${this.jsStr(this.mailThread ? this.mailThread.key : '')}')">Создать ответ</button>` : ''}
+                        <button class="btn btn--outline btn--sm"
+                                onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
+                            Ответить на это письмо</button>
                         ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                     </div>
                 </div>
@@ -2313,10 +2478,10 @@ const App = {
             <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
                 <h2 style="margin:0">${this.esc(m.subject) || 'Без темы'}</h2>
                 <div class="flex flex--wrap">
-                    ${m.thread_key ? `<a href="#mail/t/${encodeURIComponent(m.thread_key)}" class="btn btn--outline btn--sm">Вся переписка</a>` : ''}
                     <a href="#mail/inbox" class="btn btn--outline btn--sm">← К списку</a>
-                    ${m.direction === 'in' ? `<button class="btn btn--primary btn--sm" onclick="App.mailCreateReply(${m.id}, ${m.request_id || 'null'}, '${this.jsStr(m.thread_key || '')}')">Создать ответ</button>` : ''}
-                    <button class="btn btn--outline btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>
+                    ${m.thread_key
+                        ? `<a href="#mail/t/${encodeURIComponent(m.thread_key)}" class="btn btn--primary btn--sm">Вся переписка и ответ →</a>`
+                        : `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>`}
                     ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                 </div>
             </div>
@@ -2640,17 +2805,6 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    // ==== «Создать ответ»: the full КП assembly when there is one to reuse ====
-    // Item 3: a letter that already produced a `requests` row (any category
-    // that isn't spam/service/a supplier's own offer — see Triage::CATEGORIES)
-    // gets the exact same «Подходящие позиции» + «Сформировать КП» flow as the
-    // Запросы tab, instead of a bare text reply. Plain correspondence, which
-    // never got a request row, keeps the plain AI-drafted reply.
-    mailCreateReply(messageId, requestId, threadKey) {
-        if (requestId) { location.hash = `mail/request/${requestId}`; return; }
-        this.mailCompose(messageId, true, threadKey);
-    },
-
     // ==== Rendering an email body: HTML sanitized server-side, shown inside a
     // sandboxed iframe with no allow-scripts so a sanitizer gap still can't run
     // anything; plain text keeps the old escaped/pre-wrapped rendering (item 4) ====
@@ -2867,6 +3021,16 @@ const App = {
         document.getElementById('adminBody').innerHTML = `<div class="card"><p class="no">${this.esc(err.message)}</p></div>`;
     },
 
+    // llm_route is per provider («openrouter» through a proxy, «yandex» direct),
+    // so the overview names both instead of printing the object itself
+    routeLabel(route) {
+        if (!route) return 'напрямую';
+        if (typeof route === 'string') return route;
+        const names = {openrouter: 'OpenRouter', yandex: 'Yandex'};
+        const parts = Object.entries(route).map(([k, v]) => `${names[k] || k} — ${v}`);
+        return parts.length ? parts.join(' · ') : 'напрямую';
+    },
+
     async adminOverview() {
         try {
             const d = await this.api('admin.php?action=overview');
@@ -2888,7 +3052,7 @@ const App = {
                         ${d.llm.map(p => `<p>${this.esc(p.label)}: ${p.enabled ? `<span class="ok">в цепочке #${p.order}</span>` : '<span class="muted">выключен</span>'}
                             · ключ ${p.key_set ? '<span class="ok">задан</span>' : '<span class="no">не задан</span>'}
                             · модель <code>${this.esc(p.model)}</code></p>`).join('')}
-                        <p class="muted">Запросы идут ${this.esc(d.llm_route || 'напрямую')}${d.llm_catalog && d.llm_catalog.count
+                        <p class="muted">Запросы идут ${this.esc(this.routeLabel(d.llm_route))}${d.llm_catalog && d.llm_catalog.count
                             ? ` · каталог OpenRouter: ${d.llm_catalog.count} моделей, ${this.fmtDate(d.llm_catalog.synced_at)}` : ''}</p>
                         <a href="#settings/llm" class="btn btn--outline btn--sm">Настроить</a>
                     </div>

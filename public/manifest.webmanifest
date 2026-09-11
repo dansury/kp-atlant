@@ -10,8 +10,8 @@
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui", "browser"],
   "orientation": "any",
-  "background_color": "#22221f",
-  "theme_color": "#f1f0ee",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
   "categories": ["business", "productivity"],
   "shortcuts": [
     { "name": "Письма", "url": "./#mail", "description": "Доска, входящие, запросы и компании" },

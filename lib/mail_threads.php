@@ -41,14 +41,57 @@ final class MailThreads {
     }
 
     /**
-     * Thread key of a message row. Same subject → same key, in every mailbox.
-     * A letter with no subject cannot be grouped by one, so it follows its
-     * `In-Reply-To` when that message is already archived, and otherwise stands
-     * alone under its own Message-ID.
+     * Mailbox providers where the domain says nothing about who is writing.
+     * Two clients on gmail.com are two companies; two clients on «zavod.ru»
+     * are two people at one.
+     */
+    private const FREE_MAIL = [
+        'gmail.com', 'googlemail.com', 'yandex.ru', 'yandex.com', 'ya.ru', 'yandex.by', 'yandex.kz',
+        'mail.ru', 'bk.ru', 'list.ru', 'inbox.ru', 'internet.ru', 'rambler.ru', 'lenta.ru', 'ro.ru',
+        'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'icloud.com', 'me.com',
+        'proton.me', 'protonmail.com', 'yahoo.com', 'aol.com', 'qq.com', '163.com',
+    ];
+
+    /**
+     * WHO the conversation is with — the other side of it, never us.
+     *
+     * The subject alone was the thread: «Запрос КП на бронежилеты» from three
+     * different companies in one week collapsed into one conversation, and the
+     * card showed the wrong client's letters. The party is therefore part of the
+     * key: the corporate domain (so a colleague writing from the same company
+     * lands in the same thread) or, on a free mailbox where the domain means
+     * nothing, the address itself.
+     */
+    public static function party(array $row): string {
+        $direction = (string)($row['direction'] ?? 'in');
+        // Our own answer is addressed TO the client — that is the party, not us
+        $raw = $direction === 'out'
+            ? (string)($row['to_emails'] ?? '')
+            : (string)($row['from_email'] ?? '');
+
+        $addr = '';
+        foreach (preg_split('/[,;]/', $raw) ?: [] as $candidate) {
+            $candidate = trim($candidate);
+            if (preg_match('/[\w.+-]+@[\w.-]+\.\w+/u', $candidate, $m)) { $addr = mb_strtolower($m[0]); break; }
+        }
+        if ($addr === '') return '';
+
+        $domain = substr($addr, strpos($addr, '@') + 1);
+        return in_array($domain, self::FREE_MAIL, true) ? $addr : $domain;
+    }
+
+    /**
+     * Thread key of a message row: the same subject WITH THE SAME PARTY, in
+     * every mailbox of ours. A letter with no subject cannot be grouped by one,
+     * so it follows its `In-Reply-To` when that message is already archived, and
+     * otherwise stands alone under its own Message-ID.
      */
     public static function keyFor(array $row): string {
         $norm = self::normalizeSubject((string)($row['subject'] ?? ''));
-        if ($norm !== '') return 's:' . md5(mb_strtolower($norm));
+        if ($norm !== '') {
+            $party = self::party($row);
+            return 's:' . md5(($party !== '' ? $party . '|' : '') . mb_strtolower($norm));
+        }
 
         $parent = trim((string)($row['in_reply_to'] ?? ''));
         if ($parent !== '') {
@@ -63,7 +106,8 @@ final class MailThreads {
 
     /** Stamp one archived row with its thread. Called right after every insert. */
     public static function assign(int $messageId): ?string {
-        $row = Db::one("SELECT id, subject, message_id, in_reply_to, from_email, date_at FROM mail_messages WHERE id=?", [$messageId]);
+        $row = Db::one("SELECT id, subject, message_id, in_reply_to, from_email, to_emails, direction, date_at
+                        FROM mail_messages WHERE id=?", [$messageId]);
         if (!$row) return null;
         $key = self::keyFor($row);
         Db::update('mail_messages', [
@@ -79,7 +123,7 @@ final class MailThreads {
      */
     public static function backfill(bool $all = false): int {
         $where = $all ? '1=1' : "(thread_key IS NULL OR thread_key = '')";
-        $rows = Db::all("SELECT id, subject, message_id, in_reply_to, from_email, date_at
+        $rows = Db::all("SELECT id, subject, message_id, in_reply_to, from_email, to_emails, direction, date_at
                          FROM mail_messages WHERE $where ORDER BY date_at, id");
         $n = 0;
         foreach ($rows as $row) {
@@ -164,6 +208,14 @@ final class MailThreads {
              WHERE m.thread_key=? ORDER BY m.date_at DESC, m.id DESC LIMIT 1", [$key]
         );
 
+        // The request (and the company) belong to the CONVERSATION, not to its
+        // newest letter: a client's «ждём, спасибо» carries neither, and taking
+        // them from the last row alone lost the КП positions of the whole thread.
+        $linked = Db::one(
+            "SELECT MAX(request_id) AS request_id, MAX(counterparty_id) AS counterparty_id
+             FROM mail_messages WHERE thread_key=?", [$key]
+        );
+
         // Which mailboxes this conversation lives in — «яндекс + gmail» is the
         // whole reason the thread exists, so the list says it out loud
         $boxes = Db::all(
@@ -190,9 +242,10 @@ final class MailThreads {
             'mailbox_id'      => $last['mailbox_id'] !== null ? (int)$last['mailbox_id'] : null,
             'mailbox_name'    => $last['mailbox_name'],
             'mailboxes'       => $boxes,
-            'counterparty_id' => $last['counterparty_id'] ? (int)$last['counterparty_id'] : null,
-            'counterparty_name' => $last['counterparty_name'],
-            'request_id'      => $last['request_id'] ? (int)$last['request_id'] : null,
+            'counterparty_id' => $linked['counterparty_id'] ? (int)$linked['counterparty_id'] : null,
+            'counterparty_name' => $last['counterparty_name'] ?: ($linked['counterparty_id']
+                ? Db::val("SELECT name FROM counterparties WHERE id=?", [$linked['counterparty_id']]) : null),
+            'request_id'      => $linked['request_id'] ? (int)$linked['request_id'] : null,
             'category'        => $last['category'] ?? null,
             'participants'    => self::participants($key),
         ];
@@ -256,13 +309,20 @@ final class MailThreads {
             "SELECT * FROM mail_messages WHERE thread_key=? AND direction='in' ORDER BY date_at DESC, id DESC LIMIT 1", [$key]
         ) ?: $last;
 
+        // Same rule as summary(): the request is the thread's, not the last
+        // letter's — the positions table belongs under the whole conversation
+        $linked = Db::one(
+            "SELECT MAX(request_id) AS request_id, MAX(counterparty_id) AS counterparty_id
+             FROM mail_messages WHERE thread_key=?", [$key]
+        );
+
         return [
             'reply_to_id'     => (int)$lastIn['id'],
             'to'              => $lastIn['direction'] === 'in' ? (string)$lastIn['from_email'] : (string)$lastIn['to_emails'],
             'subject'         => 'Re: ' . self::displaySubject((string)$lastIn['subject']),
             'mailbox_id'      => $last['mailbox_id'] !== null ? (int)$last['mailbox_id'] : null,
-            'counterparty_id' => $lastIn['counterparty_id'] ? (int)$lastIn['counterparty_id'] : null,
-            'request_id'      => $lastIn['request_id'] ? (int)$lastIn['request_id'] : null,
+            'counterparty_id' => $linked['counterparty_id'] ? (int)$linked['counterparty_id'] : null,
+            'request_id'      => $linked['request_id'] ? (int)$linked['request_id'] : null,
             'category'        => $lastIn['category'] ?? null,
         ];
     }

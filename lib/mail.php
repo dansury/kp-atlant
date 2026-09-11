@@ -325,7 +325,11 @@ final class MailArchive {
             'subject'     => $subject,
             'message_id'  => $msg['message_id'] ?? '',
             'in_reply_to' => $msg['in_reply_to'] ?? '',
+            // The conversation is «this subject WITH THIS CLIENT», so the key
+            // needs both sides: for a letter we sent, the party is the addressee
+            'direction'   => $direction,
             'from_email'  => $msg['from'] ?? '',
+            'to_emails'   => $msg['to'] ?? '',
             'date_at'     => $msg['date'] ?? '',
         ]);
         return Db::insert('mail_messages', [
@@ -362,7 +366,9 @@ final class MailArchive {
             'subject'     => $subject,
             'message_id'  => $o['message_id'] ?? '',
             'in_reply_to' => $o['in_reply_to'] ?? '',
+            'direction'   => 'out',
             'from_email'  => $o['from_email'] ?? '',
+            'to_emails'   => $o['to'] ?? ($o['to_emails'] ?? ''),
             'date_at'     => date('Y-m-d H:i:s'),
         ]);
         return Db::insert('mail_messages', [

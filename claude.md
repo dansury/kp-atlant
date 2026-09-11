@@ -40,7 +40,12 @@ request.
 
 ## Mail
 Letters live in threads, not rows: `MailThreads::keyFor()` groups them by the subject with
-«Re:»/«Fwd:» stripped, so an answer sent from Gmail belongs to the Yandex conversation.
+«Re:»/«Fwd:» stripped **and the party the letter is with** (`MailThreads::party()` — the
+corporate domain, or the whole address on a free mailbox), so an answer sent from Gmail
+belongs to the Yandex conversation while «Запрос КП» from two different companies stays two
+conversations. The party of a letter WE send is its addressee, never us. A thread's request
+and company are the whole conversation's (`MAX(request_id)`), never the newest letter's — a
+client's «спасибо» carries neither.
 Anything that archives a letter must set `thread_key`, and an answer must inherit the thread
 of the letter it answers, whichever mailbox it leaves from. A copy in the IMAP
 «Отправленные» is not optional and not silent: `Mailer::send()` resolves the real folder and
@@ -48,6 +53,11 @@ records the outcome in `mail_messages.sent_state` — a failure is `Logger::erro
 visible warning, never a swallowed warning.
 
 ## Interface
+The interface is light: a white page, blocks drawn with a hairline border and a soft shadow,
+and the shop's red as the only accent — a tint means something (waiting, warning, a stage of
+the board), never decoration. Red text goes through `--accent-ink`; `--primary` is a fill and
+a border colour. Keep every text/background pair at WCAG AA and say so in the CSS comment.
+
 There is ONE «Настройки» item in the header: everything lives under `#settings/<tab>`, admin-only
 tabs hidden from a plain manager. Do not add a second top-level entry for a settings screen.
 
@@ -62,6 +72,13 @@ light background belongs in that selector list. Red TEXT always goes through `--
 the white and the dark side.
 
 ## Board
+Everything a letter needs is IN the letter (module 012): the «Подходящие позиции» table and
+the reply box are drawn under the conversation, so a КП is priced and an answer is written
+without leaving the company card. The positions table is scoped to its host block
+(`[data-match-host]`) because several can be open at once — never go back to page-wide
+element ids for it. One reply box per conversation: do not add a second button that opens
+another way to answer.
+
 «Письма» is ONE board and a card on it is a COMPANY (module 011) — its letters, its requests
 and its КП are things you open the card to see, never a second list beside it. New mail puts
 itself there: `Boards::sync()` runs on every open of the board, so nothing waits for a manager
