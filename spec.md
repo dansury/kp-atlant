@@ -14,11 +14,18 @@
 | Почтовая программа: цепочки, «Отправленные», доски | `specs/010-mail-client-boards/spec.md` | Implemented |
 | Одна доска: компания = карточка, письма и запросы внутри | `specs/011-unified-board/spec.md` | Implemented |
 | Письмо как рабочее место: позиции и ответ внутри, цепочки по отправителю | `specs/012-letter-card-workbench/spec.md` | Implemented |
+| Аналоги из наличия, таблица соответствия, реквизиты и НДС из МойСклад | `specs/013-alternatives-and-requisites/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
 |---|---|
 | Чем искать факты для ответа на shared-хостинге (RAG / БД / эмбеддинги) | `specs/006-email-triage/research.md` |
+
+## Tests
+| Что проверяет | Файл |
+|---|---|
+| Модуль 013 целиком: аналоги, таблица соответствия, карточка, реквизиты, НДС | `php tests/module_013.php` |
+| Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 
 ## Constitution
 `.specify/memory/constitution.md`

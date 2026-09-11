@@ -536,6 +536,29 @@ const App = {
             </div>`;
     },
 
+    /**
+     * «Запрошенной позиции нет — предлагаем эту» (модуль 013).
+     *
+     * Показывает ровно то, что попадёт в КП: чем заменили, почему и каким
+     * требованиям запроса наша позиция соответствует по её же описанию.
+     * Ничего не придумывается на этом экране — это те же данные, что в PDF.
+     */
+    altNote(i) {
+        if (!i.is_alternative) return '';
+        const alt = i.alternative || {};
+        const fits = (alt.matched || []).map(m =>
+            `<li>соответствует: ${this.esc(m.requirement)}${m.ours ? ' — ' + this.esc(m.ours) : ''}</li>`).join('');
+        const differs = (alt.differs || []).length
+            ? `<div class="muted">отличается: ${this.esc((alt.differs || []).join('; '))}</div>` : '';
+        return `
+            <div class="note note--swap">
+                <strong>Аналог.</strong> Нет в наличии: ${this.esc(i.alt_of || i.raw_name || '')}.
+                ${alt.reason ? this.esc(alt.reason) : ''}
+                ${fits ? `<ul class="alt-fits">${fits}</ul>` : ''}
+                ${differs}
+            </div>`;
+    },
+
     matchRow(i = {}) {
         const conf = i.match_confidence ? Math.round(i.match_confidence * 100) : null;
         const src = this.matchSourceLabel(i.match_source);
@@ -547,8 +570,11 @@ const App = {
                 <input type="hidden" data-field="article" value="${this.esc(i.article || '')}">
                 <input type="hidden" data-field="stock" value="${i.stock ?? ''}">
                 <input type="hidden" data-field="needs_choice" value="${i.needs_choice ? 1 : 0}">
+                <input type="hidden" data-field="is_alternative" value="${i.is_alternative ? 1 : 0}">
+                <input type="hidden" data-field="alt_of" value="${this.esc(i.alt_of || '')}">
                 <div class="match-row__name">
                     ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}</div>` : ''}
+                    ${this.altNote(i)}
                     <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
                            value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
                     <div class="suggest" hidden></div>
@@ -971,6 +997,19 @@ const App = {
                     </div>
 
                     <div class="card">
+                        <div class="card__title">Таблица соответствия</div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="showMatchTable" ${proposal.show_match_table_effective ? 'checked' : ''}>
+                                Открывать КП таблицей «запрошено → предлагаем»</label>
+                            <div class="muted">Запрос пришёл ${proposal.request_shape === 'table' ? 'таблицей или спецификацией — таблица включена сама' : 'текстом — по умолчанию таблица не нужна'}.</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Пояснение над таблицей</label>
+                            <textarea id="matchTableNote" rows="2"
+                                placeholder="Слева — позиции Вашего запроса, справа — что мы предлагаем по каждой из них.">${this.esc(proposal.match_table_note || '')}</textarea>
+                        </div>
+                    </div>
+                    <div class="card">
                         <div class="card__title">Текст перед таблицей</div>
                         <textarea id="preTable" rows="3" placeholder="Условия отгрузки, самовывоз...">${this.esc(proposal.pre_table_text || '')}</textarea>
                     </div>
@@ -1049,11 +1088,19 @@ const App = {
                     <div class="note note--swap">
                         Аналог: просили «${this.esc(it.requested_name)}». Что напишем клиенту про замену —
                         попадёт в сопроводительное письмо и запомнится для следующих КП.
+                        ${(it.alt_matched || []).length ? `<ul class="alt-fits">${
+                            it.alt_matched.map(m => `<li>соответствует: ${this.esc(m.requirement)}${m.ours ? ' — ' + this.esc(m.ours) : ''}</li>`).join('')
+                        }</ul>` : ''}
+                        ${(it.alt_differs || []).length ? `<div class="muted">отличается: ${this.esc(it.alt_differs.join('; '))}</div>` : ''}
                     </div>
                     <div class="form-group">
                         <label>Пояснение к замене</label>
-                        <input type="text" data-field="notes" value="${this.esc(it.notes || '')}"
+                        <input type="text" data-field="alt_reason" value="${this.esc(it.alt_reason || '')}"
                                placeholder="аналог по классу защиты, наш производитель, срок поставки короче">
+                    </div>
+                    <div class="form-group">
+                        <label>Примечание в таблице</label>
+                        <input type="text" data-field="notes" value="${this.esc(it.notes || '')}">
                     </div>` : ''}
                 <div class="form-group">
                     <label>Описание</label>
@@ -1066,6 +1113,11 @@ const App = {
                 <div class="form-group">
                     <label>Комплектация</label>
                     <textarea rows="2" data-field="included_text">${this.esc(it.included_text || '')}</textarea>
+                </div>
+                <div class="form-group">
+                    <label>Ссылка на товар на сайте</label>
+                    <input type="url" data-field="site_url" value="${this.esc(it.site_url || '')}"
+                           placeholder="подставляется сама из каталога сайта — «Настройки → Сайт (Битрикс)»">
                 </div>
                 <div class="flex">
                     <label><input type="checkbox" data-field="show_images" ${it.show_images != 0 ? 'checked' : ''}> Фото</label>
@@ -1193,6 +1245,9 @@ const App = {
             upsell_note: document.getElementById('upsellNote').value,
             show_images: document.getElementById('showImages').checked ? 1 : 0,
             show_upsell: document.getElementById('showUpsell').checked ? 1 : 0,
+            // Явный выбор менеджера побеждает автоопределение формы запроса
+            show_match_table: document.getElementById('showMatchTable').checked ? 1 : 0,
+            match_table_note: document.getElementById('matchTableNote').value,
             vat_rate: parseInt(document.getElementById('vatRate').value),
             execution_days: parseInt(document.getElementById('execDays').value),
             show_vat_total: parseInt(document.getElementById('showVat').value),
@@ -3305,6 +3360,8 @@ const App = {
                 if (it.type.startsWith('model:')) return this.modelSelect(id, catalogs[it.type.slice(6)] || [], String(it.value));
                 if (it.secret) return `<input type="password" id="${id}" placeholder="${it.filled ? 'задан ' + this.esc(it.tail) + ' — оставьте пустым' : 'не задан'}">`;
                 if (it.type === 'int') return `<input type="number" id="${id}" value="${this.esc(it.value)}">`;
+                // Списки синонимов и текст блока дисциплины — многострочные
+                if (it.type === 'textarea') return `<textarea id="${id}" rows="6">${this.esc(it.value)}</textarea>`;
                 return `<input type="text" id="${id}" value="${this.esc(it.value)}">`;
             };
             const groups = Object.entries(d.groups).map(([key, title]) => {

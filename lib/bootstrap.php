@@ -983,6 +983,62 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '16')");
         $current = 16;
     }
+
+    // v17 — module 013: an analogue for what we cannot ship, the correspondence
+    // table of a request that arrived as a table, the product's page on the
+    // shop, and the requisites frozen onto the КП they were signed with.
+    if ($current < 17) {
+        // The catalog now remembers the product's own VAT rate (МойСклад decides
+        // the rate of a КП line, not a house default) and its page on the site
+        Db::ensureColumn('products_cache', 'vat', 'INTEGER');
+        Db::ensureColumn('products_cache', 'site_url', 'TEXT');
+        Db::ensureColumn('products_cache', 'site_url_synced_at', 'TEXT');
+
+        // Was the request a table or prose? Decided from the letter, stored once
+        Db::ensureColumn('requests', 'shape', 'TEXT');
+
+        // A matched line may be an analogue of something we could not ship, and
+        // it carries the proof: which of the client's requirements it meets
+        Db::ensureColumn('request_items', 'is_alternative', 'INTEGER', '0');
+        Db::ensureColumn('request_items', 'alt_of', 'TEXT');
+        Db::ensureColumn('request_items', 'alt_specs_json', 'TEXT');
+
+        Db::ensureColumn('proposal_items', 'is_alternative', 'INTEGER', '0');
+        Db::ensureColumn('proposal_items', 'alt_reason', 'TEXT');
+        Db::ensureColumn('proposal_items', 'alt_specs_json', 'TEXT');
+        Db::ensureColumn('proposal_items', 'site_url', 'TEXT');
+
+        // The correspondence table and the requisites the document was signed
+        // with. `requisites_json` is a SNAPSHOT: reprinting a КП from March must
+        // not silently stamp today's bank account on it.
+        Db::ensureColumn('proposals', 'show_match_table', 'INTEGER');
+        Db::ensureColumn('proposals', 'match_table_note', 'TEXT');
+        Db::ensureColumn('proposals', 'requisites_json', 'TEXT');
+
+        // Our own legal facts, as МойСклад holds them
+        Db::ensureColumn('legal_entities', 'moysklad_id', 'TEXT');
+        Db::ensureColumn('legal_entities', 'kpp', 'TEXT');
+        Db::ensureColumn('legal_entities', 'okpo', 'TEXT');
+        Db::ensureColumn('legal_entities', 'legal_address', 'TEXT');
+        Db::ensureColumn('legal_entities', 'pays_vat', 'INTEGER', '1');
+        Db::ensureColumn('legal_entities', 'bank_name', 'TEXT');
+        Db::ensureColumn('legal_entities', 'bank_bic', 'TEXT');
+        Db::ensureColumn('legal_entities', 'bank_account', 'TEXT');
+        Db::ensureColumn('legal_entities', 'bank_corr', 'TEXT');
+        Db::ensureColumn('legal_entities', 'synced_at', 'TEXT');
+
+        // The buyer's, and the договор the КП is issued under
+        Db::ensureColumn('counterparties', 'legal_title', 'TEXT');
+        Db::ensureColumn('counterparties', 'legal_address', 'TEXT');
+        Db::ensureColumn('counterparties', 'kpp', 'TEXT');
+        Db::ensureColumn('counterparties', 'ogrn', 'TEXT');
+        Db::ensureColumn('counterparties', 'contract_moysklad_id', 'TEXT');
+        Db::ensureColumn('counterparties', 'contract_name', 'TEXT');
+        Db::ensureColumn('counterparties', 'contract_date', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '17')");
+        $current = 17;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

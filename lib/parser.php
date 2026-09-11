@@ -53,10 +53,19 @@ class RequestParser {
 
         if ($substitutions) {
             $fewShot .= "\n\nВ этом КП есть замены на аналоги — назови их в письме прямо, "
-                      . "одной фразой на позицию, без извинений:\n";
+                      . "одной фразой на позицию, без извинений. Для каждой замены обязательно "
+                      . "перечисли, каким требованиям запроса наша позиция соответствует — "
+                      . "строго по списку ниже, ничего не добавляя от себя:\n";
             foreach (array_slice($substitutions, 0, 8) as $s) {
                 $fewShot .= "Просили: {$s['requested']} → предлагаем: {$s['offered']}"
                           . ($s['note'] !== '' ? " ({$s['note']})" : '') . "\n";
+                // Which of the client's own requirements this analogue was
+                // PROVED to meet (module 013). The model may repeat these and
+                // may not invent any others.
+                foreach (array_slice($s['matched'] ?? [], 0, 6) as $m) {
+                    $fewShot .= "    соответствует: {$m['requirement']}"
+                              . (($m['ours'] ?? '') !== '' ? " — у нас: {$m['ours']}" : '') . "\n";
+                }
             }
         }
         if ($pastSubstitutions) {

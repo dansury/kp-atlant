@@ -12,6 +12,8 @@ require_once ROOT . '/lib/kp_content.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/notifier.php';
 require_once ROOT . '/lib/crm.php';
+require_once ROOT . '/lib/request_shape.php';
+require_once ROOT . '/lib/requisites.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -26,6 +28,16 @@ switch ($action) {
                               WHERE p.id=?", [$id]);
         if (!$proposal) jsonError('Not found', 404);
         $proposal['items'] = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$id]);
+        // What each analogue was proved to meet, so the editor shows the same
+        // evidence the client will read
+        foreach ($proposal['items'] as &$row) {
+            $row['alt_matched'] = KpContent::matchedSpecs($row);
+            $row['alt_differs'] = KpContent::unmatchedSpecs($row);
+        }
+        unset($row);
+        $proposal['show_match_table_effective'] = KpContent::showMatchTable($proposal);
+        $proposal['request_shape'] = $proposal['request_id']
+            ? RequestShape::of((int)$proposal['request_id']) : RequestShape::TEXT;
         // Which positions are analogues rather than what was asked for — the
         // editor asks the manager to explain exactly those (module 011)
         $swaps = [];
@@ -79,11 +91,19 @@ switch ($action) {
             // house rule is written once instead of retyped on every КП
             'pre_table_text'  => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='pre_table' ORDER BY id DESC LIMIT 1") ?: ''),
             'post_table_text' => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='post_table' ORDER BY id DESC LIMIT 1") ?: ''),
+            // Запрос пришёл таблицей — КП открывается таблицей соответствия.
+            // Решается по самому письму (module 013), без вопроса менеджеру.
+            'show_match_table' => (RequestShape::of($requestId) === RequestShape::TABLE) ? 1 : 0,
         ]);
 
         // Insert items
         foreach ($matched as $i => $m) {
             $match = $m['match'];
+            // «Сколько можем отгрузить» — свободный остаток. Из «Подходящих
+            // позиций» он уже свободный (`reserved` там учтён), из прямого
+            // подбора приходит сырой остаток и резерв отдельно; оба пути
+            // складываются в одну и ту же пару колонок КП.
+            $free = $match ? max(0, (int)($match['stock'] ?? 0) - (int)($match['reserved'] ?? 0)) : 0;
             Db::insert('proposal_items', [
                 'proposal_id' => $proposalId,
                 'position' => $i + 1,
@@ -102,7 +122,13 @@ switch ($action) {
                 'match_variants' => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
                 'is_confirmed' => $m['is_confirmed'] ? 1 : 0,
                 // The manager's own note wins over the automatic «под заказ»
-                'notes' => $m['notes'] ?? (($match && ($match['stock'] ?? 0) == 0) ? 'под заказ' : null),
+                'notes' => $m['notes'] ?? (($match && $free === 0) ? 'под заказ' : null),
+                // An analogue offered because we could not ship what was asked
+                // for, and the proof that it fits (module 013)
+                'is_alternative' => !empty($m['is_alternative']) ? 1 : 0,
+                'alt_reason'     => $m['alt_specs']['reason'] ?? null,
+                'alt_specs_json' => !empty($m['alt_specs'])
+                    ? json_encode($m['alt_specs'], JSON_UNESCAPED_UNICODE) : null,
             ]);
         }
 
@@ -133,6 +159,21 @@ switch ($action) {
         // Pre-fill the upsell table with modules from the addon folder (FR-044)
         KpContent::seedAddons($proposalId);
 
+        // НДС, реквизиты, адреса, банк и договор — из МойСклад и ЗАМОРОЖЕНЫ на
+        // этом КП (module 013). Переоткрытый через полгода документ печатается с
+        // теми реквизитами, с которыми был подписан, а не с сегодняшними.
+        if ((int)Settings::get('REQUISITES_AUTOSYNC', 1) === 1) {
+            try {
+                Requisites::syncOrganization();
+                if ($req['counterparty_id']) Requisites::syncCounterparty((int)$req['counterparty_id']);
+            } catch (Throwable $e) {
+                // A dead token leaves the last synced copy in charge — a КП is
+                // never blocked by МойСклад being unreachable
+                Logger::warning('moysklad', 'Реквизиты не обновились перед КП: ' . $e->getMessage());
+            }
+        }
+        Requisites::freeze($proposalId);
+
         // Generate PDF draft
         PdfGenerator::generate($proposalId);
 
@@ -162,7 +203,8 @@ switch ($action) {
         // Update proposal fields
         $fields = [];
         foreach (['pre_table_text', 'post_table_text', 'intro_text', 'conditions_text', 'execution_days', 'validity_days', 'vat_rate', 'show_vat_total',
-                  'warranty_text', 'images_note', 'show_images', 'show_upsell', 'upsell_intro', 'upsell_note'] as $f) {
+                  'warranty_text', 'images_note', 'show_images', 'show_upsell', 'upsell_intro', 'upsell_note',
+                  'show_match_table', 'match_table_note'] as $f) {
             if (array_key_exists($f, $input)) $fields[$f] = $input[$f];
         }
         if (array_key_exists('cover_letter_final', $input)) {
@@ -179,7 +221,8 @@ switch ($action) {
                 $itemId = $itemData['id'] ?? 0;
                 $upd = [];
                 foreach (['quantity', 'price', 'product_name', 'is_confirmed', 'notes', 'vat_rate', 'moysklad_product_id',
-                          'description_text', 'specs_text', 'included_text', 'show_images', 'price_from', 'qty_from'] as $f) {
+                          'description_text', 'specs_text', 'included_text', 'show_images', 'price_from', 'qty_from',
+                          'alt_reason', 'site_url'] as $f) {
                     if (array_key_exists($f, $itemData)) $upd[$f] = $itemData[$f];
                 }
                 // Which photos of this product go into the KP (FR-046). An empty

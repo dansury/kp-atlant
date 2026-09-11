@@ -12,6 +12,7 @@
  * stored with `needs_choice = 1` and the card asks instead of guessing.
  */
 require_once __DIR__ . '/catalog.php';
+require_once __DIR__ . '/alternatives.php';
 
 final class RequestItems {
 
@@ -27,7 +28,139 @@ final class RequestItems {
 
         $counterpartyId = !empty($req['counterparty_id']) ? (int)$req['counterparty_id'] : null;
         self::write($requestId, self::fromMatches(ProductMatcher::matchItems($items, $useLlm, $counterpartyId)));
+        // Every row was written by the matcher a line ago, so every row is up
+        // for an analogue — `is_confirmed` here means «уверенное совпадение по
+        // названию», not «менеджер это утвердил», and an exact name match on an
+        // empty shelf is exactly the line the analogue exists for.
+        self::fillAlternatives($requestId, $useLlm, array_column(self::all($requestId), 'id'));
         return self::all($requestId);
+    }
+
+    /**
+     * Lines we cannot ship get an analogue that we can (module 013).
+     *
+     * A line qualifies when it found nothing at all, or when what it found has
+     * no free remainder. The analogue REPLACES the row — a КП prices one
+     * position per request line, not two — but nothing is hidden: `alt_of`
+     * keeps what the client asked for, `alt_specs_json` keeps the proof of
+     * which of their requirements it meets, and the position we could not ship
+     * goes back into `match_variants`, so «выбрать другую» offers it again with
+     * one click.
+     *
+     * A line with no analogue in stock stays exactly as it was and the КП says
+     * «под заказ» — it does not become a question.
+     *
+     * $onlyIds names the rows an automatic match just wrote — those are fair
+     * game whatever their `is_confirmed` says, because the score set it and
+     * nobody has looked at them yet. Called with no list (from the UI), it
+     * leaves every confirmed row alone: that flag is then the manager's.
+     *
+     * @param int[]|null $onlyIds
+     */
+    public static function fillAlternatives(int $requestId, bool $useLlm = false, ?array $onlyIds = null): int {
+        if (!Alternatives::enabled()) return 0;
+
+        $rows = Db::all("SELECT * FROM request_items WHERE request_id=? ORDER BY position, id", [$requestId]);
+        $raw = Db::val("SELECT raw_text FROM requests WHERE id=?", [$requestId]) ?: '';
+
+        $eligible = $onlyIds === null ? null : array_map('intval', $onlyIds);
+
+        $needy = [];
+        foreach ($rows as $row) {
+            if ($eligible === null) {
+                if ((int)$row['is_confirmed'] === 1) continue;
+            } elseif (!in_array((int)$row['id'], $eligible, true)) {
+                continue;
+            }
+            if ((int)($row['is_alternative'] ?? 0) === 1) continue;
+            // `stock` on the row is the free remainder the matcher recorded;
+            // a row with no product at all is just as much «нечего отгрузить»
+            $hasProduct = trim((string)($row['product_name'] ?? '')) !== '';
+            $free = $row['stock'] === null ? 0 : (int)$row['stock'];
+            if ($hasProduct && $free > 0) continue;
+            $needy[(int)$row['id']] = $row;
+        }
+        if (!$needy) return 0;
+
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
+        $lines = [];
+        $ids = [];
+        foreach ($needy as $id => $row) {
+            $ids[] = $id;
+            $lines[] = [
+                'raw_name'   => (string)($row['raw_name'] !== '' ? $row['raw_name'] : (string)$row['product_name']),
+                // The original fragment of the letter is where the requirements
+                // are written — «класс Бр5», «размер L», «площадь 40 дм2»
+                'raw_text'   => self::requirementText($raw, (string)$row['raw_name']),
+                'exclude_id' => (string)($row['moysklad_product_id'] ?? ''),
+            ];
+        }
+
+        $found = 0;
+        foreach (Alternatives::suggest($lines, $counterpartyId, $useLlm) as $i => $alt) {
+            if (!$alt) continue;
+            $id = $ids[$i];
+            $row = $needy[$id];
+
+            // What we could not ship goes back into the candidate list, so the
+            // manager can put it back without re-matching the line
+            $variants = $row['match_variants'] ? (json_decode($row['match_variants'], true) ?: []) : [];
+            if (!empty($row['moysklad_product_id'])) {
+                array_unshift($variants, [
+                    'moysklad_id' => $row['moysklad_product_id'],
+                    'name'        => (string)$row['product_name'],
+                    'article'     => (string)($row['article'] ?? ''),
+                    'unit'        => (string)($row['unit'] ?? 'шт.'),
+                    'price'       => (float)($row['price'] ?? 0),
+                    'stock'       => (int)($row['stock'] ?? 0),
+                    'score'       => $row['match_confidence'] ?? null,
+                    'source'      => 'было подобрано, нет в наличии',
+                ]);
+            }
+
+            Db::update('request_items', [
+                'moysklad_product_id' => $alt['moysklad_id'],
+                'product_name'        => $alt['name'],
+                'article'             => $alt['article'],
+                'unit'                => $alt['unit'],
+                'price'               => $alt['price'],
+                'stock'               => $alt['free'],
+                'match_confidence'    => $alt['score'],
+                'match_source'        => 'аналог',
+                'match_variants'      => $variants ? json_encode($variants, JSON_UNESCAPED_UNICODE) : null,
+                'is_alternative'      => 1,
+                'alt_of'              => trim((string)$row['product_name']) !== ''
+                                            ? (string)$row['product_name'] : (string)$row['raw_name'],
+                'alt_specs_json'      => json_encode([
+                    'matched' => $alt['matched'],
+                    'differs' => $alt['differs'],
+                    'reason'  => $alt['reason'],
+                    'source'  => $alt['source'],
+                ], JSON_UNESCAPED_UNICODE),
+                'notes'               => $alt['reason'] !== '' ? 'аналог: ' . $alt['reason'] : 'аналог из наличия',
+                // An analogue is a swap — the manager looks at it before it ships
+                'needs_choice'        => 1,
+                'updated_at'          => date('Y-m-d H:i:s'),
+            ], 'id=?', [$id]);
+            $found++;
+        }
+
+        if ($found) Logger::info('catalog', "Подобрано аналогов: $found", ['request_id' => $requestId]);
+        return $found;
+    }
+
+    /**
+     * The piece of the letter this line came from — where its requirements are.
+     * The parser keeps a `raw_text` per item, but a line edited by hand has
+     * none, so the letter is searched for the sentence that names it.
+     */
+    private static function requirementText(string $letter, string $name): string {
+        $name = trim($name);
+        if ($name === '' || $letter === '') return $name;
+        foreach (preg_split('/\R|(?<=[.;])\s+/u', $letter) ?: [] as $line) {
+            if (mb_stripos($line, mb_substr($name, 0, 12)) !== false) return trim($line);
+        }
+        return $name;
     }
 
     public static function all(int $requestId): array {
@@ -48,6 +181,10 @@ final class RequestItems {
             $row['variants'] = $row['match_variants'] ? (json_decode($row['match_variants'], true) ?: []) : [];
             unset($row['match_variants']);
             $row['price_options'] = $prices[$row['moysklad_product_id']] ?? [];
+            // Which of the client's requirements this analogue meets — the card
+            // shows it, and so does the КП
+            $row['alternative'] = !empty($row['alt_specs_json'])
+                ? (json_decode((string)$row['alt_specs_json'], true) ?: null) : null;
         }
         return $rows;
     }
@@ -67,8 +204,10 @@ final class RequestItems {
         ], $existing);
         $matches = ProductMatcher::matchItems($queries, $useLlm, $counterpartyId);
 
+        $repicked = [];
         foreach ($existing as $i => $row) {
             if ((int)$row['is_confirmed'] === 1) continue;
+            $repicked[] = (int)$row['id'];
             $m = $matches[$i] ?? null;
             $best = $m['match'] ?? null;
             Db::update('request_items', [
@@ -77,15 +216,23 @@ final class RequestItems {
                 'article'             => $best['article'] ?? null,
                 'unit'                => $best['unit'] ?? $row['unit'],
                 'price'               => (float)($best['price'] ?? 0),
-                'stock'               => $best['stock'] ?? null,
+                'stock'               => $best === null ? null : Alternatives::freeStock($best),
                 'match_confidence'    => $best['score'] ?? null,
                 'match_variants'      => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
                 'needs_choice'        => !empty($m['needs_choice']) ? 1 : 0,
                 'match_source'        => $m['match_source'] ?? null,
                 'is_confirmed'        => !empty($m['is_confirmed']) ? 1 : 0,
+                // A fresh match starts from what the client asked for again:
+                // the analogue is re-decided below against today's stock
+                'is_alternative'      => 0,
+                'alt_of'              => null,
+                'alt_specs_json'      => null,
                 'updated_at'          => date('Y-m-d H:i:s'),
             ], 'id=?', [$row['id']]);
         }
+        // Only the rows rematch() actually re-picked are up for an analogue —
+        // it left the manager's confirmed lines alone and so does this
+        self::fillAlternatives($requestId, $useLlm, $repicked);
         return self::all($requestId);
     }
 
@@ -112,6 +259,11 @@ final class RequestItems {
                 // A row the manager saved is answered: the choice prompt goes away
                 'needs_choice'        => (!empty($row['is_confirmed']) || $prodName !== '') ? 0 : (int)($row['needs_choice'] ?? 0),
                 'notes'               => trim((string)($row['notes'] ?? '')) ?: null,
+                // The manager put a different product on the line — it is no
+                // longer our analogue but their choice, and the КП stops
+                // explaining it as a swap
+                'is_alternative'      => !empty($row['is_alternative']) ? 1 : 0,
+                'alt_of'              => trim((string)($row['alt_of'] ?? '')) ?: null,
                 'updated_at'          => date('Y-m-d H:i:s'),
             ];
 
@@ -150,6 +302,9 @@ final class RequestItems {
                 'needs_choice' => (int)($row['needs_choice'] ?? 0) === 1,
                 'notes'        => $row['notes'] ?? null,
                 'variants'     => $row['variants'] ?? [],
+                'is_alternative' => (int)($row['is_alternative'] ?? 0) === 1,
+                'alt_of'         => $row['alt_of'] ?? null,
+                'alt_specs'      => $row['alternative'] ?? null,
                 'match'        => $hasProduct ? [
                     'moysklad_id' => $row['moysklad_product_id'] ?? null,
                     'name'        => (string)$row['product_name'],
@@ -173,7 +328,7 @@ final class RequestItems {
         $row = Db::one("SELECT * FROM request_items WHERE id=? AND request_id=?", [$itemId, $requestId]);
         if (!$row) throw new RuntimeException('Строка не найдена');
 
-        $p = Db::one("SELECT moysklad_id, name, article, unit, price, prices_json, stock FROM products_cache WHERE moysklad_id=?", [$productId]);
+        $p = Db::one("SELECT moysklad_id, name, article, unit, price, prices_json, stock, reserved FROM products_cache WHERE moysklad_id=?", [$productId]);
         if (!$p) throw new RuntimeException('Позиция каталога не найдена');
 
         $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
@@ -183,7 +338,7 @@ final class RequestItems {
             'article'             => $p['article'],
             'unit'                => $p['unit'] ?: 'шт.',
             'price'               => Catalog::priceFor($p, $counterpartyId),
-            'stock'               => $p['stock'],
+            'stock'               => Alternatives::freeStock($p),
             'is_confirmed'        => 1,
             'needs_choice'        => 0,
             'updated_at'          => date('Y-m-d H:i:s'),
@@ -210,13 +365,17 @@ final class RequestItems {
                 'article'             => $best['article'] ?? null,
                 'unit'                => $best['unit'] ?? 'шт.',
                 'price'               => (float)($best['price'] ?? 0),
-                'stock'               => $best['stock'] ?? null,
+                // The FREE remainder, not the number on the МойСклад card: stock
+                // already reserved for someone else is not ours to promise, and
+                // this column is what decides «в наличии» / «под заказ» all the
+                // way through to the КП and to the analogue search (module 013)
+                'stock'               => $best === null ? null : Alternatives::freeStock($best),
                 'match_confidence'    => $best['score'] ?? null,
                 'match_variants'      => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
                 'needs_choice'        => !empty($m['needs_choice']) ? 1 : 0,
                 'match_source'        => $m['match_source'] ?? null,
                 'is_confirmed'        => !empty($m['is_confirmed']) ? 1 : 0,
-                'notes'               => ($best && (int)($best['stock'] ?? 0) === 0) ? 'под заказ' : null,
+                'notes'               => ($best && Alternatives::freeStock($best) === 0) ? 'под заказ' : null,
             ];
         }
         return $out;

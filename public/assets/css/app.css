@@ -109,7 +109,7 @@ h2 { font-size: 20px; }
 .form-group { margin-bottom: 14px; }
 .form-group label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; }
 input[type="text"], input[type="email"], input[type="password"], input[type="number"],
-textarea, select {
+input[type="url"], textarea, select {
     width: 100%; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
     font-size: 14px; font-family: inherit; background: var(--surface); color: var(--text);
 }
@@ -394,6 +394,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bcard__actions a:hover { color: var(--accent-ink); }
 .note--swap { background: var(--warning-bg); border: 1px solid #f0dcbb; color: var(--warning);
               border-radius: var(--radius-sm); padding: 6px 10px; margin: 6px 0; font-size: 12px; }
+/* Module 013 — which of the client's requirements the analogue actually meets.
+   Ink is var(--text) on the warm warning tint, not the tint's own amber: the
+   list is evidence a manager reads line by line, so it keeps full contrast
+   (--text #14161a on --warning-bg #fdf4e7 ≈ 15.1:1, well past WCAG AA). */
+.alt-fits { margin: 4px 0 2px; padding-left: 18px; color: var(--text); font-size: 12px; }
+.alt-fits li { margin: 1px 0; }
 /* Module 011 — a card is a company, and the board says out loud who is waiting.
    Unanswered: bold, a coloured edge, full-strength text. Answered: normal
    weight, dimmed — the same language the conversation list uses. */

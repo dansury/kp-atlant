@@ -87,6 +87,35 @@ of the board, and do not make a card carry one letter again. A card with an unan
 is bold and rises inside its column; an answered one dims and keeps the order it was dragged
 into — the column itself is the manager's decision and code never changes it.
 
+## Analogues, the shape of a request, and the КП document
+A position with no FREE remainder (`stock - reserved`) is never left blank: `Alternatives`
+answers it with something we can ship — by name through `Synonyms` (built-in groups plus
+`MATCH_SYNONYMS`, never replaced), then by description against the requirements read out of
+the client's own sentence — and the КП NAMES the requirements it meets, quoting OUR text as
+proof. A claim our own description does not support never reaches the document, whoever
+made it. Every path here must give the same answer with no model key, only flatter: the
+model pass sharpens the choice, it is not what finds it. A line with no analogue in stock
+stays «под заказ» — it never becomes a question to the manager or to the client.
+
+Whether a request arrived as a table is decided by `RequestShape` from the letter alone,
+stored once on `requests.shape`, and never asked or inferred by a model — a table-shaped
+request opens its КП with the correspondence table, a text one does not. The manager's
+switch on the КП beats the setting, which beats the shape.
+
+НДС, реквизиты, адреса, банк and the договор come from `Requisites` (the организация and
+the договор in МойСклад) and are FROZEN onto the proposal in `proposals.requisites_json`
+when it is generated. Never regenerate that block on reprint, and never let a model near
+it. A link to the shop goes through `Bitrix::productUrl()`, which verifies before it caches:
+a 404 in a signed document is worse than no link.
+
+## Prompts and the model's discipline
+Every system prompt gets the discipline block appended by `Prompts::render()` — do the whole
+job, no abbreviation, no invented facts, and a clarifying question ONLY when the answer is
+needed to price something or issue a document. Put a new behavioural rule there, not in a
+thirteenth copy inside one prompt. A generation that must be reproducible (a КП, a match)
+calls the model at temperature 0 and treats its answer as a CHOICE among things the code
+verified, never as a source of names, prices or stock.
+
 ## Configuration
 Never read `config.php` directly. `config.php` holds DEFAULTS only and is optional; the effective value is `Settings::get('KEY')` (DB override → config.php → built-in default), and `$cfg` from bootstrap is already that merged array. A new setting must be declared in `Settings::SPEC` so the admin panel can show and override it. Secrets go through `Crypt` and never reach the browser.
 
@@ -95,6 +124,14 @@ Report failures with `Logger::error()` / `Logger::exception()` (channel + contex
 
 ## Language
 Code comments in English. UI in Russian. Specs in English.
+
+## Deploy
+`data/` and `storage/` hold everything the service has learned — corrections, edited prompts,
+the knowledge cache, the embedding index, settings, the signature, attachments — and none of
+it is in git. They are in `pull.php`'s `ALWAYS_KEEP` together with `config.php`, and that is
+load-bearing: `data/.gitkeep` IS in the repository, so a purge without that list walks in and
+deletes the database. Never make a deploy protection depend on a field an operator has to
+fill in. `tests/deploy_preserves_data.php` runs pull.php's own code and must stay green.
 
 ## Graphify
 Use graph to understand the project and update it after new implementations.
