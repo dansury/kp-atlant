@@ -10,7 +10,7 @@ PHP 8.1+ / SQLite / vanilla JS. No heavy frameworks. Deploy on shared hosting.
 Use OpenRouter + Yandex Foundation Models wrapper from NeuroPro (lib/llm.php pattern). Dual-provider fallback chain. Providers, models, keys and all technical prompts are edited in the admin panel — read prompts through `Prompts::render()`, never inline a system prompt in code.
 
 ## Knowledge base
-The company wiki lives in a separate repo (`dansury/Atlant`, `GRAPH/wiki`). Never inline its facts into code or prompts — the local copy is synced by `Knowledge::sync()` and injected into a generation with `Knowledge::augment($promptKey, $vars, $query)`, which picks only the wiki sections that match the text at hand. A new generation that may need company facts must go through `Knowledge::augment()` and declare its prompt key in `Knowledge::TASKS`.
+The company wiki lives in a separate repo (`dansury/Atlant`, `GRAPH/wiki`). Never inline its facts into code or prompts — the local copy is synced by `Knowledge::sync()` and injected into a generation with `Knowledge::augment($promptKey, $vars, $query)`, which picks only the wiki sections that match the text at hand. A new generation that may need company facts must go through `Knowledge::augment()` and declare its prompt key in `Knowledge::TASKS`. The wiki is retrieved by WORDS first (FTS5, or the PHP scan); `Embeddings::indexKnowledge()` vectorizes the same `knowledge_sections` and only ADDS sections the words did not reach. A wiki vector is keyed by `knowledge_sections.text_hash`, never by the section id — `Knowledge::reindex()` rebuilds that table on every sync, and an index keyed by the id would be thrown away with it.
 
 ## Incoming mail
 Every inbound letter goes through `Triage` (module 006), never straight to the parser.
@@ -69,7 +69,8 @@ first open of the card and costs no model call. What must never happen by itself
 between equally good candidates: `ProductMatcher` marks such a line `needs_choice` and the
 card asks. Do not lower that to «берём первый». Semantic search (`Embeddings`, Yandex Cloud)
 is an optional second opinion: every code path must give the same answer with no key, no
-index and a dead API, only worse. Indexing is always batched (`curl_multi`), time-budgeted
+index and a dead API, only worse. When an embedding does not arrive, the log and the panel
+must name the HTTP code and what the API said — one line per batch, never one per position. Indexing is always batched (`curl_multi`), time-budgeted
 and resumable through `text_hash` — never write a loop that embeds the whole catalog in one
 request.
 
@@ -164,7 +165,7 @@ calls the model at temperature 0 and treats its answer as a CHOICE among things 
 verified, never as a source of names, prices or stock.
 
 ## Configuration
-Never read `config.php` directly. `config.php` holds DEFAULTS only and is optional; the effective value is `Settings::get('KEY')` (DB override → config.php → built-in default), and `$cfg` from bootstrap is already that merged array. A new setting must be declared in `Settings::SPEC` so the admin panel can show and override it. Secrets go through `Crypt` and never reach the browser.
+Never read `config.php` directly. `config.php` holds DEFAULTS only and is optional; the effective value is `Settings::get('KEY')` (DB override → config.php → built-in default), and `$cfg` from bootstrap is already that merged array. A new setting must be declared in `Settings::SPEC` so the admin panel can show and override it. Secrets go through `Crypt` and never reach the browser: the panel shows `Settings::mask()` — the first four characters and the last four — which is enough to tell two tokens apart and useless to steal. An identifier that is not a secret (the МойСклад ID организации, a Folder ID) is shown in full; do not mask it.
 
 ## Errors
 Report failures with `Logger::error()` / `Logger::exception()` (channel + context), not `error_log()` — the admin reads them in «Настройки → Логи».

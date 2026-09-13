@@ -85,3 +85,27 @@ Schema version 6.
 `lib/knowledge.php`, `cron/sync_knowledge.php`, prompts and settings registries,
 `lib/parser.php` call sites, `public/api/admin.php` (`knowledge`, `knowledge_sync`,
 `knowledge_preview`), «База знаний» tab in `public/assets/js/app.js`.
+
+## Sections found by meaning (module 009)
+
+The wiki is searched by words first — FTS5, or the PHP scan where SQLite has none. Vectors are
+a second opinion on top of that answer: `Knowledge::search()` asks `Embeddings::searchKnowledge()`
+for sections the words did not reach and adds at most `KNOWLEDGE_VECTOR_TOP` of them, each above
+`KNOWLEDGE_VECTOR_MIN` and only while the character budget allows. «Сколько ждать заказ» finds
+«Сроки поставки» with no term in common; nothing is ever REMOVED from the lexical pick.
+
+`knowledge_sections` is therefore built on every reindex even when this SQLite has no FTS5 — it
+is what the vector index points at — and every section carries `text_hash`, the md5 of
+`Knowledge::vectorText()` (title, heading, tags, body). Vectors live in `knowledge_vectors` keyed
+by that hash, so re-reading the wiki from GitHub keeps the embeddings of every section whose text
+did not move.
+
+| Key | Meaning |
+|---|---|
+| `KNOWLEDGE_VECTORS` | use the vector index over the wiki at all (on) |
+| `KNOWLEDGE_VECTOR_TOP` | how many sections meaning may add on top of the words (3) |
+| `KNOWLEDGE_VECTOR_MIN` | cosine similarity below which a section is not added (0.55) |
+
+«Настройки → База знаний» carries the progress card and the «Векторизовать базу знаний» button,
+which drives the same stepped loop as the catalog; `cron/index_vectors.php` indexes both.
+With no Yandex key, the switch off or an empty index, the wiki block is exactly the lexical one.

@@ -82,6 +82,38 @@ instead of fourteen sequential ones.
 (`pack('g*')`), which makes a cosine a plain dot product and 1 200 positions ≈ 1 MB instead
 of ~12 MB of JSON. The index is unpacked once per request.
 
+**A failure says which wall it hit.** The indexing used to log one «Эмбеддинг не получен
+после повторов» per slot with nothing but the slot number in it — forty identical lines that
+name no cause. A batch now logs ONE line carrying the HTTP code, the curl error and the first
+200 characters of the answer, and the step hands the same sentence back to the panel
+(`report.error`): a rejected key (401), a folder without rights (403), a rate limit (429) and
+a connection that never opened (0) are four different problems with four different fixes.
+`products.php?action=vector_diagnose` does one live request and prints the code, so the
+question «почему не векторизуется» is answered without reading the log at all.
+
+**The wave is not the batch.** `VECTOR_BATCH` is the unit of work; `VECTOR_CONCURRENCY`
+(5 by default) is how many of it are on the wire at once. Twenty parallel requests is what
+earns the 429 on a shared host. A request may also never outlive the step that started it:
+its timeout is clipped to what is left of `VECTOR_BUDGET_SEC`, because a batch that hangs to
+the full `VECTOR_TIMEOUT_SEC` used to eat the whole budget and leave no time for the retry —
+so every slot was reported as «не получен» after exactly one attempt.
+
+**A host where `curl_multi` gives nothing back still finishes.** A whole wave answering with
+code 0 flips the run to single `curl_exec` requests for the rest of the step. Slower, and it
+works on hosting where the parallel interface does not.
+
+## The wiki is indexed by the same engine (with module 005)
+
+`Embeddings::indexKnowledge()` runs the same batched, budgeted, resumable step over the wiki
+sections. `Knowledge::search()` stays lexical first: the vector index only ADDS up to
+`KNOWLEDGE_VECTOR_TOP` sections above `KNOWLEDGE_VECTOR_MIN` that the words did not reach,
+and only while the character budget allows.
+
+A wiki vector is keyed by `text_hash`, never by the section id — `Knowledge::reindex()` drops
+and rebuilds `knowledge_sections` on every sync, and an index keyed by the id would be thrown
+away each time the wiki is re-read. Sections whose text did not move keep their embeddings;
+one edited paragraph re-embeds one section.
+
 **Degradation is silent and total.** No Yandex key, vectors switched off, an empty index or
 a dead API — `Embeddings::enabled()` is false or the search returns nothing, and the match is
 exactly the lexical one it was before. A КП never fails because an embedding did not arrive.
@@ -98,12 +130,19 @@ exactly the lexical one it was before. A КП never fails because an embedding d
 | `VECTOR_ENABLED` | use the vector index at all |
 | `VECTOR_MODEL_DOC`, `VECTOR_MODEL_QUERY` | Yandex embedding models |
 | `VECTOR_BATCH`, `VECTOR_PAUSE_MS`, `VECTOR_BUDGET_SEC`, `VECTOR_RETRIES`, `VECTOR_TIMEOUT_SEC` | the resilience knobs above |
+| `VECTOR_CONCURRENCY` | how many requests of a batch are in flight together (5) |
+| `KNOWLEDGE_VECTORS`, `KNOWLEDGE_VECTOR_TOP`, `KNOWLEDGE_VECTOR_MIN` | the wiki half of the index (module 005) |
 | `VECTOR_ENDPOINT` | mirror of the embeddings API for a filtered network |
 
 ## Schema v11 (this module)
 
 - `product_vectors` — `product_id`, `model`, `dim`, `text_hash`, `vec` (BLOB), `updated_at`
 - `request_items.needs_choice`, `request_items.match_source`
+
+## Schema v19 (the wiki index)
+
+- `knowledge_vectors` — `text_hash` (PK), `model`, `dim`, `vec` (BLOB), `updated_at`
+- `knowledge_sections.text_hash` — what the vector is keyed by
 
 ## API
 
@@ -113,11 +152,16 @@ exactly the lexical one it was before. A КП never fails because an embedding d
 | `products.php?action=vector_index` | one bounded, resumable indexing step |
 | `products.php?action=vector_stats` | how much of the catalog is vectorized |
 | `products.php?action=vector_reset` | drop the index (model or folder changed) |
+| `products.php?action=vector_diagnose` | one live request to Yandex, with the HTTP code |
+| `admin.php?action=knowledge_vector_index` | one bounded step over the wiki sections |
+| `admin.php?action=knowledge_vector_stats` | how much of the wiki is vectorized |
+| `admin.php?action=knowledge_vector_reset` | drop the wiki index |
 | `products.php?action=match_preview` | what the request card would see for a phrase |
 
 ## Cron
 
 ```
-php cron/index_vectors.php --budget=60        # steps until done
-php cron/index_vectors.php --once             # a single step
+php cron/index_vectors.php --budget=60             # catalog and wiki, steps until done
+php cron/index_vectors.php --once                  # a single step per index
+php cron/index_vectors.php --only=knowledge        # the wiki alone
 ```

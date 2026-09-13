@@ -2026,8 +2026,11 @@ const App = {
                     <button class="btn btn--primary btn--sm" id="vecBtn" onclick="App.vectorIndex()"
                             ${d.configured ? '' : 'disabled'}>Векторизовать каталог</button>
                     <button class="btn btn--outline btn--sm" onclick="App.vectorReset()">Очистить индекс</button>
+                    <button class="btn btn--outline btn--sm" onclick="App.vectorDiagnose()"
+                            ${d.configured ? '' : 'disabled'}>Проверить эмбеддинги</button>
                 </div>
                 <div id="vectorProgress" class="muted" style="margin-top:8px"></div>
+                <div id="vectorDiag" style="margin-top:8px"></div>
             `;
         } catch (err) {
             card.innerHTML = `<div class="card__title">Векторный поиск по каталогу</div><p class="no">${this.esc(err.message)}</p>`;
@@ -2037,30 +2040,62 @@ const App = {
     /**
      * The indexing loop lives in the browser: each request does one bounded step
      * on the server and says how much is left. That is what keeps a 1 200-position
-     * catalog from ever needing a request longer than the host allows.
+     * catalog — or a wiki of two hundred sections — from ever needing a request
+     * longer than the host allows. The same loop drives both indexes.
      */
-    async vectorIndex() {
-        const btn = document.getElementById('vecBtn');
-        const out = document.getElementById('vectorProgress');
+    async vectorLoop({endpoint, btnId, outId, label, after}) {
+        const btn = document.getElementById(btnId);
+        const out = document.getElementById(outId);
+        const idle = btn ? btn.textContent : '';
         if (btn) { btn.disabled = true; btn.textContent = 'Векторизуем...'; }
         let indexed = 0, failed = 0, steps = 0;
         try {
             while (steps < 200) {
-                const r = (await this.api('products.php?action=vector_index', {method: 'POST', body: {}})).report;
+                const r = (await this.api(endpoint, {method: 'POST', body: {}})).report;
                 indexed += r.indexed; failed += r.failed; steps++;
                 if (out) out.textContent = `шаг ${steps}: обработано ${indexed}, осталось ${r.left}`
                     + (failed ? `, неудач ${failed}` : '');
                 if (r.done) break;
                 // A step that moved nothing will not move anything next time either
-                if (r.indexed === 0) { this.toast('Шаг без прогресса — проверьте ключ Yandex и логи', 'error'); break; }
+                if (r.indexed === 0) {
+                    this.toast(r.error || 'Шаг без прогресса — проверьте ключ Yandex и логи', 'error');
+                    break;
+                }
+                // Partial failure still has a reason, and the panel prints it
+                if (r.error && out) out.textContent += ` · ${r.error}`;
             }
-            this.toast(`Векторизовано позиций: ${indexed}` + (failed ? `, не удалось: ${failed}` : ''), failed ? 'info' : 'success');
+            this.toast(`${label}: ${indexed}` + (failed ? `, не удалось: ${failed}` : ''), failed ? 'info' : 'success');
         } catch (err) {
             this.toast(err.message, 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Векторизовать каталог'; }
-            this.loadVectorStats();
+            if (btn) { btn.disabled = false; btn.textContent = idle; }
+            if (after) after();
         }
+    },
+
+    vectorIndex() {
+        return this.vectorLoop({
+            endpoint: 'products.php?action=vector_index',
+            btnId: 'vecBtn', outId: 'vectorProgress',
+            label: 'Векторизовано позиций',
+            after: () => this.loadVectorStats(),
+        });
+    },
+
+    // One live request to Yandex — the answer to «почему не векторизуется»
+    async vectorDiagnose() {
+        const out = document.getElementById('vectorDiag');
+        out.innerHTML = '<p class="muted">Спрашиваем Yandex Cloud...</p>';
+        try {
+            const d = await this.api('products.php?action=vector_diagnose');
+            out.innerHTML = `
+                <p class="${d.ok ? 'ok' : 'no'}">${d.ok
+                    ? `Эмбеддинг получен: HTTP ${d.http}, размерность ${d.dim}, ${d.ms} мс`
+                    : this.esc(d.error || `HTTP ${d.http}`)}</p>
+                <p class="muted">Адрес: <code>${this.esc(d.endpoint)}</code> · модель <code>${this.esc(d.model)}</code>
+                   · folder <code>${this.esc(d.folder || 'не задан')}</code> · ключ <code>${this.esc(d.key || 'не задан')}</code>
+                   ${d.proxy ? ` · через прокси <code>${this.esc(d.proxy)}</code>` : ''}</p>`;
+        } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
     async vectorReset() {
@@ -2218,36 +2253,112 @@ const App = {
         } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
-    // ---- KP look: default texts, photos and upsell ----
+    // ---- KP look: defaults typed here, facts pulled from МойСклад ----
+    // НДС, ИНН, адреса, банк and the договор are not settings — they are what
+    // МойСклад holds, frozen onto the КП when it is generated (module 013).
+    // The tab shows them so the manager sees the document's real numbers, and
+    // the typed-in fields below only cover what МойСклад does not answer.
 
     async settingsKp() {
         try {
-            const d = await this.api('settings.php?action=general');
+            const d = await this.api('settings.php?action=kp');
+            this.kpState = d;
+            const g = d.general || {};
+            const s = d.seller || {};
+            const cv = d.catalog_vat || {};
+            const row = (label, value, extra = '') => value
+                ? `<p><span class="muted">${label}:</span> ${this.esc(value)}${extra}</p>` : '';
+            const vatHint = !s.pays_vat
+                ? `<div class="muted">Организация в МойСклад — не плательщик НДС: в КП печатается «${this.esc(d.exempt_note)}», ставка не применяется.</div>`
+                : (cv.rate === null || cv.rate === undefined
+                    ? '<div class="muted">В каталоге нет ставок НДС — применяется значение из этого поля.</div>'
+                    : `<div class="muted">В каталоге МойСклад преобладает ${cv.rate}% (${cv.share}% из ${cv.items} позиций).
+                       Ставка позиции всегда важнее этого поля — оно применяется, когда в каталоге ставки нет.
+                       ${String(g.default_vat_rate || '') !== String(cv.rate)
+                           ? `<a href="#" onclick="App.kpUseCatalogVat(event)">подставить ${cv.rate}%</a>` : ''}</div>`);
+
             document.getElementById('adminBody').innerHTML = `
                 <div class="card">
+                    <div class="card__title">Реквизиты из МойСклад</div>
+                    <p class="muted">Это подставляется в КП и замораживается в документе в момент создания.
+                       Правится в МойСклад, не здесь.</p>
+                    ${d.seller.synced_at
+                        ? `<p class="muted">Обновлено из МойСклад: ${this.fmtDate(d.seller.synced_at)}</p>`
+                        : '<p class="no">Реквизиты ещё ни разу не подтягивались — нажмите «Обновить из МойСклад».</p>'}
+                    ${row('Организация', s.full_name)}
+                    ${row('Краткое имя', s.short_name)}
+                    ${row('ИНН', s.inn)}${row('КПП', s.kpp)}
+                    ${row('ОГРН', s.ogrn)}${row('ОГРНИП', s.ogrnip)}${row('ОКПО', s.okpo)}
+                    ${row('Юридический адрес', s.legal_address)}
+                    ${row('Фактический адрес', s.address)}
+                    ${row('Телефон', s.phone)}${row('E-mail', s.email)}
+                    ${row('Подписант', s.signatory)}
+                    ${row('Банк', (s.bank || {}).line)}
+                    <p><span class="muted">НДС:</span> ${s.pays_vat
+                        ? 'организация — плательщик НДС'
+                        : `не плательщик — в КП «${this.esc(d.exempt_note)}»`}</p>
+                    <p class="muted">ID организации в МойСклад: <code>${this.esc(d.org_id || s.moysklad_id || 'не задан')}</code>
+                       ${d.token_set ? '' : ' · <span class="no">токен МойСклад не задан</span>'}</p>
+                    ${d.autosync ? '' : '<p class="no">Автоподтяжка выключена (REQUISITES_AUTOSYNC) — КП возьмёт то, что лежит здесь.</p>'}
+                    ${d.block_in_kp ? '' : '<p class="no">Блок реквизитов в КП выключен (KP_REQUISITES_BLOCK) — документ их не печатает.</p>'}
+                    <div class="flex flex--wrap">
+                        <button class="btn btn--primary" id="kpReqBtn" onclick="App.kpSyncRequisites()">Обновить из МойСклад</button>
+                        <a class="btn btn--outline" href="#settings/moysklad">Токен и ID организации</a>
+                    </div>
+                    <div id="kpReqResult" style="margin-top:10px"></div>
+                </div>
+
+                <div class="card">
                     <div class="card__title">Умолчания коммерческого предложения</div>
+                    <p class="muted">Применяются там, где МойСклад молчит: ставка позиции и реквизиты организации
+                       всегда важнее этих полей.</p>
                     <div class="grid grid--3">
                         <div class="form-group"><label>НДС по умолчанию, %</label>
-                            <input type="number" id="kpVat" value="${this.esc(d.default_vat_rate || 5)}"></div>
+                            <input type="number" id="kpVat" value="${this.esc(g.default_vat_rate || 5)}"
+                                   ${s.pays_vat ? '' : 'disabled'}>
+                            ${vatHint}</div>
                         <div class="form-group"><label>Срок исполнения, дней</label>
-                            <input type="number" id="kpExec" value="${this.esc(d.default_execution_days || 30)}"></div>
+                            <input type="number" id="kpExec" value="${this.esc(g.default_execution_days || 30)}"></div>
                         <div class="form-group"><label>Срок действия КП, дней</label>
-                            <input type="number" id="kpValid" value="${this.esc(d.default_validity_days || 14)}"></div>
+                            <input type="number" id="kpValid" value="${this.esc(g.default_validity_days || 14)}"></div>
                         <div class="form-group"><label>Фото на позицию, максимум</label>
-                            <input type="number" id="kpMaxImages" min="0" max="12" value="${this.esc(d.kp_max_images_per_item || 5)}"></div>
+                            <input type="number" id="kpMaxImages" min="0" max="12" value="${this.esc(g.kp_max_images_per_item || 5)}"></div>
                         <div class="form-group"><label>Папка модулей в МойСклад</label>
-                            <input type="text" id="kpAddonCategory" value="${this.esc(d.addon_category || '')}"></div>
+                            <input type="text" id="kpAddonCategory" value="${this.esc(g.addon_category || '')}"></div>
                     </div>
                     <div class="form-group"><label>Условия поставки</label>
-                        <textarea id="kpConditions" rows="2">${this.esc(d.default_conditions_text || '')}</textarea></div>
+                        <textarea id="kpConditions" rows="2">${this.esc(g.default_conditions_text || '')}</textarea></div>
                     <div class="form-group"><label>Гарантия</label>
-                        <textarea id="kpWarranty" rows="2">${this.esc(d.default_warranty_text || '')}</textarea></div>
+                        <textarea id="kpWarranty" rows="2">${this.esc(g.default_warranty_text || '')}</textarea></div>
                     <div class="form-group"><label>Оговорка под фотографиями</label>
-                        <textarea id="kpImagesNote" rows="2">${this.esc(d.kp_images_note || '')}</textarea></div>
+                        <textarea id="kpImagesNote" rows="2">${this.esc(g.kp_images_note || '')}</textarea></div>
                     <button class="btn btn--primary" onclick="App.saveKpSettings()">Сохранить</button>
                 </div>
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    kpUseCatalogVat(ev) {
+        if (ev) ev.preventDefault();
+        const rate = ((this.kpState || {}).catalog_vat || {}).rate;
+        if (rate === null || rate === undefined) return;
+        document.getElementById('kpVat').value = rate;
+    },
+
+    async kpSyncRequisites() {
+        const btn = document.getElementById('kpReqBtn');
+        const out = document.getElementById('kpReqResult');
+        if (btn) { btn.disabled = true; btn.textContent = 'Спрашиваем МойСклад...'; }
+        out.innerHTML = '';
+        try {
+            await this.api('settings.php?action=kp_requisites_sync', {method: 'POST', body: {}});
+            this.toast('Реквизиты обновлены', 'success');
+            this.settingsKp();
+        } catch (err) {
+            out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Обновить из МойСклад'; }
+        }
     },
 
     async saveKpSettings() {
@@ -2290,7 +2401,9 @@ const App = {
             card.innerHTML = `
                 <div class="card__title">Доступ к API</div>
                 ${d.ms_error ? `<p class="no">${this.esc(d.ms_error)}</p>` : ''}
-                ${d.diag ? `<p class="muted">Токен: ${this.esc(source)}, длина ${d.diag.token_len}, конец «…${this.esc(d.diag.token_tail)}»${Object.entries(d.diag.probes || {}).map(([k, v]) => ` · ${k}: HTTP ${v.code}`).join('')}</p>` : ''}
+                ${d.diag ? `<p class="muted">Токен: ${this.esc(source)}, длина ${d.diag.token_len},
+                   <code>${this.esc(d.diag.token_mask || '')}</code>${Object.entries(d.diag.probes || {}).map(([k, v]) => ` · ${k}: HTTP ${v.code}`).join('')}</p>
+                   <p class="muted">ID организации: <code>${this.esc(d.diag.org_id || 'не задан')}</code></p>` : ''}
                 <p>Товары: ${yes(p.products)} · Контрагенты: ${yes(p.counterparties)} · Заказы: ${yes(p.orders_write)}
                    · Счета: ${yes(p.invoices)} · Вебхуки: ${yes(p.webhooks)}</p>
                 <p class="muted">Адрес вебхука: <code>${this.esc(d.webhook_url)}</code></p>
@@ -3300,9 +3413,12 @@ const App = {
                         · ${this.esc(t.label)} <code>${t.key}</code> · бюджет ${t.budget} символов</p>`).join('')}
                 </div>
 
+                <div class="card" id="kbVectorCard"><div class="loading">Проверяем векторный индекс...</div></div>
+
                 <div class="card">
                     <div class="card__title">Проверка подбора</div>
-                    <p class="muted">Вставьте текст письма или список позиций — увидите, какие разделы вики попадут в промпт.</p>
+                    <p class="muted">Вставьте текст письма или список позиций — увидите, какие разделы вики попадут в промпт.
+                       «по смыслу» — раздел, который добавили векторы, а не совпавшие слова.</p>
                     <textarea id="kbQuery" rows="4" placeholder="Например: какой класс защиты у шлема Атом и есть ли размер L?"></textarea>
                     <div class="flex flex--wrap" style="margin-top:8px">
                         <select id="kbTask">${d.tasks.map(t => `<option value="${t.key}">${this.esc(t.label)}</option>`).join('')}</select>
@@ -3323,7 +3439,59 @@ const App = {
                     </tbody></table>
                 </div>
             `;
+            this.loadKnowledgeVectorStats();
         } catch (err) { this.adminFail(err); }
+    },
+
+    // ---- Wiki vectors: the «по смыслу» half of the knowledge base (modules 005, 009) ----
+
+    async loadKnowledgeVectorStats() {
+        const card = document.getElementById('kbVectorCard');
+        if (!card) return;
+        const d = ((this.knowledgeState || {}).vectors) || {};
+        try {
+            const fresh = await this.api('admin.php?action=knowledge_vector_stats');
+            Object.assign(d, fresh);
+        } catch { /* the status call already gave us a snapshot */ }
+        const done = d.total ? Math.round(100 * Math.min(d.indexed, d.total) / d.total) : 0;
+        card.innerHTML = `
+            <div class="card__title">Векторный поиск по базе знаний</div>
+            <p class="muted">Те же эмбеддинги, что и у каталога: к разделам, найденным по словам, добавляются
+               подходящие по смыслу — «сколько ждать заказ» находит «Сроки поставки» без общих слов.
+               Индекс строится шагами и переживает перечитывание вики: раздел, текст которого не изменился,
+               заново не векторизуется.</p>
+            ${!d.configured ? '<p class="no">Не заданы ключ и Folder ID Yandex — подбор по вики работает только по словам. Задайте их в «Настройки → Нейросети».</p>'
+                : (!d.enabled ? '<p class="no">Векторы базы знаний выключены («Настройки → Все параметры → База знаний»).</p>' : '')}
+            <p>Векторизовано разделов: <strong>${d.indexed || 0}</strong> из ${d.total || 0}
+               ${d.pending ? ` · ждёт обработки: ${d.pending}` : ' · всё актуально'}
+               ${d.dim ? ` · размерность ${d.dim}` : ''}</p>
+            <div class="progress"><div class="progress__bar" style="width:${done}%"></div></div>
+            <p class="muted">Модель: ${this.esc(d.model || '')}${d.updated_at ? ` · обновлён ${this.fmtDate(d.updated_at)}` : ''}</p>
+            <div class="flex flex--wrap">
+                <button class="btn btn--primary btn--sm" id="kbVecBtn" onclick="App.knowledgeVectorIndex()"
+                        ${d.configured ? '' : 'disabled'}>Векторизовать базу знаний</button>
+                <button class="btn btn--outline btn--sm" onclick="App.knowledgeVectorReset()">Очистить индекс</button>
+            </div>
+            <div id="kbVectorProgress" class="muted" style="margin-top:8px"></div>
+        `;
+    },
+
+    knowledgeVectorIndex() {
+        return this.vectorLoop({
+            endpoint: 'admin.php?action=knowledge_vector_index',
+            btnId: 'kbVecBtn', outId: 'kbVectorProgress',
+            label: 'Векторизовано разделов',
+            after: () => this.loadKnowledgeVectorStats(),
+        });
+    },
+
+    async knowledgeVectorReset() {
+        if (!confirm('Очистить векторы базы знаний? Их придётся построить заново.')) return;
+        try {
+            const r = await this.api('admin.php?action=knowledge_vector_reset', {method: 'POST', body: {}});
+            this.toast(`Индекс очищен (${r.removed})`, 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+        this.loadKnowledgeVectorStats();
     },
 
     async knowledgeSync(force) {
@@ -3352,7 +3520,9 @@ const App = {
             }
             out.innerHTML = (d.enabled ? '' : '<p class="no">Для этой задачи база знаний выключена — показан «сухой» подбор.</p>')
                 + d.items.map(i => `<p>${this.esc(i.title)}
-                    <span class="muted">· ${i.chars} симв. · совпало терминов: ${i.hits} · вес ${i.score}</span></p>`).join('');
+                    <span class="muted">· ${i.chars} симв. · ${i.source === 'vector'
+                        ? `по смыслу, близость ${i.score}`
+                        : `совпало терминов: ${i.hits} · вес ${i.score}`}</span></p>`).join('');
         } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
@@ -3379,7 +3549,7 @@ const App = {
                 if (it.type.startsWith('select:')) return `<select id="${id}">
                     ${it.type.slice(7).split(',').map(o => `<option value="${o}" ${String(it.value) === o ? 'selected' : ''}>${o || '(без шифрования)'}</option>`).join('')}</select>`;
                 if (it.type.startsWith('model:')) return this.modelSelect(id, catalogs[it.type.slice(6)] || [], String(it.value));
-                if (it.secret) return `<input type="password" id="${id}" placeholder="${it.filled ? 'задан ' + this.esc(it.tail) + ' — оставьте пустым' : 'не задан'}">`;
+                if (it.secret) return `<input type="password" id="${id}" placeholder="${it.filled ? 'задан ' + this.esc(it.tail) + ' — оставьте пустым, чтобы не менять' : 'не задан'}">`;
                 if (it.type === 'int') return `<input type="number" id="${id}" value="${this.esc(it.value)}">`;
                 // Списки синонимов и текст блока дисциплины — многострочные
                 if (it.type === 'textarea') return `<textarea id="${id}" rows="6">${this.esc(it.value)}</textarea>`;

@@ -83,7 +83,11 @@ class MoySklad {
         $t = self::$token;
         return [
             'token_len'  => strlen($t),
+            // Both ends of the token, so the operator can tell which one is
+            // stored without it ever being readable (Settings::mask)
+            'token_mask' => Settings::mask($t),
             'token_tail' => $t === '' ? '' : substr($t, -4),
+            'org_id'     => (string)Settings::get('MOYSKLAD_ORG_ID', ''),
             'probes'     => self::$diag,
         ];
     }

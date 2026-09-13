@@ -227,6 +227,75 @@ final class Requisites {
         ];
     }
 
+    /**
+     * Everything «Оформление КП» prints, and where each value came from.
+     *
+     * The tab used to hold typed-in numbers only, so НДС, ИНН and the addresses
+     * of the КП lived in two places at once — МойСклад and somebody's memory.
+     * This is the one answer to «что подставится в документ»: the организация as
+     * МойСклад has it, the VAT rate the catalog actually carries, and the
+     * manual defaults that only apply where МойСклад is silent.
+     */
+    public static function kpDefaults(): array {
+        $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1") ?: [];
+        $orgId = trim((string)Settings::get('MOYSKLAD_ORG_ID', ''));
+        return [
+            'org_id'        => $orgId,                       // shown in full: it is not a secret
+            'token_set'     => trim((string)Settings::get('MOYSKLAD_TOKEN', '')) !== '',
+            'autosync'      => (int)Settings::get('REQUISITES_AUTOSYNC', 1) === 1,
+            'block_in_kp'   => (int)Settings::get('KP_REQUISITES_BLOCK', 1) === 1,
+            'exempt_note'   => (string)Settings::get('KP_VAT_EXEMPT_NOTE', 'НДС не облагается'),
+            'seller'        => [
+                'moysklad_id'   => (string)($legal['moysklad_id'] ?? ''),
+                'entity_type'   => (string)($legal['entity_type'] ?? ''),
+                'full_name'     => (string)($legal['full_name'] ?? ''),
+                'short_name'    => (string)($legal['short_name'] ?? ''),
+                'inn'           => (string)($legal['inn'] ?? ''),
+                'kpp'           => (string)($legal['kpp'] ?? ''),
+                'ogrn'          => (string)($legal['ogrn'] ?? ''),
+                'ogrnip'        => (string)($legal['ogrnip'] ?? ''),
+                'okpo'          => (string)($legal['okpo'] ?? ''),
+                'legal_address' => (string)($legal['legal_address'] ?? ''),
+                'address'       => trim((string)($legal['city'] ?? '') . ' ' . (string)($legal['address'] ?? '')),
+                'phone'         => (string)($legal['phone'] ?? ''),
+                'email'         => (string)($legal['email'] ?? ''),
+                'signatory'     => (string)($legal['signatory_name'] ?? ''),
+                'pays_vat'      => !array_key_exists('pays_vat', $legal) || (int)$legal['pays_vat'] === 1,
+                'bank'          => [
+                    'name'         => (string)($legal['bank_name'] ?? ''),
+                    'bic'          => (string)($legal['bank_bic'] ?? ''),
+                    'account'      => (string)($legal['bank_account'] ?? ''),
+                    'corr_account' => (string)($legal['bank_corr'] ?? ''),
+                    'line'         => (string)($legal['bank_details'] ?? ''),
+                ],
+                'synced_at'     => (string)($legal['synced_at'] ?? ''),
+            ],
+            'catalog_vat'   => self::catalogVat(),
+            'vat_sources'   => self::VAT_SOURCES,
+        ];
+    }
+
+    /**
+     * The VAT rate the synced catalog actually carries. `vatFor()` reads it per
+     * КП from the positions of that КП; here it answers the flat question the
+     * settings tab asks — «какая ставка у нас на складе» — so the manual default
+     * can be set to what МойСклад says instead of to what someone remembers.
+     */
+    public static function catalogVat(): array {
+        $rows = Db::all(
+            "SELECT vat, COUNT(*) AS n FROM products_cache
+             WHERE is_archived IS NOT 1 AND vat IS NOT NULL
+             GROUP BY vat ORDER BY n DESC"
+        );
+        $total = array_sum(array_column($rows, 'n'));
+        return [
+            'rate'  => $rows ? (int)$rows[0]['vat'] : null,
+            'items' => (int)$total,
+            'share' => $total ? (int)round(100 * (int)$rows[0]['n'] / $total) : 0,
+            'rates' => array_map(fn($r) => ['rate' => (int)$r['vat'], 'items' => (int)$r['n']], $rows),
+        ];
+    }
+
     /** The snapshot a КП was generated with, or a fresh one for an older КП. */
     public static function forProposal(int $proposalId): array {
         $stored = Db::val("SELECT requisites_json FROM proposals WHERE id=?", [$proposalId]);

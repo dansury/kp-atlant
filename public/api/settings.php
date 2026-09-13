@@ -5,6 +5,20 @@
 require_once __DIR__ . '/../../lib/bootstrap.php';
 
 $action = $_GET['action'] ?? '';
+require_once ROOT . '/lib/moysklad.php';
+
+/** The КП and mail-processing defaults an admin edits by hand. */
+function generalSettings(): array {
+    $keys = ['default_conditions_text','default_execution_days','default_validity_days','default_vat_rate',
+             'ocr_enabled','ocr_max_pages','attachment_max_mb','unanswered_critical_h','invoice_email_subject',
+             'default_warranty_text','kp_images_note','kp_upsell_intro','kp_upsell_note',
+             'addon_category','kp_show_images','kp_show_upsell','kp_max_images_per_item'];
+    $out = [];
+    foreach ($keys as $k) {
+        $out[$k] = Db::val("SELECT value FROM settings WHERE key=?", [$k]) ?: '';
+    }
+    return $out;
+}
 
 switch ($action) {
     case 'legal_entity':
@@ -67,15 +81,7 @@ switch ($action) {
     case 'general':
         $manager = requireAuth();
         if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-            $keys = ['default_conditions_text','default_execution_days','default_validity_days','default_vat_rate',
-                     'ocr_enabled','ocr_max_pages','attachment_max_mb','unanswered_critical_h','invoice_email_subject',
-                     'default_warranty_text','kp_images_note','kp_upsell_intro','kp_upsell_note',
-                     'addon_category','kp_show_images','kp_show_upsell','kp_max_images_per_item'];
-            $settings = [];
-            foreach ($keys as $k) {
-                $settings[$k] = Db::val("SELECT value FROM settings WHERE key=?", [$k]) ?: '';
-            }
-            jsonData($settings);
+            jsonData(generalSettings());
         }
         // PUT
         $input = getInput();
@@ -83,6 +89,29 @@ switch ($action) {
             Db::q("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [$k, $v]);
         }
         jsonOk();
+
+    /**
+     * «Оформление КП»: the typed-in defaults together with the requisites and the
+     * VAT МойСклад actually holds, so the tab shows what will be PRINTED and not
+     * only what somebody once typed (module 013).
+     */
+    case 'kp':
+        requireAuth();
+        require_once ROOT . '/lib/requisites.php';
+        jsonData(['general' => generalSettings()] + Requisites::kpDefaults());
+
+    // Pull the организация from МойСклад on demand — the same sync a КП runs
+    case 'kp_requisites_sync':
+        requireAdmin();
+        require_once ROOT . '/lib/requisites.php';
+        MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+        try {
+            Requisites::syncOrganization();
+        } catch (Throwable $e) {
+            Logger::exception('moysklad', $e, ['stage' => 'kp_requisites_sync']);
+            jsonError('МойСклад: ' . $e->getMessage());
+        }
+        jsonOk(Requisites::kpDefaults());
 
     /**
      * Model picker data for anyone who may write a reply — not just admins.

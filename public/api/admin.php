@@ -307,6 +307,29 @@ try {
         case 'knowledge_reindex':
             jsonOk(['indexed' => Knowledge::reindex(), 'fts' => Knowledge::ftsAvailable()]);
 
+        // ---- Wiki vectors: the same engine as the catalog (modules 005 + 009) ----
+
+        case 'knowledge_vector_stats':
+            require_once ROOT . '/lib/embeddings.php';
+            jsonData(Embeddings::knowledgeStats());
+
+        // One resumable step, called in a loop by the panel — a wiki of two
+        // hundred sections never needs one long request
+        case 'knowledge_vector_index':
+            require_once ROOT . '/lib/embeddings.php';
+            // Nothing to embed until the sections exist: a wiki synced before
+            // the section index appeared would otherwise report «готово»
+            if (!(int)Db::val("SELECT COUNT(*) FROM knowledge_sections")) Knowledge::reindex();
+            $report = Embeddings::indexKnowledge([
+                'budget' => (int)($input['budget'] ?? Settings::get('VECTOR_BUDGET_SEC', 20)),
+            ]);
+            if ($report['error'] && !$report['indexed']) jsonError($report['error'], 400);
+            jsonOk(['report' => $report]);
+
+        case 'knowledge_vector_reset':
+            require_once ROOT . '/lib/embeddings.php';
+            jsonOk(['removed' => Embeddings::resetKnowledge()]);
+
         // What would land in the prompt for this text — the admin can see «когда необходимо»
         case 'knowledge_preview':
             $task = (string)($input['task'] ?? $_GET['task'] ?? 'mail_reply');
