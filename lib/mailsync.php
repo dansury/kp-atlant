@@ -9,6 +9,8 @@ require_once __DIR__ . '/notifier.php';
 require_once __DIR__ . '/attachments.php';
 require_once __DIR__ . '/crm.php';
 require_once __DIR__ . '/triage.php';
+require_once __DIR__ . '/mail_text.php';
+require_once __DIR__ . '/bounce.php';
 
 final class MailSync {
     /** Sync all active mailboxes (or one). Returns a per-mailbox report. */
@@ -122,6 +124,20 @@ final class MailSync {
         // Free verdict first: a Yandex.Direct digest or a MoySklad ticket is not a
         // request and must not cost a model call (module 006).
         $pre = Triage::prefilter($row);
+        if ($pre && $pre['category'] === 'bounce') {
+            // An answer of ours that never arrived. The report is archived like
+            // any service letter, but the letter it is about is marked first —
+            // a silent bounce is a client who thinks we ignored him (module 015).
+            $report = Bounce::detect($row);
+            $failed = $report ? Bounce::applyTo($report) : null;
+            if ($failed) {
+                $pre['reason'] = 'Не доставлено: ' . ($report['recipient'] ?: 'адрес не указан')
+                               . ($report['diagnostic'] !== '' ? ' — ' . $report['diagnostic'] : '');
+                Notifier::notify('mail_bounced', 'Письмо не доставлено',
+                    ($report['recipient'] ?: (string)$failed['to_emails']) . ' — ' . (string)$failed['subject'],
+                    'mail', (int)$failed['id'], null, '/#mail/msg/' . (int)$failed['id']);
+            }
+        }
         if ($pre) {
             Db::update('mail_messages', [
                 'processed_at'  => date('Y-m-d H:i:s'),
@@ -143,17 +159,42 @@ final class MailSync {
         // Nothing to read — a bare auto-reply, a picture-only newsletter. Archive it
         // and stop: asking the model to parse an empty letter only fills the log.
         if (mb_strlen(trim((string)$row['body_text'])) < 20 && trim($attachmentText) === '') {
+            // Unless it came with files. A photo of a broken helmet or a
+            // photographed ТЗ is a letter with everything in the picture — 1014
+            // incoming images in the archive — and recognition can be off or
+            // have failed. Dropping it as «служебное» loses a real client.
+            $hasFiles = count($attachments) > 0;
             Db::update('mail_messages', [
                 'processed_at'  => date('Y-m-d H:i:s'),
-                'category'      => 'service',
-                'triage_reason' => 'Пустое письмо — нечего разбирать',
+                'category'      => $hasFiles ? 'other' : 'service',
+                'triage_reason' => $hasFiles
+                    ? 'Текста нет, только вложения — прочитать глазами'
+                    : 'Пустое письмо — нечего разбирать',
                 'error'         => null,
             ], 'id=?', [$row['id']]);
+            if ($hasFiles) {
+                Notifier::notify('new_request', 'Письмо без текста, только вложения',
+                    (string)$row['subject'] . ' — от ' . (string)$row['from_email'],
+                    'mail', (int)$row['id'], null, '/#mail/msg/' . (int)$row['id']);
+            }
             return false;
         }
 
-        $parsed = Triage::classify((string)$row['body_text'], $attachmentText);
+        // The letter as a manager would read it: without our own quoted answer,
+        // without the client's gateway banner, and with the subject, which
+        // carries the order number in every reply to a shop notification.
+        $clean = MailText::forAnalysis((string)$row['body_text']);
+        $parsed = Triage::classify($clean, $attachmentText, (string)$row['subject']);
         $category = (string)($parsed['category'] ?? 'other');
+
+        // A site form with a phone and no address: there is no reply to draft,
+        // only a call to make. The category says so instead of the model guessing.
+        if ((int)($row['needs_call'] ?? 0) === 1) {
+            $category = 'callback';
+            $parsed['category'] = $category;
+            $parsed['category_source'] = 'prefilter';
+            $parsed['category_reason'] = 'Заявка с сайта: оставлен телефон, адреса нет — нужен звонок';
+        }
         $type = ($parsed['request_type'] ?? 'kp_request') === 'order' ? 'order' : 'kp_request';
 
         // A supplier pitch, a SEO mailing or a service notice the model recognised:
@@ -170,20 +211,31 @@ final class MailSync {
             return false;
         }
 
+        // A form letter with no visitor address still arrives from OUR mailbox.
+        // Resolving a company by that address would open a card for ourselves.
+        $senderEmail = (string)($row['from_email'] ?? '');
+        if (Crm::isOurAddress($senderEmail)) $senderEmail = '';
+        $form = $row['form_json'] ? (json_decode((string)$row['form_json'], true) ?: []) : [];
+
         $counterpartyId = Crm::resolveCounterparty([
             'inn'            => $parsed['inn'] ?? '',
             'name'           => $parsed['org_name'] ?? '',
-            'email'          => $row['from_email'] ?? '',
-            'contact_person' => $parsed['contact_person'] ?? ($row['from_name'] ?: null),
-            'phone'          => $parsed['contact_phone'] ?? null,
+            'email'          => $senderEmail,
+            'contact_person' => $parsed['contact_person'] ?? ($form['name'] ?? null) ?: ($row['from_name'] ?: null),
+            'phone'          => $parsed['contact_phone'] ?? ($form['phone'] ?? null),
         ]);
         if ($counterpartyId) {
             Crm::upsertContact(
                 $counterpartyId,
-                $parsed['contact_person'] ?? ($row['from_name'] ?: null),
-                $row['from_email'] ?: null,
-                $parsed['contact_phone'] ?? null
+                $parsed['contact_person'] ?? ($form['name'] ?? null) ?: ($row['from_name'] ?: null),
+                $senderEmail ?: null,
+                $parsed['contact_phone'] ?? ($form['phone'] ?? null)
             );
+            // «Мы работаем с ЭДО. Идентификатор в Диадок: 2BM-7810964292-…» —
+            // 54 letters of the archive carry one, and it was retyped by hand
+            // every time. The regex finds it; the model only adds the operator.
+            Crm::rememberEdo($counterpartyId, (string)$row['body_text'] . "\n" . $attachmentText, $parsed['edo'] ?? null);
+            Crm::fillRequisitesFromAttachments($counterpartyId, $attachments);
         }
 
         $requestId = Db::insert('requests', [
@@ -198,7 +250,7 @@ final class MailSync {
             'category_confidence' => (float)($parsed['category_confidence'] ?? 0),
             'category_reason'     => (string)($parsed['category_reason'] ?? ''),
             'category_source'     => (string)($parsed['category_source'] ?? 'llm'),
-            'email_from'       => $row['from_email'],
+            'email_from'       => $senderEmail,
             'email_subject'    => $row['subject'],
             'email_message_id' => $row['message_id'],
         ]);
@@ -206,7 +258,7 @@ final class MailSync {
         $corrId = Crm::logEvent($counterpartyId, 'in', (string)$row['body_text'], [
             'request_id' => $requestId,
             'subject'    => $row['subject'],
-            'email_from' => $row['from_email'],
+            'email_from' => $senderEmail,
         ]);
 
         foreach ($attachments as $a) {
@@ -231,7 +283,13 @@ final class MailSync {
         self::autoDraft($row, $category, $counterpartyId, $attachmentText);
 
         $orgName = $parsed['org_name'] ?? null;
-        $title = Triage::label($category) . ($orgName ? " от $orgName" : ' от ' . $row['from_email']);
+        $title = Triage::label($category) . ($orgName ? " от $orgName" : ' от ' . ($senderEmail ?: (string)$row['from_email']));
+        // A lead that left only a phone is a call, and the number belongs in the
+        // notification itself — the manager should not have to open the letter.
+        if ($category === 'callback' && !empty($form['phone'])) {
+            $title = 'Заявка с сайта — позвонить: ' . $form['phone']
+                   . (!empty($form['name']) ? ' (' . $form['name'] . ')' : '');
+        }
         // The tap lands on the letter itself — that is what «пришло новое письмо»
         // means; the request it created is one link away inside.
         Notifier::notify('new_request', $title, $row['subject'], 'request', $requestId, null,

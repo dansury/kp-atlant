@@ -16,16 +16,20 @@
 | Письмо как рабочее место: позиции и ответ внутри, цепочки по отправителю | `specs/012-letter-card-workbench/spec.md` | Implemented |
 | Аналоги из наличия, таблица соответствия, реквизиты и НДС из МойСклад | `specs/013-alternatives-and-requisites/spec.md` | Implemented |
 | Автообновление кода: проверка GitHub на каждой странице, деплой через `pull.php` | `specs/014-auto-deploy/spec.md` | Implemented |
+| Письма с форм сайта, недоставленные ответы, вторая половина сделки | `specs/015-inbound-channels/spec.md` | Implemented |
+| КП уходит клиенту в Word (.docx) | `specs/016-kp-docx/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
 |---|---|
 | Чем искать факты для ответа на shared-хостинге (RAG / БД / эмбеддинги) | `specs/006-email-triage/research.md` |
+| Из чего на самом деле состоит почта: разбор 5 419 писем за 2022–2026 | `specs/006-email-triage/corpus-2026.md` |
 
 ## Tests
 | Что проверяет | Файл |
 |---|---|
 | Модуль 013 целиком: аналоги, таблица соответствия, карточка, реквизиты, НДС | `php tests/module_013.php` |
+| Модули 015 и 016: формы сайта, спам, bounce, вложения, единый адрес, .docx | `php tests/module_015_016.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 
 ## Constitution

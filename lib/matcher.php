@@ -79,6 +79,21 @@ class ProductMatcher {
                 'match_source' => null,
             ];
 
+            // A link to the product's own page on the shop is not a guess at
+            // all: 47 letters of the archive quote one, and `products_cache`
+            // knows which row it belongs to (module 015). A named row beats
+            // every score, so the search never runs for that line.
+            $byLink = self::byShopLink((string)($item['raw_text'] ?? '') . ' ' . (string)($item['name'] ?? ''), $counterpartyId);
+            if ($byLink) {
+                $result['match'] = $byLink;
+                $result['match_source'] = 'site_url';
+                $result['variants'] = [];
+                $result['needs_choice'] = false;
+                $result['is_confirmed'] = true;
+                $results[] = $result;
+                continue;
+            }
+
             if ($candidates) {
                 $best = $candidates[0];
                 // «Равнозначные» — everything within delta of the leader. Two rows
@@ -97,6 +112,47 @@ class ProductMatcher {
             $results[] = $result;
         }
         return $results;
+    }
+
+    /**
+     * The catalog row a link in the client's own line points at.
+     *
+     * Clients paste the product page — «…/ballisticheskiy-shlem-termit-aramid/?oid=6018».
+     * `products_cache.site_url` is the same address (module 013 caches it after
+     * checking it), so the line needs no matching at all. The `oid` is Bitrix's
+     * offer id; the slug is what stays stable when it is absent.
+     */
+    public static function byShopLink(string $text, ?int $counterpartyId = null): ?array {
+        if (!preg_match('~https?://[\w.-]*atlant-armour\.ru/[^\s<>"\)\]]+~iu', $text, $m)) return null;
+        $url = rtrim($m[0], '.,;');
+
+        $row = Db::one("SELECT * FROM products_cache WHERE site_url=? LIMIT 1", [$url]);
+        if (!$row) {
+            $path = (string)parse_url($url, PHP_URL_PATH);
+            $slug = trim((string)preg_replace('~.*/([^/]+)/?$~', '$1', $path));
+            if ($slug !== '' && mb_strlen($slug) > 6) {
+                $row = Db::one("SELECT * FROM products_cache WHERE site_url LIKE ? ORDER BY id LIMIT 1", ['%/' . $slug . '%']);
+            }
+        }
+        if (!$row) return null;
+
+        // The same shape `findCandidates()` returns — the card, the КП and the
+        // analogue pass all read these keys and must not learn a second one.
+        return [
+            'moysklad_id' => $row['moysklad_id'],
+            'name'        => $row['name'],
+            'article'     => $row['article'],
+            'price'       => Catalog::priceFor($row, $counterpartyId),
+            'prices'      => Catalog::decodePrices($row['prices_json'] ?? null),
+            'stock'       => (int)$row['stock'],
+            'reserved'    => (int)$row['reserved'],
+            'unit'        => $row['unit'],
+            'characteristics' => $row['characteristics'] ?? '',
+            'score'       => 1.0,
+            'lexical'     => 1.0,
+            'vector'      => null,
+            'source'      => 'site_url',
+        ];
     }
 
     /** The whole catalog, read once per request — a KP has many positions. */

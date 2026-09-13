@@ -18,8 +18,43 @@ Every inbound letter goes through `Triage` (module 006), never straight to the p
 does parsing and classification in ONE model call; `Triage::route()` maps the category to a
 reply prompt and its fact sources. A new request category must be added to `Triage::CATEGORIES`
 together with its prompt in `Prompts::registry()` and its budget in `Knowledge::TASKS`.
+The categories cover the WHOLE deal, not its first letter: delivery, ЭДО, closing documents,
+the договор, a tender and ГОЗ each answer from their own facts, and `other` is a failure to
+classify, not a place to put the second half of a sale.
 Never call the model twice for one letter, and never let a draft invent a price, a stock
 level or an order status — those come from `Catalog`, not from the wiki.
+
+## Inbound channels
+A letter that arrived from the site form is the VISITOR's letter (module 015):
+`SiteForm::unwrap()` runs inside `MailArchive::storeIncoming()` — before the thread key, before
+the sender is stored — so the party, the company card and the reply address are the client's,
+never ours. Two thirds of what that form sends is a bot, and `SiteForm::spamReason()` says so
+in plain PHP inside `Triage::prefilter()`: a form submission must never reach the model to be
+recognised as spam. A lead with a phone and no address is category `callback` — it has no reply
+prompt on purpose, because there is nothing to answer to; it is a call, and the phone goes in
+the notification. Never resolve a counterparty from one of our own addresses — `Crm::isOurAddress()`
+is what keeps a company card for `atlant-armour.ru` from existing.
+
+A delivery report is not service mail to file away: `Bounce::applyTo()` marks the outgoing
+letter that failed (`sent_state = bounced`), and the manager hears about it. An answer that
+silently never arrived is a client who thinks he was ignored.
+
+Text that goes INTO a prompt goes through `MailText::forAnalysis()` — no quoted history, no
+gateway banner; the archive keeps the full body. HTML becomes text ONLY through
+`MailText::fromHtml()`: `strip_tags()` alone keeps the CSS inside `<style>`, which is most of a
+modern letter.
+
+Every answer leaves from the address `MAIL_OUTGOING_FROM` names — `Mailboxes::outgoing()` is the
+only way to pick a sending mailbox, and it beats whichever mailbox the manager opened.
+
+## The КП document
+The КП exists ONCE, as `PdfGenerator::html()`. `PdfGenerator` prints it, `DocxGenerator` converts
+the same HTML to Word (module 016) — never write the document a second time in another format,
+or a client ends up with two different offers. 35 of the 37 КП in the archive left as `.docx`,
+so Word is the default attachment (`KP_ATTACH_FORMAT`); the PDF stays for whoever asks for it.
+Word validates the ORDER of `w:rPr` and `w:pPr` children, not just their presence — the
+sequence in `Html2Docx` is the schema's, and changing it is what makes Word offer to repair the
+file.
 
 ## Catalog
 `products_cache` has two sources and must keep working on either: `MoySklad::refreshProductCache()`

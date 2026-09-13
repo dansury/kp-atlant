@@ -6,6 +6,8 @@
  */
 require_once __DIR__ . '/email.php';
 require_once __DIR__ . '/mail_threads.php';
+require_once __DIR__ . '/mail_text.php';
+require_once __DIR__ . '/site_forms.php';
 
 /**
  * Ready-made settings of the mail services people actually use here.
@@ -157,6 +159,32 @@ final class Mailboxes {
             if ($own) return $own;
         }
         return Db::one("SELECT * FROM mailboxes WHERE is_active=1 ORDER BY is_default DESC, id LIMIT 1");
+    }
+
+    /**
+     * The mailbox an answer leaves from (module 015).
+     *
+     * Historically that was whichever mailbox the manager happened to open, so
+     * the same client got answers from two different addresses and the reply
+     * came back to a mailbox nobody reads. `MAIL_OUTGOING_FROM` names the ONE
+     * address the company writes from; when it is set, it wins over the chosen
+     * mailbox, and a setting that points at no active mailbox is a loud error
+     * rather than a silent fallback to whatever was configured first.
+     */
+    public static function outgoing($mailboxId = null, $managerId = null): ?array {
+        $forced = mb_strtolower(trim((string)Settings::get('MAIL_OUTGOING_FROM', '')));
+        if ($forced !== '') {
+            $box = Db::one("SELECT * FROM mailboxes WHERE is_active=1 AND lower(email)=? ORDER BY is_default DESC, id LIMIT 1", [$forced]);
+            if ($box) {
+                if ($mailboxId && (int)$mailboxId !== (int)$box['id']) {
+                    Logger::info('mail', "Ответ уходит с общего адреса $forced, а не из ящика #" . (int)$mailboxId,
+                                 ['mailbox_id' => (int)$box['id']]);
+                }
+                return $box;
+            }
+            Logger::error('mail', "В настройках задан адрес для исходящих «$forced», но активного ящика с таким адресом нет — письмо уйдёт из ящика по умолчанию");
+        }
+        return !empty($mailboxId) ? self::get((int)$mailboxId) : self::default($managerId);
     }
 
     /** Mailboxes a manager may use: their own plus the shared ones. */
@@ -317,6 +345,13 @@ final class MailArchive {
         if (self::exists((int)$box['id'], $msg['folder'] ?? 'INBOX', (int)$msg['uid'], (string)($msg['message_id'] ?? ''), $direction)) return 0;
 
         $limit = max(16, (int)Settings::get('MAIL_BODY_MAX_KB', 512)) * 1024;
+
+        // A letter the site form sent us is really the visitor's letter (module
+        // 015). It is unwrapped HERE, before the thread key and the sender are
+        // read off it — otherwise every form submission is the same party, the
+        // same conversation and the same company card.
+        if ($direction === 'in') $msg = SiteForm::unwrap($msg);
+
         // The conversation this letter belongs to is decided on the way in, so a
         // Gmail answer to a Yandex letter is already in the right thread when the
         // page opens (module 010)
@@ -351,6 +386,9 @@ final class MailArchive {
             'headers'      => self::utf8((string)($msg['headers'] ?? '')),
             'size'         => (int)($msg['size'] ?? 0),
             'has_attachment' => empty($msg['attachments']) ? 0 : 1,
+            'source_channel' => $msg['source_channel'] ?? 'email',
+            'form_json'      => $msg['form_json'] ?? null,
+            'needs_call'     => (int)($msg['needs_call'] ?? 0),
             'is_read'      => !empty($msg['seen']) ? 1 : 0,
             'processed_at' => $markProcessed ? date('Y-m-d H:i:s') : null,
             'date_at'      => $msg['date'] ?? date('Y-m-d H:i:s'),
@@ -740,13 +778,13 @@ final class Mailer {
      *     counterparty_id, request_id, in_reply_to, log_to_chat (bool)
      */
     public static function send(array $o): array {
-        $box = !empty($o['mailbox_id']) ? Mailboxes::get((int)$o['mailbox_id']) : Mailboxes::default($o['manager_id'] ?? null);
+        $box = Mailboxes::outgoing($o['mailbox_id'] ?? null, $o['manager_id'] ?? null);
         $cfg = $box ? Mailboxes::cfg($box) : self::legacyCfg();
 
         $to      = trim((string)($o['to'] ?? ''));
         $subject = (string)($o['subject'] ?? '');
         $html    = $o['html'] ?? ('<p>' . nl2br(htmlspecialchars((string)($o['text'] ?? ''))) . '</p>');
-        $text    = $o['text'] ?? trim(html_entity_decode(strip_tags((string)$html), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        $text    = $o['text'] ?? MailText::fromHtml((string)$html);
         if ($to === '') throw new RuntimeException('Не указан адрес получателя');
 
         $sender = new EmailSender($cfg);

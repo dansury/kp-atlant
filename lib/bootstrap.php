@@ -1051,6 +1051,65 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '17')");
         $current = 17;
     }
+
+    // v18 — module 015: a letter from the site form is the visitor's letter, an
+    // undelivered answer says so, and a КП can leave as a Word file.
+    if ($current < 18) {
+        require_once __DIR__ . '/site_forms.php';
+        require_once __DIR__ . '/mail_threads.php';
+
+        // Where the letter really came from, and what the form said
+        Db::ensureColumn('mail_messages', 'source_channel', 'TEXT', "'email'");
+        Db::ensureColumn('mail_messages', 'form_json', 'TEXT');
+        Db::ensureColumn('mail_messages', 'needs_call', 'INTEGER', '0');
+
+        // ЭДО as the client states it, and whether he still needs paper
+        Db::ensureColumn('counterparties', 'edo_operator', 'TEXT');
+        Db::ensureColumn('counterparties', 'edo_id', 'TEXT');
+        Db::ensureColumn('counterparties', 'needs_paper_docs', 'INTEGER', '0');
+
+        // The КП as a Word file lives beside its PDF — both are printed from the
+        // same document, and a reprint must find whichever the manager sent.
+        Db::ensureColumn('proposals', 'docx_path', 'TEXT');
+
+        // Everything already in the archive: 923 form letters whose sender is
+        // our own address, all in ONE thread and ONE company card. They are
+        // rewritten here, and the threads recomputed afterwards — a migration
+        // that leaves them as they are leaves the board wrong for good.
+        $touched = 0;
+        foreach (Db::all("SELECT id, subject, body_text, from_email, from_name FROM mail_messages
+                          WHERE direction='in' AND body_text LIKE '%Заполнена форма%'") as $row) {
+            $fields = SiteForm::parse((string)$row['body_text']);
+            if (!$fields) continue;
+            $spam = SiteForm::spamReason($fields);
+            $upd = [
+                'source_channel' => 'site_form',
+                'form_json'      => json_encode($fields + ['spam_reason' => $spam], JSON_UNESCAPED_UNICODE),
+                'needs_call'     => ($fields['email'] === '' && $fields['phone'] !== '' && !$spam) ? 1 : 0,
+            ];
+            if ($spam) {
+                $upd['category'] = 'spam';
+                $upd['triage_reason'] = 'Форма сайта: ' . $spam;
+            } else {
+                if ($fields['email'] !== '') {
+                    $upd['from_email'] = $fields['email'];
+                    $upd['from_name']  = $fields['name'] !== '' ? $fields['name'] : $fields['email'];
+                }
+                $upd['subject'] = SiteForm::subject($fields, (string)$row['subject']);
+            }
+            Db::update('mail_messages', $upd, 'id=?', [$row['id']]);
+            $touched++;
+        }
+        if ($touched) {
+            MailThreads::backfill(true);
+            // The board decides again: those letters were one company and are now many
+            Db::q("DELETE FROM settings WHERE key='board_sync_sig'");
+            Logger::info('mail', "Миграция v18: писем с форм сайта разобрано — $touched");
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '18')");
+        $current = 18;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

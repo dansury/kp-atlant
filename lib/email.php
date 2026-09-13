@@ -5,6 +5,8 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
 
+require_once __DIR__ . '/mail_text.php';
+
 class EmailReader {
     private $imap;
     private array $cfg;
@@ -337,13 +339,12 @@ class EmailReader {
             $this->walkParts($id, $struct->parts, '', $text, $html, $attachments);
         }
 
-        // Fall back to HTML part when there is no text/plain
+        // Fall back to HTML part when there is no text/plain. `strip_tags` on
+        // its own keeps what stands INSIDE <style>, and a modern newsletter is
+        // mostly that: the classifier used to read a page of CSS instead of the
+        // letter (module 015).
         if (trim($text) === '' && $html !== '') {
-            $text = trim(html_entity_decode(
-                strip_tags(preg_replace('#<br[^>]*>|</p>#i', "\n", $html)),
-                ENT_QUOTES | ENT_HTML5,
-                'UTF-8'
-            ));
+            $text = MailText::fromHtml($html);
         }
 
         return [$text, $html, $attachments];

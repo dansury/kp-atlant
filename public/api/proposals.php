@@ -8,6 +8,7 @@ require_once ROOT . '/lib/moysklad.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
 require_once ROOT . '/lib/pdf.php';
+require_once ROOT . '/lib/docx.php';
 require_once ROOT . '/lib/kp_content.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/notifier.php';
@@ -256,6 +257,21 @@ switch ($action) {
         readfile($proposal['pdf_path']);
         exit;
 
+    // The КП as a Word file (module 016). Built on demand: a manager who only
+    // wants the PDF should not pay for a second render on every save.
+    case 'docx':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::val("SELECT 1 FROM proposals WHERE id=?", [$id])) jsonError('Not found', 404);
+        $path = DocxGenerator::generate($id);
+        $name = DocxGenerator::filename($id);
+        header('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        header('Content-Disposition: attachment; filename="KP-' . $id . '.docx"; '
+             . "filename*=UTF-8''" . rawurlencode($name));
+        header('Content-Length: ' . (string)filesize($path));
+        readfile($path);
+        exit;
+
     case 'confirm':
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
@@ -314,11 +330,26 @@ switch ($action) {
                              LEFT JOIN counterparties c ON p.counterparty_id = c.id
                              WHERE p.id=?", [$id]);
         if (!$proposal) jsonError('Not found', 404);
-        if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) jsonError('PDF not generated');
-
         $input = getInput();
         $to = $input['to'] ?? $proposal['email_from'] ?? $proposal['contact_email'] ?? '';
         if (!$to) jsonError('Recipient email required');
+
+        // 35 of the 37 КП in the archive left as a Word file — a закупщик puts
+        // our positions into his own form, and cannot do that with a printout
+        // (module 016). The manager's choice for THIS letter beats the setting.
+        $format = (string)($input['format'] ?? Settings::get('KP_ATTACH_FORMAT', 'docx'));
+        if (!in_array($format, ['docx', 'pdf', 'both'], true)) $format = 'docx';
+        $attachments = [];
+        $docxPath = null;
+        if ($format !== 'pdf') {
+            $docxPath = DocxGenerator::generate($id);
+            $attachments[] = $docxPath;
+        }
+        if ($format !== 'docx') {
+            if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) PdfGenerator::generate($id);
+            $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]) + $proposal;
+            $attachments[] = $proposal['pdf_path'];
+        }
 
         $subject = $input['subject'] ?? 'Коммерческое предложение от Atlant Armour';
         $body = $proposal['cover_letter_final'] ?? $proposal['cover_letter'] ?? '';
@@ -334,7 +365,7 @@ switch ($action) {
             'manager_id'      => (int)$manager['id'],
             'counterparty_id' => $proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null,
             'request_id'      => (int)$proposal['request_id'],
-            'attachments'     => [$proposal['pdf_path']],
+            'attachments'     => $attachments,
         ]);
 
         // Feed entry — an outbound message clears the unanswered highlight (FR-038)
@@ -345,9 +376,11 @@ switch ($action) {
             'email_to'   => $to,
             'manager_id' => $manager['id'] ?? null,
             'event_type' => 'kp_sent',
-            'meta'       => ['proposal_id' => (int)$id, 'pdf' => basename($proposal['pdf_path'])],
+            'meta'       => ['proposal_id' => (int)$id, 'format' => $format,
+                             'files' => array_map('basename', $attachments)],
         ]);
-        Db::q("UPDATE correspondence SET has_attachment=1, attachment_path=? WHERE id=(SELECT MAX(id) FROM correspondence)", [$proposal['pdf_path']]);
+        Db::q("UPDATE correspondence SET has_attachment=1, attachment_path=? WHERE id=(SELECT MAX(id) FROM correspondence)",
+              [$attachments[0] ?? $proposal['pdf_path']]);
 
         $now = date('Y-m-d H:i:s');
         Db::update('proposals', ['status' => 'sent', 'sent_at' => $now, 'updated_at' => $now], 'id=?', [$id]);

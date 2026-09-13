@@ -72,6 +72,117 @@ class Crm {
     }
 
     // Record a contact person of the company (FR-035)
+    /**
+     * Is this one of OUR addresses? A letter the site form sends arrives from
+     * `atlant@atlant-armour.ru`, and a visitor who left no email would otherwise
+     * open a company card for our own domain (module 015).
+     */
+    public static function isOurAddress(string $email): bool {
+        $email = mb_strtolower(trim($email));
+        if ($email === '') return false;
+        if (Db::val("SELECT 1 FROM mailboxes WHERE lower(email)=?", [$email])) return true;
+        if (Db::val("SELECT 1 FROM legal_entities WHERE lower(email)=?", [$email])) return true;
+        $domain = substr(strrchr($email, '@') ?: '', 1);
+        foreach (Db::all("SELECT email FROM mailboxes WHERE email IS NOT NULL AND email <> ''") as $b) {
+            $ours = mb_strtolower((string)$b['email']);
+            if ($domain !== '' && str_ends_with($ours, '@' . $domain)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * ЭДО identifiers the client puts in his own signature (module 015).
+     *
+     * «Мы работаем с ЭДО. 1) Идентификатор участника ЭДО (GUID) КонтурДиадок
+     * 2BM-7727473370-772701001-202111290821548642984» — 176 letters of the
+     * archive are about ЭДО and 54 carry an identifier. The regex is what finds
+     * it: the model may add the operator's name, it never invents the id.
+     * Nothing is overwritten — a client who switches operator says so in words.
+     */
+    public static function rememberEdo(int $counterpartyId, string $text, $fromModel = null): void {
+        $row = Db::one("SELECT edo_operator, edo_id, needs_paper_docs FROM counterparties WHERE id=?", [$counterpartyId]);
+        if (!$row) return;
+
+        $id = (string)($row['edo_id'] ?? '');
+        if ($id === '' && preg_match('/\b(2[A-Z]{2}[-\s]?[A-Z0-9]{8,}(?:-[A-Z0-9]+){0,4})/u', $text, $m)) {
+            $id = strtoupper(str_replace(' ', '', trim($m[1])));
+        }
+
+        $operator = (string)($row['edo_operator'] ?? '');
+        if ($operator === '') {
+            foreach (['Диадок' => '/контур[\s.]*диадок|диадок/iu', 'СБИС' => '/\bсбис\b/iu',
+                      'Такском' => '/такском/iu', 'Астрал' => '/астрал/iu'] as $name => $re) {
+                if (preg_match($re, $text)) { $operator = $name; break; }
+            }
+            if ($operator === '' && is_array($fromModel) && !empty($fromModel['operator'])) {
+                $operator = mb_substr((string)$fromModel['operator'], 0, 40);
+            }
+        }
+
+        $paper = (int)($row['needs_paper_docs'] ?? 0);
+        if (!$paper && preg_match('/(?:на\s+)?бумажн\w+\s+носител|оригинал\w*\s+(?:документ|почтой)|дублир\w+\s+на\s+бумаг/iu', $text)) {
+            $paper = 1;
+        }
+        if (!$paper && is_array($fromModel) && !empty($fromModel['paper_copy'])) $paper = 1;
+
+        $upd = [];
+        if ($id !== '' && $id !== (string)($row['edo_id'] ?? '')) $upd['edo_id'] = $id;
+        if ($operator !== '' && $operator !== (string)($row['edo_operator'] ?? '')) $upd['edo_operator'] = $operator;
+        if ($paper !== (int)($row['needs_paper_docs'] ?? 0)) $upd['needs_paper_docs'] = $paper;
+        if (!$upd) return;
+
+        Db::update('counterparties', $upd + ['updated_at' => date('Y-m-d H:i:s')], 'id=?', [$counterpartyId]);
+        Logger::info('crm', 'ЭДО контрагента #' . $counterpartyId . ' обновлён из письма: '
+                     . implode(', ', array_keys($upd)), ['counterparty_id' => $counterpartyId]);
+    }
+
+    /**
+     * Requisites arriving as a FILE (module 015). 206 incoming attachments of
+     * the archive are «карточка предприятия» or a ЕГРЮЛ extract: the ИНН, КПП,
+     * ОГРН and legal address were retyped by hand every time. Only empty fields
+     * are filled — what МойСклад or a manager already put in wins.
+     */
+    public static function fillRequisitesFromAttachments(int $counterpartyId, array $attachments): void {
+        $text = '';
+        foreach ($attachments as $a) {
+            $name = mb_strtolower((string)($a['filename'] ?? ''));
+            $looksLikeCard = (bool)preg_match('/карточк|реквизит|егрюл|егрип|выписк|карта\s*партнёр|карта\s*партнер|информационн\w*\s*карт/iu', $name);
+            if (!$looksLikeCard) continue;
+            $text .= "\n" . (string)($a['extracted_text'] ?? '');
+        }
+        if (trim($text) === '') return;
+
+        $found = self::requisitesFromText($text);
+        if (!$found) return;
+
+        $row = Db::one("SELECT * FROM counterparties WHERE id=?", [$counterpartyId]);
+        if (!$row) return;
+        $upd = [];
+        foreach ($found as $field => $value) {
+            if (trim((string)($row[$field] ?? '')) === '') $upd[$field] = $value;
+        }
+        if (!$upd) return;
+        Db::update('counterparties', $upd + ['updated_at' => date('Y-m-d H:i:s')], 'id=?', [$counterpartyId]);
+        Logger::info('crm', 'Реквизиты контрагента #' . $counterpartyId . ' заполнены из вложения: '
+                     . implode(', ', array_keys($upd)), ['counterparty_id' => $counterpartyId]);
+    }
+
+    /** ИНН/КПП/ОГРН/юр. адрес out of a company card. Digits are checked, not trusted. */
+    public static function requisitesFromText(string $text): array {
+        $out = [];
+        if (preg_match('/\bИНН\D{0,12}(\d{10}|\d{12})\b/iu', $text, $m)) $out['inn'] = $m[1];
+        if (preg_match('/\bКПП\D{0,12}(\d{9})\b/iu', $text, $m))          $out['kpp'] = $m[1];
+        if (preg_match('/\bОГРНИП\D{0,12}(\d{15})\b/iu', $text, $m))      $out['ogrn'] = $m[1];
+        elseif (preg_match('/\bОГРН\D{0,12}(\d{13})\b/iu', $text, $m))    $out['ogrn'] = $m[1];
+        if (preg_match('/(?:Юридический|Почтовый|Юр\.?)\s*адрес\s*:?\s*(.{10,180}?)(?:\n|Тел|ИНН|КПП|ОГРН|Банк|E-?mail)/isu', $text, $m)) {
+            $out['legal_address'] = trim((string)preg_replace('/\s+/u', ' ', $m[1]), " \t\n\r.,;");
+        }
+        if (preg_match('/(?:Полное\s+наименование|Наименование\s+организации)\s*:?\s*(.{4,160}?)(?:\n|ИНН|КПП|ОГРН)/isu', $text, $m)) {
+            $out['legal_title'] = trim((string)preg_replace('/\s+/u', ' ', $m[1]), " \t\n\r.,;");
+        }
+        return $out;
+    }
+
     public static function upsertContact(int $counterpartyId, ?string $name, ?string $email, ?string $phone = null): void {
         $email = $email ? mb_strtolower(trim($email)) : null;
         if (!$email) return;

@@ -318,5 +318,21 @@ ok('таблицы соответствия в документе нет', !str_
 ok('но замена всё равно объяснена', str_contains($html2, 'Предлагается вместо'));
 ok('и позиция в документе есть', str_contains($html2, 'Атлант Multicam'));
 
+echo "\n14. Тот же документ выгружается в Word (модуль 016)\n";
+require_once ROOT . '/lib/docx.php';
+$docxPath = DocxGenerator::generate($proposalId);
+ok('файл .docx создан', is_file($docxPath) && filesize($docxPath) > 2000);
+ok('путь записан в КП', (string)Db::val("SELECT docx_path FROM proposals WHERE id=?", [$proposalId]) === $docxPath);
+$zip = new ZipArchive();
+ok('пакет открывается', $zip->open($docxPath) === true);
+$docXml = (string)$zip->getFromName('word/document.xml');
+$zip->close();
+ok('document.xml — корректный XML', simplexml_load_string($docXml) !== false);
+ok('таблица соответствия попала в Word', str_contains($docXml, 'Таблица соответствия запросу'));
+ok('позиция в Word есть', str_contains($docXml, 'Страж-5'));
+ok('реквизиты в Word есть', str_contains($docXml, 'Реквизиты поставщика'));
+ok('стили шаблона в текст не просочились', !str_contains($docXml, 'border-collapse'));
+@unlink($docxPath);
+
 echo "\n" . ($fail ? "$fail FAILED\n" : "ВСЁ ЗЕЛЁНОЕ\n");
 exit($fail ? 1 : 0);
