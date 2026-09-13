@@ -1140,6 +1140,17 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '19')");
         $current = 19;
     }
+
+    // v20 — module 018: «подтверждено» becomes a statement about the document
+    if ($current < 20) {
+        // Which positions the manager knowingly signed off without a price, and
+        // who did it. Empty means «КП с ценами» — the guard then has nothing to
+        // ask about (module 018).
+        Db::ensureColumn('proposals', 'no_price_ack_json', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '20')");
+        $current = 20;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
@@ -1410,7 +1421,12 @@ function jsonOk(array $data = []): never {
     exit;
 }
 
-function jsonError(string $msg, int $code = 400): never {
+/**
+ * $extra — machine-readable detail the browser acts on rather than just shows.
+ * «КП без цены» sends the positions back with the refusal, so the editor can
+ * name them in the question it asks instead of repeating the message (module 018).
+ */
+function jsonError(string $msg, int $code = 400, array $extra = []): never {
     // A 401 is an open tab whose session ran out — ordinary traffic, not an
     // incident. Logging it buried the journal under hundreds of «Unauthorized».
     if (class_exists('Logger') && $code !== 401) {
@@ -1418,7 +1434,8 @@ function jsonError(string $msg, int $code = 400): never {
     }
     http_response_code($code);
     jsonHeaders();
-    echo jsonBody(['error' => $msg, 'code' => $code]);
+    // `error` and `code` are the contract and win over anything $extra carries
+    echo jsonBody(['error' => $msg, 'code' => $code] + $extra);
     exit;
 }
 

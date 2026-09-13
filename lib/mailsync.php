@@ -223,6 +223,9 @@ final class MailSync {
             'email'          => $senderEmail,
             'contact_person' => $parsed['contact_person'] ?? ($form['name'] ?? null) ?: ($row['from_name'] ?: null),
             'phone'          => $parsed['contact_phone'] ?? ($form['phone'] ?? null),
+            // The letter itself, signatures and quoted thread included: where
+            // «АО "Уралэлемент"» lives when the model did not extract it
+            'text'           => (string)$row['body_text'] . "\n" . $attachmentText,
         ]);
         if ($counterpartyId) {
             Crm::upsertContact(
@@ -280,7 +283,7 @@ final class MailSync {
             'error'             => null,
         ], 'id=?', [$row['id']]);
 
-        self::autoDraft($row, $category, $counterpartyId, $attachmentText);
+        self::autoDraft($row, $category, $counterpartyId, $attachmentText, $requestId);
 
         $orgName = $parsed['org_name'] ?? null;
         $title = Triage::label($category) . ($orgName ? " от $orgName" : ' от ' . ($senderEmail ?: (string)$row['from_email']));
@@ -302,16 +305,25 @@ final class MailSync {
      * default: until the manager trusts the categories, every letter should not
      * cost a second model call. A failure here must never lose the request.
      */
-    private static function autoDraft(array $row, string $category, ?int $counterpartyId, string $attachmentText): void {
+    private static function autoDraft(array $row, string $category, ?int $counterpartyId,
+                                     string $attachmentText, ?int $requestId = null): void {
         if ((int)Settings::get('TRIAGE_AUTO_DRAFT', 0) !== 1) return;
         if (Triage::route($category)[0] === null) return;
         try {
+            // The same «чего у нас нет» block the reply button sends (module 018).
+            // A draft prepared here is used as-is on the first click, so leaving
+            // it out would put the silence back for exactly those letters.
+            $unmatched = [];
+            if ($requestId && RequestItems::ensure($requestId)) {
+                $unmatched = RequestItems::unmatched($requestId);
+            }
             $text = Triage::draft($row, $category, [
                 'org_name'        => $counterpartyId ? (string)Db::val("SELECT name FROM counterparties WHERE id=?", [$counterpartyId]) : '',
                 'attachments'     => $attachmentText,
                 'counterparty_id' => $counterpartyId,
                 'email_rules'     => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
                 'tov'             => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
+                'unmatched'       => $unmatched,
             ]);
             Db::update('mail_messages', ['draft_text' => $text, 'draft_at' => date('Y-m-d H:i:s')], 'id=?', [$row['id']]);
         } catch (Throwable $e) {

@@ -16,6 +16,53 @@ require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/request_shape.php';
 require_once ROOT . '/lib/requisites.php';
 
+/**
+ * SC-005 with teeth (module 018).
+ *
+ * «Ни одно КП не уходит клиенту без подтверждения менеджером» was a click, not
+ * a statement about the document: a КП with «Итого: 0,00 руб.» was confirmed and
+ * sent exactly like a priced one. Nothing is blocked dead here — the manager is
+ * asked once, by position, and his answer is kept on the proposal so
+ * «Подтвердить» and «Отправить» do not ask twice for the same document. A price
+ * edited afterwards drops the answer and the question comes back.
+ */
+function requireNoPriceAck(int $proposalId, array $input, array $manager): void {
+    $gaps = KpContent::priceGaps($proposalId);
+    if (!$gaps['items'] && !$gaps['empty']) return;
+
+    $stored = json_decode((string)(Db::val("SELECT no_price_ack_json FROM proposals WHERE id=?", [$proposalId]) ?: ''), true);
+    $ackedIds = is_array($stored) ? array_map('intval', (array)($stored['items'] ?? [])) : [];
+    $ackedEmpty = is_array($stored) && !empty($stored['empty']);
+
+    $gapIds = array_map('intval', array_column($gaps['items'], 'id'));
+    $openIds = array_values(array_diff($gapIds, $ackedIds));
+    // Every position already answered for, and an empty КП answered for as such
+    if (!$openIds && (!$gaps['empty'] || $ackedEmpty)) return;
+
+    if (empty($input['no_price_ack'])) {
+        $msg = $gaps['empty']
+            ? 'В КП нет ни одной позиции — подтвердите, что отправляем его таким.'
+            : 'Без цены: ' . count($gaps['items']) . ' поз. Подтвердите, что отправляем КП без цены по ним.';
+        jsonError($msg, 409, ['no_price' => [
+            'items' => $gaps['items'],
+            'total' => $gaps['total'],
+            'empty' => $gaps['empty'],
+        ]]);
+    }
+
+    Db::update('proposals', ['no_price_ack_json' => json_encode([
+        'items'      => $gapIds,
+        'empty'      => $gaps['empty'],
+        'manager_id' => (int)$manager['id'],
+        'at'         => date('Y-m-d H:i:s'),
+    ], JSON_UNESCAPED_UNICODE)], 'id=?', [$proposalId]);
+
+    Logger::warning('kp', 'КП подтверждено без цены по ' . count($gaps['items']) . ' поз.', [
+        'proposal_id' => $proposalId, 'manager_id' => (int)$manager['id'],
+        'positions'   => array_column($gaps['items'], 'position'),
+    ]);
+}
+
 $action = $_GET['action'] ?? '';
 
 switch ($action) {
@@ -48,6 +95,12 @@ switch ($action) {
         }
         unset($it);
         $proposal['addons'] = Db::all("SELECT * FROM proposal_addons WHERE proposal_id=? ORDER BY position", [$id]);
+        // What the editor warns about before the manager reaches «Подтвердить»:
+        // positions with no money on them, positions the catalog never answered,
+        // and a buyer whose name is still an e-mail address (module 018)
+        $proposal['price_gaps'] = KpContent::priceGaps($id);
+        $proposal['unmatched']  = KpContent::unmatchedRows($id);
+        $proposal['buyer']      = Requisites::forProposal($id)['buyer'] ?? null;
         jsonData($proposal);
 
     case 'generate':
@@ -151,7 +204,11 @@ switch ($action) {
 
         $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
         $swaps = KpContent::substitutions($items);
-        $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections, $swaps, $pastSwaps);
+        // The letter names the same products the table does, and says out loud
+        // what the catalog never answered (module 018)
+        $unmatched = KpContent::unmatchedRows($proposalId);
+        $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections, $swaps,
+                                                          $pastSwaps, $unmatched);
         Db::update('proposals', ['cover_letter' => $coverLetter], 'id=?', [$proposalId]);
 
         // Pull descriptions, specs and photos for the product cards (FR-040, FR-042)
@@ -218,6 +275,9 @@ switch ($action) {
 
         // Update items
         if (!empty($input['items'])) {
+            // What the money looked like before the edit — a price that moves
+            // invalidates the manager's «отправляем без цены» answer (module 018)
+            $moneyBefore = Db::all("SELECT id, price, quantity FROM proposal_items WHERE proposal_id=? ORDER BY id", [$id]);
             foreach ($input['items'] as $itemData) {
                 $itemId = $itemData['id'] ?? 0;
                 $upd = [];
@@ -232,6 +292,10 @@ switch ($action) {
                     $upd['selected_images'] = json_encode(array_values($itemData['selected_images']), JSON_UNESCAPED_UNICODE);
                 }
                 if ($upd) Db::update('proposal_items', $upd, 'id=? AND proposal_id=?', [$itemId, $id]);
+            }
+            $moneyAfter = Db::all("SELECT id, price, quantity FROM proposal_items WHERE proposal_id=? ORDER BY id", [$id]);
+            if ($moneyAfter !== $moneyBefore) {
+                Db::update('proposals', ['no_price_ack_json' => null], 'id=?', [$id]);
             }
         }
 
@@ -277,6 +341,10 @@ switch ($action) {
         $id = (int)($_GET['id'] ?? 0);
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
         if (!$proposal) jsonError('Not found', 404);
+
+        // A КП that prices nothing is not confirmed on the same click as one
+        // that does — the manager answers for those positions by name (SC-005)
+        requireNoPriceAck($id, getInput(), $manager);
 
         // Save corrections (US4). Everything the manager wrote by hand is a
         // lesson: the letter he rewrote, the paragraphs he added around the
@@ -333,6 +401,10 @@ switch ($action) {
         $input = getInput();
         $to = $input['to'] ?? $proposal['email_from'] ?? $proposal['contact_email'] ?? '';
         if (!$to) jsonError('Recipient email required');
+
+        // The same question the confirm asked. Answered there and unchanged
+        // since, it does not come back; a price edited in between brings it back.
+        requireNoPriceAck($id, $input, $manager);
 
         // 35 of the 37 КП in the archive left as a Word file — a закупщик puts
         // our positions into his own form, and cannot do that with a printout

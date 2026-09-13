@@ -93,7 +93,10 @@ table of what those lines mean in our catalog — `request_items`.
 - Built once, locally, when the card is first opened: **no model call** to open a request.
   «Подобрать нейросетью» is a separate button and costs one call.
 - Each line: name with autocomplete over the local base, quantity, unit, price, note and an
-  «ок» flag. A confirmed line is never re-picked by the automatic match.
+  «ок» flag. A confirmed line is never re-picked by the automatic match — and, since
+  module 018, is never sent to the model either: the query list is built from the open
+  rows alone. The table is not blanked while the button runs, and the toast says what
+  the run actually did («подобрано: 1, без совпадений: 1, подтверждённых не тронуто: 1»).
 - The KP is generated **from this table** (`RequestItems::toProposalItems()`), so a wrong
   guess is corrected once, on the request, instead of in every proposal after it.
 - `MoySklad::refreshProductCache()` before a KP is now best-effort: with a dead token the

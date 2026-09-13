@@ -33,14 +33,19 @@ class RequestParser {
      * manufacturer and gets a price list of another reads it as a mistake.
      * $pastSubstitutions — how the manager explained such a swap before, so the
      * wording is the office's own and not the model's invention (module 011).
+     * $unmatched — what the catalog never answered, verbatim from the client;
+     * the letter names it instead of leaving the reader to notice (module 018).
+     *
+     * $items are the КП's own rows. `product_name` on them is the name that will
+     * be printed in the table, and the letter is bound to it: the same КП used
+     * to say «EARMOR M32X mark3» in the letter and «ELECTRONIC EARMUFFS» in the
+     * table, which is the very thing module 016 exists to prevent between the
+     * PDF and the Word file.
      */
     public static function generateCoverLetter(array $items, string $orgName, string $tov,
                                                array $corrections = [], array $substitutions = [],
-                                               array $pastSubstitutions = []): string {
-        $itemList = implode("\n", array_map(
-            fn($i) => "- {$i['product_name']} ({$i['quantity']} {$i['unit']})",
-            $items
-        ));
+                                               array $pastSubstitutions = [], array $unmatched = []): string {
+        ['positions' => $itemList, 'unmatched' => $unmatchedList] = self::coverLetterLists($items, $unmatched);
 
         $fewShot = '';
         if ($corrections) {
@@ -78,8 +83,36 @@ class RequestParser {
         // The wiki knows our products — pull in what this KP is actually about
         $system = Knowledge::augment('cover_letter', ['tov' => $tov, 'few_shot' => $fewShot], "$orgName\n$itemList");
 
-        $user = "Контрагент: $orgName\nПозиции КП:\n$itemList";
+        $user = "Контрагент: $orgName\n"
+              . "Позиции КП (названия ДОСЛОВНО такие, как в таблице КП — другими их не называй):\n"
+              . $itemList;
+        if ($unmatchedList !== '') {
+            $user .= "\n\nНе нашли в каталоге (слова клиента, назови их в письме и напиши, "
+                   . "что уточняем наличие и цену):\n" . $unmatchedList;
+        }
         return LLM::chatText($system, $user, 0.4);
+    }
+
+    /**
+     * The two lists a cover letter is written from, and they never overlap.
+     *
+     * `positions` is the КП's own rows by `product_name` — the exact strings the
+     * table will print, which is what binds the letter to it. A line the catalog
+     * never answered is not a position: it goes to `unmatched` in the client's
+     * own words, so the same item cannot appear twice under two different names.
+     *
+     * @return array{positions:string,unmatched:string}
+     */
+    public static function coverLetterLists(array $items, array $unmatched): array {
+        $holes = array_flip(array_map(fn($u) => (int)$u['n'], $unmatched));
+        $positions = array_filter($items, fn($i) => trim((string)($i['product_name'] ?? '')) !== ''
+                                                 && !isset($holes[(int)($i['position'] ?? 0)]));
+        return [
+            'positions' => implode("\n", array_map(
+                fn($i) => "- {$i['product_name']} ({$i['quantity']} {$i['unit']})", $positions)),
+            'unmatched' => implode("\n", array_map(
+                fn($u) => "- {$u['requested']} ({$u['quantity']} {$u['unit']})", $unmatched)),
+        ];
     }
 
     // Normalize product names for fuzzy matching
@@ -107,7 +140,7 @@ class RequestParser {
      * Draft a reply to an incoming letter. Called only from «Создать ответ» —
      * mail sync itself never asks the model for a reply.
      * $ctx: org_name, attachments (text), thread (array of ['direction','date_at','body_text']),
-     *       email_rules, tov.
+     *       email_rules, tov, unmatched (positions the catalog never answered).
      */
     public static function generateReply(array $message, array $ctx = []): string {
         // Retrieval query = what the client actually wrote: subject, body, attachments
@@ -135,6 +168,9 @@ class RequestParser {
         if (trim((string)($ctx['attachments'] ?? '')) !== '') {
             $user .= "\n===== ТЕКСТ ВЛОЖЕНИЙ =====\n" . self::clip((string)$ctx['attachments'], 6000) . "\n";
         }
+        // Positions the catalog never answered. Until now the draft simply left
+        // them out and the client was told nothing at all (module 018).
+        $user .= RequestItems::unmatchedBlock((array)($ctx['unmatched'] ?? []));
 
         return LLM::chatText($system, $user, 0.4);
     }

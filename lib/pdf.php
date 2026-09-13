@@ -76,6 +76,11 @@ class PdfGenerator {
         $matchTable = $showMatchTable ? KpContent::matchTableRows($proposalId) : [];
         $matchTableNote = (string)($proposal['match_table_note'] ?? '');
 
+        // Позиции запроса, на которые каталог не ответил (module 018). Печатаются
+        // отдельным блоком словами клиента: КП с молчаливой дырой — это КП,
+        // в котором клиент сам должен заметить, что его просьбу потеряли.
+        $unmatched = KpContent::unmatchedRows($proposalId);
+
         $maxImages = (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
         $addons = Db::all(
             "SELECT * FROM proposal_addons WHERE proposal_id=? AND is_selected=1 ORDER BY position",
@@ -183,6 +188,9 @@ class PdfGenerator {
             'showMatchTable' => $showMatchTable && $matchTable,
             'matchTable' => $matchTable,
             'matchTableNote' => $matchTableNote,
+            'unmatched' => $unmatched,
+            'unmatchedNote' => (string)Settings::get('KP_UNMATCHED_NOTE',
+                'По этим позициям запроса мы уточняем наличие, сроки и цену и вернёмся с ответом отдельно.'),
             'showSiteLink' => (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1,
             'showVatTotal' => (bool)($proposal['show_vat_total'] ?? false),
             'conditionsText' => $conditionsText,
