@@ -1,6 +1,8 @@
 config.php
 data/kp.db
 data/secret.key
+data/auto-pull.json
+data/auto-pull.json.lock
 data/kp.db-wal
 data/kp.db-shm
 data/kp/
