@@ -95,6 +95,8 @@ class PdfGenerator {
             $item['gallery'] = !empty($item['show_images'])
                 ? KpContent::itemGallery($item, $maxImages)
                 : [];
+            // The same link as a picture, for a КП that gets printed (module 017)
+            $item['site_qr'] = KpContent::itemQr($item);
             // An analogue carries its own evidence into the card
             $item['alt_matched'] = KpContent::matchedSpecs($item);
             $item['alt_differs'] = KpContent::unmatchedSpecs($item);
@@ -177,6 +179,7 @@ class PdfGenerator {
             'vatStatement' => $vatStatement,
             'requisites' => $requisites,
             'showRequisites' => (int)Settings::get('KP_REQUISITES_BLOCK', 1) === 1,
+            'qrSize' => max(50, (int)Settings::get('KP_QR_SIZE', 90)),
             'showMatchTable' => $showMatchTable && $matchTable,
             'matchTable' => $matchTable,
             'matchTableNote' => $matchTableNote,

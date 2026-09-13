@@ -54,9 +54,20 @@ if ((int)Settings::get('REQUISITES_AUTOSYNC', 1) === 1) {
 
 // Ссылки на товары на сайте греются здесь, а не при генерации КП: документ
 // не должен ждать ответа Битрикса.
+//
+// Сначала — выгрузка модуля atlant.kpsync (module 017): весь каталог страницами
+// за один разговор. Что она не закрыла — товар, которого на сайте нет под этим
+// артикулом, — добирается поштучно, как и раньше. Порядок именно такой: после
+// выгрузки поштучному проходу почти нечего делать.
 $urls = 0;
 try {
-    $urls = Bitrix::refreshUrls(50);
+    $sync = Bitrix::syncFromSite();
+    $urls = (int)$sync['updated'];
+} catch (Throwable $e) {
+    Logger::exception('bitrix', $e, ['stage' => 'export']);
+}
+try {
+    $urls += Bitrix::refreshUrls(50);
 } catch (Throwable $e) {
     Logger::exception('bitrix', $e, ['stage' => 'urls']);
 }

@@ -99,6 +99,12 @@ try {
             require_once ROOT . '/lib/bitrix.php';
             jsonOk(['resolved' => Bitrix::refreshUrls(max(1, (int)($input['limit'] ?? 50)))]);
 
+        // Весь каталог за один разговор — когда на сайте стоит модуль
+        // atlant.kpsync (module 017)
+        case 'bitrix_sync_catalog':
+            require_once ROOT . '/lib/bitrix.php';
+            jsonOk(['sync' => Bitrix::syncFromSite()]);
+
         case 'test_llm':
             $provider = (string)($input['provider'] ?? $_GET['provider'] ?? '');
             try {

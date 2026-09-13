@@ -23,6 +23,13 @@
  *
  * With `BITRIX_ENABLED` off, every call here returns null and the КП simply
  * prints no link. Nothing upstream may depend on the site being reachable.
+ *
+ * When the site runs the `atlant.kpsync` module (module 017, `bitrix-module/`
+ * in this repository), the same webhook also answers `action=export` with the
+ * whole catalog in pages — `syncFromSite()` walks it and fills every link in
+ * one conversation instead of one request per position. That is an
+ * optimisation and nothing more: with no module, or a module that is off, the
+ * three-step resolution above still answers every product on its own.
  */
 final class Bitrix {
 
@@ -87,6 +94,7 @@ final class Bitrix {
             'base'     => self::base(),
             'webhook'  => self::webhook() !== '' ? 'задан' : 'не задан',
             'template' => (string)Settings::get('BITRIX_URL_TEMPLATE', ''),
+            'module'   => self::modulePing(),
             'sample'   => null,
         ];
         $row = Db::one("SELECT moysklad_id, name, article, code, parent_id FROM products_cache
@@ -95,6 +103,144 @@ final class Bitrix {
             $out['sample'] = ['name' => $row['name'], 'article' => $row['article'], 'url' => self::resolve($row)];
         }
         return $out;
+    }
+
+    // ------------------------------------------------------- catalog export
+
+    /**
+     * Fill `products_cache.site_url` for the whole catalog from one endpoint.
+     *
+     * The per-product path costs one HTTP request per position and is paid at
+     * the moment a КП is built; this pays for the whole catalog once, from
+     * cron. It only ever writes a link the site actually gave us — a product
+     * the site did not mention is left exactly as it was, so a half-finished
+     * export never erases links that are already known good.
+     *
+     * The pass is bounded by `BITRIX_EXPORT_STEPS`: on a shared host a walk of
+     * 20 000 positions must be able to stop and be continued by the next cron
+     * run rather than time out halfway.
+     *
+     * @return array{checked:int,updated:int,pages:int,done:bool}
+     */
+    public static function syncFromSite(): array
+    {
+        $out = ['checked' => 0, 'updated' => 0, 'pages' => 0, 'done' => true];
+        if (!self::enabled() || self::webhook() === '') return $out;
+
+        $limit  = max(1, min(1000, (int)Settings::get('BITRIX_EXPORT_PAGE', 500)));
+        $steps  = max(1, (int)Settings::get('BITRIX_EXPORT_STEPS', 20));
+        $offset = 0;
+
+        for ($step = 0; $step < $steps; $step++) {
+            $body = self::http(self::exportUrl($offset, $limit));
+            // A site that stopped answering mid-walk is not a finished walk
+            if ($body === null) { $out['done'] = false; break; }
+
+            $page = self::parseExport($body);
+            if (!$page['items']) break;
+
+            $out['pages']++;
+            foreach ($page['items'] as $item) {
+                $out['checked']++;
+                if (self::applyExported($item)) $out['updated']++;
+            }
+
+            if ($page['next'] === null) break;
+            $offset = $page['next'];
+            if ($step === $steps - 1) $out['done'] = false;
+        }
+
+        if ($out['updated'] > 0) {
+            Logger::info('bitrix', 'Ссылки на товары обновлены с сайта', $out);
+        }
+        return $out;
+    }
+
+    /**
+     * One page of the module's answer, reduced to what the catalog needs.
+     *
+     * Pure on purpose: a test hands it a recorded answer and no site has to be
+     * reachable. Both spellings of every field are accepted, because a Битрикс
+     * answer is `NAME`/`DETAIL_PAGE_URL` and a hand-written one is usually
+     * `name`/`url`.
+     *
+     * @return array{items:array<int,array{article:string,code:string,name:string,url:string}>,next:?int}
+     */
+    public static function parseExport(string $body): array
+    {
+        $data = json_decode($body, true);
+        if (!is_array($data)) return ['items' => [], 'next' => null];
+
+        $rows = $data['result'] ?? [];
+        if (!is_array($rows)) return ['items' => [], 'next' => null];
+
+        $items = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $url = trim((string)($row['url'] ?? $row['URL'] ?? $row['DETAIL_PAGE_URL']
+                                 ?? $row['detailPageUrl'] ?? ''));
+            if ($url === '') continue;   // a row with no page is not an answer
+            $items[] = [
+                'article' => trim((string)($row['ARTICLE'] ?? $row['article'] ?? '')),
+                'code'    => trim((string)($row['CODE'] ?? $row['code'] ?? '')),
+                'name'    => trim((string)($row['NAME'] ?? $row['name'] ?? '')),
+                'url'     => self::absolute($url),
+            ];
+        }
+
+        $next = $data['next'] ?? null;
+        return ['items' => $items, 'next' => is_numeric($next) ? (int)$next : null];
+    }
+
+    /**
+     * Store one exported row against the catalog.
+     *
+     * Matched on артикул, then on код — never on the name. A name that merely
+     * looks alike would put the wrong page into a signed document, and the
+     * per-product path already makes that guess where it is cheap to undo.
+     */
+    private static function applyExported(array $item): bool
+    {
+        foreach ([['article', $item['article']], ['code', $item['code']]] as [$column, $value]) {
+            if ($value === '') continue;
+
+            $rows = Db::all(
+                "SELECT moysklad_id FROM products_cache
+                 WHERE $column IS NOT NULL AND $column <> '' AND $column = ? COLLATE NOCASE
+                   AND is_archived IS NOT 1",
+                [$value]
+            );
+            if (!$rows) continue;
+
+            foreach ($rows as $row) {
+                Db::q("UPDATE products_cache SET site_url=?, site_url_synced_at=datetime('now')
+                       WHERE moysklad_id=?",
+                      [$item['url'], (string)$row['moysklad_id']]);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static function exportUrl(int $offset, int $limit): string
+    {
+        $webhook = self::webhook();
+        $query = http_build_query(['action' => 'export', 'offset' => $offset, 'limit' => $limit]);
+        return $webhook . (str_contains($webhook, '?') ? '&' : '?') . $query;
+    }
+
+    /** What the site module says about itself; null when there is none. */
+    private static function modulePing(): ?array
+    {
+        $webhook = self::webhook();
+        if ($webhook === '') return null;
+
+        $body = self::http($webhook . (str_contains($webhook, '?') ? '&' : '?') . 'action=ping');
+        if ($body === null) return null;
+
+        $data = json_decode($body, true);
+        return is_array($data) && isset($data['result']) && is_array($data['result'])
+            ? $data['result'] : null;
     }
 
     // ---------------------------------------------------------------- resolving
