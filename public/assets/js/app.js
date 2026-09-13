@@ -3364,11 +3364,25 @@ const App = {
                 if (it.type === 'textarea') return `<textarea id="${id}" rows="6">${this.esc(it.value)}</textarea>`;
                 return `<input type="text" id="${id}" value="${this.esc(it.value)}">`;
             };
+            // Автообновление кода: состояние последней проверки и кнопка разовой
+            // проверки живут прямо в карточке этой группы (модуль 014).
+            const ap = d.autopull || {};
+            const apCard = () => {
+                const lines = [];
+                lines.push(ap.configured
+                    ? `Отслеживается: <b>${this.esc(ap.repo)}</b> · ${this.esc(ap.ref)}. Креды — из <code>pull-config.php</code> в корне сайта.`
+                    : 'Рядом с <code>pull.php</code> нет <code>pull-config.php</code> — включать нечего.');
+                if (ap.checked_at) lines.push(`Последняя проверка: ${this.esc(ap.checked_at)}${ap.note ? ' — ' + this.esc(ap.note) : ''}.`);
+                if (ap.error) lines.push(`<b>Ошибка: ${this.esc(ap.error)}</b>`);
+                return `<div class="muted" style="margin:8px 0">${lines.join('<br>')}</div>
+                    <div class="flex flex--end"><button class="btn btn--sm btn--outline" onclick="App.autopullCheck()">Проверить и обновить сейчас</button></div>`;
+            };
             const groups = Object.entries(d.groups).map(([key, title]) => {
                 const items = d.items.filter(i => i.group === key);
                 if (!items.length) return '';
                 return `<div class="card">
                     <div class="card__title">${this.esc(title)}</div>
+                    ${key === 'deploy' ? apCard() : ''}
                     ${items.map(it => `
                         <div class="setting">
                             <div class="setting__label">
@@ -3408,6 +3422,18 @@ const App = {
         try {
             await this.api('admin.php?action=settings', {method: 'PUT', body: {values}});
             this.toast('Настройки сохранены', 'success');
+            this.adminSettings();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // Разовая проверка обновления: спрашивает head у GitHub и, если коммит новее
+    // выложенного, запускает pull.php — независимо от галочки.
+    async autopullCheck() {
+        try {
+            const res = await this.api('admin.php?action=autopull_check', {method: 'POST', body: {}});
+            const r = res.report || {};
+            this.toast(r.ok ? `Автообновление: ${r.note}${r.head ? ' (head ' + r.head + ')' : ''}` : `Автообновление: ${r.error}`,
+                r.ok ? 'success' : 'error');
             this.adminSettings();
         } catch (err) { this.toast(err.message, 'error'); }
     },
