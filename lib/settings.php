@@ -40,17 +40,23 @@ final class Settings {
         'GITHUB_TOKEN'           => ['knowledge', 'Токен GitHub', 'secret', true, '', 'Fine-grained токен с правом Contents: Read. Для приватного репозитория обязателен'],
         'KNOWLEDGE_SYNC_TTL_SEC' => ['knowledge', 'Проверять обновления не чаще, сек', 'int', false, 600, '0 — проверять версию репозитория перед каждой генерацией'],
         'KNOWLEDGE_TIMEOUT_SEC'  => ['knowledge', 'Таймаут запроса к GitHub, сек', 'int', false, 20, ''],
-        'KNOWLEDGE_TASKS'        => ['knowledge', 'Где применять', 'text', false, 'mail_reply,reply_kp,reply_product,reply_availability,reply_order_status,reply_return,reply_docs,reply_wholesale,reply_complaint,cover_letter,followup,normalize_names', 'Ключи задач через запятую: mail_reply, cover_letter, followup, normalize_names'],
+        'KNOWLEDGE_TASKS'        => ['knowledge', 'Где применять', 'text', false, 'mail_reply,reply_kp,reply_product,reply_availability,reply_order_status,reply_delivery,reply_edo,reply_closing_docs,reply_contract,reply_tender,reply_gov_order,reply_return,reply_docs,reply_wholesale,reply_complaint,cover_letter,followup,normalize_names', 'Ключи задач через запятую: mail_reply, cover_letter, followup, normalize_names'],
         'KNOWLEDGE_MAX_CHARS'    => ['knowledge', 'Максимум символов вики в промпте', 'int', false, 6000, 'Бюджет для ответа на письмо; у остальных задач — доля от него'],
         'KNOWLEDGE_MIN_HITS'     => ['knowledge', 'Минимум совпавших терминов', 'int', false, 2, 'Ниже порога раздел вики не подмешивается — «незачем»'],
 
         // --- Triage (module 006): what a letter is and how it gets answered ---
         'TRIAGE_ENABLED'          => ['triage', 'Классифицировать входящие письма', 'bool', false, 1, 'Выключено — как раньше: каждое письмо становится запросом КП'],
-        'TRIAGE_SERVICE_SENDERS'  => ['triage', 'Служебные отправители', 'text', false, 'yandex.ru, yandex.com, yandex-team.ru, moysklad.ru, sweb.ru, nic.ru, rutubeinfo.ru, no-reply@*, noreply@*, devnull@*', 'Через запятую. Домен покрывает поддомены; можно маски вида no-reply@*'],
+        'TRIAGE_SERVICE_SENDERS'  => ['triage', 'Служебные отправители', 'text', false, 'yandex.ru, yandex.com, yandex-team.ru, moysklad.ru, sweb.ru, nic.ru, rutubeinfo.ru, ofd.astral.ru, chek.pofd.ru, ofd.ru, platformaofd.ru, atol.ru, aqsi.ru, account.2gis.com, trello.com, todoist.com, accounts.google.com, google.com, sender.ozon.ru, ozon.ru, sfr.gov.ru, nalog.ru, avito.ru, no-reply@*, noreply@*, no_reply@*, notification@*, notifications@*, mailer-daemon@*, devnull@*', 'Через запятую. Домен покрывает поддомены; можно маски вида no-reply@*'],
         'TRIAGE_MIN_CONFIDENCE'   => ['triage', 'Порог уверенности классификатора', 'text', false, '0.5', 'Ниже порога письмо помечается «не определено» — разбирает менеджер'],
         'TRIAGE_CATALOG_LIMIT'    => ['triage', 'Позиций каталога в промпте', 'int', false, 6, 'Сколько товаров из МойСклад подмешивать в ответ'],
         'TRIAGE_AUTO_DRAFT'       => ['triage', 'Готовить черновик сразу', 'bool', false, 0, 'Иначе черновик создаётся по кнопке «Создать ответ» — это экономит вызовы модели'],
         'TRIAGE_SPAM_SENDERS'     => ['triage', 'Отправители-спамеры', 'text', false, '', 'Через запятую — адреса, отмеченные кнопкой «Спам» в письме. Письма с них дальше в запрос не попадают и уходят в папку спама на сервере'],
+
+        // --- Inbound channels (module 015): the site form, and the address
+        // every answer must leave from ---
+        'SITE_FORM_UNWRAP'     => ['triage', 'Разворачивать письма с форм сайта', 'bool', false, 1, 'Письмо «Новый вопрос с сайта» приходит от нас самих: отправителем становится посетитель, темой — его вопрос'],
+        'SITE_FORM_SPAM_FILTER'=> ['triage', 'Отсеивать спам из форм сайта', 'bool', false, 1, 'Заявки, заполненные ботом (имя «1», сообщение «555», SQL-payload), не доходят до модели и не заводят запрос'],
+        'MAIL_OUTGOING_FROM'   => ['mail', 'Адрес для всех исходящих', 'text', false, '', 'Пусто — письмо уходит из ящика, в который пришло. Заполнено — ВСЕ ответы уходят с этого адреса, каким бы ящиком их ни открыли'],
 
         // --- Web push (module 007) ---
         'PUSH_ENABLED'      => ['push', 'Push-уведомления', 'bool', false, 1, 'Уведомления на телефон администратора о новых письмах и запросах'],
@@ -90,6 +96,7 @@ final class Settings {
         'KP_CARD_PHOTOS'       => ['kp', 'Фото в карточке товара', 'int', false, 1, '1 — первая фотография товара из МойСклад. Явный выбор менеджера в редакторе КП этот лимит не ограничивает'],
         'KP_SHOW_SITE_LINK'    => ['kp', 'Ссылка на товар на сайте', 'bool', false, 1, 'Под описанием позиции печатается ссылка на её страницу на сайте (см. «Сайт (Битрикс)»)'],
         'KP_VAT_EXEMPT_NOTE'   => ['kp', 'Формулировка без НДС', 'text', false, 'НДС не облагается', 'Печатается, когда организация в МойСклад не плательщик НДС'],
+        'KP_ATTACH_FORMAT'     => ['kp', 'Формат КП для клиента', 'select:docx,pdf,both', false, 'docx', 'Чем КП уходит в письме. Закупщику нужен редактируемый файл: он переносит позиции в свою форму — поэтому по умолчанию Word'],
         'KP_REQUISITES_BLOCK'  => ['kp', 'Блок реквизитов в КП', 'bool', false, 1, 'Реквизиты, банк, адреса и договор подтягиваются из МойСклад и фиксируются в КП на момент создания'],
 
         // --- The shop on 1С-Битрикс (module 013) ---

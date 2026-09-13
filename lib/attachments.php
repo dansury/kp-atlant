@@ -98,14 +98,150 @@ class Attachments {
             return [self::toUtf8(file_get_contents($path)), 'ok'];
         }
 
-        if (in_array($ext, ['jpg', 'jpeg', 'png'], true) || str_starts_with($mime, 'image/')) {
+        if ($ext === 'odt' || $ext === 'ods') return [self::fromOpenDocument($path), 'ok'];
+        if ($ext === 'rtf') return [self::fromRtf($path), 'ok'];
+
+        // Legacy binary Word and Excel. 130 incoming .doc files of the archive
+        // — карты партнёра, договоры, прайсы — used to be stored and never read
+        // (module 015). There is no parser for them on shared hosting, so the
+        // readable runs of text are pulled out of the stream itself.
+        if (in_array($ext, ['doc', 'dot', 'xls', 'xlt'], true)
+            || str_contains($mime, 'msword') || str_contains($mime, 'ms-excel')) {
+            $text = self::fromLegacyOffice($path);
+            return [$text, trim($text) === '' ? 'empty' : 'ok'];
+        }
+
+        if ($ext === 'zip' || str_contains($mime, 'zip')) return [self::fromZip($path, $opts), 'ok'];
+
+        if (in_array($ext, ['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp', 'bmp', 'gif', 'jfif', 'tif', 'tiff'], true)
+            || str_starts_with($mime, 'image/')) {
             if (!$ocrAllowed) return ['', 'skipped'];
-            $ocr = self::ocr($path, $ext === 'png' ? 'image/png' : 'image/jpeg');
+            $ocr = self::ocr($path, self::imageMime($ext, $mime));
             return $ocr !== null ? [$ocr, 'ocr'] : ['', 'failed'];
         }
 
-        // .doc / .xls (legacy binary) and everything else — kept, not parsed
         return ['', 'skipped'];
+    }
+
+    /** Vision names the format explicitly; an unknown one goes in as JPEG. */
+    private static function imageMime(string $ext, string $mime): string {
+        return match ($ext) {
+            'png'  => 'image/png',
+            'heic', 'heif' => 'image/heic',
+            'webp' => 'image/webp',
+            'bmp'  => 'image/bmp',
+            'gif'  => 'image/gif',
+            'tif', 'tiff' => 'image/tiff',
+            default => str_starts_with($mime, 'image/') && $mime !== 'image/jpeg' ? $mime : 'image/jpeg',
+        };
+    }
+
+    /**
+     * Readable text of a legacy .doc/.xls stream.
+     *
+     * The OLE container stores the text of a Word document as UTF-16LE runs and
+     * the strings of a workbook as short records; both sit between long stretches
+     * of binary. Pulling the runs out gives what a person would read — headings,
+     * requisites, a price table — which is all the classifier and the requisites
+     * reader need. It is not a converter and does not pretend to be one.
+     */
+    private static function fromLegacyOffice(string $path): string {
+        $raw = (string)@file_get_contents($path, false, null, 0, 6 * 1024 * 1024);
+        if ($raw === '') return '';
+
+        $chunks = [];
+        // UTF-16LE runs. Latin and digits are «X\x00»; Cyrillic lives on page
+        // \x04 («К» is 1A 04), so both halves of the pair have to be allowed —
+        // matching only printable low bytes would eat the first Russian letter
+        // of every line.
+        if (preg_match_all('/(?:[\x20-\x7E]\x00|[\x00-\x5F]\x04){6,}/', $raw, $m)) {
+            foreach ($m[0] as $run) {
+                $t = @iconv('UTF-16LE', 'UTF-8//IGNORE', $run);
+                if ($t !== false) $chunks[] = $t;
+            }
+        }
+        // Single-byte runs (older writers, and most of a .xls)
+        if (preg_match_all('/[\x20-\x7E\xA0-\xFF]{10,}/', $raw, $m)) {
+            foreach ($m[0] as $run) $chunks[] = self::toUtf8($run);
+        }
+
+        $text = implode("\n", $chunks);
+        // Field codes and OLE bookkeeping read as text but mean nothing
+        $text = (string)preg_replace('/\b(?:HYPERLINK|PAGEREF|MERGEFORMAT|Microsoft\s+\w+|Root\s+Entry|WordDocument|\w*Table|SummaryInformation|Objects?Pool|CompObj)\b/u', ' ', $text);
+        $text = (string)preg_replace('/[^\P{C}\n]+/u', ' ', $text);
+        $text = (string)preg_replace('/[ \t]{2,}/u', ' ', $text);
+        $text = (string)preg_replace('/\n{2,}/u', "\n", $text);
+
+        // Keep the lines a human could have written: a run of punctuation is
+        // noise, and the same string often shows up in both passes.
+        $keep = [];
+        foreach (explode("\n", $text) as $line) {
+            $line = trim($line);
+            if (mb_strlen($line) < 4) continue;
+            $letters = (int)preg_match_all('/[\p{L}\p{N}]/u', $line);
+            if ($letters < mb_strlen($line) * 0.5) continue;
+            $keep[mb_strtolower($line)] = $line;
+        }
+        return trim(implode("\n", array_slice(array_values($keep), 0, 2000)));
+    }
+
+    /** ODT/ODS — the same zip trick as DOCX, with OpenDocument's own part name. */
+    private static function fromOpenDocument(string $path): string {
+        $zip = new ZipArchive();
+        if ($zip->open($path) !== true) return '';
+        $xml = $zip->getFromName('content.xml');
+        $zip->close();
+        if ($xml === false) return '';
+        $xml = (string)preg_replace('#<text:(?:p|h)\b[^>]*>#', "\n", $xml);
+        $xml = (string)preg_replace('#<table:table-cell\b[^>]*>#', "\t", $xml);
+        return trim(html_entity_decode(strip_tags($xml), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    /** RTF — control words out, escaped Cyrillic back in. */
+    private static function fromRtf(string $path): string {
+        $raw = (string)@file_get_contents($path, false, null, 0, 4 * 1024 * 1024);
+        if ($raw === '') return '';
+        $raw = (string)preg_replace('/\{\\\*?(?:fonttbl|colortbl|stylesheet|info|pict|object)[^}]*\}/s', ' ', $raw);
+        $raw = (string)preg_replace_callback("/\\\\'([0-9a-f]{2})/i",
+            fn($m) => chr(hexdec($m[1])), $raw);
+        $raw = (string)preg_replace_callback('/\\\\u(-?\d+)\??/',
+            fn($m) => mb_chr(((int)$m[1] + 65536) % 65536, 'UTF-8') ?: '', $raw);
+        $raw = (string)preg_replace('/\\\\par[d]?\b/', "\n", $raw);
+        $raw = (string)preg_replace('/\\\\[a-z]+-?\d*\s?/i', ' ', $raw);
+        $raw = str_replace(['{', '}'], ' ', $raw);
+        $raw = self::toUtf8($raw);
+        return trim((string)preg_replace('/[ \t]{2,}/u', ' ', $raw));
+    }
+
+    /**
+     * A zip of documents — a spec, a card and a price list in one attachment.
+     * Only the members we can already read are opened, and only a few of them:
+     * an archive is not a reason to unpack a client's whole folder.
+     */
+    private static function fromZip(string $path, array $opts): string {
+        $zip = new ZipArchive();
+        if ($zip->open($path) !== true) return '';
+        $out = [];
+        $opened = 0;
+        for ($i = 0; $i < $zip->numFiles && $opened < 10; $i++) {
+            $name = (string)$zip->getNameIndex($i);
+            $ext = mb_strtolower(pathinfo($name, PATHINFO_EXTENSION));
+            if (!in_array($ext, ['pdf', 'docx', 'xlsx', 'doc', 'xls', 'txt', 'csv', 'rtf', 'odt'], true)) continue;
+            $stat = $zip->statIndex($i);
+            if (($stat['size'] ?? 0) > 12 * 1024 * 1024) continue;
+            $tmp = tempnam(sys_get_temp_dir(), 'att');
+            if ($tmp === false) continue;
+            $data = $zip->getFromIndex($i);
+            if ($data === false) { @unlink($tmp); continue; }
+            file_put_contents($tmp, $data);
+            // No OCR inside an archive: a zip of scans would spend the whole quota
+            [$text] = self::extractText($tmp, '', $name, ['ocr' => false] + $opts);
+            @unlink($tmp);
+            $opened++;
+            if (trim((string)$text) !== '') $out[] = "--- $name ---\n" . $text;
+        }
+        $zip->close();
+        return trim(implode("\n\n", $out));
     }
 
     // PDF text layer

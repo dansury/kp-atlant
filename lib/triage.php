@@ -8,6 +8,9 @@
  * says which prompt and which fact sources answer it.
  */
 require_once __DIR__ . '/catalog.php';
+require_once __DIR__ . '/site_forms.php';
+require_once __DIR__ . '/bounce.php';
+require_once __DIR__ . '/mail_text.php';
 
 final class Triage {
 
@@ -21,11 +24,24 @@ final class Triage {
         'product_question' => ['Вопрос о товаре',           'kp_request', 'reply_product',      ['catalog', 'wiki']],
         'availability'     => ['Наличие и сроки',           'kp_request', 'reply_availability', ['catalog', 'wiki']],
         'order_status'     => ['Статус заказа',             'kp_request', 'reply_order_status', ['orders', 'wiki']],
+        // Module 015: the second half of a deal. 561 letters of the archive are
+        // about the parcel, 176 about ЭДО, 171 about the closing documents and
+        // 184 about the договор — all of them used to fall into «other».
+        'delivery'         => ['Доставка и отправка',       'kp_request', 'reply_delivery',     ['orders', 'wiki']],
+        'edo'              => ['ЭДО и обмен документами',   'kp_request', 'reply_edo',          ['wiki']],
+        'closing_docs'     => ['Закрывающие документы',     'kp_request', 'reply_closing_docs', ['orders', 'wiki']],
+        'contract'         => ['Договор и спецификация',    'kp_request', 'reply_contract',     ['wiki']],
+        'tender'           => ['Тендер, НМЦК, закупка',     'kp_request', 'reply_tender',       ['catalog', 'wiki']],
+        'gov_order'        => ['Гособоронзаказ',            'kp_request', 'reply_gov_order',    ['wiki']],
         'return_exchange'  => ['Возврат или обмен',         'kp_request', 'reply_return',       ['wiki']],
         'docs_request'     => ['Документы и сертификаты',   'kp_request', 'reply_docs',         ['wiki']],
         'wholesale'        => ['Опт и дилерство',           'kp_request', 'reply_wholesale',    ['wiki']],
         'complaint'        => ['Претензия',                 'kp_request', 'reply_complaint',    ['wiki']],
+        // A lead from the site form that left a phone and no address. There is
+        // nothing to answer to, so there is no prompt: the card is a call to make.
+        'callback'         => ['Заявка на звонок',          'kp_request', null,                 []],
         'supplier_offer'   => ['Нам предлагают товар',      null,         null,                 []],
+        'bounce'           => ['Письмо не доставлено',      null,         null,                 []],
         'spam'             => ['Спам и рассылки',           null,         null,                 []],
         'service'          => ['Служебное уведомление',     null,         null,                 []],
         'other'            => ['Не определено',             'kp_request', 'mail_reply',         ['wiki']],
@@ -73,6 +89,19 @@ final class Triage {
             return ['category' => 'spam', 'reason' => 'Помечено спам-фильтром сервера'];
         }
 
+        // A form filled by a scanner (module 015). Two thirds of everything the
+        // site form sends is this, and none of it may reach the model.
+        $formSpam = self::formSpamReason($message);
+        if ($formSpam !== null) {
+            return ['category' => 'spam', 'reason' => 'Форма сайта: ' . $formSpam];
+        }
+
+        // A delivery report is not mail to answer — it is an answer of ours that
+        // never arrived, and `MailSync` marks the failed letter before we archive it.
+        if (Bounce::detect($message) !== null) {
+            return ['category' => 'bounce', 'reason' => 'Отчёт о недоставке письма'];
+        }
+
         $headers = mb_strtolower((string)($message['headers'] ?? ''));
         if ($headers !== '') {
             if (preg_match('/^list-(unsubscribe|id):/m', $headers)) {
@@ -94,6 +123,25 @@ final class Triage {
             return ['category' => 'spam', 'reason' => "Отправитель $from ранее отмечен кнопкой «Спам»"];
         }
         return null;
+    }
+
+    /**
+     * Why the form submission behind this letter is a bot, or null. The verdict
+     * is stored on the row when the letter is archived, so a re-run costs nothing.
+     */
+    private static function formSpamReason(array $message): ?string {
+        $stored = trim((string)($message['form_spam_reason'] ?? ''));
+        if ($stored !== '') return $stored;
+        $json = (string)($message['form_json'] ?? '');
+        if ($json !== '') {
+            $f = json_decode($json, true);
+            if (is_array($f)) {
+                $reason = (string)($f['spam_reason'] ?? '');
+                return $reason !== '' ? $reason : null;
+            }
+        }
+        $fields = SiteForm::parse((string)($message['body_text'] ?? $message['body'] ?? ''));
+        return $fields ? SiteForm::spamReason($fields) : null;
     }
 
     /** Exact address against TRIAGE_SPAM_SENDERS — filled in by the «Спам» button, not edited by hand. */
@@ -126,9 +174,9 @@ final class Triage {
      * Parse + classify in one model call. Falls back to the pre-006 behaviour
      * (plain `parse_request`, category `other`) when triage is switched off.
      */
-    public static function classify(string $text, string $attachmentText = ''): array {
+    public static function classify(string $text, string $attachmentText = '', string $subject = ''): array {
         if (!self::enabled()) {
-            $parsed = RequestParser::parse($text, $attachmentText);
+            $parsed = RequestParser::parse(($subject !== '' ? "Тема письма: $subject\n\n" : '') . $text, $attachmentText);
             $parsed['category'] = ($parsed['request_type'] ?? '') === 'order' ? 'order' : 'kp_request';
             $parsed['category_confidence'] = 0.0;
             $parsed['category_reason'] = 'Классификация выключена';
@@ -137,7 +185,10 @@ final class Triage {
         }
 
         $system = Prompts::render('classify_request');
-        $user = $text;
+        // The subject is half the letter here: «Атлант Армор: Новый заказ N6764»
+        // and «Счёт на оплату» are answers to a notification whose body says only
+        // «почему не отправляете» — 141 such letters in the archive (module 015).
+        $user = ($subject !== '' ? "Тема письма: $subject\n\n" : '') . $text;
         if (trim($attachmentText) !== '') {
             $user .= "\n\n===== ТЕКСТ ВЛОЖЕНИЙ =====\n" . $attachmentText;
         }
@@ -175,7 +226,7 @@ final class Triage {
         if ($promptKey === null) [$promptKey, $sources] = self::route('other');
 
         $query = trim((string)($message['subject'] ?? '') . "\n"
-            . self::clip((string)($message['body_text'] ?? ''), 4000) . "\n"
+            . self::clip(MailText::forAnalysis((string)($message['body_text'] ?? '')), 4000) . "\n"
             . self::clip((string)($ctx['attachments'] ?? ''), 1500));
 
         $vars = [

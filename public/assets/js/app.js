@@ -505,7 +505,8 @@ const App = {
 
     // Where a candidate came from: the words of the letter, its meaning, or both
     matchSourceLabel(source) {
-        return {words: 'по словам', meaning: 'по смыслу', both: 'по словам и смыслу'}[source] || '';
+        return {words: 'по словам', meaning: 'по смыслу', both: 'по словам и смыслу',
+                site_url: 'по ссылке на товар'}[source] || '';
     },
 
     /**
@@ -1053,6 +1054,8 @@ const App = {
                 <div>
                     <div class="card" style="padding:10px">
                         <iframe class="pdf-frame" id="pdfPreview" src="/api/proposals.php?action=preview&id=${id}"></iframe>
+                        <a class="btn btn--sm btn--outline btn--block" style="margin-top:8px"
+                           href="/api/proposals.php?action=docx&id=${id}">Скачать в Word (.docx)</a>
                     </div>
                 </div>
             </div>
@@ -1067,6 +1070,14 @@ const App = {
                         <label>Тема письма</label>
                         <input type="text" id="sendSubject" value="Коммерческое предложение от Atlant Armour">
                     </div>
+                </div>
+                <div class="form-group" style="max-width:320px">
+                    <label>Чем приложить КП</label>
+                    <select id="sendFormat">
+                        <option value="docx">Word (.docx) — редактируемый</option>
+                        <option value="pdf">PDF</option>
+                        <option value="both">И Word, и PDF</option>
+                    </select>
                 </div>
                 <button class="btn btn--primary" onclick="App.sendProposal(${id})">Отправить КП</button>
             </div>
@@ -1285,7 +1296,9 @@ const App = {
         if (!to) return this.toast('Укажите email получателя', 'error');
         try {
             await this.api(`proposals.php?action=send&id=${id}`, {method:'POST', body: {
-                to, subject: document.getElementById('sendSubject').value
+                to,
+                subject: document.getElementById('sendSubject').value,
+                format: document.getElementById('sendFormat')?.value || undefined
             }});
             this.toast('КП отправлено!', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
@@ -2510,7 +2523,9 @@ const App = {
     // $key — the conversation this letter is shown in, so «ответить» lands in
     // the one composer at the bottom instead of opening a window of its own
     threadMessage(m, open, key) {
-        const sentBad = m.direction === 'out' && m.sent_state === 'failed';
+        // A bounced answer is not a delivered one: the client is still waiting
+        const sentBad = m.direction === 'out'
+            && ['failed', 'bounced', 'bounce_soft'].includes(m.sent_state);
         return `
             <div class="tmsg ${m.direction === 'in' ? 'tmsg--in' : 'tmsg--out'}" data-tmsg>
                 <div class="tmsg__head" onclick="this.parentElement.classList.toggle('tmsg--open')">
@@ -2581,6 +2596,12 @@ const App = {
                 ${m.error ? `<p class="no">Ошибка обработки: ${this.esc(m.error)}</p>` : ''}
                 ${m.direction === 'out' && m.sent_state === 'failed'
                     ? '<p class="no">Копия письма не попала в «Отправленные» на почтовом сервере — смотрите «Настройки → Почта».</p>' : ''}
+                ${m.direction === 'out' && ['bounced', 'bounce_soft'].includes(m.sent_state)
+                    ? `<p class="no"><strong>Письмо не доставлено.</strong> ${this.esc(m.error || 'Почтовый сервер вернул отчёт о недоставке')} — клиент ответа не получил.</p>` : ''}
+                ${m.needs_call
+                    ? '<p class="no"><strong>Заявка с сайта: нужен звонок.</strong> Посетитель оставил телефон и не оставил адреса — ответить письмом некуда.</p>' : ''}
+                ${m.source_channel === 'site_form'
+                    ? '<p class="muted">Пришло с формы сайта — отправитель и тема восстановлены из полей формы.</p>' : ''}
                 <hr style="margin:12px 0">
                 ${this.msgBodyHtml(m, true)}
                 ${(m.attachments || []).length ? `

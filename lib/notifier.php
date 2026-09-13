@@ -12,6 +12,9 @@ class Notifier {
         'new_order'   => 'order',
         'invoice'     => 'order',
         'followup'    => 'followup',
+        // An answer that never arrived has to reach the manager as loudly as a
+        // new letter does — it is a client who thinks he was ignored (module 015)
+        'mail_bounced' => 'new_request',
     ];
 
     /**

@@ -80,8 +80,11 @@ final class Catalog {
     /** @return array<int,array<string,mixed>> */
     public static function orders(string $text, string $email, ?int $counterpartyId = null): array {
         $found = [];
-        // «заказ 7136», «№ 6919», «заказа 7136» — the number the client quotes
-        if (preg_match_all('/(?:заказ\w*|№|#)\s*[№#]?\s*(\d{3,8})/iu', $text, $m)) {
+        // «заказ 7136», «№ 6919», «Новый заказ N6764» — the number the client
+        // quotes. The latin N is how the shop's own notification writes it, and
+        // 141 letters of the archive are replies to exactly that subject line,
+        // so the number lives in the SUBJECT and nowhere else (module 015).
+        if (preg_match_all('/(?:заказ\w*|№|#)\s*[№#NnНн]?\s*(\d{3,8})/iu', $text, $m)) {
             foreach (array_unique($m[1]) as $num) {
                 foreach (Db::all("SELECT * FROM orders WHERE name LIKE ? ORDER BY id DESC LIMIT 3", ['%' . $num . '%']) as $row) {
                     $found[$row['id']] = $row;
