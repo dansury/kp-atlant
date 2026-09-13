@@ -143,6 +143,18 @@ when it is generated. Never regenerate that block on reprint, and never let a mo
 it. A link to the shop goes through `Bitrix::productUrl()`, which verifies before it caches:
 a 404 in a signed document is worse than no link.
 
+## The shop and the QR
+The site answers through `bitrix-module/atlant.kpsync` (module 017) — an installable 1С-Битрикс
+module that lives in this repository and is READ-ONLY against the shop. Its export
+(`Bitrix::syncFromSite()`) is an optimisation over the per-product path and never a replacement:
+every code path must still answer with no module, a module switched off and an unreachable site,
+only slower. An exported row is matched on артикул, then on код — never on the name, because a
+name that merely looks alike puts the wrong page into a signed document.
+The QR beside the link encodes `proposal_items.site_url` itself — never a shortener, never a
+tracking wrapper: what the client scans has to be the address he can also read. `Qr` writes a
+base64 PNG because that is the only picture the preview, mPDF and `Html2Docx::image()` all read;
+what it cannot encode returns null and the card prints the link alone.
+
 ## Prompts and the model's discipline
 Every system prompt gets the discipline block appended by `Prompts::render()` — do the whole
 job, no abbreviation, no invented facts, and a clarifying question ONLY when the answer is

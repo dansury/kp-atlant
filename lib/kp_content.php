@@ -5,6 +5,7 @@
  * an unreachable image never blocks PDF generation.
  */
 require_once __DIR__ . '/bitrix.php';
+require_once __DIR__ . '/qr.php';
 require_once __DIR__ . '/request_shape.php';
 
 class KpContent {
@@ -348,6 +349,28 @@ class KpContent {
             return ['bytes' => $binary, 'mime' => self::mimeOf($img['ref'], $binary)];
         }
         return null;
+    }
+
+    /**
+     * The link printed as a QR, so it survives paper (module 017).
+     *
+     * A КП leaves as Word and is read as often on a printed sheet as on a
+     * screen; there the address under the card is something a client would
+     * have to retype. The picture encodes exactly `site_url` — the same link
+     * `Bitrix::productUrl()` verified and froze on the item, never a shortener
+     * and never a tracking wrapper, because what the client scans has to be
+     * the address he can also read.
+     *
+     * Empty string when there is no link or the setting is off; the caller
+     * prints the link alone and says nothing about it.
+     */
+    public static function itemQr(array $item): string {
+        if ((int)Settings::get('KP_QR_CODE', 1) !== 1) return '';
+
+        $url = trim((string)($item['site_url'] ?? ''));
+        if ($url === '') return '';
+
+        return Qr::dataUri($url, 4, 2);
     }
 
     /**

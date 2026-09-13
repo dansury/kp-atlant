@@ -400,8 +400,13 @@ final class Html2Docx {
         $size = @getimagesizefromstring($bytes);
         [$w, $h] = $size ? [(int)$size[0], (int)$size[1]] : [480, 320];
         if ($w <= 0 || $h <= 0) return '';
-        // A photo pasted at its own pixel size would run off an A4 page
-        $maxPx = (int)($img->getAttribute('class') === 'logo' ? 220 : 430);
+        // A photo pasted at its own pixel size would run off an A4 page; a QR
+        // is not a photo and only has to stay big enough for a phone camera
+        $maxPx = match (strtolower(trim((string)$img->getAttribute('class')))) {
+            'logo' => 220,
+            'qr'   => 110,
+            default => 430,
+        };
         if ($w > $maxPx) { $h = (int)round($h * $maxPx / $w); $w = $maxPx; }
 
         $name = 'media/image' . (count($this->media) + 1) . '.' . $ext;

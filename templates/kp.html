@@ -58,6 +58,12 @@
     .fits li { margin: 0; }
     .card__link { font-size: 9.5pt; margin-top: 6px; }
     .card__link a { color: #c00; text-decoration: none; }
+    /* The same address as a picture: on paper the link above is not clickable.
+       Kept small and beside the text, never a block of its own — the card is
+       about the product, and the QR is a convenience on the way out. */
+    .card__qr { margin-top: 4px; }
+    .card__qr img { vertical-align: middle; }
+    .card__qr-note { font-size: 8.5pt; color: #666; }
 
     /* Requisites: the block that must be right, not plausible */
     .req { margin-top: 22px; padding-top: 10px; border-top: 1px solid #ccc; font-size: 9pt; color: #333; }
@@ -288,6 +294,16 @@
     <div class="card__link">Подробнее на сайте:
         <a href="<?= htmlspecialchars($item['site_url']) ?>"><?= htmlspecialchars($item['site_url']) ?></a>
     </div>
+    <?php if (!empty($item['site_qr'])): ?>
+    <!-- The same link for a printed copy. class="qr" is what tells the Word
+         converter this is not a photograph and must stay small. -->
+    <div class="card__qr">
+        <img class="qr" src="<?= $item['site_qr'] ?>"
+             width="<?= (int)($qrSize ?? 90) ?>" height="<?= (int)($qrSize ?? 90) ?>"
+             alt="QR-код страницы товара на сайте">
+        <span class="card__qr-note">&nbsp;Наведите камеру телефона</span>
+    </div>
+    <?php endif; ?>
     <?php endif; ?>
 </div>
 <?php endif; ?>
