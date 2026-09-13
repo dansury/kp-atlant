@@ -69,6 +69,8 @@ just render the current code.
 ## 6. Limits
 
 - One GitHub API call per page view at `AUTOPULL_INTERVAL = 0` (5000/h with a token).
-- The deploy is a second HTTP request to the same host; a host serving one PHP request
-  at a time will stall it until the timeout, and the card names the failure.
+- The deploy is a second HTTP request to the same host. Where the host serves one PHP
+  request at a time it cannot answer while this page is being served: after 20 seconds of
+  silence the wait is dropped, the page renders the old code, and `pull.php` finishes the
+  deploy on its own (`ignore_user_abort(true)`) — the next page view is on the new code.
 - Not a cron replacement: nobody opens a page, nothing gets deployed.
