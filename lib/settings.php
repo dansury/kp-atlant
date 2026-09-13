@@ -134,6 +134,11 @@ final class Settings {
         'FALLBACK_HOURS'        => ['notify', 'Порог эскалации, часов', 'int', false, 24, ''],
         'NOTIFICATION_POLL_SEC' => ['notify', 'Опрос уведомлений, сек', 'int', false, 30, ''],
 
+        // --- Auto-deploy (module 014): the active-development checkbox ---
+        'AUTOPULL_ENABLED'  => ['deploy', 'Проверять обновления при каждом запуске', 'bool', false, 0, 'На время активной разработки: каждое открытие страницы тихо спрашивает у GitHub head отслеживаемой ссылки, и новый коммит выкладывается через pull.php — страница открывается заново уже на новом коде. Репозиторий, токен и пароль pull.php берутся из pull-config.php в корне сайта'],
+        'AUTOPULL_INTERVAL' => ['deploy', 'Проверять не чаще, сек', 'int', false, 0, '0 — при каждом открытии страницы. Каждая проверка — один запрос к API GitHub (лимит 5000 в час с токеном)'],
+        'AUTOPULL_URL'      => ['deploy', 'Адрес pull.php', 'text', false, '', 'Пусто — вычисляется сам из каталога скрипта. Заполняется, когда хостинг не открывает собственный домен изнутри PHP'],
+
         // --- Logging ---
         'LOG_LEVEL'          => ['log', 'Уровень логирования', 'select:debug,info,warning,error', false, 'info', ''],
         'LOG_RETENTION_DAYS' => ['log', 'Хранить логи, дней', 'int', false, 30, ''],
@@ -154,6 +159,7 @@ final class Settings {
         'push'     => 'Push-уведомления',
         'mail'     => 'Почта (значения по умолчанию)',
         'notify'   => 'Уведомления',
+        'deploy'   => 'Автообновление кода',
         'log'      => 'Логи',
     ];
 

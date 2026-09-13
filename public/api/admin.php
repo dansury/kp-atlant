@@ -25,6 +25,8 @@ try {
                     'items'       => Settings::describe(),
                     'config_file' => file_exists(ROOT . '/config.php'),
                     'encrypted'   => Crypt::available(),
+                    // Автообновление кода: что показать в карточке «Автообновление кода»
+                    'autopull'    => autopullState(),
                 ]);
             }
             // PUT — write overrides. '' on a secret keeps the stored value.
@@ -41,6 +43,23 @@ try {
             Logger::info('settings', "Настройки изменены ($saved)", ['manager_id' => $admin['id']]);
             LLM::init(Settings::effective());
             jsonOk(['saved' => $saved]);
+
+        // Разовая проверка обновления — независимо от галочки (модуль 014)
+        case 'autopull_check': {
+            $report = AutoPull::check(autopullOpts(), true);
+            Logger::info('deploy', 'Проверка обновления: ' . ($report['ok'] ? $report['note'] : $report['error']),
+                ['manager_id' => $admin['id'], 'head' => $report['head']]);
+            jsonOk([
+                'report' => [
+                    'ok'       => $report['ok'],
+                    'note'     => $report['note'],
+                    'error'    => $report['error'],
+                    'head'     => substr($report['head'], 0, 7),
+                    'deployed' => $report['deployed_now'],
+                ],
+                'state' => autopullState(),
+            ]);
+        }
 
         // ---------- Connection tests ----------
 
@@ -349,6 +368,33 @@ try {
 } catch (Throwable $e) {
     Logger::exception('admin', $e, ['action' => $action]);
     jsonError($e->getMessage(), 500);
+}
+
+/** Options for the deploy check: the switch from the panel, the creds from pull-config.php. */
+function autopullOpts(): array {
+    $cfg = Settings::effective();
+    return AutoPull::options($cfg, [
+        'root'      => ROOT,
+        'state_dir' => dirname((string)($cfg['DB_PATH'] ?? ROOT . '/data/kp.db')),
+    ]);
+}
+
+/** What the admin card shows: what is tracked and how the last check ended. */
+function autopullState(): array {
+    $opts   = autopullOpts();
+    $status = AutoPull::status($opts);
+    $pull   = AutoPull::pullConfig(AutoPull::root($opts));
+    return [
+        'configured' => $pull !== null,
+        'repo'       => $pull['repo'] ?? '',
+        'ref'        => $pull === null ? ''
+            : ($pull['source'] === 'pr' ? 'PR #' . $pull['pr_number'] : 'ветка ' . $pull['branch']),
+        'checked_at' => $status['checked_at'] > 0 ? date('Y-m-d H:i:s', $status['checked_at']) : '',
+        'note'       => $status['note'],
+        'error'      => $status['error'],
+        'head'       => substr($status['head'], 0, 7),
+        'deployed'   => substr($status['deployed'], 0, 7),
+    ];
 }
 
 /** A saved mailbox by id, or the unsaved form values — so «проверить» works before saving. */

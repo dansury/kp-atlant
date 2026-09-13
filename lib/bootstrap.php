@@ -29,6 +29,7 @@ require_once __DIR__ . '/llm.php';
 require_once __DIR__ . '/knowledge.php';
 require_once __DIR__ . '/triage.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/auto_pull.php';
 
 // Init DB before the settings layer — the overrides live in it
 Db::init($fileCfg['DB_PATH'] ?? ROOT . '/data/kp.db');
@@ -62,6 +63,17 @@ LLM::init($cfg);
 
 // Keep managers in sync with config.php (panel edits are not overwritten)
 syncManagersFromConfig($cfg);
+
+// Автообновление кода (модуль 014). Пока в настройках стоит галочка, каждое
+// открытие страницы тихо спрашивает у GitHub head отслеживаемой ссылки: тот же
+// коммит — не происходит ничего, новый — pull.php выкладывает его и браузер
+// возвращается на ту же страницу, уже на новом коде. Креды берутся из
+// pull-config.php рядом с pull.php (он же корень проекта), состояние — в data/,
+// которое деплой не трогает.
+AutoPull::run(AutoPull::options($cfg, [
+    'root'      => ROOT,
+    'state_dir' => dirname((string)($cfg['DB_PATH'] ?? ROOT . '/data/kp.db')),
+]));
 
 function initSchema(): void {
     $sql = <<<'SQL'
