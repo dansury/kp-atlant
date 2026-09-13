@@ -6,15 +6,33 @@
 class Crm {
 
     /**
+     * Legal forms a Russian company signs itself with, longest first — `\b`
+     * already keeps «ГУП» out of «ФГУП», and the order keeps it that way if the
+     * boundary ever moves.
+     */
+    private const LEGAL_FORMS = 'ФГБОУ|ФГБУ|ФГКУ|ФГУП|ГБУЗ|ГБОУ|ГБУ|ГКУ|МБУ|МУП|ГУП|АНО|НКО|ООО|ОАО|ЗАО|ПАО|НАО|АО|ИП';
+
+    /**
      * Find or create the company card for an incoming message.
-     * $hints: inn, name, email, contact_person, phone
+     * $hints: inn, name, email, contact_person, phone, text
      * Match order (C-012): INN → corporate email domain → normalized name.
+     *
+     * `text` is the letter itself, and it is the safety net under the model: a
+     * КП went out addressed to «zakupki@…» because the only place «АО
+     * "Уралэлемент"» appeared was the signature of a quoted letter and the
+     * prompt never looked there (module 018). The regex looks there before the
+     * e-mail is accepted as a company name.
      */
     public static function resolveCounterparty(array $hints): ?int {
         $inn    = self::cleanInn($hints['inn'] ?? '');
         $name   = trim((string)($hints['name'] ?? ''));
         $email  = trim((string)($hints['email'] ?? ''));
         $domain = self::corporateDomain($email);
+
+        if ($name === '' || filter_var($name, FILTER_VALIDATE_EMAIL) !== false) {
+            $fromText = self::companyFromText((string)($hints['text'] ?? ''));
+            if ($fromText !== '') $name = $fromText;
+        }
 
         $found = null;
 
@@ -58,6 +76,50 @@ class Crm {
             'contact_email'   => $email ?: null,
             'contact_phone'   => $hints['phone'] ?? null,
         ]);
+    }
+
+    /**
+     * «С уважением, начальник отдела снабжения АО "Уралэлемент"» — the company
+     * name as a human writes it, found without a model call.
+     *
+     * Quoted forms («АО "Уралэлемент"») are read first because that is how a
+     * signature is nearly always written; the unquoted form («ООО Технотрейд»,
+     * «ИП Сурков К.А.») is the fallback. Our own организация is never returned —
+     * every letter carries our signature under the quoted thread.
+     */
+    public static function companyFromText(string $text): string {
+        $text = trim($text);
+        if ($text === '') return '';
+        $forms = self::LEGAL_FORMS;
+
+        $candidates = [];
+        // «АО "Уралэлемент"», «ООО «Ромашка-Плюс»» — quotes of any of the shapes
+        // a Russian keyboard and a mail client produce between them
+        if (preg_match_all('/\b(' . $forms . ')\s*[«"\x{201C}\x{201E}\x{2018}]\s*([^«»"\x{201C}\x{201D}\x{201E}\x{2018}\x{2019}]{2,80}?)\s*[»"\x{201D}\x{2019}]/u',
+                           $text, $m, PREG_SET_ORDER)) {
+            foreach ($m as $hit) $candidates[] = mb_strtoupper($hit[1]) . ' «' . trim($hit[2]) . '»';
+        }
+        // Unquoted: a legal form followed by up to four capitalised words or initials
+        $word = '(?:[А-ЯЁ][\p{L}\-]+|[А-ЯЁ]\.\s?[А-ЯЁ]?\.?)';
+        if (preg_match_all('/\b(' . $forms . ')\s+(' . $word . '(?:\s+' . $word . '){0,3})/u',
+                           $text, $m, PREG_SET_ORDER)) {
+            foreach ($m as $hit) $candidates[] = mb_strtoupper($hit[1]) . ' ' . trim($hit[2]);
+        }
+
+        // Our own организация signs every letter we ever quoted back
+        $ours = [];
+        foreach (Db::all("SELECT full_name, short_name FROM legal_entities") as $le) {
+            foreach ([$le['full_name'] ?? '', $le['short_name'] ?? ''] as $n) {
+                $norm = normalizeCompanyName((string)$n);
+                if ($norm !== '') $ours[$norm] = true;
+            }
+        }
+        foreach ($candidates as $candidate) {
+            $norm = normalizeCompanyName($candidate);
+            if ($norm === '' || isset($ours[$norm])) continue;
+            return mb_substr($candidate, 0, 120);
+        }
+        return '';
     }
 
     // Follow the merge chain to the surviving card

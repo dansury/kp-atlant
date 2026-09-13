@@ -136,7 +136,9 @@ switch ($action) {
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         // `smart=1` lets the model normalize the wording first — costs a call
         $useLlm = ($_GET['smart'] ?? '0') === '1';
-        jsonData(['items' => RequestItems::rematch($id, $useLlm)]);
+        // The counts come back with the rows: «ничего не нашлось» must not look
+        // the same on screen as «нашлось всё» (module 018)
+        jsonData(RequestItems::rematchReport($id, $useLlm));
 
     case 'create':
         $manager = requireAuth();
@@ -155,6 +157,8 @@ switch ($action) {
             'email'          => $parsed['contact_email'] ?? '',
             'contact_person' => $parsed['contact_person'] ?? null,
             'phone'          => $parsed['contact_phone'] ?? null,
+            // Pasted text carries the same signature an e-mail does
+            'text'           => $text,
         ]);
         if ($counterpartyId && !empty($parsed['contact_email'])) {
             Crm::upsertContact($counterpartyId, $parsed['contact_person'] ?? null, $parsed['contact_email'], $parsed['contact_phone'] ?? null);

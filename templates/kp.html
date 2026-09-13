@@ -52,6 +52,12 @@
     table.match-table td.num { text-align: center; width: 26px; }
     table.match-table td.qty { text-align: center; width: 46px; white-space: nowrap; }
     table.match-table td.state { text-align: center; width: 70px; }
+    /* Positions the catalog never answered — stated, never dropped (module 018) */
+    .unmatched { margin: 12px 0 16px; border: 1px solid #ccc; padding: 8px 10px; }
+    .unmatched__title { font-size: 10.5pt; font-weight: bold; margin-bottom: 4px; }
+    .unmatched__note { font-size: 9.5pt; color: #555; margin-bottom: 4px; }
+    .unmatched ul { margin: 0; padding-left: 18px; }
+    .unmatched li { font-size: 9.5pt; margin: 0; }
     /* Bр5 red is the shop's accent and stays inside AA on white (#c00 on #fff ≈ 5.9:1) */
     .swap { color: #c00; font-size: 8.5pt; }
     .fits { font-size: 8.5pt; color: #333; margin-top: 2px; }
@@ -308,6 +314,21 @@
 </div>
 <?php endif; ?>
 <?php endforeach; ?>
+
+<!-- Positions we could not match to the catalog (module 018).
+     The КП names them in the client's own words. Before this block they were
+     priced at nothing and the client was left to spot the hole himself. -->
+<?php if (!empty($unmatched)): ?>
+<div class="unmatched">
+    <div class="unmatched__title">Позиции запроса, по которым нужно уточнение</div>
+    <div class="unmatched__note"><?= nl2br(htmlspecialchars($unmatchedNote)) ?></div>
+    <ul>
+        <?php foreach ($unmatched as $row): ?>
+        <li><?= htmlspecialchars($row['requested']) ?> — <?= htmlspecialchars((string)$row['quantity']) ?> <?= htmlspecialchars($row['unit']) ?></li>
+        <?php endforeach; ?>
+    </ul>
+</div>
+<?php endif; ?>
 
 <!-- Post-table block (optional) -->
 <?php if (!empty($postTableText)): ?>

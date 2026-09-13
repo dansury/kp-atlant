@@ -156,6 +156,74 @@ class KpContent {
     }
 
     /**
+     * Positions the catalog never answered (module 018).
+     *
+     * A line with no `moysklad_product_id` that nobody confirmed by hand is not
+     * a position — it is the client's own sentence, carried through parsing and
+     * matching without ever meeting a product. The КП prints these separately,
+     * in the client's own words, instead of pricing them at nothing and letting
+     * the reader discover the hole.
+     *
+     * @return array<int,array{n:int,requested:string,quantity:mixed,unit:string}>
+     */
+    public static function unmatchedRows(int $proposalId): array {
+        $items = Db::all(
+            "SELECT * FROM proposal_items
+             WHERE proposal_id=? AND (moysklad_product_id IS NULL OR moysklad_product_id='')
+               AND is_confirmed=0
+             ORDER BY position", [$proposalId]
+        );
+        $rows = [];
+        foreach ($items as $item) {
+            // Кто что просил — дословно: `requested_name` is what the letter
+            // said, and `product_name` only repeats it when nothing was found
+            $asked = trim((string)($item['requested_name'] ?? ''));
+            if ($asked === '') $asked = trim((string)($item['product_name'] ?? ''));
+            if ($asked === '') continue;
+            $rows[] = [
+                'n'         => (int)$item['position'],
+                'requested' => $asked,
+                'quantity'  => $item['quantity'],
+                'unit'      => (string)($item['unit'] ?: 'шт.'),
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * Positions of a КП that carry no money (module 018).
+     *
+     * SC-005 of spec 001 — «ни одно КП не уходит клиенту без подтверждения
+     * менеджером» — was a click, not a statement about the document: a КП whose
+     * «Итого» was 0,00 руб. confirmed and sent exactly like a priced one. This
+     * is what `confirm` and `send` weigh that click against.
+     *
+     * @return array{items:array<int,array<string,mixed>>,total:float,empty:bool}
+     */
+    public static function priceGaps(int $proposalId): array {
+        $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
+        $total = 0.0;
+        $gaps = [];
+        foreach ($items as $item) {
+            $price = (float)($item['price'] ?? 0);
+            $total += $price * (float)($item['quantity'] ?? 0);
+            if ($price > 0) continue;
+            $name = trim((string)($item['product_name'] ?? ''));
+            if ($name === '') $name = trim((string)($item['requested_name'] ?? ''));
+            $gaps[] = [
+                'id'       => (int)$item['id'],
+                'position' => (int)$item['position'],
+                'name'     => $name !== '' ? $name : 'позиция без названия',
+                'quantity' => $item['quantity'],
+                'unit'     => (string)($item['unit'] ?: 'шт.'),
+            ];
+        }
+        // A КП with no positions at all is the same hole seen from the other
+        // side, and the manager is asked about it the same way
+        return ['items' => $gaps, 'total' => $total, 'empty' => !$items];
+    }
+
+    /**
      * «Таблица соответствия» — the block a КП opens with when the request
      * arrived as a table (module 013).
      *

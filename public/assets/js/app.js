@@ -752,6 +752,15 @@ const App = {
         return res.items;
     },
 
+    /**
+     * Re-pick the catalog rows. Spec 008 §5: «confirmed line is never re-picked
+     * by the automatic match» — the server holds that line, and only the rows
+     * still open are even sent to the model.
+     *
+     * The table is NOT wiped while this runs. Blanking it read as «всё сбросилось»
+     * and, on an error, actually left an empty table behind — the manager's own
+     * ✓ appeared to be gone when nothing had been touched (module 018).
+     */
     async rematchItems(from, smart) {
         const host = this.matchHost(from);
         if (!host) return;
@@ -759,17 +768,35 @@ const App = {
         const opts = this.matchOpts(host);
         // What the manager has already typed must survive the re-match
         const pending = this.collectMatchedItems(host);
-        host.innerHTML = `<div class="card__title">Подходящие позиции</div>
-                          <div class="loading">${smart ? 'Спрашиваем нейросеть и подбираем...' : 'Подбираем по каталогу...'}</div>`;
+        const buttons = [...host.querySelectorAll('button')];
+        buttons.forEach(b => b.disabled = true);
+        const note = document.createElement('div');
+        note.className = 'loading';
+        note.textContent = smart ? 'Спрашиваем нейросеть и подбираем...' : 'Подбираем по каталогу...';
+        host.appendChild(note);
         try {
             await this.api(`requests.php?action=items_save&id=${requestId}`, {method: 'POST', body: {items: pending}});
             const res = await this.api(`requests.php?action=items_rematch&id=${requestId}&smart=${smart ? 1 : 0}`, {method: 'POST'});
             this.renderMatchedItems(requestId, res.items || [], host, opts);
-            this.toast('Подбор обновлён — подтверждённые строки не тронуты', 'success');
+            this.toast(this.rematchSummary(res), res.repicked && !res.found ? 'info' : 'success');
         } catch (err) {
             this.toast(err.message, 'error');
-            this.renderMatchedItems(requestId, [], host, opts);
+            // The rows are still whatever the save left in the database
+            note.remove();
+            buttons.forEach(b => b.disabled = false);
         }
+    },
+
+    /** What the re-match actually did — «ничего не нашлось» must not look like success. */
+    rematchSummary(res) {
+        const kept = res.kept ? `подтверждённых не тронуто: ${res.kept}` : '';
+        if (!res.repicked) return kept ? `Пересматривать нечего — ${kept}` : 'Пересматривать нечего';
+        const parts = [];
+        if (res.found) parts.push(`подобрано: ${res.found}`);
+        if (res.empty) parts.push(`без совпадений: ${res.empty}`);
+        if (res.alternatives) parts.push(`аналогов: ${res.alternatives}`);
+        if (kept) parts.push(kept);
+        return `Пересмотрено строк: ${res.repicked} — ${parts.join(', ')}`;
     },
 
     // A redraw must not lose the letter card's «Сформировать КП» line
@@ -961,6 +988,7 @@ const App = {
                     <button class="btn btn--primary" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
                 </div>
             </div>
+            ${this.proposalWarnings(proposal)}
             <div class="grid grid--2">
                 <div>
                     <div class="card">
@@ -1084,6 +1112,43 @@ const App = {
         `;
         // Thumbnails load per position, so a KP with many photos still opens fast
         items.forEach(it => { if (it.moysklad_product_id) this.loadItemPhotos(it.id); });
+    },
+
+    /**
+     * What is wrong with this КП, said before «Подтвердить» is pressed (module 018).
+     *
+     * Three holes the manager used to find out about only from the client:
+     * positions with no price, positions the catalog never answered, and a
+     * buyer whose «название» is still the sender's e-mail address.
+     */
+    proposalWarnings(proposal) {
+        const gaps = (proposal.price_gaps && proposal.price_gaps.items) || [];
+        const empty = !!(proposal.price_gaps && proposal.price_gaps.empty);
+        const unmatched = proposal.unmatched || [];
+        const buyer = proposal.buyer || {};
+        const blocks = [];
+
+        if (empty) {
+            blocks.push('<div><strong>В КП нет ни одной позиции.</strong> Отправка попросит подтверждение.</div>');
+        } else if (gaps.length) {
+            blocks.push(`<div><strong>Без цены: ${gaps.length} поз.</strong> —
+                ${gaps.map(i => `№${i.position} ${this.esc(i.name)}`).join(', ')}.
+                Отправка попросит подтверждение.</div>`);
+        }
+        if (unmatched.length) {
+            blocks.push(`<div><strong>Не нашлось в каталоге: ${unmatched.length} поз.</strong> —
+                ${unmatched.map(u => this.esc(u.requested)).join('; ')}.
+                КП и письмо назовут их отдельным блоком.</div>`);
+        }
+        if (buyer.name_is_email) {
+            blocks.push(`<div><strong>Название покупателя не определено</strong> — в карточке стоит
+                ${this.esc(buyer.name_source)}. В документе печатается «${this.esc(buyer.name)}»;
+                впишите название организации в карточке контрагента.</div>`);
+        }
+        if (!blocks.length) return '';
+        return `<div class="kp-warn">
+                    <div class="card__title">Проверьте перед отправкой</div>${blocks.join('')}
+                </div>`;
     },
 
     // One product card in the editor: texts, photo count, "от" price flags
@@ -1281,10 +1346,37 @@ const App = {
         if (frame) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
     },
 
+    /**
+     * A КП that prices nothing is refused once, by position, and goes through
+     * only on a second, explicit answer (SC-005, module 018). The server decides
+     * — this just asks the question it sent back and repeats the call.
+     *
+     * Returns true when the call went through, false when the manager said no.
+     */
+    async postWithNoPriceAck(url, body = {}) {
+        try {
+            await this.api(url, {method: 'POST', body});
+            return true;
+        } catch (err) {
+            const gap = err.data && err.data.no_price;
+            if (!gap) throw err;
+            const lines = (gap.items || []).map(i => `№${i.position} — ${i.name} (${i.quantity} ${i.unit})`);
+            const what = gap.empty
+                ? 'В КП нет ни одной позиции.'
+                : `Без цены ${lines.length} поз.:\n${lines.join('\n')}\n\nИтого по КП: ${this.fmtMoney(gap.total)}`;
+            if (!confirm(`${what}\n\nОтправляем клиенту в таком виде?`)) {
+                this.toast('Отменено — проставьте цены и повторите', 'info');
+                return false;
+            }
+            await this.api(url, {method: 'POST', body: {...body, no_price_ack: true}});
+            return true;
+        }
+    },
+
     // Confirm and prepare for sending
     async confirmAndSend(id) {
         try {
-            await this.api(`proposals.php?action=confirm&id=${id}`, {method:'POST'});
+            if (!await this.postWithNoPriceAck(`proposals.php?action=confirm&id=${id}`)) return;
             this.toast('КП подтверждено', 'success');
             this.refreshPreview(id);
         } catch (err) { this.toast(err.message, 'error'); }
@@ -1295,12 +1387,12 @@ const App = {
         const to = document.getElementById('sendTo').value.trim();
         if (!to) return this.toast('Укажите email получателя', 'error');
         try {
-            await this.api(`proposals.php?action=send&id=${id}`, {method:'POST', body: {
+            const sent = await this.postWithNoPriceAck(`proposals.php?action=send&id=${id}`, {
                 to,
                 subject: document.getElementById('sendSubject').value,
                 format: document.getElementById('sendFormat')?.value || undefined
-            }});
-            this.toast('КП отправлено!', 'success');
+            });
+            if (sent) this.toast('КП отправлено!', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 

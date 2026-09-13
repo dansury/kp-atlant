@@ -41,6 +41,12 @@ Extraction rules:
 - qty defaults to 1 if not specified
 - raw_text = original text fragment for this item
 - Do NOT take the supplier's own INN (Atlant Armour / ИП Сурков) as the client INN
+- org_name: look for it in the SIGNATURE as well as in the body — «С уважением, …»,
+  ФИО + должность + компания, a letterhead line, a stamp line. Read the QUOTED and
+  FORWARDED parts too: on a reply the company is often named only there.
+  Take the legal form with the name («АО "Уралэлемент"», «ООО Ромашка»), not just
+  the bare word. Never use an e-mail address or a domain as org_name — leave it
+  null instead. Never take the supplier's own name (Atlant Armour / ИП Сурков).
 - If no items found, return empty items array
 PROMPT,
             ],
@@ -126,6 +132,12 @@ Rules:
   перевязочный пакет, ПНВ = прибор ночного видения). qty defaults to 1.
 - raw_text = the original fragment for the item.
 - Never take the supplier's own INN (Atlant Armour / ИП Сурков) as the client INN.
+- org_name: look for it in the SIGNATURE as well as in the body — «С уважением, …»,
+  ФИО + должность + компания, a letterhead line, a stamp line. Read the QUOTED and
+  FORWARDED parts too: on a reply the company is often named only there.
+  Take the legal form with the name («АО "Уралэлемент"», «ООО Ромашка»), not just
+  the bare word. Never use an e-mail address or a domain as org_name — leave it
+  null instead. Never take the supplier's own name (Atlant Armour / ИП Сурков).
 - No items found → items is an empty array. Do not invent positions.
 PROMPT,
             ],
@@ -596,7 +608,15 @@ PROMPT,
 
 Формат: короткое деловое письмо на русском. 3-5 предложений. Без пафоса, с фактами.
 Структура: приветствие → по вашему запросу готовы поставить → перечень кратко → готовы ответить на вопросы.
-Факты о компании и товарах бери только из базы знаний выше — ничего не выдумывай.{{few_shot}}
+Факты о компании и товарах бери только из базы знаний выше — ничего не выдумывай.
+
+Названия позиций пиши ДОСЛОВНО так, как они даны в блоке «Позиции КП» пользовательского
+сообщения. Это те же строки, что уйдут в таблицу КП, и письмо не должно называть товар
+иначе, чем таблица: ни моделью из запроса клиента, ни названием из базы знаний, ни
+переводом. Позиций, которых нет в этом блоке, в письме быть не должно.
+Если в сообщении есть блок «Не нашли в каталоге» — назови эти позиции отдельной фразой
+словами клиента и напиши, что уточняем по ним наличие и цену. Не молчи о них и не
+заменяй их другими товарами.{{few_shot}}
 PROMPT,
             ],
 

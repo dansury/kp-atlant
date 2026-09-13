@@ -394,6 +394,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bcard__actions a:hover { color: var(--accent-ink); }
 .note--swap { background: var(--warning-bg); border: 1px solid #f0dcbb; color: var(--warning);
               border-radius: var(--radius-sm); padding: 6px 10px; margin: 6px 0; font-size: 12px; }
+
+/* Module 018 — what is wrong with this КП, before «Подтвердить» is pressed.
+   Ink is var(--text) on the warm warning tint, not the tint's own amber: this
+   is a list the manager acts on line by line, so it keeps full contrast
+   (--text #14161a on --warning-bg #fdf4e7 ≈ 15.1:1, past WCAG AA). */
+.kp-warn { background: var(--warning-bg); border: 1px solid #f0dcbb; border-radius: var(--radius-sm);
+           padding: 12px 14px; margin-bottom: 16px; font-size: 13px; color: var(--text); }
+.kp-warn .card__title { color: var(--warning); margin-bottom: 6px; }
+.kp-warn > div + div { margin-top: 6px; }
 /* Module 013 — which of the client's requirements the analogue actually meets.
    Ink is var(--text) on the warm warning tint, not the tint's own amber: the
    list is evidence a manager reads line by line, so it keeps full contrast

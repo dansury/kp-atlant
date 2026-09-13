@@ -23,6 +23,9 @@ final class Requisites {
     /** Where the VAT rate of a position comes from, in order. */
     public const VAT_SOURCES = ['позиция каталога', 'настройка НДС по умолчанию'];
 
+    /** Printed instead of an e-mail address when the buyer has no name yet. */
+    public const BUYER_UNKNOWN = 'Покупатель уточняется';
+
     /**
      * Pull the организация from МойСклад into `legal_entities`.
      * The signature, the logo and the stamp are ours and stay untouched —
@@ -131,6 +134,14 @@ final class Requisites {
 
         $vat = self::vatFor($proposalId, $legal, (int)($proposal['vat_rate'] ?? 0));
 
+        // A company card opened from a letter whose signature the model did not
+        // read holds the sender's e-mail where the name belongs (`Crm::
+        // resolveCounterparty` falls back to it). That address must never be
+        // printed as the buyer of an official document: the КП says the name is
+        // still being established, and the editor shows the manager why.
+        $buyerName = trim((string)($buyer['name'] ?? ''));
+        $buyerNameIsEmail = $buyerName !== '' && filter_var($buyerName, FILTER_VALIDATE_EMAIL) !== false;
+
         return [
             'captured_at' => date('Y-m-d H:i:s'),
             'seller' => [
@@ -156,7 +167,11 @@ final class Requisites {
                 'synced_at'     => (string)($legal['synced_at'] ?? ''),
             ],
             'buyer' => $buyer ? [
-                'name'          => (string)$buyer['name'],
+                'name'          => $buyerNameIsEmail ? self::BUYER_UNKNOWN : $buyerName,
+                // What the card actually holds, kept for the manager's screen —
+                // hidden from the document, not lost
+                'name_source'   => $buyerNameIsEmail ? $buyerName : '',
+                'name_is_email' => $buyerNameIsEmail,
                 'legal_title'   => (string)($buyer['legal_title'] ?? ''),
                 'inn'           => (string)($buyer['inn'] ?? ''),
                 'kpp'           => (string)($buyer['kpp'] ?? ''),

@@ -11,6 +11,7 @@ require_once __DIR__ . '/catalog.php';
 require_once __DIR__ . '/site_forms.php';
 require_once __DIR__ . '/bounce.php';
 require_once __DIR__ . '/mail_text.php';
+require_once __DIR__ . '/request_items.php';
 
 final class Triage {
 
@@ -271,6 +272,8 @@ final class Triage {
         if (trim((string)($ctx['attachments'] ?? '')) !== '') {
             $user .= "\n===== ТЕКСТ ВЛОЖЕНИЙ =====\n" . self::clip((string)$ctx['attachments'], 6000) . "\n";
         }
+        // Positions the catalog never answered — named, not quietly dropped
+        $user .= RequestItems::unmatchedBlock((array)($ctx['unmatched'] ?? []));
         return $user;
     }
 

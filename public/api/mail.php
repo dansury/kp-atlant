@@ -194,6 +194,12 @@ try {
                 'counterparty_id' => $msg['counterparty_id'] ?? null,
                 'email_rules'     => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
                 'tov'             => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
+                // Positions of this letter the catalog never answered. The draft
+                // says so in the client's own words instead of dropping them
+                // silently, which is all that used to happen (module 018).
+                'unmatched'       => !empty($msg['request_id'])
+                    ? (RequestItems::ensure((int)$msg['request_id']) ? RequestItems::unmatched((int)$msg['request_id']) : [])
+                    : [],
             ];
             // The manager may pick the model right in the reply window. The choice
             // holds for this one request; it never becomes a stored setting, and

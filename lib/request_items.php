@@ -189,27 +189,64 @@ final class RequestItems {
         return $rows;
     }
 
-    /**
-     * Re-run the catalog match. A row the manager confirmed by hand is left
-     * exactly as it is — the button re-picks only what is still unconfirmed.
-     */
+    /** Re-run the catalog match; the items afterwards. */
     public static function rematch(int $requestId, bool $useLlm = false): array {
+        return self::rematchReport($requestId, $useLlm)['items'];
+    }
+
+    /**
+     * Re-run the catalog match and say what it did (modules 008 §5, 018).
+     *
+     * A row the manager confirmed is left exactly as it is — spec 008 §5,
+     * «confirmed line is never re-picked by the automatic match». It is not
+     * merely skipped when the answers come back: it never goes to the model at
+     * all, so «Подобрать нейросетью» normalizes and prices only the lines that
+     * are still open, and a confirmed line cannot be renamed by a normalization
+     * it was never part of.
+     *
+     * The counts are what the card reports back: a run that found nothing for
+     * the remaining lines used to look exactly like a run that found everything.
+     *
+     * @return array{items:array,repicked:int,found:int,empty:int,kept:int,alternatives:int}
+     */
+    public static function rematchReport(int $requestId, bool $useLlm = false): array {
         $existing = self::all($requestId);
-        if (!$existing) return self::ensure($requestId, $useLlm);
+        if (!$existing) {
+            $items = self::ensure($requestId, $useLlm);
+            $found = count(array_filter($items, fn($r) => trim((string)($r['product_name'] ?? '')) !== ''));
+            return ['items' => $items, 'repicked' => count($items), 'found' => $found,
+                    'empty' => count($items) - $found, 'kept' => 0, 'alternatives' => 0];
+        }
+
+        // Only the open lines are asked about — a confirmed row is not a query
+        $open = [];
+        foreach ($existing as $i => $row) {
+            if ((int)$row['is_confirmed'] !== 1) $open[$i] = $row;
+        }
+        $kept = count($existing) - count($open);
+        if (!$open) {
+            return ['items' => $existing, 'repicked' => 0, 'found' => 0,
+                    'empty' => 0, 'kept' => $kept, 'alternatives' => 0];
+        }
 
         $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
         $queries = array_map(fn($r) => [
             'name' => ($r['raw_name'] !== '' ? $r['raw_name'] : (string)$r['product_name']),
             'qty'  => $r['quantity'],
-        ], $existing);
-        $matches = ProductMatcher::matchItems($queries, $useLlm, $counterpartyId);
+        ], $open);
+        // matchItems answers positionally, so the query list is re-keyed and the
+        // original row index is kept alongside it
+        $rowIndex = array_keys($open);
+        $matches = ProductMatcher::matchItems(array_values($queries), $useLlm, $counterpartyId);
 
         $repicked = [];
-        foreach ($existing as $i => $row) {
-            if ((int)$row['is_confirmed'] === 1) continue;
+        $found = 0;
+        foreach ($rowIndex as $n => $i) {
+            $row = $existing[$i];
             $repicked[] = (int)$row['id'];
-            $m = $matches[$i] ?? null;
+            $m = $matches[$n] ?? null;
             $best = $m['match'] ?? null;
+            if ($best) $found++;
             Db::update('request_items', [
                 'moysklad_product_id' => $best['moysklad_id'] ?? null,
                 'product_name'        => $best['name'] ?? null,
@@ -232,8 +269,15 @@ final class RequestItems {
         }
         // Only the rows rematch() actually re-picked are up for an analogue —
         // it left the manager's confirmed lines alone and so does this
-        self::fillAlternatives($requestId, $useLlm, $repicked);
-        return self::all($requestId);
+        $alternatives = self::fillAlternatives($requestId, $useLlm, $repicked);
+        return [
+            'items'        => self::all($requestId),
+            'repicked'     => count($repicked),
+            'found'        => $found,
+            'empty'        => count($repicked) - $found,
+            'kept'         => $kept,
+            'alternatives' => $alternatives,
+        ];
     }
 
     /** Replace the table with what the editor sent. */
@@ -345,6 +389,54 @@ final class RequestItems {
         ], 'id=?', [$itemId]);
 
         return self::all($requestId);
+    }
+
+    /**
+     * Lines the catalog never answered (module 018).
+     *
+     * A row with no product and no manager behind it is the client's own
+     * sentence and nothing else. Until now it was visible only as «без цены: N»
+     * in the manager's totals — the client was told nothing at all. The reply
+     * draft and the КП both say these out loud, in the client's own words.
+     *
+     * @return array<int,array{position:int,requested:string,quantity:mixed,unit:string}>
+     */
+    public static function unmatched(int $requestId): array {
+        $rows = Db::all(
+            "SELECT * FROM request_items
+             WHERE request_id=? AND (moysklad_product_id IS NULL OR moysklad_product_id='')
+               AND is_confirmed=0
+             ORDER BY position, id", [$requestId]
+        );
+        $out = [];
+        foreach ($rows as $row) {
+            $asked = trim((string)($row['raw_name'] ?? ''));
+            if ($asked === '') $asked = trim((string)($row['product_name'] ?? ''));
+            if ($asked === '') continue;
+            $out[] = [
+                'position'  => (int)$row['position'],
+                'requested' => $asked,
+                'quantity'  => $row['quantity'],
+                'unit'      => (string)($row['unit'] ?: 'шт.'),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * The unmatched lines as a block for a model prompt — one wording, used by
+     * every place that drafts a letter, so the reply and the КП say the same.
+     */
+    public static function unmatchedBlock(array $unmatched): string {
+        if (!$unmatched) return '';
+        $out = "\n===== ЧЕГО НЕТ В НАШЕМ КАТАЛОГЕ =====\n"
+             . "По этим позициям запроса совпадения не нашлось. Назови их в ответе ДОСЛОВНО "
+             . "словами клиента и напиши, что уточняем по ним наличие, сроки и цену. "
+             . "Не молчи о них, не придумывай им замену и не выдавай за них другой товар.\n";
+        foreach ($unmatched as $u) {
+            $out .= "- {$u['requested']} ({$u['quantity']} {$u['unit']})\n";
+        }
+        return $out;
     }
 
     /** How many lines of a request are still waiting for that answer. */
