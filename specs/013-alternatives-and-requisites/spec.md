@@ -238,3 +238,27 @@ supply no name, price or stock of its own).
 - The синоним table is deliberately about the NAMES OF A CATEGORY, the words
   clients type. Facts about our products stay in the wiki (`Knowledge`) and are
   never inlined into code.
+
+## «Настройки → Оформление КП» shows what will be printed
+
+The tab used to hold typed-in numbers alone, so the VAT, the ИНН and the addresses of a КП
+lived in two places at once — МойСклад, and somebody's memory. It now opens with the
+организация as МойСклад has it: full and short name, ИНН/КПП, ОГРН(ИП), ОКПО, the legal and
+the actual address, phone, e-mail, the signatory, the bank line, whether we charge VAT at all,
+and when all of it was last pulled. «Обновить из МойСклад» runs the same
+`Requisites::syncOrganization()` a КП runs, so the tab and the document can never disagree.
+
+The ID of the организация is printed IN FULL — it is not a secret, and an operator comparing
+two МойСклад accounts needs to read it.
+
+The typed-in fields below are explicitly what applies where МойСклад is silent. «НДС по
+умолчанию» states the rate the catalog actually carries (`Requisites::catalogVat()` — the
+prevailing rate among non-archived positions, with its share) and offers to fill it in; the
+field is disabled outright when the организация is not a VAT payer, because the document then
+prints `KP_VAT_EXEMPT_NOTE` and no rate at all. The order of precedence is unchanged and now
+visible on screen: the position's own rate, then this default.
+
+| Action | Meaning |
+|---|---|
+| `settings.php?action=kp` | manual defaults plus the requisites and the VAT МойСклад holds |
+| `settings.php?action=kp_requisites_sync` | pull the организация from МойСклад now |

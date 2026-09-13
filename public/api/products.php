@@ -148,7 +148,9 @@ switch ($action) {
         $report = Embeddings::indexCatalog([
             'budget' => (int)($_GET['budget'] ?? Settings::get('VECTOR_BUDGET_SEC', 20)),
         ]);
-        if ($report['error']) jsonError($report['error'], 400);
+        // A step that moved something is a success even with failures in it;
+        // one that moved nothing hands the reason to the panel as an error
+        if ($report['error'] && !$report['indexed']) jsonError($report['error'], 400);
         jsonOk(['report' => $report]);
 
     case 'vector_stats':
@@ -160,6 +162,12 @@ switch ($action) {
         requireAdmin();
         require_once ROOT . '/lib/embeddings.php';
         jsonOk(['removed' => Embeddings::reset()]);
+
+    // One live request to Yandex: what the indexing runs into, in plain HTTP
+    case 'vector_diagnose':
+        requireAdmin();
+        require_once ROOT . '/lib/embeddings.php';
+        jsonData(Embeddings::diagnose());
 
     // What the request card will see for a phrase — words, meaning and the score
     case 'match_preview':

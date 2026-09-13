@@ -7,6 +7,8 @@
  * by KNOWLEDGE_SYNC_TTL_SEC) and hands the LLM only the sections that match the task
  * at hand — the whole wiki is ~100 KB and would eat the context window for nothing.
  */
+require_once __DIR__ . '/embeddings.php';
+
 final class Knowledge {
 
     /** Tasks that may receive wiki context: prompt key => [label, share of the char budget] */
@@ -103,11 +105,12 @@ final class Knowledge {
     public static function preview(string $query, string $task): array {
         $picked = self::search($query, self::budget($task));
         return array_map(fn($s) => [
-            'title' => $s['title'],
-            'path'  => $s['path'],
-            'score' => round($s['score'], 2),
-            'hits'  => $s['hits'],
-            'chars' => mb_strlen($s['text']),
+            'title'  => $s['title'],
+            'path'   => $s['path'],
+            'score'  => round($s['score'], 2),
+            'hits'   => $s['hits'],
+            'chars'  => mb_strlen($s['text']),
+            'source' => $s['source'] ?? 'text',
         ], $picked);
     }
 
@@ -129,6 +132,7 @@ final class Knowledge {
             'fts'        => self::ftsAvailable(),
             'indexed'    => (int)(self::state('indexed_count') ?: 0),
             'indexed_at' => self::state('indexed_at'),
+            'vectors'    => Embeddings::knowledgeStats(),
             'tasks'      => array_map(fn($t) => [
                 'key'     => $t,
                 'label'   => self::TASKS[$t][0],
@@ -321,6 +325,50 @@ final class Knowledge {
      * off-topic letter gets no knowledge block at all.
      */
     public static function search(string $query, int $budget): array {
+        $picked = self::searchLexical($query, $budget);
+        return self::withVectors($query, $picked, $budget);
+    }
+
+    /**
+     * Sections the words alone did not reach. The wiki is searched the way the
+     * catalog is (module 009): the lexical pick decides, the vector index is a
+     * second opinion that adds what a different wording hides — «сколько ждать
+     * заказ» finds «Сроки поставки» even with no term in common. Off, unkeyed
+     * or unindexed, this adds nothing and the lexical answer stands.
+     */
+    private static function withVectors(string $query, array $picked, int $budget): array {
+        if (!Embeddings::knowledgeEnabled()) return $picked;
+        $left = $budget - array_sum(array_map(fn($p) => mb_strlen($p['text']), $picked));
+        if ($left < 400) return $picked;
+
+        $top = max(1, (int)Settings::get('KNOWLEDGE_VECTOR_TOP', 3));
+        $min = (float)Settings::get('KNOWLEDGE_VECTOR_MIN', '0.55');
+        try {
+            $hits = Embeddings::searchKnowledge($query, $top + count($picked));
+        } catch (Throwable $e) {
+            Logger::exception('knowledge', $e, ['stage' => 'vector_search']);
+            return $picked;
+        }
+
+        $seen = array_map(fn($p) => $p['title'], $picked);
+        $added = 0;
+        foreach ($hits as $hit) {
+            if ($added >= $top || $left < 400) break;
+            if ($hit['score'] < $min) break;                 // sorted best first
+            $row = Db::one("SELECT title, doc_path AS path, body FROM knowledge_sections WHERE id=?", [$hit['section_id']]);
+            if (!$row || in_array($row['title'], $seen, true)) continue;
+            $text = self::clip((string)$row['body'], min($left, 2500));
+            $left -= mb_strlen($text);
+            $seen[] = $row['title'];
+            $added++;
+            $picked[] = ['title' => $row['title'], 'path' => $row['path'], 'text' => $text,
+                         'score' => $hit['score'], 'hits' => 0, 'source' => 'vector'];
+        }
+        return $picked;
+    }
+
+    /** Words only: FTS5 when this SQLite has it, the PHP scan when it does not. */
+    private static function searchLexical(string $query, int $budget): array {
         // FTS5 ranks in C over an index built at sync time; the PHP scan below
         // re-stems the whole wiki on every call and only survives as a fallback
         // for a build of SQLite compiled without FTS5.
@@ -370,7 +418,7 @@ final class Knowledge {
             $text = self::clip($s['text'], min($left, 2500));
             $left -= mb_strlen($text);
             $out[] = ['title' => $s['title'], 'path' => $s['path'], 'text' => $text,
-                      'score' => $row['score'], 'hits' => $row['hits']];
+                      'score' => $row['score'], 'hits' => $row['hits'], 'source' => 'text'];
         }
         return $out;
     }
@@ -399,23 +447,27 @@ final class Knowledge {
      * a letter arrives often, so the work belongs here and not in the query path.
      */
     public static function reindex(): int {
-        if (!self::ftsAvailable()) return 0;
-        Db::pdo()->exec("DELETE FROM knowledge_fts");
+        $fts = self::ftsAvailable();
+        if ($fts) Db::pdo()->exec("DELETE FROM knowledge_fts");
+        // The section table is built even without FTS5: it is what the vector
+        // index points at, and `text_hash` is that index's resume cursor.
         Db::pdo()->exec("DELETE FROM knowledge_sections");
         $n = 0;
         foreach (self::sections() as $s) {
             $id = Db::insert('knowledge_sections', [
-                'doc_path' => $s['path'],
-                'title'    => $s['title'],
-                'heading'  => $s['heading'],
-                'tags'     => $s['tags'],
-                'body'     => $s['text'],
-                'chars'    => mb_strlen($s['text']),
+                'doc_path'  => $s['path'],
+                'title'     => $s['title'],
+                'heading'   => $s['heading'],
+                'tags'      => $s['tags'],
+                'body'      => $s['text'],
+                'chars'     => mb_strlen($s['text']),
+                'text_hash' => md5(self::vectorText($s + ['body' => $s['text']])),
             ]);
-            Db::q("INSERT INTO knowledge_fts (rowid, title, heading, tags, body) VALUES (?,?,?,?,?)",
+            if ($fts) Db::q("INSERT INTO knowledge_fts (rowid, title, heading, tags, body) VALUES (?,?,?,?,?)",
                   [$id, $s['title'], $s['heading'], $s['tags'], $s['text']]);
             $n++;
         }
+        Embeddings::forgetKnowledgeIndex();
         self::state('indexed_at', self::now());
         self::state('indexed_count', (string)$n);
         return $n;
@@ -465,7 +517,7 @@ final class Knowledge {
             $text = self::clip((string)$row['body'], min($left, 2500));
             $left -= mb_strlen($text);
             $out[] = ['title' => $row['title'], 'path' => $row['path'], 'text' => $text,
-                      'score' => -(float)$row['rank'], 'hits' => $hits];
+                      'score' => -(float)$row['rank'], 'hits' => $hits, 'source' => 'text'];
         }
         return $out;
     }
@@ -514,6 +566,22 @@ final class Knowledge {
             if (count($terms) >= 40) break;
         }
         return implode(' OR ', array_map(fn($t) => '"' . str_replace('"', '', rtrim($t, '*')) . '"' . (str_ends_with($t, '*') ? '*' : ''), $terms));
+    }
+
+    /**
+     * The text a wiki section is embedded from, and — hashed — the identity of
+     * its vector. Title and heading carry as much meaning as the body here: a
+     * section called «Гарантия» is about warranty even when the word appears
+     * once inside it.
+     */
+    public static function vectorText(array $section): string {
+        $parts = array_filter([
+            (string)($section['title'] ?? ''),
+            (string)($section['heading'] ?? ''),
+            (string)($section['tags'] ?? ''),
+            (string)($section['body'] ?? $section['text'] ?? ''),
+        ], fn($v) => trim($v) !== '');
+        return mb_substr(trim(implode("\n", $parts)), 0, 2000);
     }
 
     /** Wiki documents split into `##` sections — the unit we retrieve and inject. */

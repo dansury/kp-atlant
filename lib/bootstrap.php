@@ -1110,6 +1110,36 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '18')");
         $current = 18;
     }
+
+    // v19 — modules 005 + 009: the wiki is vectorized the way the catalog is
+    if ($current < 19) {
+        // Vectors are keyed by the TEXT, not by the section id: the section
+        // table is rebuilt from scratch on every reindex, and a wiki re-read
+        // from GitHub must not throw away the embeddings of sections whose text
+        // did not move.
+        Db::pdo()->exec(<<<SQL
+        CREATE TABLE IF NOT EXISTS knowledge_vectors (
+            text_hash TEXT PRIMARY KEY,
+            model TEXT NOT NULL DEFAULT '',
+            dim INTEGER NOT NULL DEFAULT 0,
+            vec BLOB NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+SQL);
+        Db::ensureColumn('knowledge_sections', 'text_hash', 'TEXT', "''");
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_ksections_hash ON knowledge_sections(text_hash)");
+
+        // Sections indexed before this migration carry no hash and would never
+        // be picked up by the queue — rebuild them from the cached wiki.
+        try {
+            if ((int)Db::val("SELECT COUNT(*) FROM knowledge_docs")) Knowledge::reindex();
+        } catch (Throwable $e) {
+            Logger::exception('knowledge', $e, ['stage' => 'migration_19']);
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '19')");
+        $current = 19;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

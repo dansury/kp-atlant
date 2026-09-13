@@ -43,6 +43,9 @@ final class Settings {
         'KNOWLEDGE_TASKS'        => ['knowledge', 'Где применять', 'text', false, 'mail_reply,reply_kp,reply_product,reply_availability,reply_order_status,reply_delivery,reply_edo,reply_closing_docs,reply_contract,reply_tender,reply_gov_order,reply_return,reply_docs,reply_wholesale,reply_complaint,cover_letter,followup,normalize_names', 'Ключи задач через запятую: mail_reply, cover_letter, followup, normalize_names'],
         'KNOWLEDGE_MAX_CHARS'    => ['knowledge', 'Максимум символов вики в промпте', 'int', false, 6000, 'Бюджет для ответа на письмо; у остальных задач — доля от него'],
         'KNOWLEDGE_MIN_HITS'     => ['knowledge', 'Минимум совпавших терминов', 'int', false, 2, 'Ниже порога раздел вики не подмешивается — «незачем»'],
+        'KNOWLEDGE_VECTORS'      => ['knowledge', 'Векторный поиск по базе знаний', 'bool', false, 1, 'Разделы вики тоже векторизуются эмбеддингами Yandex: к словесному подбору добавляются разделы, подходящие по смыслу. Без ключа Yandex подбор молча остаётся словесным'],
+        'KNOWLEDGE_VECTOR_TOP'   => ['knowledge', 'Разделов по смыслу, максимум', 'int', false, 3, 'Сколько разделов добавлять сверх найденных по словам'],
+        'KNOWLEDGE_VECTOR_MIN'   => ['knowledge', 'Порог близости по смыслу', 'text', false, '0.55', 'Косинусная близость 0…1. Ниже порога раздел не добавляется'],
 
         // --- Triage (module 006): what a letter is and how it gets answered ---
         'TRIAGE_ENABLED'          => ['triage', 'Классифицировать входящие письма', 'bool', false, 1, 'Выключено — как раньше: каждое письмо становится запросом КП'],
@@ -81,7 +84,8 @@ final class Settings {
         'VECTOR_ENABLED'       => ['match', 'Векторный поиск по каталогу', 'bool', false, 1, 'Эмбеддинги Yandex Cloud. Без ключа Yandex подбор молча остаётся словесным'],
         'VECTOR_MODEL_DOC'     => ['match', 'Модель эмбеддингов каталога', 'text', false, 'text-search-doc', 'emb://<folder>/<модель>/latest'],
         'VECTOR_MODEL_QUERY'   => ['match', 'Модель эмбеддингов запроса', 'text', false, 'text-search-query', ''],
-        'VECTOR_BATCH'         => ['match', 'Позиций в одной пачке', 'int', false, 20, 'Пачка уходит параллельно через curl_multi. Больше — быстрее, но легче упереться в лимит'],
+        'VECTOR_BATCH'         => ['match', 'Позиций в одной пачке', 'int', false, 20, 'Размер порции, которая обрабатывается за один заход. Больше — быстрее, но легче упереться в лимит'],
+        'VECTOR_CONCURRENCY'   => ['match', 'Параллельных запросов', 'int', false, 5, 'Сколько запросов пачки висят на линии одновременно. Уменьшите при HTTP 429 от Yandex'],
         'VECTOR_PAUSE_MS'      => ['match', 'Пауза между пачками, мс', 'int', false, 100, 'Страховка от rate limit'],
         'VECTOR_BUDGET_SEC'    => ['match', 'Лимит времени на шаг, сек', 'int', false, 20, 'Шаг останавливается по времени, следующий продолжает с того же места'],
         'VECTOR_RETRIES'       => ['match', 'Повторов при ошибке', 'int', false, 3, 'На 429 и 5xx позиция уходит в повтор с нарастающей паузой'],
@@ -279,16 +283,28 @@ final class Settings {
                 'default'      => $secret ? '' : (string)$default,
                 'value'        => $secret ? '' : (string)$value,
                 'filled'       => $secret ? ((string)$value !== '') : null,
-                'tail'         => $secret ? self::tail((string)$value) : null,
+                'tail'         => $secret ? self::mask((string)$value) : null,
             ];
         }
         return $rows;
     }
 
-    /** Last characters of a secret — enough to tell two keys apart, useless to steal. */
-    public static function tail(string $secret): string {
+    /**
+     * A secret as the panel shows it: first four characters and last four.
+     * Both ends, because one end does not identify a token — an operator with
+     * three МойСклад tokens and two Yandex keys has to be able to tell from the
+     * screen WHICH one is stored, without the value ever being readable.
+     */
+    public static function mask(string $secret): string {
         $len = mb_strlen($secret);
-        return $len === 0 ? '' : ($len <= 4 ? str_repeat('•', $len) : '…' . mb_substr($secret, -4));
+        if ($len === 0) return '';
+        if ($len <= 8) return str_repeat('•', $len);
+        return mb_substr($secret, 0, 4) . '…' . mb_substr($secret, -4);
+    }
+
+    /** @deprecated Use mask() — kept so older callers keep working. */
+    public static function tail(string $secret): string {
+        return self::mask($secret);
     }
 
     /** DB values arrive as strings; give ints and bools back in their declared shape. */
