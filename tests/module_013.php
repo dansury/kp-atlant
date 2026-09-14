@@ -251,7 +251,15 @@ try {
        (string)substr_count($html, 'соответствует'));
     ok('после таблицы — описание товара', str_contains($html, 'собственного производства'));
     ok('и фотография', str_contains($html, 'data:image/'));
-    ok('блок реквизитов на месте', str_contains($html, 'Реквизиты поставщика'));
+    // Реквизиты поставщика стоят в шапке первой страницы и БОЛЬШЕ НИГДЕ:
+    // до модуля 022 тот же ИНН, КПП и адрес печатались вторым блоком в конце
+    // документа, и клиент читал одно и то же дважды.
+    ok('реквизиты поставщика в шапке', str_contains($html, 'ИНН'));
+    ok('и не продублированы в конце', !str_contains($html, 'Реквизиты поставщика'));
+    // ИНН ПОКУПАТЕЛЯ в документе тоже есть, и это не дубль — считаем наш
+    $sellerInn = (string)(Requisites::forProposal($proposalId)['seller']['inn'] ?? '');
+    ok('ИНН поставщика напечатан один раз', substr_count($html, $sellerInn) === 1,
+       $sellerInn . ' × ' . substr_count($html, $sellerInn));
     ok('НДС прописан', str_contains($html, 'НДС'));
 
     $path = PdfGenerator::generate($proposalId);
@@ -330,7 +338,7 @@ $zip->close();
 ok('document.xml — корректный XML', simplexml_load_string($docXml) !== false);
 ok('таблица соответствия попала в Word', str_contains($docXml, 'Таблица соответствия запросу'));
 ok('позиция в Word есть', str_contains($docXml, 'Страж-5'));
-ok('реквизиты в Word есть', str_contains($docXml, 'Реквизиты поставщика'));
+ok('реквизиты в Word не продублированы', !str_contains($docXml, 'Реквизиты поставщика'));
 ok('стили шаблона в текст не просочились', !str_contains($docXml, 'border-collapse'));
 @unlink($docxPath);
 

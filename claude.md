@@ -21,6 +21,12 @@ together with its prompt in `Prompts::registry()` and its budget in `Knowledge::
 The categories cover the WHOLE deal, not its first letter: delivery, ЭДО, closing documents,
 the договор, a tender and ГОЗ each answer from their own facts, and `other` is a failure to
 classify, not a place to put the second half of a sale.
+The classifier is not the last word: the manager picks the category in a dropdown BEFORE
+«Сгенерировать ответ», and a change there is a correction, not just a fix to one letter —
+`Triage::correct()` stores it and `Triage::learned()` feeds the last such corrections back into
+the classifier prompt as examples (module 022). A letter asking what a product CAN DO
+(«можно ли отстегнуть слой») is `product_question`; answering it with «уточняем наличие, цену и
+сроки» is the mistake this exists to stop.
 Never call the model twice for one letter, and never let a draft invent a price, a stock
 level or an order status — those come from `Catalog`, not from the wiki.
 
@@ -57,7 +63,10 @@ sequence in `Html2Docx` is the schema's, and changing it is what makes Word offe
 file.
 
 Card text is Markdown on the way in and HTML on the way out, and `Markup` is the only door
-between them (module 020). МойСклад descriptions are written in a visual editor and arrive as
+between them (module 020). `markdownToHtml()` normalizes HTML it is handed anyway (module 022):
+printing is the last door, and there is nowhere left to check afterwards — a field that still
+holds `<ul><li>` must print a list, not its tags. `htmlToMarkdown()` also runs without
+`ext-dom`: on a host without it `new DOMDocument()` is a fatal error in the middle of a КП. МойСклад descriptions are written in a visual editor and arrive as
 `<ul><li>…`, so everything that copies product text into `proposal_items` — `enrichItems()`,
 `splitDescription()`, the editor's own save — runs it through `Markup::toMarkdown()`, and the
 template prints it with `Markup::markdownToHtml()`. Never put raw МойСклад HTML into the
@@ -71,9 +80,40 @@ decides what the document prints — but it never leaves the document: `unmatche
 it up and the КП names it in the client's own words, and the correspondence table answers
 «уточняем» on its line. Dropping such a line silently is the hole module 018 exists to close.
 
+A line marked «не наша номенклатура» is the ONE exception to that, and it is a different
+statement (module 022): not «we could not price this» but «we do not sell this». `Scope` marks
+it — from the `CATALOG_OUT_OF_SCOPE` rule list, or from the manager's own button, which adds
+the line's words to that list — and it then leaves the document ENTIRELY: no priced row, no
+«уточняем» line, no analogue, and `outOfScopeBlock()` tells the model to say nothing about it.
+It never leaves the SCREEN: the row stays on the card, struck through, because silently
+dropping a client's line is exactly what the manager must be able to see.
+
+Требования клиента к размеру и цвету — это РАЗНЫЕ строки, а не одна на сумму количеств.
+`Variants::expand()` splits «(р.S-5шт, р.M-13шт, р.L-7шт)» before the catalog is touched and
+without a model call — an error in a quantity is an error in money — and `resolveRow()` moves
+each line onto its own `products_cache` row (`product_type = 'variant'`, `parent_id`), with its
+own article, price and stock. The catalog is searched by the PARENT name; the label lives on
+the row (`request_items.variant_label`), never inside the name. A size token is accepted only
+with an explicit hint («р.», «размер») or from a CLOSED set — otherwise «Рукав 5ELEM - 1 шт»
+becomes a size.
+
+The КП carries the supplier's requisites ONCE, in the header. The block at the end prints only
+what the header does not have — bank, договор, buyer. The signature line has no blank rule on
+it: a space left «под роспись» in a signed document reads as an unfilled form. The signature
+belongs to the MANAGER (`Signatures::forProposal()`) — their own image and their own name, with
+the организация's signatory as the default. The file is named `PdfGenerator::fileName()` and
+both formats share it: `КП_Атлант_Армор_для_{кому}_от_{дата}` — `KP-2026-002.pdf` is a name
+nobody finds again in their own downloads folder.
+
 The КП carries a logo top left. `$legal['logo_path']` is an empty string on a fresh install,
 not NULL, so resolve it by trying paths in order and taking the first that EXISTS — an
-uploaded logo, then the bundled one. `Branding` (module 021) owns that order and every other
+uploaded logo, then the bundled one. That was only half of it: **mPDF renders a TRANSPARENT PNG
+only through GD**, and without it drops the image from the document silently
+(`showImageErrors = false`) — which is why the JPEG photo and the grey QR printed and the logo
+never did. Transparency is therefore removed BEFORE mPDF: `Branding::documentImage()` →
+`Png::flatten()`, through GD when it exists and in plain PHP when it does not. Never hand mPDF
+a picture straight from disk, and never read «загружен» as «печатается» —
+`Branding::documentWarning()` is what tells them apart. `Branding` (module 021) owns that order and every other
 place a logo appears: the КП, the app icon and the tab favicon are THREE kinds, all uploaded
 through «Настройки → Логотипы» and all stored in `storage/logo/`, outside the repository,
 because a deploy overwrites `public/assets/`. `PdfGenerator::bundledLogos()` reads `Branding`
@@ -87,7 +127,13 @@ reads as a draft.
 through the API, and `CatalogImport::run()` from a МойСклад Excel export (module 008). Never make a
 KP, a match or a draft depend on the API being reachable — a dead token must degrade to the imported
 catalog, not to an error. Stock never comes from the file. Prices and names for a client-facing
-document come from `products_cache`, never from a model.
+document come from `products_cache`, never from a model. Stock comes from
+`MoySklad::refreshStock()` — the `/report/stock/all` report, over the warehouses
+`MOYSKLAD_STORES` names (empty = all). Pick only the ones you actually ship from: a остаток of
+the shop window or of rejects, printed in a КП, is a promise nobody can keep. `reserve` is
+subtracted everywhere downstream (`Alternatives::freeStock`) — promising reserved stock twice
+is a missed deadline, not optimism. Modifications (`/entity/variant`) land in the same table in
+the same shape the Excel import writes them: both roads into the catalog must answer alike.
 The Excel import reads EVERY «Цена: …» column into `prices_json` under the МойСклад type name,
 so a catalog loaded from a file knows as many price types as one synced through the API. The
 import column and `CATALOG_DEFAULT_PRICE_TYPE` are ONE choice, not two settings: the import
@@ -116,7 +162,10 @@ client's «спасибо» carries neither.
 A letter that is not ours to answer leaves the SCREEN, not the mailbox (module 019):
 `MailSync::archiveMessage()` stamps `archived_at`/`archived_reason` and moves the letter into
 the account's own «Архив», and every list — threads, letters, the unread counter, the company
-card, `Boards::sync()` — drops `archived_at IS NOT NULL` unless it was asked for it. Adding a
+card, `Boards::sync()` and `MailThreads::messages()` — drops `archived_at IS NOT NULL` unless it
+was asked for it. That last one was missed for a module and a half, and it is the one place
+letters are actually SHOWN: a mailbox switched off kept displaying its letters inside the
+conversation, which reads as «ящик отключила, а письмо осталось». Adding a
 query over `mail_messages` that forgets that filter puts «не наш профиль» back in the manager's
 face. The category `not_our_profile` is set BY HAND and is not in `classify_request`: it is a
 verdict, not a classification.
@@ -177,7 +226,18 @@ There is ONE «Настройки» item in the header: everything lives under `
 tabs hidden from a plain manager. Do not add a second top-level entry for a settings screen.
 «Ликбез» is a tab like any other (module 021) — the manual for the SCREEN, and it stays there,
 never in the company wiki: the wiki is product knowledge that goes into prompts, and an
-instruction about a button inside a reply to a client is noise in the context.
+instruction about a button inside a reply to a client is noise in the context. But the tab is no
+longer where it is READ (module 022): the explanation stands next to the block it explains, as a
+«?» that opens on a CLICK — there is no hover on a phone, so a hint living in `title` does not
+exist there at all. Every hint text lives once, in `App.HINTS`, and the «Ликбез» page is built
+from that same list: never write a hint twice.
+
+Оформление КП, база знаний, промпты и ToV are open to a plain MANAGER (module 022) — they work
+with those texts daily and spot a bad wording first. Switches, keys, mailboxes and logs stay
+admin-only: those break the service, not a sentence. Every such edit goes through
+`ContentLog::record()` and shows on the admin's «Обзор» — a text two people edit silently ends
+up somewhere nobody meant. Tone of Voice lives in `storage/`, never in the repository: a deploy
+overwrites repository files and used to erase every edit.
 
 Nothing is ever wider than the phone. A grid column is `minmax(0, 1fr)` and its items get
 `min-width: 0`: bare `1fr` is `minmax(auto, 1fr)`, and that `auto` is the column's MIN-CONTENT —
@@ -260,6 +320,17 @@ needed to price something or issue a document. Put a new behavioural rule there,
 thirteenth copy inside one prompt. A generation that must be reproducible (a КП, a match)
 calls the model at temperature 0 and treats its answer as a CHOICE among things the code
 verified, never as a source of names, prices or stock.
+
+## Learning from corrections
+Everything a human fixed after the machine lives in ONE table and ONE shape — what was asked,
+what the machine answered, what it should have been (`Learning`, module 022). It has two
+consumers and they must not drift apart: recent corrections go into the prompts as examples,
+and the accumulated ones go out as an archive to the company wiki (`dansury/Atlant`,
+`GRAPH/RAW/NEW`). The export order is load-bearing: the archive reaches GitHub FIRST, and only
+a confirmed write stamps `exported_at` — stamping earlier loses the corrections when GitHub
+answers with an error, and the next archive is built from the new ones only. The same question
+with the same correct answer is never stored twice: identical examples crowd the different ones
+out of a prompt.
 
 ## Configuration
 Never read `config.php` directly. `config.php` holds DEFAULTS only and is optional; the effective value is `Settings::get('KEY')` (DB override → config.php → built-in default), and `$cfg` from bootstrap is already that merged array. A new setting must be declared in `Settings::SPEC` so the admin panel can show and override it. Secrets go through `Crypt` and never reach the browser: the panel shows `Settings::mask()` — the first four characters and the last four — which is enough to tell two tokens apart and useless to steal. An identifier that is not a secret (the МойСклад ID организации, a Folder ID) is shown in full; do not mask it.

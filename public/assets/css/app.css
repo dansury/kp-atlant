@@ -212,7 +212,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .msg { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; font-size: 13px; }
 .msg__head { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .msg__subject { font-weight: 600; margin-bottom: 4px; }
-.msg__body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
+/* Текст письма читают целиком, а не через щель в 260 пикселей: своя полоса
+   прокрутки внутри страницы, которая и так прокручивается, — это два
+   независимых движения на одном экране (модуль 022). Длинные ленты (.chat)
+   ограничивают себя сами. */
+.msg__body { white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg__files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .msg--in { background: var(--surface); border-left: 3px solid var(--border-strong); }
 .msg--out { background: var(--primary-bg); border-left: 3px solid var(--primary); margin-left: 24px; }
@@ -247,7 +251,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Item 4/5: an email body or a converted DOCX/XLSX rendered inside a sandboxed
    iframe — width fills the card, height is set by App.sizeFrame() once the
    frame has actually loaded its content */
-.html-frame { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); display: block; height: 80px; }
+/* Стартовая высота рамки письма — экран, а не 80 пикселей: если JS не успел
+   померить содержимое (письмо было свёрнуто), читать всё равно можно */
+.html-frame { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); display: block; height: 320px; }
 .preview-body { max-height: 75vh; overflow-y: auto; }
 .preview-frame { height: 75vh; }
 
@@ -386,6 +392,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .note--choice { background: var(--warning-bg); border: 1px solid #f0dcbb; border-radius: var(--radius-sm);
                 padding: 8px 12px; font-size: 12px; margin-bottom: 10px; color: var(--warning); }
 .match-row--choice { background: var(--warning-bg); border-left: 3px solid var(--warning); padding-left: 8px; }
+/* Строка «не наша номенклатура»: с экрана не исчезает — менеджер должен видеть,
+   что из просьбы клиента мы отбросили, — но гаснет, потому что в документ и в
+   ответ она не уйдёт (модуль 022) */
+.match-row--out { opacity: .62; }
+.match-row--out input, .match-row--out .suggest { text-decoration: line-through; }
+.note--out { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+             padding: 6px 10px; font-size: 12px; margin: 4px 0; color: var(--text); }
 .choice { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
 .choice__title { font-size: 12px; font-weight: 600; color: var(--warning); }
 .choice__opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
@@ -491,6 +504,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .composer input[type="text"] { margin-bottom: 6px; }
 .composer textarea { min-height: 104px; }
 .composer__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+/* Классификатор стоит ПЕРЕД кнопкой генерации: видно, чем сервис собирается
+   отвечать, и это можно поменять до того, как ответ написан (модуль 022).
+   На телефоне он занимает всю строку — выбор из двадцати категорий не должен
+   ужиматься до трёх букв. */
+.composer__cat { width: auto; max-width: 100%; font-size: 12px; padding: 5px 8px; }
 /* The box is always open at the foot of the conversation, so it must not shout
    louder than the letters above it until it is focused */
 .composer:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-bg); }
@@ -562,6 +580,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     .tmsg__head { gap: 6px; }
     .tmsg__date { margin-left: 0; }
     .composer__head select { margin-left: 0; max-width: 100%; }
+    .composer__cat { width: 100%; }
     .chat__composer { flex-direction: column; align-items: stretch; }
     .chat__composer .btn { width: 100%; justify-content: center; }
 
@@ -574,3 +593,79 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     .preview-body { max-height: 65vh; }
     .preview-frame { height: 60vh; }
 }
+
+/* ==== Модуль 022: подсказки там, где возникает вопрос ====
+
+   Ликбез был одной страницей, на которую надо уйти с рабочего экрана. Теперь
+   объяснение стоит рядом с блоком: значок «?» и короткий текст по нажатию.
+   Именно по НАЖАТИЮ, а не по наведению: на телефоне наведения нет, и
+   подсказка, живущая только в `title`, там не существует вовсе. */
+.hint {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; margin-left: 6px; padding: 0;
+    border: 1px solid var(--border-strong); border-radius: 50%;
+    background: var(--surface); color: var(--text-muted);
+    font: 600 11px/1 inherit; cursor: pointer; vertical-align: middle;
+    flex: 0 0 auto;
+}
+.hint:hover, .hint:focus-visible { border-color: var(--primary); color: var(--accent-ink); }
+
+/* Пузырь подсказки. На широком экране он ставится у значка (координаты
+   считает App.showHint), на узком — прилипает к низу экрана во всю ширину:
+   окошко в 340 px на телефоне всё равно не помещается. */
+.hint-bubble {
+    position: absolute; z-index: 400; max-width: 340px;
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border-strong); border-radius: var(--radius);
+    box-shadow: 0 8px 28px rgba(16, 24, 40, .18);
+    padding: 12px 34px 12px 14px; font-size: 13px; line-height: 1.5;
+}
+.hint-bubble__title { font-weight: 600; margin-bottom: 4px; }
+.hint-bubble__text { color: var(--text-muted); overflow-wrap: anywhere; }
+.hint-bubble__close {
+    position: absolute; top: 4px; right: 6px; border: 0; background: none;
+    color: var(--text-muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px;
+}
+.hint-bubble__close:hover { color: var(--text); }
+
+@media (max-width: 560px) {
+    .hint-bubble {
+        position: fixed; left: 8px; right: 8px; top: auto; bottom: 8px;
+        width: auto !important; max-width: none;
+    }
+    /* На телефоне палец крупнее курсора */
+    .hint { width: 22px; height: 22px; font-size: 12px; }
+}
+
+/* Справка целиком — те же тексты, что и у значков «?», собранные подряд.
+   Одна колонка на телефоне, две на широком экране; minmax(0,1fr) обязателен —
+   голый 1fr это min-content колонки, и длинная строка распирает страницу. */
+.hint-index { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 10px; }
+.hint-index__item { min-width: 0; border-left: 2px solid var(--border); padding-left: 10px; font-size: 13px; }
+.hint-index__title { font-weight: 600; margin-bottom: 2px; }
+@media (min-width: 900px) { .hint-index { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Выбор складов МойСклад (модуль 022): список с галочками, в одну колонку на
+   телефоне и в две на широком экране. minmax(0,1fr) — иначе длинное название
+   склада распирает страницу. */
+.store-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 8px; }
+.store-list__item { display: flex; align-items: flex-start; gap: 8px; min-width: 0;
+                    padding: 5px 6px; border-radius: var(--radius-sm); font-size: 13px; cursor: pointer; }
+.store-list__item:hover { background: var(--surface-2); }
+.store-list__item span { min-width: 0; overflow-wrap: anywhere; }
+@media (min-width: 760px) { .store-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Предполагаемый ответ в «Проверке подбора» (модуль 022): это письмо, а не
+   код, — переносы сохраняем, ширину не даём распирать страницу. */
+.kb-answer { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2);
+             border: 1px solid var(--border); border-radius: var(--radius-sm);
+             padding: 10px 12px; font-size: 13px; line-height: 1.55; }
+
+/* Лента правок на «Обзоре» (модуль 022): строка = кто, что и когда поменял.
+   На телефоне колонки складываются — длинное название промпта не должно
+   расширять страницу. */
+.changes { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.changes__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+                min-width: 0; font-size: 13px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.changes__row:last-child { border-bottom: none; }
+.changes__row > span { min-width: 0; overflow-wrap: anywhere; }

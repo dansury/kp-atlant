@@ -61,9 +61,17 @@ try {
             if ($key === '') jsonError('Не указана цепочка');
             // Цепочка целиком в архиве всё равно открывается — иначе из вкладки
             // «Архив» некуда нажать
-            $summary = MailThreads::summary($key) ?: MailThreads::summary($key, true);
+            $summary = MailThreads::summary($key);
+            // Архивную цепочку открываем целиком — иначе из вкладки «Архив»
+            // некуда нажать. В рабочей переписке архивных писем не показываем:
+            // выключенный ящик уходит с экрана вместе со своими письмами
+            $archivedThread = false;
+            if (!$summary) {
+                $summary = MailThreads::summary($key, true);
+                $archivedThread = (bool)$summary;
+            }
             if (!$summary) jsonError('Цепочка не найдена', 404);
-            $messages = MailThreads::messages($key);
+            $messages = MailThreads::messages($key, $archivedThread || !empty($_GET['archived']));
             // HTML is sanitized (allowlist, no scripts, no remote stylesheets) and
             // rendered client-side inside a sandboxed iframe — plain text stays the
             // fallback for a letter that has no HTML part at all
@@ -213,13 +221,17 @@ try {
                 'thread'          => array_reverse($thread),
                 'counterparty_id' => $msg['counterparty_id'] ?? null,
                 'email_rules'     => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
-                'tov'             => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
+                'tov'             => Tov::read(),
                 // Positions of this letter the catalog never answered. The draft
                 // says so in the client's own words instead of dropping them
                 // silently, which is all that used to happen (module 018).
                 'unmatched'       => !empty($msg['request_id'])
                     ? (RequestItems::ensure((int)$msg['request_id']) ? RequestItems::unmatched((int)$msg['request_id']) : [])
                     : [],
+                // Позиции, которыми мы не занимаемся: ответ про них молчит и
+                // ничего не обещает (модуль 022)
+                'out_of_scope'    => !empty($msg['request_id'])
+                    ? RequestItems::outOfScope((int)$msg['request_id']) : [],
             ];
             // The manager may pick the model right in the reply window. The choice
             // holds for this one request; it never becomes a stored setting, and
@@ -244,6 +256,9 @@ try {
             [$promptKey] = Triage::route($category);
             $promptKey = $promptKey ?? 'mail_reply';
             if (!empty($input['category']) && $input['category'] !== ($msg['category'] ?? null)) {
+                // Менеджер поправил классификатор перед генерацией ответа —
+                // правка чинит и это письмо, и все следующие похожие (модуль 022)
+                Triage::correct($msg, $category, (int)$manager['id'], (string)($input['category_comment'] ?? ''));
                 Db::update('mail_messages', ['category' => $category], 'id=?', [$id]);
                 if (!empty($msg['request_id'])) {
                     Db::update('requests', ['category' => $category, 'category_source' => 'manager'],

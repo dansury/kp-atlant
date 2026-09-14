@@ -130,6 +130,20 @@ switch ($action) {
         }
         jsonData(['items' => $items]);
 
+    // Строка, которой мы не занимаемся: с экрана она не исчезает, но в КП и в
+    // ответ клиенту не уходит, и её слова пополняют список правил (модуль 022)
+    case 'items_scope':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $input = getInput();
+        try {
+            $items = RequestItems::setScope($id, (int)($input['item_id'] ?? 0), !empty($input['out_of_scope']));
+        } catch (Throwable $e) {
+            jsonError($e->getMessage(), 400);
+        }
+        jsonData(['items' => $items, 'out_of_scope' => RequestItems::outOfScope($id)]);
+
     case 'items_rematch':
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
@@ -241,8 +255,16 @@ switch ($action) {
 
     case 'categories':
         requireAuth();
+        // `answerable` — есть ли у категории свой промпт ответа. Выпадающий
+        // список перед «Сгенерировать ответ» показывает их первыми: менеджер
+        // выбирает, ЧЕМ отвечать, а не только чем письмо помечено (модуль 022)
         jsonData(['categories' => array_map(
-            fn($k) => ['key' => $k, 'label' => Triage::label($k)],
+            fn($k) => [
+                'key'        => $k,
+                'label'      => Triage::label($k),
+                'answerable' => Triage::route($k)[0] !== null,
+                'request'    => Triage::createsRequest($k),
+            ],
             array_keys(Triage::CATEGORIES)
         )]);
 

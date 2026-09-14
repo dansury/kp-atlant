@@ -284,7 +284,18 @@ final class MailThreads {
      * The whole conversation, oldest first, whichever mailbox each letter is in.
      * This is what makes a Gmail answer visible in the Yandex thread.
      */
-    public static function messages(string $key): array {
+    /**
+     * Письма цепочки.
+     *
+     * `$withArchived` по умолчанию ВЫКЛЮЧЕН, и это правило модуля 019: письмо,
+     * убранное с экрана, с экрана и уходит — из списков, из счётчика и отсюда
+     * тоже. Здесь фильтра не было, и выключенный ящик продолжал показывать свои
+     * письма внутри переписки: снаружи это выглядело как «ящик отключила, а
+     * письмо осталось» (модуль 022). Включают его там, где архив и спрашивали, —
+     * во вкладке «Архив».
+     */
+    public static function messages(string $key, bool $withArchived = false): array {
+        $archived = $withArchived ? '' : ' AND m.archived_at IS NULL';
         $rows = Db::all(
             "SELECT m.id, m.mailbox_id, m.direction, m.folder, m.subject, m.thread_subject,
                     m.from_email, m.from_name, m.to_emails, m.cc_emails, m.body_text, m.body_html,
@@ -296,7 +307,7 @@ final class MailThreads {
              LEFT JOIN mailboxes b ON b.id = m.mailbox_id
              LEFT JOIN counterparties c ON c.id = m.counterparty_id
              LEFT JOIN managers g ON g.id = m.manager_id
-             WHERE m.thread_key=? ORDER BY m.date_at, m.id", [$key]
+             WHERE m.thread_key=?$archived ORDER BY m.date_at, m.id", [$key]
         );
         foreach ($rows as &$row) {
             $row['attachments'] = $row['has_attachment']

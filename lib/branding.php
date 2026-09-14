@@ -89,6 +89,59 @@ final class Branding {
         return substr(md5(implode('-', $parts)), 0, 8);
     }
 
+    /**
+     * Знак для ДОКУМЕНТА — data:URI, который mPDF и Word напечатают на любом
+     * хостинге (модуль 022).
+     *
+     * mPDF рисует прозрачный PNG только через GD, а без неё выбрасывает
+     * картинку молча (`showImageErrors` выключен): КП уходило клиенту без
+     * логотипа, хотя знак был загружен и лежал на диске. Поэтому прозрачность
+     * снимается здесь — один раз, с кэшем рядом с файлом, — и в документ
+     * уходит PNG без альфы.
+     *
+     * Пустая строка означает «знака нет вовсе»; вызывающий это уже отличает от
+     * «знак есть, но не читается».
+     */
+    public static function documentImage(string $kind = 'kp'): string {
+        $path = self::resolve($kind);
+        return $path === '' ? '' : self::fileAsDocumentImage($path);
+    }
+
+    /** Тот же знак, но из названного файла: путь из `legal_entities.logo_path`. */
+    public static function fileAsDocumentImage(string $path): string {
+        if ($path === '' || !is_file($path)) return '';
+
+        $flat = self::flatCopy($path);
+        $file = $flat !== '' ? $flat : $path;
+        $bytes = @file_get_contents($file);
+        if ($bytes === false || $bytes === '') return '';
+
+        return 'data:' . self::mime($file) . ';base64,' . base64_encode($bytes);
+    }
+
+    /**
+     * Копия файла без прозрачности, или '' — если снимать нечего или нечем.
+     * Кэш живёт рядом с загруженным знаком и помечен временем файла: заменили
+     * логотип — старая копия больше не подойдёт по имени.
+     */
+    private static function flatCopy(string $path): string {
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        if ($ext !== 'png') return '';       // JPEG и SVG mPDF печатает и без GD
+
+        $cacheDir = self::dir() . '/cache';
+        if (!is_dir($cacheDir)) @mkdir($cacheDir, 0755, true);
+        $cache = $cacheDir . '/flat-' . md5($path) . '-' . (int)@filemtime($path) . '.png';
+        if (is_file($cache)) return $cache;
+
+        require_once __DIR__ . '/png.php';
+        $data = (string)@file_get_contents($path);
+        if ($data === '') return '';
+        $flat = Png::flatten($data);
+        // null — либо альфы нет (печатается как есть), либо формат нам не по зубам
+        if ($flat === null) return '';
+        return @file_put_contents($cache, $flat) !== false ? $cache : '';
+    }
+
     public static function mime(string $path): string {
         return match (strtolower(pathinfo($path, PATHINFO_EXTENSION))) {
             'png'  => 'image/png',
@@ -196,6 +249,28 @@ final class Branding {
 
     private static function clearCache(): void {
         foreach (glob(self::dir() . '/cache/*.png') ?: [] as $file) @unlink($file);
+    }
+
+    /**
+     * Почему знак этого вида может не напечататься. Пустая строка — всё хорошо.
+     * Панель показывает это рядом с загрузкой, чтобы «логотип не вставляется»
+     * было видно ДО того, как КП уйдёт клиенту.
+     */
+    public static function documentWarning(string $kind = 'kp'): string {
+        $path = self::resolve($kind);
+        if ($path === '') return 'Знак не найден: ни загруженного, ни встроенного файла нет.';
+
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        if ($ext !== 'png') return '';
+
+        require_once __DIR__ . '/png.php';
+        $data = (string)@file_get_contents($path);
+        if ($data === '') return 'Файл знака не читается с диска.';
+        if (!Png::isPng($data) || !Png::hasAlpha($data)) return '';
+        if (self::flatCopy($path) !== '') return '';
+
+        return 'PNG с прозрачным фоном, и снять её не удалось: в КП знак может не напечататься. '
+             . 'Загрузите PNG без прозрачности или JPG.';
     }
 
     /** Состояние для панели: что загружено, что встроено, каким адресом отдаётся. */

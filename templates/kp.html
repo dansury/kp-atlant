@@ -366,39 +366,33 @@
     Предлагаемая цена продукции является твёрдой и не подлежит изменению в течение <?= $validityDays ?> дней с даты настоящего предложения.
 </div>
 
-<!-- Date + Signature -->
+<!-- Дата и подпись.
+     Пустой строки под подпись здесь больше нет: место, оставленное «под
+     роспись», в подписанном документе читается как незаполненный бланк
+     (модуль 022).
+     Картинка — подпись МЕНЕДЖЕРА этого КП, расшифровка — его же; ничего своего
+     он не завёл — печатается подписант организации. -->
 <div class="signature">
     <div class="date"><?= $date ?></div>
     <div class="sign">
-        <?php if ($signaturePath && file_exists($signaturePath)): ?>
+        <?php if ($signaturePath !== ''): ?>
         <img src="<?= $signaturePath ?>" alt="Подпись">
-        <?php else: ?>
-        _______________
         <?php endif; ?>
-        <div class="sign-name"><?= htmlspecialchars($seller['signatory'] !== '' ? $seller['signatory'] : ($legal['signatory_name'] ?? '')) ?></div>
+        <div class="sign-name"><?= htmlspecialchars($signatoryName) ?></div>
     </div>
 </div>
 
-<!-- Requisites: from МойСклад, frozen on this КП at the moment it was made.
-     Nothing in this block is ever written by a model (module 013). -->
-<?php if (!empty($showRequisites) && !empty($requisites['seller'])): ?>
+<!-- Договор и покупатель: то, чего в шапке нет.
+     Реквизиты ПОСТАВЩИКА раньше печатались здесь второй раз — ИНН, КПП, ОГРН и
+     адрес те же, что уже стоят в шапке первой страницы. Дубль убран
+     (модуль 022): в шапке он и остаётся, а сюда попадает только то, чего там
+     не было, — банк, договор и адресат. Ничего в этом блоке никогда не пишет
+     модель: это снимок из МойСклад, замороженный на КП (модуль 013). -->
+<?php if (!empty($showRequisites) && (!empty($seller['bank']['line']) || !empty($requisites['contract']) || !empty($requisites['buyer']))): ?>
 <div class="req">
-    <div class="req__title">Реквизиты поставщика</div>
-    <div class="req__row"><?= htmlspecialchars($seller['full_name']) ?></div>
-    <?php if ($seller['legal_address'] !== ''): ?>
-    <div class="req__row">Юридический адрес: <?= htmlspecialchars($seller['legal_address']) ?></div>
-    <?php endif; ?>
-    <div class="req__row">
-        ИНН <?= htmlspecialchars($seller['inn']) ?><?php
-        if ($seller['kpp'] !== '')    echo ', КПП ' . htmlspecialchars($seller['kpp']);
-        if ($seller['ogrnip'] !== '') echo ', ОГРНИП ' . htmlspecialchars($seller['ogrnip']);
-        elseif ($seller['ogrn'] !== '') echo ', ОГРН ' . htmlspecialchars($seller['ogrn']);
-        if ($seller['okpo'] !== '')   echo ', ОКПО ' . htmlspecialchars($seller['okpo']); ?>
-    </div>
     <?php if (!empty($seller['bank']['line'])): ?>
     <div class="req__row">Банк: <?= htmlspecialchars($seller['bank']['line']) ?></div>
     <?php endif; ?>
-    <div class="req__row">НДС: <?= htmlspecialchars($vatStatement) ?></div>
 
     <?php if (!empty($requisites['contract'])): ?>
     <div class="req__row">Договор: <?= htmlspecialchars($requisites['contract']['name']) ?><?php

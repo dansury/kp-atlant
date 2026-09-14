@@ -126,6 +126,11 @@ Rules:
 - Money and requisites present + named positions → order, not kp_request.
 - A question about a product WE sell is product_question even if it ends with «сколько стоит»;
   a list of positions with quantities is kp_request.
+- A letter that asks what a product CAN DO — «можно ли отстегнуть слой», «снимается ли
+  подкладка», «подойдёт ли на рост 190», «совместим ли с ПНВ», «это на какую погоду» —
+  is product_question, NOT kp_request and NOT availability. No price is asked, no quantity
+  is named: the client wants to know how the thing is made. Answering such a letter with
+  «уточняем наличие, цену и сроки» is the single most common mistake here.
 - Text after "--- Вложение: <name> ---" comes from an attached file — positions often live
   ONLY there (спецификация, заявка); extract them.
 - Normalize product names: expand abbreviations (бж = бронежилет, ИПП = индивидуальный
@@ -202,6 +207,9 @@ PROMPT,
 5. Чего нет ни в базе знаний, ни в каталоге — прямо напиши, что уточнишь у производства
    и вернёшься с ответом. Выдумывать вес, размеры и совместимость нельзя.
 6. Если товар не наш (чужой бренд, чужой шлем) — так и скажи, но подскажи, чем можем помочь.
+7. НИКОГДА не отвечай «уточняем наличие, цену и сроки» на вопрос о конструкции. Клиент
+   спросил, как устроена вещь, а не сколько она стоит: такой ответ читается как «мы вас не
+   прочитали». Не знаешь ответа — скажи, что уточнишь ИМЕННО ЭТО, своими словами.
 PROMPT,
             ],
 
@@ -777,6 +785,11 @@ TEXT;
         } else {
             Db::insert('prompts', ['key' => $key, 'content' => $content, 'updated_at' => $now, 'updated_by' => $managerId]);
         }
+        // Промпты правит и менеджер (модуль 022) — админ видит это в ленте
+        // изменений на первой странице, а не узнаёт из чужого письма клиенту
+        require_once __DIR__ . '/content_log.php';
+        ContentLog::record('prompt', $key, self::registry()[$key][0] ?? $key,
+                           $managerId, (string)($prev['content'] ?? ''), $content);
         Logger::info('prompts', "Промпт «{$key}» изменён", ['manager_id' => $managerId]);
     }
 
@@ -787,6 +800,9 @@ TEXT;
             Db::insert('prompt_history', ['key' => $key, 'content' => $prev['content'], 'manager_id' => $managerId]);
             Db::q("DELETE FROM prompts WHERE key=?", [$key]);
         }
+        require_once __DIR__ . '/content_log.php';
+        ContentLog::record('prompt', $key, (self::registry()[$key][0] ?? $key) . ' — сброшен к встроенному',
+                           $managerId, (string)($prev['content'] ?? ''), '');
         Logger::info('prompts', "Промпт «{$key}» возвращён к встроенному", ['manager_id' => $managerId]);
     }
 

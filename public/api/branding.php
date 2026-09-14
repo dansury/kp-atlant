@@ -48,7 +48,9 @@ if ($method === 'GET' && $action === '') {
 switch ($action) {
     case 'list':
         requireAuth();
-        jsonData(['items' => Branding::describe()]);
+        // «Загружен» и «печатается» — не одно и то же: mPDF без GD выбрасывает
+        // прозрачный PNG молча, и КП уходило клиенту без знака (модуль 022)
+        jsonData(['items' => Branding::describe(), 'kp_warning' => Branding::documentWarning('kp')]);
 
     case 'upload':
         $admin = requireAdmin();

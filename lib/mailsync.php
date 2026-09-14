@@ -318,16 +318,21 @@ final class MailSync {
             // A draft prepared here is used as-is on the first click, so leaving
             // it out would put the silence back for exactly those letters.
             $unmatched = [];
+            $outOfScope = [];
             if ($requestId && RequestItems::ensure($requestId)) {
                 $unmatched = RequestItems::unmatched($requestId);
+                // И то, чем мы не занимаемся: черновик про эти позиции молчит
+                // и ничего по ним не обещает (модуль 022)
+                $outOfScope = RequestItems::outOfScope($requestId);
             }
             $text = Triage::draft($row, $category, [
                 'org_name'        => $counterpartyId ? (string)Db::val("SELECT name FROM counterparties WHERE id=?", [$counterpartyId]) : '',
                 'attachments'     => $attachmentText,
                 'counterparty_id' => $counterpartyId,
                 'email_rules'     => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
-                'tov'             => is_file(ROOT . '/reference/tov.md') ? (string)file_get_contents(ROOT . '/reference/tov.md') : '',
+                'tov'             => Tov::read(),
                 'unmatched'       => $unmatched,
+                'out_of_scope'    => $outOfScope,
             ]);
             Db::update('mail_messages', ['draft_text' => $text, 'draft_at' => date('Y-m-d H:i:s')], 'id=?', [$row['id']]);
         } catch (Throwable $e) {
