@@ -182,7 +182,7 @@ final class Mailboxes {
                 }
                 return $box;
             }
-            Logger::error('mail', "В настройках задан адрес для исходящих «$forced», но активного ящика с таким адресом нет — письмо уйдёт из ящика по умолчанию");
+            Logger::error('mail', "В настройках задан адрес для исходящих «{$forced}», но активного ящика с таким адресом нет — письмо уйдёт из ящика по умолчанию");
         }
         return !empty($mailboxId) ? self::get((int)$mailboxId) : self::default($managerId);
     }
@@ -429,21 +429,30 @@ final class Mailboxes {
  */
 final class MailArchive {
     /**
+     * Below this many characters a body says nothing about WHICH letter it is:
+     * «Спасибо!» twice in one conversation is two letters, not one. Such a letter
+     * is deduplicated by its Message-ID alone (module 021).
+     */
+    private const DEDUP_MIN_BODY = 40;
+
+    /**
      * Store an incoming message. Returns the row id, or 0 when already archived.
      * $markProcessed stamps the row as handled: old mail pulled by the full-archive
      * download must land in the archive WITHOUT waking the request pipeline —
      * a three-year-old letter is history, not a new КП request.
      */
     public static function storeIncoming(array $box, array $msg, string $direction = 'in', bool $markProcessed = false): int {
-        if (self::exists((int)$box['id'], $msg['folder'] ?? 'INBOX', (int)$msg['uid'], (string)($msg['message_id'] ?? ''), $direction)) return 0;
+        // A letter the site form sent us is really the visitor's letter (module
+        // 015). It is unwrapped FIRST, before the thread key and the sender are
+        // read off it — otherwise every form submission is the same party, the
+        // same conversation and the same company card. It also has to happen
+        // before the duplicate check, or the fingerprint a letter is LOOKED UP by
+        // is not the fingerprint it was STORED under (module 021).
+        if ($direction === 'in') $msg = SiteForm::unwrap($msg);
+
+        if (self::exists($box, $msg, $direction)) return 0;
 
         $limit = max(16, (int)Settings::get('MAIL_BODY_MAX_KB', 512)) * 1024;
-
-        // A letter the site form sent us is really the visitor's letter (module
-        // 015). It is unwrapped HERE, before the thread key and the sender are
-        // read off it — otherwise every form submission is the same party, the
-        // same conversation and the same company card.
-        if ($direction === 'in') $msg = SiteForm::unwrap($msg);
 
         // The conversation this letter belongs to is decided on the way in, so a
         // Gmail answer to a Yandex letter is already in the right thread when the
@@ -464,6 +473,10 @@ final class MailArchive {
             'mailbox_id'   => (int)$box['id'],
             'thread_key'    => $thread,
             'thread_subject'=> MailThreads::displaySubject($subject),
+            // The letter's own fingerprint, so the NEXT copy of it — from another
+            // mailbox, from «Отправленные», from an imported mbox — is recognised
+            'dedup_hash'   => self::fingerprint($msg) ?: null,
+            'import_id'    => $msg['import_id'] ?? null,
             'direction'    => $direction,
             'folder'       => $msg['folder'] ?? 'INBOX',
             'uid'          => (int)($msg['uid'] ?? 0),
@@ -641,19 +654,174 @@ final class MailArchive {
         }
     }
 
-    private static function exists(int $mailboxId, string $folder, int $uid, string $messageId, string $direction = 'in'): bool {
+    /**
+     * Is this letter already in the archive? (module 021)
+     *
+     * Four keys, cheapest first. With `MAIL_DEDUP` on — and it is on out of the
+     * box — the Message-ID and the content fingerprint are looked up across ALL
+     * mailboxes, because the same letter reaching two of our addresses, pulled
+     * back out of «Отправленные» and then imported again from a Gmail mbox is ONE
+     * letter, not four rows in the conversation. Switched off, the checks narrow
+     * back to the mailbox they were before.
+     */
+    private static function exists(array $box, array $msg, string $direction = 'in'): bool {
+        $mailboxId = (int)$box['id'];
+        $folder    = (string)($msg['folder'] ?? 'INBOX');
+        $uid       = (int)($msg['uid'] ?? 0);
+        $messageId = (string)($msg['message_id'] ?? '');
+
         // A letter the manager deleted must stay deleted: the row is gone, so the
         // tombstone is the only thing standing between it and the next sync
         if (self::wasDeleted($mailboxId, $folder, $uid, $messageId)) return true;
         if ($uid > 0 && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND folder=? AND uid=?", [$mailboxId, $folder, $uid])) return true;
+
+        $global = self::dedupEnabled();
         // The same message can arrive twice (INBOX + Sent sync, or a re-created mailbox)
-        if ($messageId !== '' && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND folder=?", [$mailboxId, $messageId, $folder])) return true;
-        // A letter WE sent is already in the archive under folder «SENT» or under
-        // whatever the server calls it; pulling it back out of «Отправленные»
-        // must not show the same answer twice in the thread
-        if ($direction === 'out' && $messageId !== ''
-            && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND direction='out'", [$mailboxId, $messageId])) return true;
+        if ($messageId !== '') {
+            $found = $global
+                ? Db::val("SELECT 1 FROM mail_messages WHERE message_id=?", [$messageId])
+                : Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND folder=?",
+                          [$mailboxId, $messageId, $folder]);
+            if ($found) return true;
+            // A letter WE sent is already in the archive under folder «SENT» or under
+            // whatever the server calls it; pulling it back out of «Отправленные»
+            // must not show the same answer twice in the thread
+            if ($direction === 'out'
+                && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND direction='out'",
+                           [$mailboxId, $messageId])) return true;
+        }
+
+        // Last key: the letter itself. A gateway that rewrote the Message-ID, a
+        // client that never wrote one, a forwarded copy of our own answer — the
+        // body and the files are the same, so it is the same letter.
+        if ($global && (string)Settings::get('MAIL_DEDUP_CONTENT', 1) === '1') {
+            $hash = self::fingerprint($msg);
+            if ($hash !== '' && Db::val("SELECT 1 FROM mail_messages WHERE dedup_hash=?", [$hash])) return true;
+        }
         return false;
+    }
+
+    /** Deduplication is the default for every mailbox; a setting can switch it off. */
+    public static function dedupEnabled(): bool {
+        return (string)Settings::get('MAIL_DEDUP', 1) === '1';
+    }
+
+    /**
+     * The letter's own fingerprint: sender, recipients, subject, text and the
+     * bytes of every file. Returns '' when the letter carries too little to be
+     * recognised by its content (see DEDUP_MIN_BODY) — such a letter is left to
+     * the Message-ID, never guessed at.
+     */
+    public static function fingerprint(array $msg): string {
+        $files = [];
+        foreach ($msg['attachments'] ?? [] as $file) {
+            $content = (string)($file['content'] ?? '');
+            $files[] = ($file['content_hash'] ?? sha1($content)) . ':' . (int)($file['size'] ?? strlen($content));
+        }
+        sort($files);
+
+        $body = self::normalizeForHash(utf8Text((string)($msg['body'] ?? '')));
+        if ($body === '') {
+            $html = utf8Text((string)($msg['body_html'] ?? ''));
+            if (trim($html) !== '') $body = self::normalizeForHash(MailText::fromHtml($html));
+        }
+        if (mb_strlen($body) < self::DEDUP_MIN_BODY && !$files) return '';
+        // The archive stores a body cut to MAIL_BODY_MAX_KB, so hashing the whole
+        // of an incoming one would disagree with the hash of the same letter read
+        // back out of the archive. The first 100 000 characters are inside both.
+        $body = mb_substr($body, 0, 100000);
+
+        $to = array_filter(array_map('trim', explode(',', mb_strtolower(utf8Text((string)($msg['to'] ?? ''))))));
+        sort($to);
+
+        return sha1(implode("\n", [
+            mb_strtolower(trim(utf8Text((string)($msg['from'] ?? '')))),
+            implode(',', $to),
+            self::normalizeForHash(utf8Text((string)($msg['subject'] ?? ''))),
+            $body,
+            implode(',', $files),
+        ]));
+    }
+
+    /**
+     * The same letter read over IMAP and out of an mbox differs in line endings,
+     * trailing spaces and the odd non-breaking space — never in its words.
+     */
+    private static function normalizeForHash(string $s): string {
+        $s = str_replace(["\xC2\xA0", "\xEF\xBB\xBF"], [' ', ''], $s);
+        $s = (string)preg_replace('/\s+/u', ' ', $s);
+        return trim(mb_strtolower($s));
+    }
+
+    /** Fingerprint of a row that is already stored, files read from the archive. */
+    public static function fingerprintRow(array $row): string {
+        $files = [];
+        foreach (Db::all("SELECT content_hash, size FROM attachments WHERE mail_message_id=?", [$row['id']]) as $a) {
+            if (empty($a['content_hash'])) continue;   // hashed on the way in since module 021
+            $files[] = ['content_hash' => $a['content_hash'], 'size' => (int)$a['size']];
+        }
+        return self::fingerprint([
+            'from' => $row['from_email'] ?? '', 'to' => $row['to_emails'] ?? '',
+            'subject' => $row['subject'] ?? '', 'body' => $row['body_text'] ?? '',
+            'body_html' => $row['body_html'] ?? '', 'attachments' => $files,
+        ]);
+    }
+
+    /**
+     * Hash the letters archived before module 021 — in steps, because an archive
+     * of twenty thousand bodies is not something a shared host does in one
+     * request. Runs from the import, from the sync and from the panel's button;
+     * until it finishes, those old letters are deduplicated by Message-ID alone.
+     * @return array{done:int,left:int}
+     */
+    public static function backfillFingerprints(int $limit = 500, float $seconds = 5.0): array {
+        $deadline = microtime(true) + $seconds;
+        $done = 0;
+        while ($done < $limit && microtime(true) < $deadline) {
+            $rows = Db::all("SELECT id, from_email, to_emails, subject, body_text, body_html
+                             FROM mail_messages WHERE dedup_hash IS NULL ORDER BY id LIMIT 50");
+            if (!$rows) break;
+            foreach ($rows as $row) {
+                // '-' and not NULL: a letter too short to fingerprint must not be
+                // looked at again on every following step
+                Db::update('mail_messages', ['dedup_hash' => self::fingerprintRow($row) ?: '-'], 'id=?', [$row['id']]);
+                $done++;
+            }
+        }
+        return ['done' => $done, 'left' => (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE dedup_hash IS NULL")];
+    }
+
+    /**
+     * Attach an archived letter to the company card it belongs to (module 021).
+     *
+     * History does not go through the request pipeline — `processInbound()` never
+     * sees it — so nothing would otherwise set `counterparty_id`, and the
+     * imported conversation would exist in the archive and nowhere else. The
+     * party is the OTHER side: the sender of what came in, the addressee of what
+     * we sent. `$createMissing` is off unless the operator asked: a three-year
+     * archive would otherwise open a company card per newsletter.
+     */
+    public static function linkCounterparty(int $messageId, bool $createMissing = false): ?int {
+        require_once __DIR__ . '/crm.php';
+        $row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$messageId]);
+        if (!$row || !empty($row['counterparty_id'])) return $row ? ($row['counterparty_id'] ?? null) : null;
+
+        $email = (string)($row['direction'] === 'out'
+            ? trim(explode(',', (string)$row['to_emails'])[0] ?? '')
+            : $row['from_email']);
+        $email = mb_strtolower(trim($email));
+        if ($email === '' || Crm::isOurAddress($email)) return null;
+
+        $hints = [
+            'email' => $email,
+            'name'  => $row['direction'] === 'out' ? '' : (string)($row['from_name'] ?? ''),
+            'text'  => (string)($row['body_text'] ?? ''),
+        ];
+        $id = $createMissing ? Crm::resolveCounterparty($hints) : Crm::findCounterparty($hints);
+        if (!$id) return null;
+
+        Db::update('mail_messages', ['counterparty_id' => $id], 'id=?', [$messageId]);
+        return $id;
     }
 
     /** Was this letter thrown away by hand? (module 004, «Удалить») */

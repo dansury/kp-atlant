@@ -11,6 +11,8 @@ storage/signatures/*
 !storage/signatures/.gitkeep
 storage/logo/*
 !storage/logo/.gitkeep
+storage/mbox/*
+!storage/mbox/.gitkeep
 storage/attachments/*
 !storage/attachments/.gitkeep
 storage/invoices/*

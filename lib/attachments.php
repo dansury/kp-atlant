@@ -39,6 +39,19 @@ class Attachments {
         $content = $file['content'] ?? '';
         $size = strlen($content);
         $mime = $file['mime'] ?? self::guessMime($name);
+        $hash = sha1($content);
+
+        // The bytes decide, not the name: a signature picture quoted back into
+        // every letter of a thread, or the same letter re-read out of an mbox,
+        // must not put a second copy of one file on one letter (module 021).
+        if (!empty($links['mail_message_id'])) {
+            $twin = Db::one("SELECT id, filename, extract_status FROM attachments WHERE mail_message_id=? AND content_hash=?",
+                            [$links['mail_message_id'], $hash]);
+            if ($twin) {
+                return ['id' => (int)$twin['id'], 'filename' => (string)$twin['filename'],
+                        'status' => (string)$twin['extract_status'], 'text' => '', 'duplicate' => true];
+            }
+        }
 
         $dir = ROOT . '/storage/attachments/' . date('Y/m');
         if (!is_dir($dir)) mkdir($dir, 0755, true);
@@ -68,6 +81,7 @@ class Attachments {
             'path'              => str_replace(ROOT . '/', '', $path),
             'mime'              => $mime,
             'size'              => $size,
+            'content_hash'      => $hash,
             'extracted_text'    => $text !== '' ? mb_substr($text, 0, 60000) : null,
             'extract_status'    => $status,
         ]);

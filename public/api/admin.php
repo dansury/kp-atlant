@@ -261,6 +261,74 @@ try {
                 isset($input['batch']) ? (int)$input['batch'] : null
             )]);
 
+        // ---------- Import of an mbox archive (module 021) ----------
+
+        /**
+         * What is lying in `storage/mbox`, what has already been imported, and how
+         * far the fingerprinting of the old archive has got. A Gmail export is
+         * measured in gigabytes: the panel uploads what fits through PHP and the
+         * rest is put next to it over FTP — both show up in the same list.
+         */
+        case 'mbox_files':
+            require_once ROOT . '/lib/mbox.php';
+            jsonData([
+                'files'     => MboxImport::files(),
+                'imports'   => MboxImport::all(),
+                'dir'       => 'storage/mbox',
+                'mailboxes' => array_map(fn($b) => ['id' => (int)$b['id'], 'name' => $b['name'], 'email' => $b['email']],
+                                          Mailboxes::all()),
+                'dedup'     => [
+                    'enabled'   => MailArchive::dedupEnabled(),
+                    'content'   => (string)Settings::get('MAIL_DEDUP_CONTENT', 1) === '1',
+                    'unhashed'  => (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE dedup_hash IS NULL"),
+                    'total'     => (int)Db::val("SELECT COUNT(*) FROM mail_messages"),
+                ],
+                'upload_max' => ini_get('upload_max_filesize'),
+            ]);
+
+        case 'mbox_upload':
+            require_once ROOT . '/lib/mbox.php';
+            if (empty($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                jsonError('Файл не загрузился. Сервер принимает не больше ' . ini_get('upload_max_filesize')
+                    . ' — архив крупнее положите в storage/mbox по FTP, он появится в списке сам.');
+            }
+            jsonOk(['filename' => MboxImport::accept($_FILES['file'])]);
+
+        case 'mbox_start':
+            require_once ROOT . '/lib/mbox.php';
+            jsonOk(['import' => MboxImport::register((string)($input['filename'] ?? ''), [
+                'mailbox_id'       => (int)($input['mailbox_id'] ?? 0),
+                'create_companies' => !empty($input['create_companies']),
+                'manager_id'       => (int)$admin['id'],
+            ])]);
+
+        // One step of the import. The panel calls it until done=true.
+        case 'mbox_step':
+            require_once ROOT . '/lib/mbox.php';
+            jsonOk(['result' => MboxImport::step(
+                (int)($input['id'] ?? 0),
+                isset($input['seconds']) ? (int)$input['seconds'] : null,
+                isset($input['limit']) ? (int)$input['limit'] : null
+            )]);
+
+        case 'mbox_reset':
+            require_once ROOT . '/lib/mbox.php';
+            MboxImport::reset((int)($input['id'] ?? 0));
+            jsonOk(['import' => MboxImport::get((int)($input['id'] ?? 0))]);
+
+        case 'mbox_delete':
+            require_once ROOT . '/lib/mbox.php';
+            MboxImport::remove((int)($input['id'] ?? 0), !empty($input['with_file']));
+            jsonOk();
+
+        // Hash the letters archived before module 021, in steps — until this is
+        // done they are deduplicated by Message-ID alone.
+        case 'mail_fingerprints':
+            jsonOk(['result' => MailArchive::backfillFingerprints(
+                (int)($input['limit'] ?? 1000),
+                (float)($input['seconds'] ?? 10)
+            )]);
+
         // Archive of a mailbox as an .mbox file — importable into any mail client
         case 'mailbox_export':
             $id  = (int)($_GET['id'] ?? 0);

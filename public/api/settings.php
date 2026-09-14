@@ -52,23 +52,19 @@ switch ($action) {
         Db::q("UPDATE legal_entities SET signature_path=? WHERE is_active=1", [$dest]);
         jsonOk(['path' => $dest]);
 
+    // Старый адрес загрузки логотипа КП. Теперь все три знака — КП, приложение
+    // и значок вкладки — живут в `Branding` и грузятся через api/branding.php;
+    // здесь оставлена совместимость для сохранённых ссылок (модуль 021).
     case 'upload_logo':
-        $manager = requireAuth();
+        requireAuth();
+        require_once ROOT . '/lib/branding.php';
         if (empty($_FILES['file'])) jsonError('No file uploaded');
-        $file = $_FILES['file'];
-        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        if (!in_array($ext, ['png','jpg','jpeg','svg'])) jsonError('PNG, JPG or SVG only');
-
-        // Рядом с подписью, а не в репозитории: файл в `public/assets/img/`
-        // переписывался бы при каждом деплое встроенным знаком (модуль 020)
-        $dir = ROOT . '/storage/logo';
-        if (!is_dir($dir)) mkdir($dir, 0755, true);
-        foreach (glob($dir . '/logo.*') ?: [] as $old) @unlink($old);
-        $dest = $dir . '/logo.' . $ext;
-        move_uploaded_file($file['tmp_name'], $dest);
-
-        Db::q("UPDATE legal_entities SET logo_path=? WHERE is_active=1", [$dest]);
-        jsonOk(['path' => $dest]);
+        try {
+            $res = Branding::store('kp', $_FILES['file']);
+        } catch (Throwable $e) {
+            jsonError($e->getMessage());
+        }
+        jsonOk(['path' => $res['path']]);
 
     case 'email_rules':
         $manager = requireAuth();

@@ -45,6 +45,9 @@ h2 { font-size: 20px; }
 .header__logo { display: flex; align-items: center; gap: 8px; font-size: 19px; font-weight: 800;
                 letter-spacing: .01em; color: var(--primary); white-space: nowrap; }
 .header__mark { width: 26px; height: 17px; flex: none; fill: currentColor; }
+/* Загруженный знак компании вместо встроенного: высоту держим по строке шапки,
+   ширину не ограничиваем — узкий герб и широкий логотип с надписью равно уместны */
+.header__brand { height: 24px; width: auto; max-width: 180px; flex: none; object-fit: contain; }
 .header__sub { color: var(--text-muted); font-weight: 500; font-size: 15px; }
 .header__nav { display: flex; gap: 2px; flex: 1; }
 /* Nav reads as the shop's tab strip: quiet until active, then red with a red edge */
@@ -258,7 +261,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 
 /* Tab strip of the admin console */
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
-.tab { padding: 8px 14px; font-size: 13px; text-decoration: none; color: var(--text-muted); border-bottom: 2px solid transparent; }
+.tab { padding: 8px 14px; font-size: 13px; text-decoration: none; color: var(--text-muted); border-bottom: 2px solid transparent;
+       cursor: pointer; }   /* вкладка без href (переключатель ролей в «Ликбезе») тоже должна выглядеть нажимаемой */
 .tab:hover { color: var(--accent-ink); }
 .tab--active { color: var(--accent-ink); border-bottom-color: var(--primary); font-weight: 600; }
 
