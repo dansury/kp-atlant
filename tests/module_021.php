@@ -227,6 +227,52 @@ ok('второй шаг дочитал остальные', $step2['imported'] =
 ok('и файл закончился', !empty($step2['done']));
 ok('писем ровно три, без половинок', (int)Db::val("SELECT COUNT(*) FROM mail_messages") === 3);
 
+echo "\n== Загрузка кусками: 413 от прокси больше не мешает ==\n";
+// Гигабайтную выгрузку Gmail не берёт ни nginx, ни upload_max_filesize: файл
+// режет браузер, а сервер собирает его обратно — байт в байт и без повторов.
+$bigName = 'chunked-' . getmypid() . '.mbox';
+$bigBody = $out . $out;
+$bigSize = strlen($bigBody);
+$piece = function (int $from, int $len) use ($bigBody, $sandbox) {
+    $tmp = $sandbox . '/piece-' . $from . '-' . $len;
+    file_put_contents($tmp, substr($bigBody, $from, $len));
+    return $tmp;
+};
+$part = intdiv($bigSize, 3);
+
+$init = MboxImport::chunkInit($bigName, $bigSize);
+ok('загрузка начата с нуля', $init['received'] === 0 && strlen($init['upload_id']) === 16, json_encode($init));
+ok('кусок не меньше 256 КБ', $init['chunk_max'] >= 256 * 1024, (string)$init['chunk_max']);
+
+$s1 = MboxImport::chunkAppend($init['upload_id'], 0, $piece(0, $part), false);
+ok('первый кусок принят', $s1['received'] === $part, json_encode($s1));
+$s1again = MboxImport::chunkAppend($init['upload_id'], 0, $piece(0, $part), false);
+ok('повтор того же куска не удваивает файл', $s1again['received'] === $part, json_encode($s1again));
+
+$gap = false;
+try { MboxImport::chunkAppend($init['upload_id'], $part + 10, $piece($part + 10, 50), false); }
+catch (Throwable $e) { $gap = true; }
+ok('кусок мимо места отвергнут — письмо пополам хуже неудачной загрузки', $gap);
+
+$resume = MboxImport::chunkInit($bigName, $bigSize);
+ok('после обрыва продолжаем с принятого байта', $resume['received'] === $part, json_encode($resume));
+
+MboxImport::chunkAppend($resume['upload_id'], $part, $piece($part, $part), false);
+$last = MboxImport::chunkAppend($resume['upload_id'], 2 * $part, $piece(2 * $part, $bigSize - 2 * $part), false);
+ok('последний кусок закрыл файл', !empty($last['complete']), json_encode($last));
+
+$assembled = MboxImport::chunkFinish($resume['upload_id']);
+$assembledPath = MboxImport::dir() . '/' . $assembled;
+register_shutdown_function(fn() => @unlink($assembledPath));
+ok('файл собран байт в байт', is_file($assembledPath) && file_get_contents($assembledPath) === $bigBody);
+ok('и лежит в storage/mbox под своим именем', $assembled === $bigName, $assembled);
+
+$bigImport = MboxImport::register($assembled, ['mailbox_id' => $boxId]);
+$bigRes = MboxImport::step((int)$bigImport['id'], 20, 100);
+ok('собранный файл читается импортом до конца', !empty($bigRes['done']), json_encode($bigRes['import']['percent'] ?? null));
+ok('и все письма в нём — дубликаты уже импортированных',
+   $bigRes['imported'] === 0 && $bigRes['duplicates'] === 6, json_encode($bigRes));
+
 echo "\n== Логотипы: КП, приложение, favicon ==\n";
 ok('по умолчанию КП печатает встроенный знак',
    str_ends_with(Branding::resolve('kp'), 'public/assets/img/logo.png')
