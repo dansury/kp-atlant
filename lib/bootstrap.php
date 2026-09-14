@@ -1165,6 +1165,34 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '21')");
         $current = 21;
     }
+
+    // v22 — модуль 020: переписка читается на карточке, а не в заметках;
+    // описание товара печатается разметкой, а не её тегами; позицию, которой
+    // у нас нет, можно свернуть, и КП об этом говорит вслух.
+    if ($current < 22) {
+        require_once __DIR__ . '/markup.php';
+
+        // Позиция, свёрнутая менеджером: в таблицу, карточки и «Итого» она не
+        // попадает, а в блок «нужно уточнение» — попадает. 0 — как было.
+        Db::ensureColumn('proposal_items', 'is_excluded', 'INTEGER', '0');
+
+        // Описания, которые уже лежат в КП размеченными. Их писали в визуальном
+        // редакторе МойСклад, и до этой миграции `<ul><li>` уходили в PDF ровно
+        // так, как выглядят. Переписываем один раз, в Markdown: дальше карточка
+        // читается и правится как текст.
+        foreach (Db::all("SELECT id, description_text, specs_text, included_text FROM proposal_items") as $row) {
+            $upd = [];
+            foreach (['description_text', 'specs_text', 'included_text'] as $field) {
+                $was = (string)($row[$field] ?? '');
+                if ($was === '' || !Markup::looksLikeHtml($was)) continue;
+                $upd[$field] = Markup::toMarkdown($was);
+            }
+            if ($upd) Db::update('proposal_items', $upd, 'id=?', [$row['id']]);
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '22')");
+        $current = 22;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

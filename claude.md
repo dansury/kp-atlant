@@ -56,6 +56,27 @@ Word validates the ORDER of `w:rPr` and `w:pPr` children, not just their presenc
 sequence in `Html2Docx` is the schema's, and changing it is what makes Word offer to repair the
 file.
 
+Card text is Markdown on the way in and HTML on the way out, and `Markup` is the only door
+between them (module 020). МойСклад descriptions are written in a visual editor and arrive as
+`<ul><li>…`, so everything that copies product text into `proposal_items` — `enrichItems()`,
+`splitDescription()`, the editor's own save — runs it through `Markup::toMarkdown()`, and the
+template prints it with `Markup::markdownToHtml()`. Never put raw МойСклад HTML into the
+document and never `htmlspecialchars()` a card field into it: the first ships a script into a
+signed offer, the second ships the tags themselves. `toMarkdown()` is idempotent, so calling it
+on a field a manager has already edited is safe.
+
+A position the manager folds as «нет в наличии» (`proposal_items.is_excluded`) leaves the
+priced table, the cards and «Итого» — `KpContent::printedItems()` is the ONE place that
+decides what the document prints — but it never leaves the document: `unmatchedRows()` picks
+it up and the КП names it in the client's own words, and the correspondence table answers
+«уточняем» on its line. Dropping such a line silently is the hole module 018 exists to close.
+
+The КП carries a logo top left. `$legal['logo_path']` is an empty string on a fresh install,
+not NULL, so resolve it by trying paths in order and taking the first that EXISTS — an
+uploaded logo (`storage/logo/`, outside the repository so a deploy cannot overwrite it), then
+the bundled `public/assets/img/logo-default.png`, which `tools/make_logo.php` draws. A КП that
+prints without a logo reads as a draft.
+
 ## Catalog
 `products_cache` has two sources and must keep working on either: `MoySklad::refreshProductCache()`
 through the API, and `CatalogImport::run()` from a МойСклад Excel export (module 008). Never make a
@@ -99,6 +120,21 @@ screen with it — reversibly, under `archived_reason = 'mailbox_off'`. Deleting
 happens to its archive: every letter points at the mailbox by a foreign key, so `DELETE FROM
 mailboxes` alone is the `FOREIGN KEY constraint failed` this module exists to end.
 
+Reading a letter is something a MANAGER does, never something the screen does for him
+(module 020). `mail.php?action=thread` marks a conversation read only when asked — `read=1` —
+because the company card unfolds the newest waiting conversation by itself, and that unfolding
+used to clear the unread count of letters nobody had looked at. Any new place that shows a
+thread must decide which it is: an explicit open (`read=1`, or `mail.php?action=thread_read`
+afterwards) or a preview that leaves the count alone.
+
+The company feed («Заметки и события») carries NOTES and MILESTONES, not letters (module 020).
+`Crm::chat()` drops rows that are plain correspondence; a letter is read and answered in
+«Переписка», where it has its thread, its attachments and the one reply box. `Crm::logEvent()`
+still records every letter — `last_inbound_at`/`last_outbound_at` and the unanswered highlight
+depend on it — so narrow what is SHOWN, never what is written. Inside a conversation the
+folding is a mail client's: our own answers and letters already read collapse to one line with
+the beginning of their text, and what is open is the unread and the client's last letter.
+
 Anything that archives a letter must set `thread_key`, and an answer must inherit the thread
 of the letter it answers, whichever mailbox it leaves from. A copy in the IMAP
 «Отправленные» is not optional and not silent: `Mailer::send()` resolves the real folder and
@@ -138,8 +174,11 @@ without leaving the company card. The positions table is scoped to its host bloc
 (`[data-match-host]`) because several can be open at once — never go back to page-wide
 element ids for it. One reply box per conversation: do not add a second button that opens
 another way to answer. On a company card that box is ALREADY OPEN — the newest conversation
-unfolds with the card, and «Подходящие позиции» and «Сгенерировать ответ» are on the screen
-without a click (module 019). Do not put a «Написать» button back at the top of the card, and
+THAT AWAITS AN ANSWER unfolds with the card, and «Подходящие позиции» and «Сгенерировать
+ответ» are on the screen without a click (module 019). Answered and sent conversations stay
+folded, and the unfolding does not mark anything read (module 020). When nothing awaits an
+answer the composer still stands open under the list — a company with no pending letter must
+not send you looking for a «Написать» button. Do not put a «Написать» button back at the top of the card, and
 do not hide the draft button when there is nothing to answer: disable it and say why. A
 conversation with no request says so in the positions block — a silently missing table reads
 as a feature that disappeared.

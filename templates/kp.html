@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <style>
     body { font-family: DejaVu Sans, sans-serif; font-size: 11pt; color: #222; line-height: 1.5; margin: 0; padding: 20px 40px; }
-    .header { text-align: right; font-size: 9pt; color: #555; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; }
+    .header { text-align: right; font-size: 9pt; color: #555; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; min-height: 62px; }
     .header .entity-name { font-weight: bold; font-size: 10pt; color: #222; }
-    .logo { float: left; max-height: 60px; margin-right: 15px; }
+    /* Знак — слева вверху, до всего остального: реквизиты отправителя стоят
+       справа от него и в Word ложатся следующим абзацем (модуль 020) */
+    .logo { float: left; max-height: 62px; margin: 0 15px 6px 0; }
     .title { text-align: center; font-size: 16pt; font-weight: bold; margin: 30px 0 20px; text-transform: uppercase; letter-spacing: 1px; }
     .intro { margin-bottom: 15px; }
     .block { margin: 15px 0; }
@@ -37,6 +39,11 @@
     .card__desc { font-size: 10pt; text-align: justify; }
     .card__subtitle { font-size: 10pt; font-weight: bold; margin: 12px 0 4px; }
     .card__list { font-size: 10pt; margin: 0; }
+    /* Описание приходит из МойСклад размеченным и печатается разметкой, а не
+       её тегами: списки остаются списками (модуль 020) */
+    .card__desc ul, .card__desc ol, .card__list ul, .card__list ol { margin: 4px 0; padding-left: 18px; }
+    .card__desc li, .card__list li { margin: 0 0 2px; }
+    .card__desc p, .card__list p { margin: 0 0 5px; }
     .gallery { margin: 10px 0; text-align: center; }
     .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; }
     .disclaimer { font-size: 8.5pt; color: #666; font-style: italic; margin-top: 8px; }
@@ -165,7 +172,11 @@
         <td><?= htmlspecialchars($row['requested']) ?></td>
         <td class="qty"><?= $row['quantity'] ?> <?= htmlspecialchars($row['unit']) ?></td>
         <td>
+            <?php if (!empty($row['excluded'])): ?>
+            <span class="swap">уточняем — ответим по этой позиции отдельно</span>
+            <?php else: ?>
             <?= htmlspecialchars($row['offered']) ?>
+            <?php endif; ?>
             <?php if ($row['is_alternative']): ?>
             <br><span class="swap">аналог<?= $row['note'] !== '' ? ': ' . htmlspecialchars($row['note']) : '' ?></span>
             <?php endif; ?>
@@ -271,7 +282,7 @@
     <?php endif; ?>
 
     <?php if (!empty($item['description_text'])): ?>
-    <div class="card__desc"><?= nl2br(htmlspecialchars($item['description_text'])) ?></div>
+    <div class="card__desc"><?= Markup::markdownToHtml((string)$item['description_text']) ?></div>
     <?php endif; ?>
 
     <?php if ($showImages && !empty($item['gallery'])): ?>
@@ -287,12 +298,12 @@
 
     <?php if (!empty($item['specs_text'])): ?>
     <div class="card__subtitle">Характеристики:</div>
-    <div class="card__list"><?= nl2br(htmlspecialchars($item['specs_text'])) ?></div>
+    <div class="card__list"><?= Markup::markdownToHtml((string)$item['specs_text']) ?></div>
     <?php endif; ?>
 
     <?php if (!empty($item['included_text'])): ?>
     <div class="card__subtitle">Комплектация:</div>
-    <div class="card__list"><?= nl2br(htmlspecialchars($item['included_text'])) ?></div>
+    <div class="card__list"><?= Markup::markdownToHtml((string)$item['included_text']) ?></div>
     <?php endif; ?>
 
     <?php if (!empty($showSiteLink) && !empty($item['site_url'])): ?>

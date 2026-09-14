@@ -215,6 +215,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .msg--out { background: var(--primary-bg); border-left: 3px solid var(--primary); margin-left: 24px; }
 .msg--note { background: var(--warning-bg); border-left: 3px solid var(--warning); }
 .msg--system { font-style: italic; }
+/* Веха сделки: «КП отправлено», «счёт выставлен». Текст письма за ней свёрнут
+   в две строки — лента остаётся лентой, а не вторым почтовым ящиком (модуль 020) */
+.msg--event { background: var(--surface); border-left: 3px solid var(--primary); }
+.msg--event .msg__head span:first-child { font-weight: 600; }
+.msg__body--fold { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+                   overflow: hidden; cursor: pointer; }
 .chat__composer { display: flex; gap: 8px; align-items: flex-end; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .chat__composer textarea { min-height: 44px; }
 .chat__composer .btn { white-space: nowrap; }
@@ -301,6 +307,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .suggest__item:hover { background: var(--surface-2); }
 
 /* Photo picker of a KP position */
+/* Карточка товара в редакторе КП: заголовок всегда виден, остальное
+   сворачивается, а «нет в наличии» гасит всю карточку (модуль 020) */
+.item-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; margin-bottom: 10px; }
+.item-card__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+.item-card__head:hover { color: var(--primary); }
+.item-card__caret { display: inline-block; font-size: 11px; transition: transform .15s; }
+.item-card--folded .item-card__caret { transform: rotate(-90deg); }
+.item-card--folded .item-card__fold { display: none; }
+.item-card__off { margin-left: auto; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.item-card--excluded { opacity: .62; background: var(--surface-2); }
+.item-card--excluded .item-card__head strong { text-decoration: line-through; }
 .item-card__photos { margin-top: 10px; }
 .photos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .photo { position: relative; width: 84px; height: 84px; border: 2px solid var(--border);
@@ -352,6 +369,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .tmsg__who { font-weight: 600; font-size: 13px; }
 .tmsg__folder { font-size: 11px; }
 .tmsg__date { margin-left: auto; }
+/* Свёрнутое письмо читается по началу текста прямо в строке; развёрнутое
+   показывает тело, и повторять его в шапке незачем (модуль 020) */
+.tmsg__preview { font-size: 12px; white-space: nowrap; overflow: hidden;
+                 text-overflow: ellipsis; max-width: 38%; }
+.tmsg--open .tmsg__preview { display: none; }
 .tmsg__body { display: none; padding: 0 14px 14px; font-size: 13px; overflow-wrap: anywhere; }
 .tmsg__body pre, .tmsg__body .mail-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tmsg--open .tmsg__body { display: block; }

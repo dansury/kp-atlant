@@ -1136,10 +1136,19 @@ const App = {
                 ${gaps.map(i => `№${i.position} ${this.esc(i.name)}`).join(', ')}.
                 Отправка попросит подтверждение.</div>`);
         }
-        if (unmatched.length) {
-            blocks.push(`<div><strong>Не нашлось в каталоге: ${unmatched.length} поз.</strong> —
-                ${unmatched.map(u => this.esc(u.requested)).join('; ')}.
+        // Свёрнутое руками и ненайденное каталогом — разные новости, хотя в
+        // документ обе попадают одним блоком (модуль 020)
+        const folded = unmatched.filter(u => u.excluded);
+        const missing = unmatched.filter(u => !u.excluded);
+        if (missing.length) {
+            blocks.push(`<div><strong>Не нашлось в каталоге: ${missing.length} поз.</strong> —
+                ${missing.map(u => this.esc(u.requested)).join('; ')}.
                 КП и письмо назовут их отдельным блоком.</div>`);
+        }
+        if (folded.length) {
+            blocks.push(`<div><strong>Свёрнуто как «нет в наличии»: ${folded.length} поз.</strong> —
+                ${folded.map(u => this.esc(u.requested)).join('; ')}.
+                В таблицу и «Итого» они не войдут; КП назовёт их блоком «нужно уточнение».</div>`);
         }
         if (buyer.name_is_email) {
             blocks.push(`<div><strong>Название покупателя не определено</strong> — в карточке стоит
@@ -1152,15 +1161,35 @@ const App = {
                 </div>`;
     },
 
-    // One product card in the editor: texts, photo count, "от" price flags
+    /**
+     * Одна карточка товара в редакторе КП.
+     *
+     * Карточка сворачивается: КП на пятнадцать позиций — это пятнадцать таких
+     * форм подряд, и найти в них нужную можно было только прокруткой. Заголовок
+     * свёрнутой карточки — строка с названием, числом фото и переключателем
+     * «нет в наличии» (модуль 020).
+     *
+     * «Нет в наличии» сворачивает позицию и из документа: её не будет ни в
+     * таблице, ни в карточках, ни в «Итого». Но и молча она не исчезнет — КП
+     * назовёт её словами клиента в блоке «нужно уточнение», потому что КП с
+     * незаметной дырой хуже КП, в котором чего-то нет.
+     */
     itemCardEditor(it) {
         const photos = (() => { try { return JSON.parse(it.images_json || '[]').length; } catch (e) { return 0; } })();
+        const off = it.is_excluded == 1;
         return `
-            <div class="item-card" data-item-id="${it.id}" style="border:1px solid #ddd;border-radius:6px;padding:10px;margin-bottom:10px">
-                <div class="flex flex--between">
+            <div class="item-card ${off ? 'item-card--excluded item-card--folded' : ''}" data-item-id="${it.id}">
+                <div class="item-card__head" onclick="App.toggleItemCard(this)" title="Свернуть или развернуть карточку">
+                    <span class="item-card__caret">▾</span>
                     <strong>${this.esc(it.product_name)}</strong>
                     <span class="note">${photos} фото</span>
+                    <label class="item-card__off" onclick="event.stopPropagation()"
+                           title="Позиции у нас нет: в таблицу, карточки и «Итого» она не войдёт, а КП назовёт её блоком «нужно уточнение»">
+                        <input type="checkbox" data-field="is_excluded" ${off ? 'checked' : ''}
+                               onchange="App.excludeItem(this)"> нет в наличии
+                    </label>
                 </div>
+                <div class="item-card__fold">
                 ${it.is_substitution ? `
                     <div class="note note--swap">
                         Аналог: просили «${this.esc(it.requested_name)}». Что напишем клиенту про замену —
@@ -1204,7 +1233,26 @@ const App = {
                 <div class="item-card__photos" data-photos>
                     ${it.moysklad_product_id ? '<div class="muted">Фотографии загружаются...</div>' : ''}
                 </div>
+                </div>
             </div>`;
+    },
+
+    /** Свернуть или развернуть карточку товара в редакторе (модуль 020). */
+    toggleItemCard(head) {
+        const card = head.closest('.item-card');
+        if (card) card.classList.toggle('item-card--folded');
+    },
+
+    /**
+     * «Нет в наличии»: позиция сворачивается и вместе с карточкой уходит из
+     * документа. Сохранится при следующем «Сохранить изменения» — как и любая
+     * правка карточки.
+     */
+    excludeItem(input) {
+        const card = input.closest('.item-card');
+        if (!card) return;
+        card.classList.toggle('item-card--excluded', input.checked);
+        if (input.checked) card.classList.add('item-card--folded');
     },
 
     /**
@@ -1520,9 +1568,18 @@ const App = {
                     ? '<div class="mlist__empty">В архиве этой компании пусто</div>'
                     : this.newLetterHtml(this.company || {id}));
             // Открытая переписка — а не кнопка «написать»: письмо, позиции по
-            // каталогу и поле ответа видны сразу, без единого нажатия (модуль 019)
-            if (!archived && this.companyThreads.length) {
-                this.toggleCompanyThread(this.companyThreads[0].thread_key);
+            // каталогу и поле ответа видны сразу, без единого нажатия (модуль 019).
+            // Раскрывается ровно та, что ждёт ответа: отвеченные и отправленные
+            // остаются свёрнутыми, как в почте (модуль 020). И раскрытие само по
+            // себе письма не читает — отметку ставит нажатие менеджера.
+            const waiting = archived ? null : this.companyThreads.find(t => t.unanswered);
+            if (waiting) {
+                this.toggleCompanyThread(waiting.thread_key, {markRead: false});
+            } else if (!archived && this.companyThreads.length) {
+                // Отвечать некому — но писать первым по-прежнему не через кнопку
+                // поверх экрана: поле нового письма стоит под списком, открытое
+                box.insertAdjacentHTML('beforeend', this.newLetterHtml(this.company || {id},
+                    'Все переписки отвечены. Ниже — новое письмо, выше — история: строка разворачивается нажатием.'));
             }
         } catch (err) {
             box.innerHTML = `<div class="mlist__empty">Переписка не загрузилась: ${this.esc(err.message)}</div>`;
@@ -1545,10 +1602,10 @@ const App = {
      * кнопка «Написать» наверху карточки, которая открывала окно поверх экрана;
      * теперь письмо пишется там же, где читается переписка.
      */
-    newLetterHtml(cp) {
+    newLetterHtml(cp, note = 'Писем от этой компании ещё нет — напишите первым.') {
         const to = cp.suggested_email || cp.contact_email || '';
         return `<div style="padding:0 16px 16px">
-            <p class="muted">Писем от этой компании ещё нет — напишите первым.</p>
+            <p class="muted">${this.esc(note)}</p>
             ${this.threadComposer('', {to, subject: '', counterparty_id: cp.id}, this.companyMailboxes || [])}
         </div>`;
     },
@@ -1601,15 +1658,23 @@ const App = {
      * to live on a separate request page nobody could find), and the reply box
      * at the very bottom. Reading and answering is one screen and no dialog.
      */
-    async toggleCompanyThread(key) {
+    async toggleCompanyThread(key, opts = {}) {
+        // Раскрытие руками — это чтение; раскрытие, которое сделал за менеджера
+        // экран, — нет. Отсюда и флаг: карточка компании открывает свежую
+        // переписку сама и просит НЕ помечать её прочитанной (модуль 020).
+        const markRead = opts.markRead !== false;
         const box = document.getElementById('th_' + this.threadDomId(key));
         if (!box) return;
+        // Любое нажатие по строке — явное действие, и свернуть раскрытую
+        // карточкой переписку тоже можно только посмотрев на неё
+        if (markRead && box.dataset.loaded) this.markThreadRead(key, box);
         if (!box.hidden) { box.hidden = true; return; }
         box.hidden = false;
         if (box.dataset.loaded) return;
         box.innerHTML = '<div class="loading">Загрузка писем...</div>';
         try {
-            const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key));
+            const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key)
+                                     + (markRead ? '&read=1' : ''));
             const reply = d.reply || {};
             box.innerHTML = `
                 <div class="thread">
@@ -1621,11 +1686,28 @@ const App = {
             box.dataset.loaded = '1';
             if (reply.request_id) this.loadThreadItems(box, reply.request_id);
             else this.noThreadItems(box);
-            // Opening a conversation is reading it — the card stops shouting
-            const row = box.closest('.mrow');
-            if (row) { row.classList.remove('mrow--unread'); row.querySelectorAll('.pill--danger').forEach(p => p.remove()); }
+            // Сервер уже снял отметку вместе с загрузкой — строке остаётся
+            // только перестать кричать
+            if (markRead) this.markThreadRead(key, box, true);
         } catch (err) {
             box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    /**
+     * «Прочитано» по переписке: на сервере и на строке карточки.
+     * $onServer — отметку уже поставила загрузка писем (`&read=1`).
+     */
+    async markThreadRead(key, box, onServer = false) {
+        if (box.dataset.read === '1') return;
+        box.dataset.read = '1';
+        const row = box.closest('.mrow');
+        if (row) {
+            row.classList.remove('mrow--unread');
+            row.querySelectorAll('.pill--danger').forEach(p => p.remove());
+        }
+        if (!onServer) {
+            try { await this.api('mail.php?action=thread_read', {method: 'POST', body: {key}}); } catch {}
         }
     },
 
@@ -1832,6 +1914,8 @@ const App = {
 
             <div class="card">
                 <div class="card__title">Заметки и события</div>
+                <div class="note" style="margin-bottom:8px">Заметки для коллег и вехи сделки.
+                    Письма — слева, в «Переписке»: там на них можно ответить.</div>
                 <div id="chatFeed" class="chat"><div class="loading">Загрузка...</div></div>
                 <div class="chat__composer">
                     <textarea id="noteText" rows="2" placeholder="Заметка для коллег (клиенту не уходит)..."></textarea>
@@ -1885,7 +1969,14 @@ const App = {
         `;
     },
 
-    // Chat feed (FR-033)
+    /**
+     * Лента компании (FR-033): заметки коллегам и вехи сделки.
+     *
+     * Письма сюда больше не приходят — они читаются в «Переписке» слева, где
+     * есть цепочка, вложения и поле ответа (модуль 020). Веха вроде «КП
+     * отправлено» несёт с собой текст письма: он свёрнут в одну строку и
+     * разворачивается нажатием, чтобы лента оставалась лентой.
+     */
     async loadChat(id) {
         try {
             const data = await this.api(`counterparties.php?action=chat&id=${id}&limit=50`);
@@ -1893,26 +1984,41 @@ const App = {
             if (!feed) return;
 
             feed.innerHTML = data.items.length ? data.items.map(m => {
-                const cls = m.direction === 'in' ? 'msg--in' : (m.direction === 'out' ? 'msg--out' : 'msg--note');
-                const who = m.direction === 'in'
-                    ? (this.esc(m.email_from) || 'клиент')
-                    : (m.direction === 'out' ? 'мы → ' + (this.esc(m.email_to) || 'клиент') : (this.esc(m.manager_name) || 'система'));
+                const isEvent = m.kind === 'event' || !!m.event_type;
+                const cls = isEvent ? 'msg--event' : 'msg--note';
+                const who = isEvent
+                    ? (App.eventLabels[m.event_type] || 'событие')
+                    : (this.esc(m.manager_name) || 'система');
                 const files = (m.attachments || []).map(a => this.attachmentLink(a, 'requests.php')).join('');
+                const body = this.esc(m.body || '');
                 return `
-                    <div class="msg ${cls} ${m.event_type ? 'msg--system' : ''}">
+                    <div class="msg ${cls}">
                         <div class="msg__head">
                             <span>${who}</span>
                             <span class="muted">${this.fmtDate(m.created_at)}</span>
                         </div>
                         ${m.subject ? `<div class="msg__subject">${this.esc(m.subject)}</div>` : ''}
-                        <div class="msg__body">${this.esc(m.body)}</div>
+                        ${m.email_to ? `<div class="muted">кому: ${this.esc(m.email_to)}</div>` : ''}
+                        ${body ? `<div class="msg__body ${isEvent ? 'msg__body--fold' : ''}"
+                                       ${isEvent ? `onclick="this.classList.toggle('msg__body--fold')" title="Показать текст целиком"` : ''}
+                                  >${body}</div>` : ''}
                         ${files ? `<div class="msg__files">${files}</div>` : ''}
                         ${m.request_id ? `<a class="muted" href="#mail/request/${m.request_id}">→ запрос #${m.request_id}</a>` : ''}
                     </div>`;
-            }).join('') : '<p class="muted">Переписки пока нет</p>';
+            }).join('') : '<p class="muted">Заметок и событий пока нет</p>';
 
             feed.scrollTop = feed.scrollHeight;
         } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // Чем была веха сделки — читается в ленте без расшифровки в теле
+    eventLabels: {
+        mail_sent:     'письмо отправлено',
+        kp_sent:       'КП отправлено',
+        invoice_sent:  'счёт отправлен',
+        followup_sent: 'напоминание отправлено',
+        order_created: 'заказ создан',
+        invoice_created: 'счёт выставлен',
     },
 
     // Internal note (FR-036)
@@ -2792,7 +2898,9 @@ const App = {
      * client folds them.
      */
     async pageMailThread(key) {
-        const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key));
+        // Открыть переписку отдельной страницей — само по себе явное действие:
+        // здесь отметка «прочитано» ставится сразу (модуль 020)
+        const d = await this.api('mail.php?action=thread&read=1&key=' + encodeURIComponent(key));
         const t = d.thread;
         const reply = d.reply || {};
         document.getElementById('app').innerHTML = `
@@ -2826,17 +2934,28 @@ const App = {
         if (reply.request_id) this.loadThreadItems(document.getElementById('app'), reply.request_id);
     },
 
-    // $key — the conversation this letter is shown in, so «ответить» lands in
-    // the one composer at the bottom instead of opening a window of its own
-    threadMessage(m, open, key) {
+    /**
+     * Одно письмо переписки. $isLast — последнее ли оно в цепочке.
+     *
+     * Развёрнуто то, что ещё не прочитано, и последнее письмо клиента: именно
+     * его читают, открыв компанию. Наши ответы и уже прочитанные письма
+     * свёрнуты в строку с началом текста и разворачиваются нажатием — так
+     * переписка из пятнадцати писем читается сверху вниз, а не пролистывается
+     * (модуль 020). $key — цепочка, в которой письмо показано, чтобы
+     * «ответить» попало в единственное поле внизу, а не открыло своё окно.
+     */
+    threadMessage(m, isLast, key) {
         // A bounced answer is not a delivered one: the client is still waiting
         const sentBad = m.direction === 'out'
             && ['failed', 'bounced', 'bounce_soft'].includes(m.sent_state);
+        const open = m.direction === 'in' && (isLast || Number(m.is_read) === 0);
+        const preview = (m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
         return `
             <div class="tmsg ${m.direction === 'in' ? 'tmsg--in' : 'tmsg--out'}" data-tmsg>
                 <div class="tmsg__head" onclick="this.parentElement.classList.toggle('tmsg--open')">
                     <span class="tmsg__who">${this.esc(m.from_name || m.from_email || '—')}</span>
                     <span class="muted">${m.direction === 'in' ? '→ нам' : '→ ' + this.esc(m.to_emails)}</span>
+                    ${preview ? `<span class="tmsg__preview muted">${this.esc(preview)}</span>` : ''}
                     <span class="chip chip--box">${this.esc(m.mailbox_name || 'без ящика')}</span>
                     ${m.folder ? `<span class="muted tmsg__folder">${this.esc(m.folder)}</span>` : ''}
                     ${m.has_attachment ? '<span>📎</span>' : ''}

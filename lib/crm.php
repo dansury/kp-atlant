@@ -298,14 +298,31 @@ class Crm {
         return $id;
     }
 
-    // Unified chat feed for a company (FR-033)
-    public static function chat(int $counterpartyId, int $limit = 50, int $offset = 0): array {
+    /**
+     * Лента компании: заметки и события (FR-033, сузилось в модуле 020).
+     *
+     * Раньше сюда падало всё подряд, письма включительно, — и колонка «Заметки
+     * и события» становилась вторым, худшим почтовым клиентом: тело письма без
+     * цепочки, без вложений и без поля ответа, рядом с заметкой для коллег.
+     * Письмо живёт в «Переписке», где на него можно ответить; здесь остаётся
+     * то, ради чего лента и заводилась, — заметки и вехи сделки.
+     *
+     * `$withLetters` возвращает старое поведение для тех, кому нужна вся лента
+     * целиком (выгрузка, история): само событие никуда не делось, оно просто
+     * не показывается на карточке.
+     */
+    public static function chat(int $counterpartyId, int $limit = 50, int $offset = 0, bool $withLetters = false): array {
+        // Письмо — это строка с адресом: входящее из синхронизации почты или
+        // исходящее из «Отправить». Заметка и веха адреса не носят.
+        $letter = "(c.direction IN ('in','out') AND c.event_type IS NULL)";
+        $where = $withLetters ? '1=1' : "NOT $letter";
+
         $rows = Db::all(
             "SELECT c.id, c.direction, c.event_type, c.subject, c.body, c.email_from, c.email_to,
                     c.request_id, c.created_at, c.meta_json, m.name as manager_name
              FROM correspondence c
              LEFT JOIN managers m ON c.manager_id = m.id
-             WHERE c.counterparty_id = ?
+             WHERE c.counterparty_id = ? AND $where
              ORDER BY c.created_at DESC, c.id DESC
              LIMIT ? OFFSET ?",
             [$counterpartyId, $limit, $offset]
@@ -324,14 +341,21 @@ class Crm {
             $r['attachments'] = $attachments[$r['id']] ?? [];
             $r['meta'] = $r['meta_json'] ? json_decode($r['meta_json'], true) : null;
             unset($r['meta_json']);
+            // Чем строка является для экрана: заметка коллеге, веха сделки
+            // («КП отправлено», «счёт выставлен») или письмо
+            $r['kind'] = $r['event_type']
+                ? 'event'
+                : ($r['direction'] === 'note' ? 'note' : 'letter');
         }
         unset($r);
 
         return array_reverse($rows); // oldest first, chat style
     }
 
-    public static function chatCount(int $counterpartyId): int {
-        return (int)Db::val("SELECT COUNT(*) FROM correspondence WHERE counterparty_id=?", [$counterpartyId]);
+    public static function chatCount(int $counterpartyId, bool $withLetters = false): int {
+        $letter = "(direction IN ('in','out') AND event_type IS NULL)";
+        $where = $withLetters ? '1=1' : "NOT $letter";
+        return (int)Db::val("SELECT COUNT(*) FROM correspondence WHERE counterparty_id=? AND $where", [$counterpartyId]);
     }
 
     public static function contacts(int $counterpartyId): array {

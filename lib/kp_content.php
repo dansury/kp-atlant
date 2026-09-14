@@ -7,6 +7,7 @@
 require_once __DIR__ . '/bitrix.php';
 require_once __DIR__ . '/qr.php';
 require_once __DIR__ . '/request_shape.php';
+require_once __DIR__ . '/markup.php';
 
 class KpContent {
 
@@ -31,16 +32,20 @@ class KpContent {
 
             $upd = [];
 
-            // MoySklad description is the source of truth for the card text
+            // MoySklad description is the source of truth for the card text.
+            // Его пишут в визуальном редакторе, и приходит он размеченным —
+            // в карточку КП кладётся Markdown, а не `<ul><li>` (модуль 020).
             if (empty($item['description_text']) && !empty($product['description'])) {
                 $upd['description_text'] = self::splitDescription($product['description'])['description'];
             }
             if (empty($item['specs_text'])) {
-                $specs = $product['specs_text'] ?: self::splitDescription($product['description'] ?? '')['specs'];
+                $specs = Markup::toMarkdown((string)($product['specs_text'] ?? ''))
+                    ?: self::splitDescription($product['description'] ?? '')['specs'];
                 if ($specs) $upd['specs_text'] = $specs;
             }
             if (empty($item['included_text'])) {
-                $included = $product['included_text'] ?: self::splitDescription($product['description'] ?? '')['included'];
+                $included = Markup::toMarkdown((string)($product['included_text'] ?? ''))
+                    ?: self::splitDescription($product['description'] ?? '')['included'];
                 if ($included) $upd['included_text'] = $included;
             }
 
@@ -156,7 +161,8 @@ class KpContent {
     }
 
     /**
-     * Positions the catalog never answered (module 018).
+     * Positions the catalog never answered (module 018) — и те, которые
+     * менеджер свернул руками (модуль 020).
      *
      * A line with no `moysklad_product_id` that nobody confirmed by hand is not
      * a position — it is the client's own sentence, carried through parsing and
@@ -164,13 +170,18 @@ class KpContent {
      * in the client's own words, instead of pricing them at nothing and letting
      * the reader discover the hole.
      *
-     * @return array<int,array{n:int,requested:string,quantity:mixed,unit:string}>
+     * Свёрнутая позиция — та же дыра, только замеченная: «этого у нас нет».
+     * Она уходит из таблицы и из карточек, но НЕ из документа: клиент читает
+     * её здесь, своими словами, а не выясняет пропажу сам.
+     *
+     * @return array<int,array{n:int,requested:string,quantity:mixed,unit:string,excluded:bool}>
      */
     public static function unmatchedRows(int $proposalId): array {
         $items = Db::all(
             "SELECT * FROM proposal_items
-             WHERE proposal_id=? AND (moysklad_product_id IS NULL OR moysklad_product_id='')
-               AND is_confirmed=0
+             WHERE proposal_id=?
+               AND (COALESCE(is_excluded, 0) = 1
+                    OR ((moysklad_product_id IS NULL OR moysklad_product_id='') AND is_confirmed=0))
              ORDER BY position", [$proposalId]
         );
         $rows = [];
@@ -185,6 +196,7 @@ class KpContent {
                 'requested' => $asked,
                 'quantity'  => $item['quantity'],
                 'unit'      => (string)($item['unit'] ?: 'шт.'),
+                'excluded'  => (int)($item['is_excluded'] ?? 0) === 1,
             ];
         }
         return $rows;
@@ -201,7 +213,9 @@ class KpContent {
      * @return array{items:array<int,array<string,mixed>>,total:float,empty:bool}
      */
     public static function priceGaps(int $proposalId): array {
-        $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
+        // Свёрнутая позиция в документ не попадает, значит и цены у неё нет по
+        // определению — спрашивать про неё «отправляем без цены?» нечего
+        $items = self::printedItems($proposalId);
         $total = 0.0;
         $gaps = [];
         foreach ($items as $item) {
@@ -221,6 +235,20 @@ class KpContent {
         // A КП with no positions at all is the same hole seen from the other
         // side, and the manager is asked about it the same way
         return ['items' => $gaps, 'total' => $total, 'empty' => !$items];
+    }
+
+    /**
+     * Позиции, которые печатаются в КП: всё, кроме свёрнутых (модуль 020).
+     *
+     * Одно место, где это решается, — иначе «Итого», карточки товаров и
+     * проверка «КП без цены» разошлись бы в том, что считают позицией.
+     */
+    public static function printedItems(int $proposalId): array {
+        return Db::all(
+            "SELECT * FROM proposal_items
+             WHERE proposal_id=? AND COALESCE(is_excluded, 0) = 0
+             ORDER BY position", [$proposalId]
+        );
     }
 
     /**
@@ -250,21 +278,25 @@ class KpContent {
             $offered   = trim((string)($item['product_name'] ?? ''));
             $free      = (int)($item['stock_available'] ?? 0) - (int)($item['stock_reserved'] ?? 0);
             $isAlt     = (int)($item['is_alternative'] ?? 0) === 1;
+            $excluded  = (int)($item['is_excluded'] ?? 0) === 1;
 
             $rows[] = [
                 'n'          => $i + 1,
                 'requested'  => $requested !== '' ? $requested : $offered,
                 'quantity'   => $item['quantity'],
                 'unit'       => $item['unit'] ?: 'шт.',
-                'offered'    => $offered,
-                'article'    => (string)($item['article'] ?? ''),
-                'is_alternative' => $isAlt,
+                // Свёрнутую позицию таблица не выбрасывает: строка запроса
+                // остаётся, а в ответе честно стоит «уточняем» (модуль 020)
+                'offered'    => $excluded ? '' : $offered,
+                'article'    => $excluded ? '' : (string)($item['article'] ?? ''),
+                'is_alternative' => $isAlt && !$excluded,
+                'excluded'   => $excluded,
                 // «в наличии» / «под заказ» — the honest two-value answer a
                 // спецификация expects, taken from the free remainder
-                'availability' => $free > 0 ? 'в наличии' : 'под заказ',
+                'availability' => $excluded ? 'уточняем' : ($free > 0 ? 'в наличии' : 'под заказ'),
                 'free'       => max(0, $free),
-                'matched'    => $isAlt ? self::matchedSpecs($item) : [],
-                'differs'    => $isAlt ? self::unmatchedSpecs($item) : [],
+                'matched'    => ($isAlt && !$excluded) ? self::matchedSpecs($item) : [],
+                'differs'    => ($isAlt && !$excluded) ? self::unmatchedSpecs($item) : [],
                 'note'       => trim((string)($item['alt_reason'] ?? '')) ?: trim((string)($item['notes'] ?? '')),
             ];
         }
@@ -291,10 +323,14 @@ class KpContent {
     }
 
     public static function splitDescription(string $text): array {
+        // Разметка из МойСклад снимается ДО разбора: заголовок «Характеристики:»,
+        // завёрнутый в `<p>`, не стоял в начале строки и раздел не находился —
+        // всё описание уезжало одним куском, вместе с тегами (модуль 020)
+        $text = Markup::toMarkdown($text);
         $out = ['description' => trim($text), 'specs' => '', 'included' => ''];
         if (trim($text) === '') return $out;
 
-        $pattern = '/^\s*(характеристики|технические характеристики|комплектация|состав комплекта)\s*:?\s*$/miu';
+        $pattern = '/^\s*#{0,6}\s*\**(характеристики|технические характеристики|комплектация|состав комплекта)\**\s*:?\s*$/miu';
         $parts = preg_split($pattern, $text, -1, PREG_SPLIT_DELIM_CAPTURE);
         if (count($parts) < 3) return $out;
 

@@ -59,7 +59,12 @@ switch ($action) {
         $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
         if (!in_array($ext, ['png','jpg','jpeg','svg'])) jsonError('PNG, JPG or SVG only');
 
-        $dest = ROOT . '/public/assets/img/logo.' . $ext;
+        // Рядом с подписью, а не в репозитории: файл в `public/assets/img/`
+        // переписывался бы при каждом деплое встроенным знаком (модуль 020)
+        $dir = ROOT . '/storage/logo';
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+        foreach (glob($dir . '/logo.*') ?: [] as $old) @unlink($old);
+        $dest = $dir . '/logo.' . $ext;
         move_uploaded_file($file['tmp_name'], $dest);
 
         Db::q("UPDATE legal_entities SET logo_path=? WHERE is_active=1", [$dest]);

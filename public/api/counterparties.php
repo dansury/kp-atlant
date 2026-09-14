@@ -131,15 +131,22 @@ switch ($action) {
         ]);
     }
 
-    // Unified company feed (FR-033)
+    /**
+     * Лента компании (FR-033): заметки и вехи сделки.
+     *
+     * Письма сюда больше не попадают — они читаются и отвечаются в «Переписке»
+     * слева (модуль 020). `letters=1` возвращает ленту целиком для того, кому
+     * нужна вся история одним списком.
+     */
     case 'chat': {
         requireAuth();
         $id = Crm::rootId((int)($_GET['id'] ?? 0));
         $limit = min(200, max(10, (int)($_GET['limit'] ?? 50)));
         $offset = max(0, (int)($_GET['offset'] ?? 0));
+        $withLetters = !empty($_GET['letters']);
         jsonData([
-            'items'  => Crm::chat($id, $limit, $offset),
-            'total'  => Crm::chatCount($id),
+            'items'  => Crm::chat($id, $limit, $offset, $withLetters),
+            'total'  => Crm::chatCount($id, $withLetters),
             'offset' => $offset,
         ]);
     }

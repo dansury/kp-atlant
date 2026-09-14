@@ -72,7 +72,12 @@ try {
                 if ($safe !== '') $m['body_html'] = $safe; else unset($m['body_html']);
             }
             unset($m);
-            MailThreads::markRead($key);
+            // Прочитанной переписку делает менеджер, а не экран (модуль 020).
+            // Карточка компании раскрывает свежую переписку сама, чтобы письмо
+            // было видно без нажатия, — и это раскрытие снимало «непрочитано»
+            // со всей цепочки ещё до того, как её кто-нибудь прочёл. Отметка
+            // ставится только тогда, когда её попросили: `read=1`.
+            if (!empty($_GET['read'])) MailThreads::markRead($key);
             jsonData([
                 'thread'    => $summary,
                 'messages'  => $messages,
@@ -82,6 +87,17 @@ try {
                     Mailboxes::forManager($manager)
                 ),
             ]);
+
+        /**
+         * «Прочитано» отдельным действием (модуль 020): карточка компании
+         * раскрывает переписку сама, а отметку ставит человек — когда
+         * действительно её открыл.
+         */
+        case 'thread_read':
+            $key = trim((string)($input['key'] ?? $_GET['key'] ?? ''));
+            if ($key === '') jsonError('Не указана цепочка');
+            MailThreads::markRead($key);
+            jsonOk(['unread' => MailThreads::unreadCount()]);
 
         case 'get':
             $msg = MailArchive::get((int)($_GET['id'] ?? 0));
