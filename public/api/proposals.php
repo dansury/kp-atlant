@@ -10,6 +10,7 @@ require_once ROOT . '/lib/request_items.php';
 require_once ROOT . '/lib/pdf.php';
 require_once ROOT . '/lib/docx.php';
 require_once ROOT . '/lib/kp_content.php';
+require_once ROOT . '/lib/markup.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/notifier.php';
 require_once ROOT . '/lib/crm.php';
@@ -283,8 +284,14 @@ switch ($action) {
                 $upd = [];
                 foreach (['quantity', 'price', 'product_name', 'is_confirmed', 'notes', 'vat_rate', 'moysklad_product_id',
                           'description_text', 'specs_text', 'included_text', 'show_images', 'price_from', 'qty_from',
-                          'alt_reason', 'site_url'] as $f) {
+                          'alt_reason', 'site_url', 'is_excluded'] as $f) {
                     if (array_key_exists($f, $itemData)) $upd[$f] = $itemData[$f];
+                }
+                // Карточка правится как текст, а печатается как разметка: что бы
+                // ни вставили в поле — HTML из МойСклад или из письма, — в базу
+                // ложится Markdown, и в PDF он уходит списком, а не тегами.
+                foreach (['description_text', 'specs_text', 'included_text'] as $f) {
+                    if (isset($upd[$f])) $upd[$f] = Markup::toMarkdown((string)$upd[$f]);
                 }
                 // Which photos of this product go into the KP (FR-046). An empty
                 // array is a decision too — «этой позиции фото не нужны».

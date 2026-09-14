@@ -61,7 +61,10 @@ class PdfGenerator {
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
         if (!$proposal) throw new RuntimeException("Proposal $proposalId not found");
 
-        $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
+        // Свёрнутые позиции в документ не печатаются: ни строкой таблицы, ни
+        // карточкой, ни рублём в «Итого». Названы они отдельным блоком —
+        // `KpContent::unmatchedRows()` забирает их себе (модуль 020).
+        $items = KpContent::printedItems($proposalId);
         $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1");
         if (!$legal) throw new RuntimeException('No active legal entity configured');
 
@@ -152,13 +155,21 @@ class PdfGenerator {
             }
         }
 
-        // Logo path (base64 for mPDF)
+        // Логотип слева вверху документа (модуль 020).
+        //
+        // Раньше путь брался как `$legal['logo_path'] ?? <по умолчанию>`, а в
+        // базе там стоит пустая строка, а не NULL: `??` её пропускал, запасной
+        // путь не проверялся, и КП уходило вообще без логотипа. Теперь адрес
+        // ищется по очереди — загруженный в «Настройках», затем встроенный, —
+        // и берётся первый, который существует на диске.
         $logo = '';
-        $logoFile = $legal['logo_path'] ?? ROOT . '/public/assets/img/logo.png';
-        if (file_exists($logoFile)) {
-            $logoData = base64_encode(file_get_contents($logoFile));
-            $ext = pathinfo($logoFile, PATHINFO_EXTENSION);
-            $logo = "data:image/$ext;base64,$logoData";
+        foreach ([trim((string)($legal['logo_path'] ?? '')), ...self::bundledLogos()] as $candidate) {
+            if ($candidate === '' || !is_file($candidate)) continue;
+            $ext = strtolower(pathinfo($candidate, PATHINFO_EXTENSION)) ?: 'png';
+            if ($ext === 'jpg') $ext = 'jpeg';
+            if ($ext === 'svg') $ext = 'svg+xml';
+            $logo = 'data:image/' . $ext . ';base64,' . base64_encode((string)file_get_contents($candidate));
+            break;
         }
 
         // Signature path
@@ -213,6 +224,24 @@ class PdfGenerator {
         ob_start();
         include ROOT . '/templates/kp.html';
         return (string)ob_get_clean();
+    }
+
+    /**
+     * Логотип, который лежит в репозитории. Он же — то, что печатается, пока
+     * в «Настройках» не загрузили свой файл: КП без логотипа выглядит как
+     * черновик, а имя отправителя в шапке — не замена знаку.
+     */
+    private static function bundledLogos(): array {
+        return [
+            // Загруженный в «Настройках» — сначала новый адрес, затем тот, по
+            // которому логотипы лежали раньше: деплой их не перезаписывает
+            ...glob(ROOT . '/storage/logo/logo.*') ?: [],
+            ROOT . '/public/assets/img/logo.png',
+            ROOT . '/public/assets/img/logo.jpg',
+            ROOT . '/public/assets/img/logo.svg',
+            // Встроенный запасной знак: КП не уходит клиенту без логотипа
+            ROOT . '/public/assets/img/logo-default.png',
+        ];
     }
 
     // Preview: return PDF as string (for streaming)
