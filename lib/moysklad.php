@@ -219,17 +219,91 @@ class MoySklad {
      */
     public static function refreshStock(): array {
         $stores = self::selectedStores();
+
+        // Склады спрашиваются ПО ОДНОМУ. Отчёт «Остатки» читает несколько
+        // значений `store` в фильтре не как «или», а как «и», и на двух
+        // выбранных складах отвечает пустой таблицей — из-за чего кнопка
+        // «Пересчитать остатки» отрабатывала «успешно», а в каталоге всё
+        // оставалось по нулям (`mapProduct()` пишет туда ноль).
+        $batches = $stores ?: [null];
+
+        $totals = [];        // moysklad_id => [stock, reserve], сложенные по складам
+        $rows = 0;
+        $errors = [];
+        $usedFallback = false;
+
+        foreach ($batches as $storeId) {
+            try {
+                $rows += self::readStockReport($storeId, $totals);
+            } catch (Throwable $e) {
+                $errors[] = ($storeId !== null ? "склад $storeId: " : '') . $e->getMessage();
+            }
+        }
+
+        // Ни одной строки — это не «на складе пусто», это «отчёт не ответил».
+        // Записать сюда нули значит перевести весь каталог в «под заказ», а
+        // это уже обещание клиенту, поэтому сначала пробуем спросить иначе.
+        if (!$totals) {
+            if ($stores) {
+                try {
+                    $rows += self::readStockReport(null, $totals);
+                    if ($totals) $usedFallback = true;
+                } catch (Throwable $e) {
+                    $errors[] = 'без фильтра по складам: ' . $e->getMessage();
+                }
+            }
+            if (!$totals) {
+                try {
+                    $rows += self::readAssortmentStock($totals);
+                    if ($totals) $usedFallback = true;
+                } catch (Throwable $e) {
+                    $errors[] = 'ассортимент: ' . $e->getMessage();
+                }
+            }
+        }
+
+        $updated = 0;
+        foreach ($totals as $id => $pair) {
+            $updated += Db::q(
+                "UPDATE products_cache SET stock=?, reserved=?, updated_at=datetime('now') WHERE moysklad_id=?",
+                [(int)round($pair[0]), (int)round($pair[1]), $id]
+            )->rowCount();
+        }
+
+        $result = [
+            'rows'     => $rows,
+            'updated'  => $updated,
+            'stores'   => count($stores),
+            'fallback' => $usedFallback,
+            'error'    => $errors ? implode('; ', array_unique($errors)) : null,
+        ];
+
+        // Отчёт, который не нашёл НИ ОДНОЙ нашей позиции, — это поломка, а не
+        // пустой склад: пусть она видна в логе и в ответе кнопки, а не только
+        // в нулях на карточке товара.
+        if ($updated === 0) {
+            Logger::warning('catalog', 'Остатки из МойСклад: ни одна позиция не совпала с каталогом', $result);
+        } else {
+            Logger::info('catalog', "Остатки из МойСклад: строк $rows, обновлено $updated", $result);
+        }
+        return $result;
+    }
+
+    /**
+     * Одна прогонка отчёта «Остатки», страницами, в накопитель.
+     *
+     * @param array<string,array{0:float,1:float}> $totals накопитель, по ссылке
+     * @return int сколько строк отчёта прочитано
+     */
+    private static function readStockReport(?string $storeId, array &$totals): int {
         $filter = '';
-        if ($stores) {
-            // Несколько значений одного поля МойСклад читает как «или»
-            $parts = array_map(fn($id) => 'store=' . self::$base . '/entity/store/' . $id, $stores);
-            $filter = '&filter=' . urlencode(implode(';', $parts));
+        if ($storeId !== null && $storeId !== '') {
+            $filter = '&filter=' . rawurlencode('store=' . self::$base . '/entity/store/' . $storeId);
         }
 
         $offset = 0;
         $limit = 1000;
         $rows = 0;
-        $updated = 0;
 
         do {
             $data = self::get("/report/stock/all?limit=$limit&offset=$offset$filter");
@@ -240,20 +314,50 @@ class MoySklad {
                 $id = self::extractId((string)($row['meta']['href'] ?? ''));
                 if ($id === '') continue;
                 // `stock` — на складе всего, `reserve` — уже обещано
-                $stock = (int)round((float)($row['stock'] ?? 0));
-                $reserved = (int)round((float)($row['reserve'] ?? 0));
-                $updated += Db::q(
-                    "UPDATE products_cache SET stock=?, reserved=?, updated_at=datetime('now') WHERE moysklad_id=?",
-                    [$stock, $reserved, $id]
-                )->rowCount();
+                self::addStock($totals, $id, (float)($row['stock'] ?? 0), (float)($row['reserve'] ?? 0));
             }
 
             $offset += $limit;
         } while (count($data['rows']) === $limit);
 
-        Logger::info('catalog', "Остатки из МойСклад: строк $rows, обновлено $updated",
-                     ['stores' => count($stores)]);
-        return ['rows' => $rows, 'updated' => $updated, 'stores' => count($stores)];
+        return $rows;
+    }
+
+    /**
+     * Запасной источник остатка — сам ассортимент.
+     *
+     * `/entity/assortment` отдаёт товары и модификации вместе с полями
+     * `stock`/`reserve`, и на него хватает прав «читать товары»: токен без
+     * доступа к ОТЧЁТАМ иначе оставляет весь каталог с нулевым остатком.
+     */
+    private static function readAssortmentStock(array &$totals): int {
+        $offset = 0;
+        $limit = 1000;
+        $rows = 0;
+
+        do {
+            $data = self::get("/entity/assortment?limit=$limit&offset=$offset");
+            if (!$data || empty($data['rows'])) break;
+
+            foreach ($data['rows'] as $row) {
+                $rows++;
+                if (!array_key_exists('stock', $row)) continue;
+                $id = self::extractId((string)($row['id'] ?? $row['meta']['href'] ?? ''));
+                if ($id === '') continue;
+                self::addStock($totals, $id, (float)($row['stock'] ?? 0), (float)($row['reserve'] ?? 0));
+            }
+
+            $offset += $limit;
+        } while (count($data['rows']) === $limit);
+
+        return $rows;
+    }
+
+    /** Остаток одной позиции, сложенный по всем прочитанным складам. */
+    private static function addStock(array &$totals, string $id, float $stock, float $reserve): void {
+        if (!isset($totals[$id])) $totals[$id] = [0.0, 0.0];
+        $totals[$id][0] += $stock;
+        $totals[$id][1] += $reserve;
     }
 
     // ===================== Модификации товара (модуль 022) =====================
@@ -335,10 +439,25 @@ class MoySklad {
             $prices[$name] = ($sp['value'] ?? 0) / 100;
         }
         // Своей цены у модификации может не быть — тогда она наследует товар,
-        // и подставить ноль вместо неё значит выставить КП на ноль рублей
-        if (!$prices && $parentId !== '') {
-            $cached = Db::val("SELECT prices_json FROM products_cache WHERE moysklad_id=?", [$parentId]);
-            $prices = $cached ? (json_decode((string)$cached, true) ?: []) : [];
+        // и подставить ноль вместо неё значит выставить КП на ноль рублей.
+        // Наследуется КАЖДЫЙ тип цены отдельно: у размера L своя «Розница», но
+        // «Опт безнал» только у товара — и КП, выставляемое по опту, должно
+        // взять оптовую цену товара, а не розничную модификации.
+        if ($parentId !== '') {
+            $parentPrices = $product['salePrices'] ?? null;
+            if (is_array($parentPrices)) {
+                $inherited = [];
+                foreach ($parentPrices as $sp) {
+                    $name = (string)($sp['priceType']['name'] ?? '');
+                    if ($name === '') continue;
+                    $inherited[$name] = ($sp['value'] ?? 0) / 100;
+                }
+            } else {
+                $cached = Db::val("SELECT prices_json FROM products_cache WHERE moysklad_id=?", [$parentId]);
+                $inherited = $cached ? (json_decode((string)$cached, true) ?: []) : [];
+            }
+            // Свои цены модификации сильнее унаследованных
+            $prices = $prices + $inherited;
         }
 
         $wanted = (string)Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '');

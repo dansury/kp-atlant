@@ -10,6 +10,7 @@
  */
 require_once __DIR__ . '/embeddings.php';
 require_once __DIR__ . '/catalog.php';
+require_once __DIR__ . '/markup.php';
 
 class ProductMatcher {
 
@@ -201,13 +202,27 @@ class ProductMatcher {
             }
         }
 
+        // «Монокуляр» стоит не в названии, а в описании — и это всё равно тот
+        // самый товар. Описание ищется вторым заходом и стоит ДЕШЕВЛЕ названия:
+        // совпадение в нём предлагается, но не выигрывает у совпадения в имени
+        // (модуль 023).
+        $descWeight = min(1.0, max(0.0, (float)Settings::get('MATCH_DESC_WEIGHT', 0.75)));
+        $queryWords = self::contentWords($normQuery);
+
         $scored = [];
         foreach ($products as $p) {
-            $lexical = self::similarity($normQuery, $p['match_text']);
+            $byName = self::similarity($normQuery, $p['match_text']);
+            $lexical = $byName;
 
             // Article typed straight into the letter is an exact answer
             if ($p['article'] && stripos($normQuery, mb_strtolower((string)$p['article'])) !== false) {
                 $lexical = max($lexical, 0.95);
+            }
+
+            $byDesc = 0.0;
+            if ($descWeight > 0 && $queryWords && $p['desc_text'] !== '') {
+                $byDesc = self::containment($queryWords, $p['desc_text']) * $descWeight;
+                $lexical = max($lexical, $byDesc);
             }
 
             $vec = $vector[$p['moysklad_id']] ?? null;
@@ -232,7 +247,7 @@ class ProductMatcher {
                 'score'       => round($combined, 3),
                 'lexical'     => round($lexical, 3),
                 'vector'      => $vec === null ? null : round($vec, 3),
-                'source'      => self::sourceOf($lexical, $vec, $minScore),
+                'source'      => self::sourceOf($byName, $byDesc, $vec, $minScore),
             ];
         }
 
@@ -252,21 +267,61 @@ class ProductMatcher {
         if (self::$catalog !== null) return self::$catalog;
         $rows = Db::all(
             "SELECT moysklad_id, name, name_normalized, article, price, prices_json, stock, reserved, unit,
-                    characteristics, product_type
+                    characteristics, description, specs_text, product_type, parent_id
              FROM products_cache WHERE is_archived IS NOT 1"
         );
-        foreach ($rows as &$row) $row['match_text'] = self::normalize((string)$row['name']);
+        foreach ($rows as &$row) {
+            $row['match_text'] = self::normalize((string)$row['name']);
+            // Описание, характеристики и характеристики модификации — один
+            // мешок слов: клиент не знает, в какое из полей мы это положили
+            $row['desc_text'] = self::normalize(trim(
+                Markup::toPlainText((string)($row['description'] ?? '')) . ' '
+                . Markup::toPlainText((string)($row['specs_text'] ?? '')) . ' '
+                . (string)($row['characteristics'] ?? '')
+            ));
+        }
         unset($row);
         return self::$catalog = $rows;
     }
 
     /** Why this row is in the list — the card prints it next to the score. */
-    private static function sourceOf(float $lexical, ?float $vec, float $minScore): string {
-        $byWords   = $lexical >= $minScore;
+    private static function sourceOf(float $byName, float $byDesc, ?float $vec, float $minScore): string {
+        $byWords   = $byName >= $minScore;
         $byMeaning = $vec !== null && $vec >= self::VEC_STRONG;
         if ($byWords && $byMeaning) return 'both';
         if ($byMeaning) return 'meaning';
+        // Имя не дотянуло, а описание дотянуло — так и сказать: менеджер иначе
+        // не поймёт, почему в списке строка, не похожая на запрос ни словом
+        if (!$byWords && $byDesc >= $minScore) return 'description';
         return 'words';
+    }
+
+    /**
+     * Доля слов запроса, которые ВСТРЕЧАЮТСЯ в тексте. Для описания считается
+     * именно вхождение, а не Жаккар: описание в десять раз длиннее запроса, и
+     * любая мера, делящая на объединение, у него всегда около нуля.
+     */
+    private static function containment(array $queryWords, string $haystack): float {
+        if (!$queryWords) return 0.0;
+        $words = array_flip(array_filter(explode(' ', $haystack)));
+        $hits = 0;
+        foreach ($queryWords as $w) {
+            if (isset($words[$w])) { $hits++; continue; }
+            // «монокуляры» в запросе и «монокуляр» в описании — одно слово
+            $stem = mb_substr($w, 0, max(4, mb_strlen($w) - 2));
+            if ($stem !== $w && str_contains($haystack, $stem)) $hits++;
+        }
+        return $hits / count($queryWords);
+    }
+
+    /** Слова запроса, по которым вообще имеет смысл искать. */
+    private static function contentWords(string $normalized): array {
+        $out = [];
+        foreach (explode(' ', $normalized) as $w) {
+            if (mb_strlen($w) < 4) continue;   // «для», «шт», «под» ничего не отбирают
+            $out[$w] = true;
+        }
+        return array_keys($out);
     }
 
     /**

@@ -30,6 +30,23 @@ the classifier prompt as examples (module 022). A letter asking what a product C
 Never call the model twice for one letter, and never let a draft invent a price, a stock
 level or an order status — those come from `Catalog`, not from the wiki.
 
+### Finding a letter
+Search covers the WHOLE letter and the whole archive, not four columns of the working list
+(module 023): subject, body, HTML body, sender, sender name, recipients, Cc, attachment file
+names and the text extracted from them — with `archived = 'all'` so a letter does not hide
+because somebody filed it. Words are ANDed (`MailArchive::searchTerms()`, quotes keep a phrase
+whole); a search that silently ORs turns «иванов счёт» into every letter from an Ivanov. One
+term parser, used by the mail list, the thread list and the board — three search boxes that
+disagree are three bugs waiting.
+
+### Taking a letter off the screen
+«Спам» and «не наш профиль» do the SAME thing to the screen: archive the letter and delete the
+board card built around it. A verb that only writes a category leaves the letter exactly where
+it was, and the manager presses it again. A mailbox that is switched off hides its letters and
+gives them back when it is switched on; a mailbox that is DELETED can never be switched on, so
+its letters stay visible — otherwise deleting a mailbox silently eats the correspondence
+imported into it (module 023).
+
 ## Inbound channels
 A letter that arrived from the site form is the VISITOR's letter (module 015):
 `SiteForm::unwrap()` runs inside `MailArchive::storeIncoming()` — before the thread key, before
@@ -122,6 +139,20 @@ paths. `api/branding.php` serves the picture WITHOUT auth on purpose: the browse
 favicon and the manifest icons before anyone has logged in. A КП that prints without a logo
 reads as a draft.
 
+### What the document does not say
+A field with no data prints NOTHING — never a placeholder. «Покупатель уточняется» in a signed
+КП reads as carelessness, not as honesty, so an unknown buyer means the whole «Покупатель»
+block is absent (module 023). The same rule made the QR caption a setting, empty by default:
+«Наведите камеру телефона» explains a QR code to someone who has been using one for ten years.
+Every product card starts on a new page (`KP_PAGE_BREAK`) — a description torn in half across a
+page break is a description nobody reads.
+
+The document has a THIRD form besides Word and PDF: the same positions, prices, terms and
+comments as plain text in the letter body (`KpText`, format `text`) — everything the file has
+except the QR, which has nothing to encode when the link is already clickable. A preview that
+cannot find its PDF on disk REBUILDS it: the document is fully described by the database, and
+`{"error":"PDF not found"}` is a wall in front of a manager for a file a deploy deleted.
+
 ## Catalog
 `products_cache` has two sources and must keep working on either: `MoySklad::refreshProductCache()`
 through the API, and `CatalogImport::run()` from a МойСклад Excel export (module 008). Never make a
@@ -150,6 +181,29 @@ index and a dead API, only worse. When an embedding does not arrive, the log and
 must name the HTTP code and what the API said — one line per batch, never one per position. Indexing is always batched (`curl_multi`), time-budgeted
 and resumable through `text_hash` — never write a loop that embeds the whole catalog in one
 request.
+
+A position is matched by its NAME first and by its DESCRIPTION second (module 023,
+`MATCH_DESC_WEIGHT`): «монокуляр» is not in the name of «Прибор ночного видения Филин», it is
+in its description, and that is still the product the client asked for. The description score
+is a CONTAINMENT (how many of the query's words the text holds), not a Jaccard — a description
+is ten times longer than a query and any measure dividing by the union is zero for it — and it
+is capped below a name match by construction, so a description hit is offered and never wins.
+The row then says `source = description`: a line nobody can connect to the query needs to
+explain itself.
+
+## Money on a position
+The price a КП prints is computed in ONE place — `Terms::price()` — and nowhere else. A
+position has a manual discount and, when it is not in stock, a waiting term, a waiting discount
+and a prepayment share (module 023). Discounts MULTIPLY, they do not add: 5% by hand and 10%
+for waiting is 14.5%, and a КП that says 15% is a КП that undercharges. The three waiting
+values are written onto a row READY BUT OFF (`KP_WAIT_AUTO = 0`): a discount granted on the
+manager's behalf is the manager's money given away without asking, and only a human turns it
+on. A price the manager typed carries `price_is_manual` and a re-match must never overwrite
+it — it may refine the name, the article and the stock, never the number.
+
+A variant with no price of its own inherits the product's — BY PRICE TYPE, not «whichever is
+there»: size L has its own «Розница» while only the product has «Опт безнал», and a КП billed
+at wholesale must take the product's wholesale price.
 
 ## Mail
 Letters live in threads, not rows: `MailThreads::keyFor()` groups them by the subject with
@@ -256,6 +310,23 @@ light background belongs in that selector list. Red TEXT always goes through `--
 `--primary` is for fills, borders and rules only, and putting it on text breaks contrast on both
 the white and the dark side.
 
+### One letter, one screen
+A request and a letter are ONE thing and open as one screen (module 023). `#mail/requests` does
+not exist; `#mail/request/N` and the letter a notification links to both land on the thread
+card, because a notification a manager cannot answer from is a notification that wasted the
+trip. The layout is the same wherever the card is opened from: correspondence on the left,
+matched positions on the right at desktop width and underneath on a phone — never the other way
+round «depending on the entry point», which is what read as two different products. The facts
+panel is on EVERY letter; on one with no request it says why it is empty rather than vanishing.
+
+A card that costs a catalog match to open is cached for a minute in the tab (`App.apiCached`),
+shown instantly and re-checked in the background. Any write clears the whole cache: what
+exactly it changed is not visible from there, and a stale price is worse than a wait.
+
+Hints are the SAME texts as `App.HINTS`, and on a first visit to a screen they run as a
+guided tour — one bubble at a time, with the thing being explained highlighted. A wall of
+text is a page nobody reads; a tour is a page everybody finishes.
+
 ## Board
 Everything a letter needs is IN the letter (module 012): the «Подходящие позиции» table and
 the reply box are drawn under the conversation, so a КП is priced and an answer is written
@@ -312,6 +383,23 @@ The QR beside the link encodes `proposal_items.site_url` itself — never a shor
 tracking wrapper: what the client scans has to be the address he can also read. `Qr` writes a
 base64 PNG because that is the only picture the preview, mPDF and `Html2Docx::image()` all read;
 what it cannot encode returns null and the card prints the link alone.
+
+## The Bitrix module
+`bitrix-module/atlant.kpsync/include.php` registers an autoload map. Every class named there
+MUST exist as a file: a missing one is not a silent no-op, it is `Failed opening required …`
+on the module's own settings page AND a dead endpoint, because `kp.php` asks
+`Config::enabled()` on its first line. `tests/module_023.php` walks that map and fails when a
+promised file is absent.
+
+## МойСклад stock
+`/report/stock/all` reads several `store=` values in a filter as AND, not OR: asking for two
+warehouses at once answers with an empty table, and an empty table written into the cache is
+every position «под заказ» while the shelf is full. Warehouses are therefore asked ONE AT A
+TIME and the numbers summed (module 023). An empty answer is never treated as «nothing in
+stock»: the unfiltered report is tried, then `/entity/assortment`, which carries stock and is
+readable by a token with no rights to reports. The result carries `error` and `fallback`, and
+zero updated positions is reported RED in the panel — a refresh that matched nothing is a
+breakage, not an empty warehouse, and silence about it costs a month of wrong КП.
 
 ## Prompts and the model's discipline
 Every system prompt gets the discipline block appended by `Prompts::render()` — do the whole

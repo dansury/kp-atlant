@@ -342,6 +342,9 @@ final class Triage {
             $user .= "\n===== ТЕКСТ ВЛОЖЕНИЙ =====\n" . self::clip((string)$ctx['attachments'], 6000) . "\n";
         }
         // Positions the catalog never answered — named, not quietly dropped
+        // То, что уже подобрано на карточке: ответ говорит о тех же
+        // позициях и тех же ценах, что уйдут в КП (модуль 023)
+        $user .= RequestItems::matchedBlock((array)($ctx['matched'] ?? []));
         $user .= RequestItems::unmatchedBlock((array)($ctx['unmatched'] ?? []));
         // И то, чем мы не занимаемся, — про это письмо молчит (модуль 022)
         $user .= RequestItems::outOfScopeBlock((array)($ctx['out_of_scope'] ?? []));

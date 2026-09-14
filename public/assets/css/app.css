@@ -64,6 +64,13 @@ h2 { font-size: 20px; }
    table side by side — 1100px put both on a horizontal scroll */
 .main { max-width: 1280px; margin: 20px auto; padding: 0 20px; }
 
+/* Доска канбан — во всю ширину экрана (модуль 023).
+   Пять колонок по 280px плюс поля по 20px с каждой стороны не помещались в
+   1280px, и доска уезжала в горизонтальную прокрутку на обычном ноутбуке.
+   Страница с доской снимает и потолок ширины, и боковые поля — на телефоне
+   поля возвращает медиазапрос внизу. */
+.main--wide { max-width: none; padding: 0 8px; }
+
 /* Cards */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
         box-shadow: var(--shadow); padding: 20px; margin-bottom: 16px; }
@@ -298,6 +305,44 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 
 /* «Подходящие позиции» on a request card: two lines per position — the name over
    the full width of the card (it is the long field), the numbers under it */
+/* ==== Письмо: переписка слева, подбор справа (модуль 023) ====
+   Одна раскладка на все входы в письмо. Раньше «Подходящие позиции» стояли то
+   справа, то внизу — смотря откуда письмо открыли. */
+.letter { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); gap: 16px; align-items: start; }
+.letter__main { min-width: 0; }
+.letter__side { min-width: 0; position: sticky; top: 12px; }
+.letter__side .card { margin-bottom: 12px; }
+
+.thread-head__who { font-size: 13px; color: var(--text); display: flex; flex-wrap: wrap; gap: 8px; }
+.thread-head__subject { font-weight: 600; }
+
+.facts { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.facts__row { display: flex; justify-content: space-between; gap: 10px; }
+.facts__row span { color: var(--text-muted); }
+.facts__row b { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+
+/* Предпросмотр КП прямо в карточке письма — «Открыть КП» больше никуда не уводит */
+.kp-preview { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: var(--radius); margin-top: 10px; }
+
+/* Оформление текста письма: панель кнопок и поле, которое ведёт себя как поле */
+.composer__tools { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.composer__editor { min-height: 120px; max-height: 50vh; overflow-y: auto; padding: 10px 12px;
+                    border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+                    font-size: 14px; line-height: 1.5; }
+.composer__editor:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
+.composer__editor:empty::before { content: attr(data-placeholder); color: var(--text-muted); }
+.composer__editor ul, .composer__editor ol { margin: 6px 0; padding-left: 20px; }
+.composer__files { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.composer__files .chip a { margin-left: 6px; cursor: pointer; }
+
+/* Вторая строка позиции: скидка, ожидание и комментарий (модуль 023) */
+.match-extra { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.match-extra__money { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; }
+.match-extra__money input[type="number"] { width: 62px; }
+.match-extra__comment { width: 100%; font-size: 13px; }
+.match-row__tools { display: flex; gap: 4px; align-items: center; }
+.match-row--moved { background: var(--surface-3); transition: background .4s; }
+
 .match-row { display: grid; grid-template-columns: 76px 66px 90px minmax(0,130px) minmax(0,1fr) auto auto;
              gap: 6px; align-items: center; padding-bottom: 10px; margin-bottom: 10px;
              border-bottom: 1px solid var(--border); }
@@ -526,9 +571,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    form fields grow to a comfortable tap size, and the multi-column strips
    that work fine on a desktop (match-row, board columns) stack or narrow
    instead of pushing the page sideways. */
+/* Подбор рядом с перепиской нужен только там, где для него есть место */
+@media (max-width: 1024px) {
+    .letter { grid-template-columns: minmax(0, 1fr); }
+    .letter__side { position: static; }
+}
+
 @media (max-width: 640px) {
     html, body { overflow-x: hidden; }
     .main { padding: 0 12px; margin: 12px auto; }
+    /* На телефоне доска и так прокручивается колонками — поля вернуть */
+    .main--wide { padding: 0 12px; }
     .card { padding: 14px; }
 
     .btn { padding: 12px 16px; font-size: 15px; min-height: 44px; }
@@ -609,6 +662,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     flex: 0 0 auto;
 }
 .hint:hover, .hint:focus-visible { border-color: var(--primary); color: var(--accent-ink); }
+
+/* Гайд по интерфейсу (модуль 023): подсвечен тот значок, о котором сейчас речь */
+.hint--tour { border-color: var(--primary); color: #fff; background: var(--primary);
+              box-shadow: 0 0 0 4px rgba(0, 0, 0, .08); }
+.hint-bubble--tour { z-index: 200; }
+.hint-bubble__nav { display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+                    margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.hint-bubble__nav .muted { margin-right: auto; font-size: 12px; }
 
 /* Пузырь подсказки. На широком экране он ставится у значка (координаты
    считает App.showHint), на узком — прилипает к низу экрана во всю ширину:

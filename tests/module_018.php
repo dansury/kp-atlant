@@ -180,13 +180,16 @@ Db::insert('proposal_items', ['proposal_id' => $emailKp, 'position' => 1, 'produ
     'moysklad_product_id' => 'ms-2', 'unit' => 'шт.', 'quantity' => 1, 'price' => 31000]);
 $snap = Requisites::snapshot($emailKp);
 ok('e-mail опознан как не-название', $snap['buyer']['name_is_email']);
-ok('в документ идёт «Покупатель уточняется»', $snap['buyer']['name'] === Requisites::BUYER_UNKNOWN, $snap['buyer']['name']);
+// Модуль 023: данных нет — в документе про покупателя НИЧЕГО не печатается.
+// «Покупатель уточняется» в подписанном КП читается как небрежность.
+ok('имя покупателя в документ не идёт', $snap['buyer']['name'] === '', $snap['buyer']['name']);
 ok('что было в карточке — сохранено для менеджера', $snap['buyer']['name_source'] === 'zakupki@uralelement.ru');
 Requisites::freeze($emailKp);
 $emailHtml = PdfGenerator::html($emailKp);
 ok('адреса в реквизитах покупателя нет', !str_contains($emailHtml, 'zakupki@uralelement.ru')
                                          || !str_contains($emailHtml, 'Покупатель</div>'), 'см. блок «Покупатель»');
-ok('вместо него — «Покупатель уточняется»', str_contains($emailHtml, Requisites::BUYER_UNKNOWN));
+ok('и блока «Покупатель» в КП нет вовсе', !str_contains($emailHtml, 'Покупатель</div>'));
+ok('и заглушки «Покупатель уточняется» тоже', !str_contains($emailHtml, Requisites::BUYER_UNKNOWN));
 
 $named = Requisites::snapshot($kpId);
 ok('нормальное название не трогается', $named['buyer']['name'] === 'ООО «Рубеж»' && !$named['buyer']['name_is_email']);

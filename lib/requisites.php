@@ -23,7 +23,11 @@ final class Requisites {
     /** Where the VAT rate of a position comes from, in order. */
     public const VAT_SOURCES = ['позиция каталога', 'настройка НДС по умолчанию'];
 
-    /** Printed instead of an e-mail address when the buyer has no name yet. */
+    /**
+     * Осталось ради старых КП: снимок, замороженный до модуля 023, всё ещё
+     * держит эту строку в `requisites_json`, и печатать её как имя покупателя
+     * нельзя — `forProposal()` вычищает её на чтении.
+     */
     public const BUYER_UNKNOWN = 'Покупатель уточняется';
 
     /**
@@ -167,7 +171,11 @@ final class Requisites {
                 'synced_at'     => (string)($legal['synced_at'] ?? ''),
             ],
             'buyer' => $buyer ? [
-                'name'          => $buyerNameIsEmail ? self::BUYER_UNKNOWN : $buyerName,
+                // Пусто — значит в документе про покупателя не печатается НИЧЕГО.
+                // Раньше здесь стояло «Покупатель уточняется»: фраза, которая в
+                // подписанном КП выглядит как небрежность, а не как честность
+                // (модуль 023). Данных нет — блока нет.
+                'name'          => $buyerNameIsEmail ? '' : $buyerName,
                 // What the card actually holds, kept for the manager's screen —
                 // hidden from the document, not lost
                 'name_source'   => $buyerNameIsEmail ? $buyerName : '',
@@ -315,7 +323,15 @@ final class Requisites {
     public static function forProposal(int $proposalId): array {
         $stored = Db::val("SELECT requisites_json FROM proposals WHERE id=?", [$proposalId]);
         $decoded = $stored ? json_decode((string)$stored, true) : null;
-        return is_array($decoded) && $decoded ? $decoded : self::snapshot($proposalId);
+        $snapshot = is_array($decoded) && $decoded ? $decoded : self::snapshot($proposalId);
+
+        // КП, замороженное до модуля 023, держит в имени покупателя фразу
+        // «Покупатель уточняется». Перепечатывать её нельзя: нет данных — нет
+        // строки. Снимок в базе при этом не трогаем: он на то и снимок.
+        if (($snapshot['buyer']['name'] ?? '') === self::BUYER_UNKNOWN) {
+            $snapshot['buyer']['name'] = '';
+        }
+        return $snapshot;
     }
 
     /** Freeze the requisites onto a proposal. Called once, at generation. */

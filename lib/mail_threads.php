@@ -150,8 +150,12 @@ final class MailThreads {
         // Убранное в архив («не наш профиль», письма выключенного ящика) с
         // экрана уходит целиком — и из списка, и из счётчиков. Отдельная
         // вкладка «Архив» показывает ровно обратное (модуль 019).
-        $archived = !empty($f['archived']);
-        $where[] = $archived ? 'm.archived_at IS NOT NULL' : 'm.archived_at IS NULL';
+        // `all` — искать во всей почте разом, и в работе, и в архиве
+        $everywhere = ($f['archived'] ?? null) === 'all';
+        $archived = !$everywhere && !empty($f['archived']);
+        if (!$everywhere) {
+            $where[] = $archived ? 'm.archived_at IS NOT NULL' : 'm.archived_at IS NULL';
+        }
 
         // A filter narrows WHICH THREADS are shown, never which letters are in
         // one: a thread with an unread letter must open with its whole history.
@@ -162,10 +166,20 @@ final class MailThreads {
         if (!empty($f['counterparty_id'])) { $where[] = 'm.counterparty_id = ?'; $params[] = (int)$f['counterparty_id']; }
         if (!empty($f['unread'])) $where[] = "(m.is_read = 0 AND m.direction = 'in')";
         if (!empty($f['category'])) { $where[] = 'm.category = ?'; $params[] = (string)$f['category']; }
-        if (!empty($f['q'])) {
-            $where[] = '(m.subject LIKE ? OR m.from_email LIKE ? OR m.to_emails LIKE ? OR m.body_text LIKE ?)';
-            $like = '%' . $f['q'] . '%';
-            array_push($params, $like, $like, $like, $like);
+        if (trim((string)($f['q'] ?? '')) !== '') {
+            // Цепочка попадает в выдачу, если слово нашлось В ЛЮБОМ её письме —
+            // и в теме, и в адресах, и в теле, и в именах вложений (модуль 023)
+            foreach (MailArchive::searchTerms((string)$f['q']) as $term) {
+                $like = '%' . $term . '%';
+                $where[] = 'EXISTS (SELECT 1 FROM mail_messages x
+                                    LEFT JOIN attachments a ON a.mail_message_id = x.id
+                                    WHERE x.thread_key = m.thread_key
+                                      AND (x.subject LIKE ? OR x.from_email LIKE ? OR x.from_name LIKE ?
+                                           OR x.to_emails LIKE ? OR x.cc_emails LIKE ?
+                                           OR x.body_text LIKE ? OR x.body_html LIKE ?
+                                           OR a.filename LIKE ? OR a.extracted_text LIKE ?))';
+                array_push($params, $like, $like, $like, $like, $like, $like, $like, $like, $like);
+            }
         }
         $sqlWhere = implode(' AND ', $where);
 
@@ -183,7 +197,7 @@ final class MailThreads {
 
         $items = [];
         foreach ($keys as $k) {
-            $t = self::summary((string)$k['thread_key'], $archived);
+            $t = self::summary((string)$k['thread_key'], $everywhere ? 'all' : $archived);
             if ($t) $items[] = $t;
         }
         return [
@@ -204,8 +218,15 @@ final class MailThreads {
      * $withArchived переворачивает выборку для вкладки «Архив»: там цепочка
      * состоит ровно из тех писем, которых нет в обычном списке.
      */
-    public static function summary(string $key, bool $withArchived = false): ?array {
-        $only = $withArchived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL';
+    public static function summary(string $key, bool|string $withArchived = false): ?array {
+        // 'all' — считать и работу, и архив: так поиск по всей почте не теряет
+        // цепочку только потому, что её нашли в архиве (модуль 023)
+        // Кусок условия дописывается и без префикса таблицы, и с ним («m.$only»),
+        // поэтому «всё сразу» — это условие по КОЛОНКЕ, а не «1=1»: «m.1=1»
+        // синтаксически не существует
+        $only = $withArchived === 'all'
+            ? 'thread_key IS NOT NULL'
+            : ($withArchived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL');
         $agg = Db::one(
             "SELECT COUNT(*) AS total,
                     SUM(CASE WHEN direction='in'  THEN 1 ELSE 0 END) AS in_count,

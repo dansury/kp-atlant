@@ -10,6 +10,7 @@ require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/triage.php';
 require_once ROOT . '/lib/mail_threads.php';
 require_once ROOT . '/lib/attachments.php';
+require_once ROOT . '/lib/outbox.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -26,7 +27,9 @@ try {
                 'unread'          => !empty($_GET['unread']),
                 'category'        => $_GET['category'] ?? null,
                 'q'               => trim((string)($_GET['q'] ?? '')),
-                'archived'        => !empty($_GET['archived']),
+                // «all» — поиск по всему архиву разом: менеджер ищет письмо,
+                // а не раздел, в который оно попало (модуль 023)
+                'archived'        => ($_GET['archived'] ?? '') === 'all' ? 'all' : !empty($_GET['archived']),
                 'limit'           => $_GET['limit'] ?? 50,
                 'offset'          => $_GET['offset'] ?? 0,
             ]);
@@ -46,7 +49,9 @@ try {
                 'unread'          => !empty($_GET['unread']),
                 'category'        => $_GET['category'] ?? null,
                 'q'               => trim((string)($_GET['q'] ?? '')),
-                'archived'        => !empty($_GET['archived']),
+                // «all» — поиск по всему архиву разом: менеджер ищет письмо,
+                // а не раздел, в который оно попало (модуль 023)
+                'archived'        => ($_GET['archived'] ?? '') === 'all' ? 'all' : !empty($_GET['archived']),
                 'limit'           => $_GET['limit'] ?? 50,
                 'offset'          => $_GET['offset'] ?? 0,
             ]);
@@ -159,7 +164,18 @@ try {
                 'request_id'      => $requestId,
                 'in_reply_to'     => $replyTo,
                 'thread_key'      => $threadKey,
+                // Менеджер мог переделать документ руками и приложить свой
+                'attachments'     => Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']),
             ]);
+
+            // Отправленное письмо — уже не черновик
+            if (!empty($input['reply_to_id'])) {
+                Db::q("DELETE FROM mail_drafts WHERE mail_message_id=? AND manager_id=?",
+                      [(int)$input['reply_to_id'], (int)$manager['id']]);
+            }
+            if ($threadKey) {
+                Db::q("DELETE FROM mail_drafts WHERE thread_key=? AND manager_id=?", [$threadKey, (int)$manager['id']]);
+            }
 
             // The company chat shows the same message, so nothing is invisible there
             if ($counterpartyId) {
@@ -228,6 +244,11 @@ try {
                 'unmatched'       => !empty($msg['request_id'])
                     ? (RequestItems::ensure((int)$msg['request_id']) ? RequestItems::unmatched((int)$msg['request_id']) : [])
                     : [],
+                // «Создать ответ» пишет ответ по тому, ЧТО УЖЕ ПОДОБРАНО:
+                // те же позиции, те же цены, те же комментарии, что уйдут
+                // в КП (модуль 023)
+                'matched'         => !empty($msg['request_id'])
+                    ? RequestItems::all((int)$msg['request_id']) : [],
                 // Позиции, которыми мы не занимаемся: ответ про них молчит и
                 // ничего не обещает (модуль 022)
                 'out_of_scope'    => !empty($msg['request_id'])
@@ -282,6 +303,61 @@ try {
                 'subject'         => preg_replace('/^(Re:\s*)?/iu', 'Re: ', (string)$msg['subject']),
                 'to'              => (string)$msg['from_email'],
             ]);
+
+        // ---- Свои файлы к письму (модуль 023) ----
+
+        case 'upload':
+            if (empty($_FILES['file'])) jsonError('Файл не передан');
+            jsonOk(['file' => Outbox::accept($_FILES['file'], (int)$manager['id'])]);
+
+        // ---- Черновик ответа: вкладку закрыли — текст остался (модуль 023) ----
+
+        case 'draft_get': {
+            $id  = (int)($_GET['id'] ?? 0);
+            $key = trim((string)($_GET['thread_key'] ?? ''));
+            $row = $id
+                ? Db::one("SELECT * FROM mail_drafts WHERE mail_message_id=? AND manager_id=?", [$id, (int)$manager['id']])
+                : ($key !== '' ? Db::one("SELECT * FROM mail_drafts WHERE thread_key=? AND manager_id=? ORDER BY id DESC LIMIT 1",
+                                         [$key, (int)$manager['id']]) : null);
+            jsonData(['draft' => $row ?: null]);
+        }
+
+        case 'draft_save': {
+            $id   = (int)($input['id'] ?? 0);
+            $key  = trim((string)($input['thread_key'] ?? ''));
+            $body = (string)($input['body'] ?? '');
+            if (!$id && $key === '') jsonError('Не указано письмо');
+
+            // Пустой черновик — это не черновик, а стёртое поле
+            if (trim(strip_tags($body)) === '') {
+                if ($id) Db::q("DELETE FROM mail_drafts WHERE mail_message_id=? AND manager_id=?", [$id, (int)$manager['id']]);
+                elseif ($key !== '') Db::q("DELETE FROM mail_drafts WHERE thread_key=? AND manager_id=?", [$key, (int)$manager['id']]);
+                jsonOk(['saved' => false]);
+            }
+
+            $data = [
+                'mail_message_id' => $id ?: null,
+                'thread_key'      => $key ?: null,
+                'manager_id'      => (int)$manager['id'],
+                'body'            => $body,
+                'subject'         => (string)($input['subject'] ?? ''),
+                'updated_at'      => date('Y-m-d H:i:s'),
+            ];
+            $existing = $id
+                ? Db::one("SELECT id FROM mail_drafts WHERE mail_message_id=? AND manager_id=?", [$id, (int)$manager['id']])
+                : Db::one("SELECT id FROM mail_drafts WHERE thread_key=? AND manager_id=?", [$key, (int)$manager['id']]);
+            if ($existing) Db::update('mail_drafts', $data, 'id=?', [$existing['id']]);
+            else Db::insert('mail_drafts', $data);
+            jsonOk(['saved' => true]);
+        }
+
+        case 'draft_clear': {
+            $id  = (int)($input['id'] ?? 0);
+            $key = trim((string)($input['thread_key'] ?? ''));
+            if ($id) Db::q("DELETE FROM mail_drafts WHERE mail_message_id=? AND manager_id=?", [$id, (int)$manager['id']]);
+            if ($key !== '') Db::q("DELETE FROM mail_drafts WHERE thread_key=? AND manager_id=?", [$key, (int)$manager['id']]);
+            jsonOk();
+        }
 
         case 'mark_spam':
             // «Спам»: files the letter as spam, moves it into the mailbox's own

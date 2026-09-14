@@ -72,6 +72,43 @@ class Notifier {
     }
 
     // Get unread notifications for a manager
+    /**
+     * Звуки уведомлений — то, что реально лежит в `sounds/` (модуль 023).
+     *
+     * Список читается с диска, а не хранится в настройках: файл положили по
+     * FTP — он появился в выборе сам, файл убрали — он из выбора пропал, и
+     * настройка, указывающая в пустоту, звука просто не даёт.
+     *
+     * @return array<int,array{file:string,name:string,url:string}>
+     */
+    public static function sounds(): array {
+        $dir = ROOT . '/sounds';
+        if (!is_dir($dir)) return [];
+
+        $out = [];
+        foreach (scandir($dir) ?: [] as $file) {
+            if ($file[0] === '.') continue;
+            $ext = strtolower((string)pathinfo($file, PATHINFO_EXTENSION));
+            if (!in_array($ext, ['mp3', 'ogg', 'wav', 'm4a'], true)) continue;
+            $out[] = [
+                'file' => $file,
+                // «universfield-new-notification-017-352293.mp3» человеку ничего
+                // не говорит: выкидываем хвост из цифр и разделители
+                'name' => self::soundName($file),
+                'url'  => '/sounds/' . rawurlencode($file),
+            ];
+        }
+        usort($out, fn($a, $b) => strcmp($a['name'], $b['name']));
+        return $out;
+    }
+
+    private static function soundName(string $file): string {
+        $name = (string)pathinfo($file, PATHINFO_FILENAME);
+        $name = (string)preg_replace('/[-_]\d{4,}$/', '', $name);
+        $name = str_replace(['-', '_'], ' ', $name);
+        return mb_convert_case(trim($name), MB_CASE_TITLE, 'UTF-8');
+    }
+
     public static function getUnread(int $managerId): array {
         return Db::all(
             "SELECT id, type, title, body, ref_type, ref_id, url, created_at FROM notifications WHERE manager_id=? AND is_read=0 ORDER BY created_at DESC",

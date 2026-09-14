@@ -141,7 +141,10 @@ final class Catalog {
      */
     public static function priceFor(array $product, ?int $counterpartyId = null, ?string $priceType = null): float {
         $prices = self::decodePrices($product['prices_json'] ?? null);
-        if (!$prices) return (float)($product['price'] ?? 0);
+        // У модификации цены может не быть вовсе, а нужного ТИПА цены — не быть
+        // даже когда другие типы есть. И то, и другое берётся с товара-родителя:
+        // ноль в этой строке — это КП на ноль рублей (модуль 023).
+        $prices = $prices + self::parentPrices($product);
 
         $wanted = $priceType;
         if ($wanted === null && $counterpartyId) {
@@ -150,7 +153,30 @@ final class Catalog {
         $wanted = $wanted ?? (string)Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '');
 
         if ($wanted !== '' && array_key_exists($wanted, $prices)) return (float)$prices[$wanted];
-        return (float)($product['price'] ?? 0);
+
+        $own = (float)($product['price'] ?? 0);
+        if ($own > 0) return $own;
+        // Ни выбранного типа, ни своей цены — годится любая цена родителя,
+        // лишь бы это не был ноль
+        foreach ($prices as $value) {
+            if ((float)$value > 0) return (float)$value;
+        }
+        return $own;
+    }
+
+    /** Цены товара-родителя модификации, по типам. Для товара — пустой массив. */
+    private static function parentPrices(array $product): array {
+        $parentId = trim((string)($product['parent_id'] ?? ''));
+        if ($parentId === '') return [];
+
+        $row = Db::one("SELECT price, prices_json FROM products_cache WHERE moysklad_id=?", [$parentId]);
+        if (!$row) return [];
+
+        $prices = self::decodePrices($row['prices_json'] ?? null);
+        if (!$prices && (float)($row['price'] ?? 0) > 0) {
+            $prices[(string)Settings::get('CATALOG_DEFAULT_PRICE_TYPE', 'Цена продажи')] = (float)$row['price'];
+        }
+        return $prices;
     }
 
     /** `{type name: value}` decoded from products_cache.prices_json, or []. */

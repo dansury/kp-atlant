@@ -1307,6 +1307,62 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '24')");
         $current = 24;
     }
+
+    // v25 — модуль 023: позиция, которой нет на складе, получает срок ожидания,
+    // скидку за ожидание и долю предоплаты; цену и скидку можно поставить
+    // руками; под каждой строкой подбора живёт развёрнутый комментарий; письмо,
+    // отмеченное спамом, уходит с доски; сквозной поиск по почте.
+    if ($current < 25) {
+        // «Под заказ» перестаёт быть словом в примечании и становится тремя
+        // величинами, которые печатаются и складываются в цену (модуль 023).
+        // NULL — «не заполняли», и тогда работают значения из настроек.
+        foreach (['proposal_items', 'request_items'] as $table) {
+            Db::ensureColumn($table, 'wait_on', 'INTEGER', '0');
+            Db::ensureColumn($table, 'wait_months', 'INTEGER');
+            Db::ensureColumn($table, 'wait_discount', 'REAL');
+            Db::ensureColumn($table, 'wait_prepay', 'INTEGER');
+            // Ручная скидка на позицию и признак «цену поставил человек»:
+            // пересборка КП и повторный подбор такую цену не перетирают
+            Db::ensureColumn($table, 'discount_percent', 'REAL', '0');
+            Db::ensureColumn($table, 'price_is_manual', 'INTEGER', '0');
+            // Развёрнутый комментарий под позицией. Заполняется описанием из
+            // МойСклад, правится менеджером и уходит в файл и в письмо.
+            Db::ensureColumn($table, 'comment_text', 'TEXT');
+        }
+
+        // Сколько фотографий печатать в ЭТОМ КП. Пусто — общая настройка.
+        Db::ensureColumn('proposals', 'photos_per_item', 'INTEGER');
+
+        // Черновик ответа, который менеджер не отправил. Живёт у письма, а не
+        // в браузере: вкладку закрыли — текст остался (модуль 023).
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS mail_drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mail_message_id INTEGER REFERENCES mail_messages(id) ON DELETE CASCADE,
+            thread_key TEXT,
+            manager_id INTEGER REFERENCES managers(id),
+            body TEXT NOT NULL DEFAULT '',
+            subject TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_drafts_one ON mail_drafts(mail_message_id, manager_id);
+SQL);
+
+        // Поиск идёт и по именам файлов, и по тому, что из них вытащили
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_attach_name ON attachments(filename)");
+
+        // «Загрузить заново, не считаясь с дубликатами»: импорт, который кладёт
+        // письма даже поверх дедупликации — иначе потерянный вместе с ящиком
+        // архив уже не вернуть из того же самого файла
+        Db::ensureColumn('mbox_imports', 'force', 'INTEGER', '0');
+
+        // Письма ящиков, которых больше нет, — обратно на экран (модуль 023)
+        require_once __DIR__ . '/mail.php';
+        MailArchive::restoreOrphaned();
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '25')");
+        $current = 25;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

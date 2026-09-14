@@ -15,7 +15,10 @@ class KpContent {
     // Existing manager-edited text is never overwritten.
     public static function enrichItems(int $proposalId): void {
         $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
-        $maxImages = (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
+        $perItem = Db::val("SELECT photos_per_item FROM proposals WHERE id=?", [$proposalId]);
+        $maxImages = ($perItem !== null && $perItem !== '')
+            ? max(0, (int)$perItem)
+            : (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
 
         foreach ($items as $item) {
             $msId = $item['moysklad_product_id'] ?? '';
@@ -47,6 +50,13 @@ class KpContent {
                 $included = Markup::toMarkdown((string)($product['included_text'] ?? ''))
                     ?: self::splitDescription($product['description'] ?? '')['included'];
                 if ($included) $upd['included_text'] = $included;
+            }
+
+            // Развёрнутый комментарий по позиции (модуль 023). Заполняется
+            // описанием из МойСклад — размеченным, а не тегами наружу, — потом
+            // правится менеджером и уходит в КП и в письмо. Правленое не трогаем.
+            if (trim((string)($item['comment_text'] ?? '')) === '' && !empty($product['description'])) {
+                $upd['comment_text'] = Markup::toMarkdown((string)$product['description']);
             }
 
             // Photos — cached on disk, refreshed at most monthly
