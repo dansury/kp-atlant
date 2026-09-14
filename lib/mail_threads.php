@@ -13,6 +13,8 @@
  * two mailboxes share no Message-ID history at all. `In-Reply-To` is used as a
  * second chance for letters whose subject is empty or was rewritten.
  */
+require_once __DIR__ . '/mail_text.php';
+
 final class MailThreads {
 
     /**
@@ -239,7 +241,7 @@ final class MailThreads {
         if (!$agg || !(int)$agg['total']) return null;
 
         $last = Db::one(
-            "SELECT m.*, b.name AS mailbox_name, c.name AS counterparty_name
+            "SELECT m.*, b.name AS mailbox_name, b.email AS mailbox_email, c.name AS counterparty_name
              FROM mail_messages m
              LEFT JOIN mailboxes b ON b.id = m.mailbox_id
              LEFT JOIN counterparties c ON c.id = m.counterparty_id
@@ -274,9 +276,11 @@ final class MailThreads {
             'last_at'         => $agg['last_at'],
             'last_direction'  => $last['direction'],
             'last_from'       => $last['from_email'],
+            'last_from_name'  => self::realSender($last)['name'],
             'last_to'         => $last['to_emails'],
             'last_id'         => (int)$last['id'],
-            'preview'         => mb_substr(trim((string)$last['body_text']), 0, 160),
+            // Превью — это письмо, а не служебная шапка пересылки
+            'preview'         => MailText::preview((string)$last['body_text']),
             'mailbox_id'      => $last['mailbox_id'] !== null ? (int)$last['mailbox_id'] : null,
             'mailbox_name'    => $last['mailbox_name'],
             'mailboxes'       => $boxes,
@@ -334,8 +338,39 @@ final class MailThreads {
             $row['attachments'] = $row['has_attachment']
                 ? Db::all("SELECT id, filename, size, mime FROM attachments WHERE mail_message_id=?", [$row['id']])
                 : [];
+            // Настоящий автор пересланного письма — чтобы карточка называла
+            // человека, а не наш собственный ящик, через который оно пришло
+            $real = self::realSender($row);
+            $row['real_from_name']  = $real['name'];
+            $row['real_from_email'] = $real['email'];
+            $row['is_forwarded']    = $real['forwarded'];
         }
+        unset($row);
         return $rows;
+    }
+
+    /**
+     * Кто написал письмо: тот, кто в заголовке, — или тот, кого назвала шапка
+     * пересылки, если письмо переслали.
+     *
+     * История, залитая из mbox, вся значится «от нас»: в `From` стоит наш
+     * ящик, а клиент — внутри строкой «ОТ: Имя <адрес>». Список переписок,
+     * называвший отправителем наш собственный адрес, читался как сломанный.
+     *
+     * @return array{name:string,email:string,forwarded:bool}
+     */
+    public static function realSender(array $row): array {
+        $name  = (string)($row['from_name'] ?? '');
+        $email = (string)($row['from_email'] ?? '');
+
+        $fwd = MailText::forwardedFrom((string)($row['body_text'] ?? ''));
+        // Подменяем только там, где заголовок и правда бесполезен: письмо
+        // пришло «от нас самих», а внутри лежит чужое
+        $ownBox = $email !== '' && $email === (string)($row['mailbox_email'] ?? '');
+        if ($fwd && ($ownBox || $email === '')) {
+            return ['name' => $fwd['name'] ?: $fwd['email'], 'email' => $fwd['email'], 'forwarded' => true];
+        }
+        return ['name' => $name ?: $email, 'email' => $email, 'forwarded' => (bool)$fwd];
     }
 
     /** Mark every inbound letter of a thread read — opening it is reading it. */

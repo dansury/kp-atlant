@@ -54,6 +54,33 @@ final class Outbox {
     }
 
     /**
+     * Положить в список вложений файл, который сервис собрал сам, — счёт из
+     * МойСклад, КП, что угодно с диска (issue #38).
+     *
+     * Отличается от `accept()` только источником: там пришедший из браузера
+     * `$_FILES`, здесь готовый путь. Оригинал остаётся на месте — копия
+     * живёт своей жизнью и убирается вместе с остальными черновиками.
+     */
+    public static function adopt(string $path, string $filename, int $managerId): array {
+        if (!is_file($path)) throw new RuntimeException('Файла нет на сервере: ' . basename($path));
+
+        $maxMb = max(1, (int)Settings::get('MAIL_ATTACH_MAX_MB', 25));
+        $size = (int)filesize($path);
+        if ($size > $maxMb * 1024 * 1024) {
+            throw new RuntimeException("Файл больше $maxMb МБ — столько почта не принимает");
+        }
+
+        $original = self::safeName($filename !== '' ? $filename : basename($path));
+        $stored = bin2hex(random_bytes(8)) . '__' . $original;
+        if (!@copy($path, self::dir($managerId) . '/' . $stored)) {
+            throw new RuntimeException('Файл не удалось положить к письму');
+        }
+
+        self::sweep($managerId);
+        return ['name' => $stored, 'filename' => $original, 'size' => $size];
+    }
+
+    /**
      * Имена → пути на диске. Всё, чего нет, молча пропускается: письмо не
      * должно упасть из-за файла, который уже убрали.
      *

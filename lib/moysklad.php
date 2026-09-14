@@ -645,6 +645,53 @@ class MoySklad {
         ];
     }
 
+    /**
+     * Выставить счёт покупателю (issue #38).
+     *
+     * Счёт создаётся из позиций КП: менеджер, дошедший до «клиент согласен»,
+     * не должен уходить в МойСклад и набирать те же строки руками. Права
+     * проверяются заранее — `invoiceout` без права записи отвечает 403, и
+     * пустой счёт в аккаунте лучше не оставлять.
+     */
+    public static function createInvoice(array $data): array {
+        $positions = array_map(fn($p) => [
+            'quantity'   => $p['quantity'],
+            'price'      => $p['price'] * 100,   // МойСклад считает в копейках
+            'discount'   => $p['discount'] ?? 0,
+            'vat'        => $p['vat'] ?? 0,
+            'assortment' => ['meta' => [
+                'href'      => self::$base . '/entity/product/' . $p['product_id'],
+                'type'      => 'product',
+                'mediaType' => 'application/json',
+            ]],
+        ], $data['positions']);
+
+        $body = [
+            'organization' => ['meta' => [
+                'href'      => self::$base . '/entity/organization/' . $data['organization_id'],
+                'type'      => 'organization',
+                'mediaType' => 'application/json',
+            ]],
+            'agent' => ['meta' => [
+                'href'      => self::$base . '/entity/counterparty/' . $data['counterparty_id'],
+                'type'      => 'counterparty',
+                'mediaType' => 'application/json',
+            ]],
+            'positions' => $positions,
+        ];
+        if (!empty($data['order_id'])) {
+            $body['customerOrder'] = ['meta' => [
+                'href'      => self::$base . '/entity/customerorder/' . $data['order_id'],
+                'type'      => 'customerorder',
+                'mediaType' => 'application/json',
+            ]];
+        }
+        if (!empty($data['description'])) $body['description'] = $data['description'];
+
+        $resp = self::post('/entity/invoiceout', $body);
+        return self::mapInvoice($resp);
+    }
+
     // Get orders by counterparty (US6, US7)
     public static function getOrdersByCounterparty(string $counterpartyId, int $days = 90): array {
         $since = date('Y-m-d', strtotime("-{$days} days"));

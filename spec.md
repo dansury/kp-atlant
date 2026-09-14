@@ -24,6 +24,8 @@
 | Прочитанное, свёрнутое и размеченное | `specs/020-correspondence-markup-folding/spec.md` | Implemented |
 | История из mbox, дедупликация, логотипы и ликбез | `specs/021-mbox-import-dedup/spec.md` | Implemented |
 | Модификации, склады, «не наша номенклатура» и обучение на правках | `specs/022-variants-scope-learning/spec.md` | Implemented |
+| Единая карточка письма, «под заказ» и сквозной поиск | `specs/023-letter-card-and-order-terms/spec.md` | Implemented |
+| Разбор почты партиями, одна раскладка карточки, документ в браузере | `specs/024-bulk-triage-and-one-card/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -41,6 +43,8 @@
 | Модуль 020: прочитанное ставит человек, письма в переписке, разметка описаний | `php tests/module_020.php` |
 | Модуль 021: импорт mbox, дедупликация писем со всех ящиков, логотипы | `php tests/module_021.php` |
 | Модуль 022: модификации, «не наша номенклатура», документ, обучение на правках | `php tests/module_022.php` |
+| Модуль 023: «под заказ», ручная цена, поиск по всей почте, спам с доски | `php tests/module_023.php` |
+| Модуль 024: групповые операции, фильтры доски, превью и отправитель письма | `php tests/module_024.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

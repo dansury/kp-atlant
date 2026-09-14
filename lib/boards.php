@@ -191,6 +191,8 @@ final class Boards {
                 'unanswered'    => false, 'has_attachment' => false,
                 'subject'       => null, 'preview' => null,
                 'requests_open' => 0, 'proposal_status' => null, 'proposal_id' => null,
+                // Ящики, в которые писала компания, — по ним фильтруется доска
+                'mailbox_ids'   => [],
             ];
         }
         if (!$out) return [];
@@ -210,6 +212,7 @@ final class Boards {
                     COUNT(DISTINCT thread_key) AS threads,
                     SUM(CASE WHEN direction='in' AND is_read=0 THEN 1 ELSE 0 END) AS unread,
                     SUM(has_attachment) AS files,
+                    GROUP_CONCAT(DISTINCT mailbox_id) AS mailbox_ids,
                     MAX(date_at) AS last_at,
                     MAX(CASE WHEN direction='in'  THEN date_at END) AS last_in_at,
                     MAX(CASE WHEN direction='out' THEN date_at END) AS last_out_at
@@ -224,6 +227,9 @@ final class Boards {
             $c['threads'] += (int)$r['threads'];
             $c['unread']  += (int)$r['unread'];
             $c['has_attachment'] = $c['has_attachment'] || (int)$r['files'] > 0;
+            foreach (explode(',', (string)($r['mailbox_ids'] ?? '')) as $mb) {
+                if ($mb !== '' && !in_array((int)$mb, $c['mailbox_ids'], true)) $c['mailbox_ids'][] = (int)$mb;
+            }
             foreach (['last_at', 'last_in_at', 'last_out_at'] as $f) {
                 if ($r[$f] && (string)$r[$f] > (string)$c[$f]) $c[$f] = $r[$f];
             }
@@ -547,6 +553,101 @@ final class Boards {
 
     public static function deleteCard(int $cardId): void {
         Db::q("DELETE FROM board_cards WHERE id=?", [$cardId]);
+    }
+
+    /**
+     * Групповая операция над отмеченными карточками.
+     *
+     * Доска — это место, где разбирают почту, а разбор почты на сорока
+     * карточках по одной карточке за раз не разбор, а работа руками. Поэтому
+     * отмеченным карточкам можно сказать одно и то же: прочитано, в архив,
+     * спам, переехать в колонку, уйти с доски.
+     *
+     * Карточка компании — это ВСЕ её переписки, поэтому операция идёт по
+     * цепочкам, а не по письмам: «в архив» на карточке значит «вся переписка
+     * этой компании — не наш профиль», ровно как и в самой карточке.
+     *
+     * @param array<int,int> $cardIds
+     * @return array{done:int,failed:int,errors:array<int,string>}
+     */
+    public static function bulk(array $cardIds, string $op, array $opts = [], ?int $managerId = null): array {
+        require_once __DIR__ . '/mailsync.php';
+
+        $ids = array_values(array_unique(array_filter(array_map('intval', $cardIds))));
+        if (!$ids) return ['done' => 0, 'failed' => 0, 'errors' => []];
+
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $cards = Db::all("SELECT * FROM board_cards WHERE id IN ($in)", $ids);
+
+        $done = 0; $failed = 0; $errors = [];
+        foreach ($cards as $card) {
+            try {
+                switch ($op) {
+                    case 'move':
+                        $columnId = (int)($opts['column_id'] ?? 0);
+                        if (!$columnId) throw new RuntimeException('Не выбрана колонка');
+                        // В конец колонки: групповое перемещение не должно
+                        // перетасовывать то, что менеджер уже разложил
+                        self::moveCard((int)$card['id'], $columnId, PHP_INT_MAX);
+                        break;
+
+                    case 'remove':
+                        self::deleteCard((int)$card['id']);
+                        break;
+
+                    case 'read':
+                        foreach (self::cardThreadKeys($card) as $key) MailThreads::markRead($key);
+                        break;
+
+                    case 'archive':
+                        foreach (self::cardThreadKeys($card) as $key) MailSync::archiveThread($key, $managerId);
+                        // Убранное «не наш профиль» с доски уходит вместе с письмами
+                        self::deleteCard((int)$card['id']);
+                        break;
+
+                    case 'unarchive':
+                        foreach (self::cardThreadKeys($card) as $key) MailSync::unarchiveThread($key);
+                        break;
+
+                    case 'spam':
+                        // Спам — про входящие письма: наши собственные ответы
+                        // спамом не бывают
+                        foreach (self::cardMessageIds($card, 'in') as $mid) MailSync::markAsSpam($mid);
+                        self::deleteCard((int)$card['id']);
+                        break;
+
+                    default:
+                        throw new RuntimeException('Неизвестная операция: ' . $op);
+                }
+                $done++;
+            } catch (Throwable $e) {
+                $failed++;
+                $errors[] = trim((string)$card['title']) . ': ' . $e->getMessage();
+            }
+        }
+        return ['done' => $done, 'failed' => $failed, 'errors' => array_slice($errors, 0, 5)];
+    }
+
+    /** Все цепочки, которые несёт карточка: у компании — её переписка целиком. */
+    private static function cardThreadKeys(array $card): array {
+        if (!empty($card['counterparty_id'])) {
+            return array_column(Db::all(
+                "SELECT DISTINCT thread_key FROM mail_messages
+                 WHERE counterparty_id=? AND thread_key IS NOT NULL AND archived_at IS NULL",
+                [(int)$card['counterparty_id']]), 'thread_key');
+        }
+        return !empty($card['thread_key']) ? [(string)$card['thread_key']] : [];
+    }
+
+    /** Письма карточки — по направлению, когда операция касается только входящих. */
+    private static function cardMessageIds(array $card, ?string $direction = null): array {
+        $keys = self::cardThreadKeys($card);
+        if (!$keys) return [];
+        $in = implode(',', array_fill(0, count($keys), '?'));
+        $sql = "SELECT id FROM mail_messages WHERE thread_key IN ($in) AND archived_at IS NULL";
+        $params = $keys;
+        if ($direction !== null) { $sql .= " AND direction=?"; $params[] = $direction; }
+        return array_map('intval', array_column(Db::all($sql, $params), 'id'));
     }
 
     /**
