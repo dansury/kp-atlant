@@ -232,15 +232,13 @@ class PdfGenerator {
      * черновик, а имя отправителя в шапке — не замена знаку.
      */
     private static function bundledLogos(): array {
+        require_once __DIR__ . '/branding.php';
         return [
-            // Загруженный в «Настройках» — сначала новый адрес, затем тот, по
-            // которому логотипы лежали раньше: деплой их не перезаписывает
-            ...glob(ROOT . '/storage/logo/logo.*') ?: [],
-            ROOT . '/public/assets/img/logo.png',
-            ROOT . '/public/assets/img/logo.jpg',
-            ROOT . '/public/assets/img/logo.svg',
+            // Загруженный в «Настройках → Логотипы» — он лежит в storage/, вне
+            // репозитория, потому что деплой перезаписывает public/assets/
+            ...array_filter([Branding::uploaded('kp')]),
             // Встроенный запасной знак: КП не уходит клиенту без логотипа
-            ROOT . '/public/assets/img/logo-default.png',
+            ...Branding::bundled('kp'),
         ];
     }
 

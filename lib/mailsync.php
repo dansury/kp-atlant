@@ -70,6 +70,10 @@ final class MailSync {
             if (!$id) continue;
             $stored++;
             self::storeAttachments($id, $msg['attachments'] ?? []);
+            // An answer pulled out of «Отправленные» never goes through the
+            // request pipeline, so nothing else would ever put it on the card of
+            // the company it was written to (module 021).
+            if ($direction === 'out') MailArchive::linkCounterparty($id);
         }
         $reader->close();
 
@@ -79,11 +83,11 @@ final class MailSync {
     }
 
     /**
-     * $ocr=false during «скачать весь архив»: recognizing thousands of old scans
-     * costs money, runs into the Vision rate limit and nobody asked for it —
-     * the text layer of a PDF is still extracted.
+     * $ocr=false during «скачать весь архив» and during an mbox import: recognizing
+     * thousands of old scans costs money, runs into the Vision rate limit and
+     * nobody asked for it — the text layer of a PDF is still extracted.
      */
-    private static function storeAttachments(int $mailMessageId, array $files, bool $ocr = true): array {
+    public static function storeAttachments(int $mailMessageId, array $files, bool $ocr = true): array {
         $stored = [];
         foreach ($files as $file) {
             try {
@@ -757,6 +761,9 @@ final class MailSync {
                 if (!$id) continue;
                 $stored++;
                 self::storeAttachments($id, $msg['attachments'] ?? [], false);
+                // Downloaded history is history on a company card, not a pile in
+                // the archive: the same link an mbox import makes (module 021)
+                MailArchive::linkCounterparty($id);
             }
             // The window held nothing (or was fully consumed) — jump past it
             if (!$uids || $cursor >= end($uids)) $cursor = max($cursor, min($to, $maxUid));

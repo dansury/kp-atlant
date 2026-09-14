@@ -21,6 +21,8 @@
 | Модуль сайта: ссылки и QR-коды на товары | `specs/017-bitrix-site-module/spec.md` | Implemented |
 | КП не уходит клиенту с молчаливой дырой | `specs/018-kp-completeness/spec.md` | Implemented |
 | Архив писем, выключаемые ящики, карточка с телефона | `specs/019-archive-mailboxes-mobile/spec.md` | Implemented |
+| Прочитанное, свёрнутое и размеченное | `specs/020-correspondence-markup-folding/spec.md` | Implemented |
+| История из mbox, дедупликация, логотипы и ликбез | `specs/021-mbox-import-dedup/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -35,6 +37,8 @@
 | Модули 015 и 016: формы сайта, спам, bounce, вложения, единый адрес, .docx | `php tests/module_015_016.php` |
 | Модуль 017: QR-код и разбор выгрузки каталога с сайта | `php tests/module_017.php` |
 | Модуль 019: архив писем, выключение и удаление ящика, колонка цены = тип цены | `php tests/module_019.php` |
+| Модуль 020: прочитанное ставит человек, письма в переписке, разметка описаний | `php tests/module_020.php` |
+| Модуль 021: импорт mbox, дедупликация писем со всех ящиков, логотипы | `php tests/module_021.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

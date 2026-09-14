@@ -1193,6 +1193,53 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '22')");
         $current = 22;
     }
+
+    // v23 — модуль 021: импорт переписки из mbox и дедупликация писем со всех
+    // ящиков. Отпечаток письма (отправитель, получатели, тема, текст, файлы) —
+    // то, чем одно и то же письмо узнаётся, когда Message-ID переписан шлюзом
+    // или его вовсе нет.
+    if ($current < 23) {
+        Db::ensureColumn('mail_messages', 'dedup_hash', 'TEXT');
+        Db::ensureColumn('mail_messages', 'import_id', 'INTEGER');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_mail_dedup ON mail_messages(dedup_hash)");
+        // Дедупликация ищет Message-ID по всем ящикам сразу — без этого индекса
+        // это полный проход по архиву на каждое входящее письмо
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_mail_message_id ON mail_messages(message_id)");
+        Db::ensureColumn('attachments', 'content_hash', 'TEXT');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_attach_hash ON attachments(mail_message_id, content_hash)");
+
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS mbox_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            size INTEGER NOT NULL DEFAULT 0,
+            byte_offset INTEGER NOT NULL DEFAULT 0,
+            mailbox_id INTEGER REFERENCES mailboxes(id),
+            create_companies INTEGER NOT NULL DEFAULT 0,
+            scanned INTEGER NOT NULL DEFAULT 0,
+            imported INTEGER NOT NULL DEFAULT 0,
+            duplicates INTEGER NOT NULL DEFAULT 0,
+            failed INTEGER NOT NULL DEFAULT 0,
+            done INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            manager_id INTEGER REFERENCES managers(id),
+            started_at TEXT,
+            finished_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_mbox_imports_file ON mbox_imports(filename, id);
+SQL);
+
+        // Отпечатки писем, которые уже лежат в архиве. На маленькой базе это
+        // делается здесь и сейчас; большую досчитывают шаги импорта и кнопка в
+        // «Настройки → Почта» — до тех пор старые письма дедуплицируются по
+        // Message-ID, как и раньше.
+        require_once __DIR__ . '/mail.php';
+        MailArchive::backfillFingerprints(2000, 10.0);
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '23')");
+        $current = 23;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

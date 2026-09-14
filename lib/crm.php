@@ -24,16 +24,33 @@ class Crm {
      * e-mail is accepted as a company name.
      */
     public static function resolveCounterparty(array $hints): ?int {
-        $inn    = self::cleanInn($hints['inn'] ?? '');
-        $name   = trim((string)($hints['name'] ?? ''));
-        $email  = trim((string)($hints['email'] ?? ''));
-        $domain = self::corporateDomain($email);
+        $id = self::findCounterparty($hints);
+        if ($id) return $id;
 
-        if ($name === '' || filter_var($name, FILTER_VALIDATE_EMAIL) !== false) {
-            $fromText = self::companyFromText((string)($hints['text'] ?? ''));
-            if ($fromText !== '') $name = $fromText;
-        }
+        [$inn, $name, $email, $domain] = self::identityHints($hints);
+        if ($name === '' && $email === '') return null;
 
+        return Db::insert('counterparties', [
+            'name'            => $name !== '' ? $name : $email,
+            'name_normalized' => normalizeCompanyName($name !== '' ? $name : $email),
+            'inn'             => $inn ?: null,
+            'email_domain'    => $domain,
+            'contact_person'  => $hints['contact_person'] ?? null,
+            'contact_email'   => $email ?: null,
+            'contact_phone'   => $hints['phone'] ?? null,
+        ]);
+    }
+
+    /**
+     * The lookup half of `resolveCounterparty()`: an EXISTING card or nothing.
+     *
+     * Imported history goes through this door (module 021). A three-year mbox
+     * carries thousands of senders, and creating a company card for each would
+     * bury the real ones — old letters attach themselves to the cards that are
+     * already there, and open no new ones unless the operator asked for it.
+     */
+    public static function findCounterparty(array $hints): ?int {
+        [$inn, $name, $email, $domain] = self::identityHints($hints);
         $found = null;
 
         if ($inn) {
@@ -64,18 +81,21 @@ class Crm {
             }
             return $id;
         }
+        return null;
+    }
 
-        if ($name === '' && $email === '') return null;
+    /** ИНН, название, адрес и корпоративный домен — в том виде, в каком по ним ищут. */
+    private static function identityHints(array $hints): array {
+        $inn    = self::cleanInn($hints['inn'] ?? '');
+        $name   = trim((string)($hints['name'] ?? ''));
+        $email  = trim((string)($hints['email'] ?? ''));
+        $domain = self::corporateDomain($email);
 
-        return Db::insert('counterparties', [
-            'name'            => $name !== '' ? $name : $email,
-            'name_normalized' => normalizeCompanyName($name !== '' ? $name : $email),
-            'inn'             => $inn ?: null,
-            'email_domain'    => $domain,
-            'contact_person'  => $hints['contact_person'] ?? null,
-            'contact_email'   => $email ?: null,
-            'contact_phone'   => $hints['phone'] ?? null,
-        ]);
+        if ($name === '' || filter_var($name, FILTER_VALIDATE_EMAIL) !== false) {
+            $fromText = self::companyFromText((string)($hints['text'] ?? ''));
+            if ($fromText !== '') $name = $fromText;
+        }
+        return [$inn, $name, $email, $domain];
     }
 
     /**

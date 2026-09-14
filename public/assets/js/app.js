@@ -2148,6 +2148,9 @@ const App = {
     settingsTabs() {
         const admin = !!(this.manager && this.manager.is_admin);
         return [
+            // «Ликбез» стоит первым и открыт всем: это единственная страница,
+            // которую человек ищет в первый рабочий день (модуль 021)
+            ['guide',      'Ликбез',          false],
             ['overview',   'Обзор',           true],
             ['catalog',    'Каталог товаров', false],
             ['moysklad',   'МойСклад',        true],
@@ -2155,6 +2158,7 @@ const App = {
             ['mail',       'Почта',           true],
             ['processing', 'Обработка писем', true],
             ['kp',         'Оформление КП',   true],
+            ['branding',   'Логотипы',        true],
             ['knowledge',  'База знаний',     true],
             ['managers',   'Менеджеры',       true],
             ['prompts',    'Промпты',         true],
@@ -2166,7 +2170,9 @@ const App = {
 
     pageSettings(tab) {
         const tabs = this.settingsTabs();
-        if (!tabs.some(([k]) => k === tab)) tab = tabs[0][0];
+        // Без явной вкладки админ попадает в «Обзор» — он заходит сюда работать,
+        // а менеджер в «Ликбез»: ему здесь нужно объяснение, а не тумблеры
+        if (!tabs.some(([k]) => k === tab)) tab = (this.manager && this.manager.is_admin) ? 'overview' : 'guide';
         document.getElementById('app').innerHTML = `
             <h2 style="margin-bottom:12px">Настройки</h2>
             <div class="tabs">
@@ -2175,6 +2181,7 @@ const App = {
             <div id="adminBody"><div class="loading">Загрузка...</div></div>
         `;
         const render = {
+            guide:      () => this.settingsGuide(),
             overview:   () => this.adminOverview(),
             catalog:    () => this.settingsCatalog(),
             moysklad:   () => this.settingsMoysklad(),
@@ -2182,6 +2189,7 @@ const App = {
             mail:       () => this.adminMail(),
             processing: () => this.settingsProcessing(),
             kp:         () => this.settingsKp(),
+            branding:   () => this.settingsBranding(),
             knowledge:  () => this.adminKnowledge(),
             managers:   () => this.adminManagers(),
             prompts:    () => this.adminPrompts(),
@@ -2190,6 +2198,275 @@ const App = {
             logs:       () => this.adminLogs(),
         }[tab] || (() => this.settingsCatalog());
         render();
+    },
+
+    // ---- «Ликбез»: как этим пользоваться (модуль 021) ----
+    //
+    // Одна страница на две роли. Менеджеру — про экран, на котором он работает
+    // каждый день; администратору — про то, чем этот экран кормится. Текст живёт
+    // ЗДЕСЬ, а не в вики компании: вики — это знания о товаре, которые уходят в
+    // промпты, а это инструкция к интерфейсу, и путать их нельзя.
+    settingsGuide(role) {
+        const admin = !!(this.manager && this.manager.is_admin);
+        this.guideRole = role || this.guideRole || 'manager';
+        if (!admin) this.guideRole = 'manager';
+
+        const section = (title, body) => `
+            <div class="card">
+                <div class="card__title">${title}</div>
+                ${body}
+            </div>`;
+
+        document.getElementById('adminBody').innerHTML = `
+            ${admin ? `
+            <div class="tabs" style="margin-bottom:12px">
+                <a class="tab ${this.guideRole === 'manager' ? 'tab--active' : ''}"
+                   onclick="App.settingsGuide('manager')">Для менеджера</a>
+                <a class="tab ${this.guideRole === 'admin' ? 'tab--active' : ''}"
+                   onclick="App.settingsGuide('admin')">Для администратора</a>
+            </div>` : ''}
+            ${this.guideRole === 'admin' ? this.guideAdminHtml(section) : this.guideManagerHtml(section)}
+        `;
+    },
+
+    guideManagerHtml(section) {
+        return `
+            ${section('Что это за программа', `
+                <p>Панель делает из входящего письма готовое коммерческое предложение. Письма из всех
+                   почтовых ящиков компании стекаются сюда сами, раскладываются по компаниям и ждут ответа.
+                   Отвечать, считать позиции, собирать КП и отправлять его клиенту — всё на одном экране.</p>
+                <p class="muted">Почтовый клиент открывать не нужно: ответ уходит с того же адреса, что и раньше,
+                   и его копия ложится в «Отправленные» вашего ящика.</p>`)}
+
+            ${section('Главный экран — доска «Письма»', `
+                <p>Карточка на доске — это <strong>компания</strong>, а не одно письмо. Внутри карточки
+                   вся переписка с ней, её запросы и её КП.</p>
+                <ul>
+                    <li><strong>Жирная карточка</strong> — клиент написал последним, ответа он ещё не получил.
+                        Такие карточки сами поднимаются вверх колонки.</li>
+                    <li><strong>Бледная карточка</strong> — на последнее письмо мы уже ответили.</li>
+                    <li>Карточку можно перетащить в другую колонку — порядок колонок программа никогда
+                        не меняет сама, это ваша разметка работы.</li>
+                    <li>Новые письма попадают во «Входящие» без всякой кнопки: доска обновляется на каждом открытии.</li>
+                </ul>`)}
+
+            ${section('Карточка компании: где что лежит', `
+                <ul>
+                    <li><strong>Переписка</strong> — цепочки писем. Самая свежая переписка, которая ждёт ответа,
+                        раскрывается сразу, вместе с полем ответа и таблицей подходящих позиций.</li>
+                    <li><strong>Заметки и события</strong> — то, что вы записали руками, и вехи сделки
+                        (создано КП, выставлен счёт). Писем здесь нет намеренно: письма читаются в «Переписке».</li>
+                    <li><strong>Реквизиты, контакты, ЭДО</strong> — справа. ИНН, адрес и идентификатор ЭДО
+                        программа вытаскивает из писем сама, но вы можете поправить.</li>
+                </ul>
+                <p class="muted">Письмо считается прочитанным, когда его открыли вы, — карточка, раскрывшаяся сама,
+                   счётчик непрочитанных не трогает.</p>`)}
+
+            ${section('Как ответить на письмо', `
+                <ol>
+                    <li>Откройте переписку на карточке компании.</li>
+                    <li>Нажмите <strong>«Сгенерировать ответ»</strong> — нейросеть напишет черновик по тексту письма,
+                        каталогу и базе знаний компании.</li>
+                    <li><strong>Прочитайте и поправьте.</strong> Черновик — это заготовка, а не готовое письмо:
+                        ответственность за то, что уйдёт клиенту, остаётся на вас.</li>
+                    <li>Прикрепите файлы, если нужно, и нажмите «Отправить».</li>
+                </ol>
+                <p class="muted">Ваши правки не пропадают впустую: программа запоминает разницу между черновиком
+                   и тем, что вы отправили, и следующие черновики становятся ближе к вашему стилю.</p>`)}
+
+            ${section('Как собрать КП', `
+                <ol>
+                    <li>В письме с запросом откройте <strong>«Подходящие позиции»</strong> — строки запроса уже
+                        сопоставлены с каталогом.</li>
+                    <li>Где стоит <span class="badge badge--warning">нужен выбор</span>, программа нашла несколько
+                        одинаково подходящих товаров и не стала решать за вас — выберите модель сами.</li>
+                    <li>Позиции, которых нет в наличии, получают аналог со склада; КП прямо называет,
+                        каким требованиям клиента этот аналог отвечает.</li>
+                    <li>Нажмите <strong>«Сгенерировать КП»</strong> и проверьте карточки товаров, цены и условия
+                        в редакторе. Позицию, которой у нас нет, можно свернуть — из таблицы и «Итого» она уйдёт,
+                        но в документе останется отдельной строкой «уточняем».</li>
+                    <li><strong>«Отправить клиенту»</strong> — КП уходит письмом в Word (закупщику нужен
+                        редактируемый файл); PDF можно приложить отдельно.</li>
+                </ol>
+                <p class="muted">Цены, наличие и реквизиты в документ ставит каталог и МойСклад, а не нейросеть:
+                   выдумать цифру программа не может по устройству.</p>`)}
+
+            ${section('Пометки, которые вы увидите', `
+                <ul>
+                    <li><span class="badge badge--kp">Запрос КП</span>, <span class="badge badge--new">Доставка</span>,
+                        <span class="badge badge--draft">ЭДО</span> — о чём письмо. Категорию ставит разбор входящего;
+                        если он ошибся, это видно сразу и правится руками.</li>
+                    <li><span class="badge badge--warning">не доставлено</span> — наш ответ не дошёл до адресата.
+                        Это не «клиент молчит», это надо перепроверить адрес.</li>
+                    <li><strong>«Не наш профиль»</strong> — кнопка, которая убирает переписку <em>с экрана</em>
+                        в архив. Из почтового ящика письмо никуда не исчезает, и вернуть его видно можно в любой момент.</li>
+                    <li><strong>Спам</strong> — отправитель попадает в чёрный список, следующие его письма не тревожат.</li>
+                </ul>`)}
+
+            ${section('Частые вопросы', `
+                <p><strong>Письмо пришло, а на доске компании нет.</strong> Значит, разбор счёл письмо служебным
+                   (рассылка, уведомление сервиса). Ищите его в «Архиве писем» — ссылка есть на доске.</p>
+                <p><strong>Клиент пишет с личной почты.</strong> Компания опознаётся по ИНН, домену и подписи
+                   в тексте. С gmail или mail.ru письмо может не найти карточку — привяжите его к компании руками.</p>
+                <p><strong>Одно и то же письмо два раза.</strong> Такого быть не должно: дубликаты отсекаются
+                   по Message-ID и по содержимому. Если увидели — скажите администратору, это ошибка, а не норма.</p>
+                <p><strong>Не нашёл письмо.</strong> Поиск по теме, адресу и тексту есть в «Архиве писем»
+                   и на странице компании.</p>
+                <p><strong>Панель на телефоне.</strong> Откройте «Настройки → Это устройство» и установите
+                   приложение на домашний экран — уведомления о новых письмах будут приходить туда.</p>`)}
+        `;
+    },
+
+    guideAdminHtml(section) {
+        return `
+            ${section('Что администратор держит в рабочем состоянии', `
+                <p>Менеджер работает на доске. Всё, чем эта доска кормится, живёт в «Настройках»:
+                   почтовые ящики, каталог, ключи нейросетей, реквизиты и промпты.</p>
+                <p class="muted">Любую настройку можно поменять здесь, в интерфейсе — лазить в <code>config.php</code>
+                   на сервере не нужно: значение из панели всегда важнее файла.</p>`)}
+
+            ${section('Почтовые ящики — <a href="#settings/mail">«Почта»</a>', `
+                <ul>
+                    <li>Яндекс, Mail.ru и Gmail не пускают по обычному паролю — нужен
+                        <strong>пароль приложения</strong>. Подсказка со ссылкой появляется прямо в форме ящика.</li>
+                    <li><strong>«Забрать почту»</strong> — разовая синхронизация. Регулярно её делает
+                        <code>cron/check_mail.php</code>.</li>
+                    <li><strong>«Скачать весь архив»</strong> — забирает всю переписку ящика шагами. Старые письма
+                        ложатся в архив и на карточки компаний, но запросов КП из них не создаётся.</li>
+                    <li><strong>«Отправленные»</strong> — кнопка находит настоящее имя папки на сервере. Если копия
+                        отправленного письма не появляется у клиента в ящике, начинать надо отсюда.</li>
+                    <li>Ящик <strong>выключают</strong>, а не удаляют: настройки и пароли остаются, письма можно
+                        временно убрать с экрана вместе с ним.</li>
+                </ul>`)}
+
+            ${section('Дедупликация и импорт переписки', `
+                <p><strong>Дедупликация включена по умолчанию и действует на все ящики сразу.</strong>
+                   Одно письмо не ляжет в архив дважды — ни из второго ящика, куда оно пришло копией,
+                   ни из папки «Отправленные», ни из импортированного mbox.</p>
+                <ul>
+                    <li>Первый ключ — <strong>Message-ID</strong>, он ищется по всем ящикам.</li>
+                    <li>Второй — <strong>отпечаток письма</strong>: отправитель, получатели, тема, текст и байты
+                        вложений. Ловит копии, которым шлюз переписал Message-ID.</li>
+                    <li>Совсем короткие письма («Спасибо!») по содержимому не сравниваются — два одинаковых
+                        «спасибо» в разные дни это два письма, а не одно.</li>
+                </ul>
+                <p><strong>Импорт mbox</strong> («Настройки → Почта») переносит историю из Gmail или Thunderbird:
+                   письма встают на карточки контрагентов в хронологическом порядке, со всеми файлами.
+                   Файл до размера загрузки кладётся через панель, архив на гигабайты — в <code>storage/mbox</code>
+                   по FTP: он появится в списке сам. Импорт идёт шагами и продолжается с того же места.</p>`)}
+
+            ${section('Каталог — <a href="#settings/catalog">«Каталог товаров»</a>', `
+                <ul>
+                    <li>Два источника, и КП обязано работать на любом: <strong>API МойСклад</strong> и
+                        <strong>выгрузка Excel</strong>. Умерший токен не должен останавливать работу.</li>
+                    <li>Остатки приходят только по API — в файле выгрузки лежит неснижаемый остаток, а не наличие.</li>
+                    <li><strong>Колонка цены в импорте = тип цены по умолчанию.</strong> Это одна настройка,
+                        а не две: по ней считается КП, когда для контрагента не выбран свой тип.</li>
+                    <li><strong>Векторный поиск</strong> — необязательная добавка к подбору по словам. Без ключа
+                        Yandex подбор тихо остаётся словесным, а не ломается.</li>
+                </ul>`)}
+
+            ${section('Нейросети и промпты — <a href="#settings/llm">«Нейросети»</a>, <a href="#settings/prompts">«Промпты»</a>', `
+                <ul>
+                    <li>Два провайдера с запасной цепочкой: Yandex Foundation Models и OpenRouter.
+                        Ключи вводятся здесь и показываются маской — первые и последние четыре символа.</li>
+                    <li>Все системные промпты правятся в «Промптах», с историей версий и откатом.
+                        В коде их нет.</li>
+                    <li><a href="#settings/knowledge">«База знаний»</a> — вики компании из GitHub. В промпт
+                        подмешиваются только те разделы, которые относятся к делу.</li>
+                    <li>Кнопки «Проверить» в каждой карточке говорят, что именно ответил провайдер, — не гадайте.</li>
+                </ul>`)}
+
+            ${section('Документы и знаки — <a href="#settings/kp">«Оформление КП»</a>, <a href="#settings/branding">«Логотипы»</a>', `
+                <ul>
+                    <li>Реквизиты, НДС, банк и договор тянутся из МойСклад и <strong>замораживаются</strong>
+                        в КП в момент создания: переиздание документа не меняет того, что уже подписано.</li>
+                    <li>Формат для клиента по умолчанию — Word: закупщик переносит позиции в свою форму.</li>
+                    <li>Логотипы — КП, знак приложения и значок вкладки — загружаются во вкладке «Логотипы».
+                        Файлы лежат вне репозитория, поэтому обновление кода их не перезаписывает.</li>
+                </ul>`)}
+
+            ${section('Люди, логи и обновления', `
+                <ul>
+                    <li><a href="#settings/managers">«Менеджеры»</a> — учётные записи и права. Администратор видит
+                        настройки, менеджер — только работу.</li>
+                    <li><a href="#settings/logs">«Логи»</a> — всё, что сломалось, с текстом ответа сервера.
+                        Красная цифра рядом с «Настройками» — ошибки за сутки.</li>
+                    <li><a href="#settings/all">«Все параметры»</a> — полный список настроек с описанием каждой
+                        и указанием, откуда взято текущее значение.</li>
+                    <li>Автообновление кода включается в «Все параметры → Автообновление»: каждое открытие
+                        страницы проверяет GitHub. Это режим активной разработки, на спокойном сервере его выключают.</li>
+                </ul>`)}
+        `;
+    },
+
+    // ---- Логотипы: КП, приложение, значок вкладки (модуль 021) ----
+
+    async settingsBranding() {
+        try {
+            const d = await this.api('branding.php?action=list');
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="card__title">Логотипы</div>
+                    <p class="muted">Загруженные файлы лежат в <code>storage/logo</code> — вне репозитория,
+                       поэтому обновление кода их не перезаписывает. Пока свой файл не загружен, печатается
+                       и показывается встроенный знак.</p>
+                </div>
+                ${(d.items || []).map(i => `
+                    <div class="card">
+                        <div class="card__title">${this.esc(i.title)}</div>
+                        <p class="muted">${this.esc(i.hint)}</p>
+                        <div class="flex flex--wrap" style="gap:16px;align-items:center">
+                            <img src="/${i.url}" alt="${this.esc(i.title)}"
+                                 style="max-height:64px;max-width:220px;background:#fff;border:1px solid var(--border);
+                                        border-radius:4px;padding:6px">
+                            <div>
+                                <p style="margin:0">${i.uploaded
+                                    ? `<span class="badge badge--sent">загружен</span> ${this.esc(i.filename)}`
+                                    : `<span class="badge badge--draft">встроенный</span> ${this.esc(i.filename)}`}
+                                   <span class="muted">· ${Math.max(1, Math.round(i.size / 1024))} КБ</span></p>
+                                <div class="flex flex--wrap" style="margin-top:8px;gap:8px">
+                                    <input type="file" id="brand_${i.kind}" accept=".png,.jpg,.jpeg,.svg,.webp${i.kind === 'favicon' ? ',.ico' : ''}">
+                                    <button class="btn btn--primary btn--sm" onclick="App.uploadBranding('${i.kind}')">Загрузить</button>
+                                    ${i.uploaded ? `<button class="btn btn--outline btn--sm" onclick="App.resetBranding('${i.kind}')">Вернуть встроенный</button>` : ''}
+                                </div>
+                            </div>
+                        </div>
+                    </div>`).join('')}
+                <div class="card">
+                    <div class="card__title">Где знак появится</div>
+                    <p class="muted">В коммерческом предложении — сразу, в PDF и в Word. Во вкладке браузера и на
+                       иконке установленного приложения — после перезагрузки страницы; телефон может держать
+                       старую иконку в кэше до переустановки приложения с домашнего экрана.</p>
+                </div>
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    async uploadBranding(kind) {
+        const input = document.getElementById('brand_' + kind);
+        if (!input || !input.files.length) { this.toast('Выберите файл', 'error'); return; }
+        const fd = new FormData();
+        fd.append('kind', kind);
+        fd.append('file', input.files[0]);
+        try {
+            const res = await fetch('/api/branding.php?action=upload', {method: 'POST', body: fd, credentials: 'same-origin'});
+            const raw = await res.text();
+            let d;
+            try { d = JSON.parse(raw); } catch { throw new Error(`Сервер вернул не JSON (HTTP ${res.status}). ${raw.slice(0, 200)}`); }
+            if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+            this.toast('Логотип загружен', 'success');
+            this.settingsBranding();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async resetBranding(kind) {
+        if (!confirm('Вернуть встроенный знак? Загруженный файл будет удалён.')) return;
+        try {
+            await this.api('branding.php?action=reset', {method: 'POST', body: {kind}});
+            this.toast('Вернули встроенный знак', 'success');
+            this.settingsBranding();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // ---- Catalog: the local product base the KP and the matcher read ----
@@ -4217,11 +4494,256 @@ const App = {
                        темы писем чинились после загрузки архива.</p>
                     <button class="btn btn--outline btn--sm" onclick="App.rethreadMail()">Пересобрать цепочки</button>
                 </div>
+                <div class="card" id="dedupCard"><div class="loading">Загрузка...</div></div>
+                <div class="card" id="mboxCard"><div class="loading">Загрузка...</div></div>
                 <div id="mailboxForm"></div>
             `;
             this.mailboxes = d.items;
             this.mailboxBlank = d.blank;
+            this.loadMboxCard();
         } catch (err) { this.adminFail(err); }
+    },
+
+    // ---- Дедупликация и импорт переписки из mbox (модуль 021) ----
+
+    async loadMboxCard() {
+        const dedupCard = document.getElementById('dedupCard');
+        const mboxCard = document.getElementById('mboxCard');
+        if (!dedupCard || !mboxCard) return;
+        try {
+            const d = await this.api('admin.php?action=mbox_files');
+            this.mboxState = d;
+            const dd = d.dedup || {};
+            const hashed = Math.max(0, (dd.total || 0) - (dd.unhashed || 0));
+
+            dedupCard.innerHTML = `
+                <div class="card__title">Дедупликация писем</div>
+                <p class="muted">Одно и то же письмо не ложится в архив дважды — ни из второго ящика, куда оно
+                   пришло копией, ни из папки «Отправленные», ни из импортированного mbox. Проверка идёт
+                   по всем ящикам сразу.</p>
+                <label style="display:block;margin-bottom:8px">
+                    <input type="checkbox" id="dedupOn" ${dd.enabled ? 'checked' : ''}
+                           onchange="App.saveDedup()"> Отсекать дубликаты (по умолчанию включено)
+                </label>
+                <label style="display:block;margin-bottom:8px">
+                    <input type="checkbox" id="dedupContent" ${dd.content ? 'checked' : ''}
+                           ${dd.enabled ? '' : 'disabled'} onchange="App.saveDedup()">
+                    Сравнивать ещё и по содержимому: отправитель, получатели, тема, текст и байты вложений
+                </label>
+                <p class="muted">Без второй галочки дубликат узнаётся только по Message-ID. Совсем короткие письма
+                   («Спасибо!») по содержимому не сравниваются никогда — два одинаковых «спасибо» в разные дни
+                   это два письма.</p>
+                <p>Отпечатки посчитаны у <strong>${hashed}</strong> писем из ${dd.total || 0}.
+                   ${dd.unhashed ? `<span class="muted">Пока не у всех — старые письма сравниваются
+                      по Message-ID. Досчитывается шагами, в том числе при импорте.</span>` : ''}</p>
+                ${dd.unhashed ? `<button class="btn btn--outline btn--sm" id="hashBtn" onclick="App.hashOldMail()">
+                    Досчитать отпечатки (${dd.unhashed})</button>` : ''}
+            `;
+
+            const files = d.files || [];
+            mboxCard.innerHTML = `
+                <div class="card__title">Импорт переписки из mbox</div>
+                <p class="muted">Формат выгрузки Gmail («Скачать данные»), Thunderbird и любого почтового клиента.
+                   Письма встают на карточки контрагентов в хронологическом порядке, со всеми вложениями,
+                   и не создают запросов КП — это история, а не новая работа.</p>
+                <div class="grid grid--2">
+                    <div class="form-group">
+                        <label>Файл .mbox</label>
+                        <input type="file" id="mboxFile" accept=".mbox,.mbx,.txt,.eml">
+                        <div class="muted">Сервер принимает не больше ${this.esc(d.upload_max || '')}. Архив крупнее
+                            положите по FTP в <code>${this.esc(d.dir)}</code> — он появится в списке сам.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Ящик, в который лягут письма</label>
+                        <select id="mboxMailbox">
+                            ${(d.mailboxes || []).map(b => `<option value="${b.id}">${this.esc(b.name)} — ${this.esc(b.email)}</option>`).join('')}
+                        </select>
+                        <div class="muted">Направление письма («от нас» или «нам») определяется по отправителю
+                            и меткам Gmail, а не по ящику.</div>
+                    </div>
+                </div>
+                <label style="display:block;margin-bottom:10px">
+                    <input type="checkbox" id="mboxCreateCompanies">
+                    Заводить карточки компаний для незнакомых отправителей
+                    <span class="muted">— иначе старое письмо привязывается только к уже существующей карточке,
+                    а рассылки и случайные адреса новых компаний не плодят</span>
+                </label>
+                <button class="btn btn--primary" id="mboxUploadBtn" onclick="App.uploadMbox()">Загрузить файл</button>
+                <div id="mboxProgress" style="margin-top:12px"></div>
+
+                <div class="card__title" style="margin-top:16px">Файлы в ${this.esc(d.dir)}</div>
+                ${files.length ? `
+                <div class="table-scroll">
+                <table class="table">
+                    <thead><tr><th>Файл</th><th class="num">Размер</th><th>Состояние</th><th></th></tr></thead>
+                    <tbody>
+                        ${files.map(f => this.mboxFileRow(f)).join('')}
+                    </tbody>
+                </table>
+                </div>` : '<p class="muted">Пока пусто — загрузите файл выше или положите его по FTP.</p>'}
+                ${this.mboxHistoryHtml(d.imports || [], files)}
+            `;
+        } catch (err) {
+            dedupCard.innerHTML = `<div class="card__title">Дедупликация писем</div><p class="no">${this.esc(err.message)}</p>`;
+            mboxCard.innerHTML = '';
+        }
+    },
+
+    /**
+     * Что уже импортировано. Файл после импорта обычно убирают — а ответ на
+     * вопрос «эту переписку мы уже переносили?» нужен и после этого.
+     */
+    mboxHistoryHtml(imports, files) {
+        const onDisk = new Set(files.map(f => f.filename));
+        const past = imports.filter(i => !onDisk.has(i.filename));
+        if (!past.length) return '';
+        return `
+            <div class="card__title" style="margin-top:16px">Импортированные раньше</div>
+            <div class="table-scroll">
+            <table class="table">
+                <thead><tr><th>Файл</th><th>Когда</th><th>Итог</th><th></th></tr></thead>
+                <tbody>
+                    ${past.map(i => `<tr>
+                        <td>${this.esc(i.filename)}<div class="muted">ящик: ${this.esc(i.mailbox_name) || '—'}</div></td>
+                        <td class="muted">${this.fmtDate(i.finished_at || i.started_at)}</td>
+                        <td>${i.done ? '<span class="ok">импортирован</span>' : `<span class="badge badge--draft">остановлен на ${i.percent}%</span>`}
+                            · добавлено ${i.imported} · дубликатов ${i.duplicates}${i.failed ? ` · с ошибкой ${i.failed}` : ''}
+                            ${i.exists ? '' : '<div class="muted">файла в storage/mbox больше нет</div>'}</td>
+                        <td><button class="btn btn--sm btn--outline" onclick="App.deleteMboxImport(${i.id})">Убрать из списка</button></td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+            </div>`;
+    },
+
+    mboxFileRow(f) {
+        const im = f.import;
+        const mb = (n) => (n / 1024 / 1024).toFixed(1) + ' МБ';
+        const state = !im
+            ? '<span class="muted">не импортировался</span>'
+            : (im.done
+                ? `<span class="ok">импортирован</span> · добавлено ${im.imported} · дубликатов ${im.duplicates}${im.failed ? ` · с ошибкой ${im.failed}` : ''}`
+                : `<span class="badge badge--draft">${im.percent}%</span> добавлено ${im.imported} · дубликатов ${im.duplicates}`);
+        return `
+            <tr>
+                <td><strong>${this.esc(f.filename)}</strong><div class="muted">${this.esc(f.mtime)}</div></td>
+                <td class="num">${mb(f.size)}</td>
+                <td>${state}${im && im.error ? `<div class="no">${this.esc(im.error)}</div>` : ''}</td>
+                <td>
+                    ${!im || !im.done
+                        ? `<button class="btn btn--sm btn--primary" onclick="App.startMboxImport('${this.jsStr(f.filename)}')">${im ? 'Продолжить' : 'Импортировать'}</button>`
+                        : `<button class="btn btn--sm btn--outline" onclick="App.startMboxImport('${this.jsStr(f.filename)}', true)">Импортировать заново</button>`}
+                    ${im ? `<button class="btn btn--sm btn--outline" onclick="App.deleteMboxImport(${im.id})">Убрать файл</button>` : ''}
+                </td>
+            </tr>`;
+    },
+
+    async saveDedup() {
+        const on = document.getElementById('dedupOn').checked;
+        const content = document.getElementById('dedupContent').checked;
+        try {
+            await this.api('admin.php?action=settings', {method: 'PUT', body: {values: {
+                MAIL_DEDUP: on ? '1' : '0',
+                MAIL_DEDUP_CONTENT: content ? '1' : '0',
+            }}});
+            this.toast(on ? 'Дедупликация включена' : 'Дедупликация выключена', 'success');
+            this.loadMboxCard();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async hashOldMail() {
+        const btn = document.getElementById('hashBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Считаем...'; }
+        try {
+            let left = 1;
+            // Шагами, пока есть что считать: одним запросом архив в тысячи писем
+            // на дешёвом хостинге не пережёвывается
+            while (left > 0) {
+                const r = (await this.api('admin.php?action=mail_fingerprints', {method: 'POST', body: {}})).result;
+                left = r.left;
+                if (btn) btn.textContent = `Осталось ${left}...`;
+                if (!r.done) break;
+            }
+            this.toast('Отпечатки посчитаны', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+        this.loadMboxCard();
+    },
+
+    async uploadMbox() {
+        const input = document.getElementById('mboxFile');
+        const btn = document.getElementById('mboxUploadBtn');
+        if (!input || !input.files.length) { this.toast('Выберите файл .mbox', 'error'); return; }
+        const fd = new FormData();
+        fd.append('file', input.files[0]);
+        btn.disabled = true;
+        btn.textContent = 'Загружаем...';
+        try {
+            const res = await fetch('/api/admin.php?action=mbox_upload', {method: 'POST', body: fd, credentials: 'same-origin'});
+            const raw = await res.text();
+            let d;
+            try { d = JSON.parse(raw); } catch { throw new Error(`Сервер вернул не JSON (HTTP ${res.status}). ${raw.slice(0, 200)}`); }
+            if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+            this.toast('Файл загружен, начинаем импорт', 'success');
+            await this.startMboxImport(d.filename);
+        } catch (err) {
+            this.toast(err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Загрузить файл';
+        }
+    },
+
+    async startMboxImport(filename, restart = false) {
+        const box = document.getElementById('mboxMailbox');
+        const create = document.getElementById('mboxCreateCompanies');
+        try {
+            const r = await this.api('admin.php?action=mbox_start', {method: 'POST', body: {
+                filename,
+                mailbox_id: box ? Number(box.value) : 0,
+                create_companies: create ? create.checked : false,
+            }});
+            if (restart) await this.api('admin.php?action=mbox_reset', {method: 'POST', body: {id: r.import.id}});
+            await this.runMboxImport(Number(r.import.id));
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
+     * Шагами до конца файла. Каждый шаг сам сохраняет позицию, поэтому «Стоп» —
+     * это пауза, а не потеря: продолжить можно кнопкой в списке файлов.
+     */
+    async runMboxImport(id) {
+        const out = document.getElementById('mboxProgress');
+        this.mboxStop = false;
+        let total = {imported: 0, duplicates: 0, failed: 0, scanned: 0};
+        for (let step = 0; step < 100000; step++) {
+            let r;
+            try {
+                r = (await this.api('admin.php?action=mbox_step', {method: 'POST', body: {id}})).result;
+            } catch (err) {
+                if (out) out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+                break;
+            }
+            ['imported', 'duplicates', 'failed', 'scanned'].forEach(k => { total[k] += r[k] || 0; });
+            const percent = (r.import || {}).percent || 0;
+            if (out) out.innerHTML = `
+                <div class="progress"><div class="progress__bar" style="width:${percent}%"></div></div>
+                <p>Прочитано ${percent}% файла · добавлено <strong>${total.imported}</strong>
+                   · дубликатов ${total.duplicates}${total.failed ? ` · с ошибкой ${total.failed}` : ''}</p>
+                ${r.done ? '<p class="ok">Импорт закончен.</p>'
+                    : '<button class="btn btn--outline btn--sm" onclick="App.mboxStop = true">Остановить</button>'}
+            `;
+            if (r.done || this.mboxStop) break;
+        }
+        this.loadMboxCard();
+    },
+
+    async deleteMboxImport(id) {
+        if (!confirm('Убрать файл и запись об импорте? Уже импортированные письма останутся в архиве.')) return;
+        try {
+            await this.api('admin.php?action=mbox_delete', {method: 'POST', body: {id, with_file: true}});
+            this.toast('Файл убран', 'success');
+            this.loadMboxCard();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     async rethreadMail() {

@@ -73,9 +73,14 @@ it up and the КП names it in the client's own words, and the correspondence ta
 
 The КП carries a logo top left. `$legal['logo_path']` is an empty string on a fresh install,
 not NULL, so resolve it by trying paths in order and taking the first that EXISTS — an
-uploaded logo (`storage/logo/`, outside the repository so a deploy cannot overwrite it), then
-the bundled `public/assets/img/logo-default.png`, which `tools/make_logo.php` draws. A КП that
-prints without a logo reads as a draft.
+uploaded logo, then the bundled one. `Branding` (module 021) owns that order and every other
+place a logo appears: the КП, the app icon and the tab favicon are THREE kinds, all uploaded
+through «Настройки → Логотипы» and all stored in `storage/logo/`, outside the repository,
+because a deploy overwrites `public/assets/`. `PdfGenerator::bundledLogos()` reads `Branding`
+and is the one place that decides what the document prints — never write a second list of
+paths. `api/branding.php` serves the picture WITHOUT auth on purpose: the browser asks for the
+favicon and the manifest icons before anyone has logged in. A КП that prints without a logo
+reads as a draft.
 
 ## Catalog
 `products_cache` has two sources and must keep working on either: `MoySklad::refreshProductCache()`
@@ -135,6 +140,27 @@ depend on it — so narrow what is SHOWN, never what is written. Inside a conver
 folding is a mail client's: our own answers and letters already read collapse to one line with
 the beginning of their text, and what is open is the unread and the client's last letter.
 
+One letter is ONE row of the archive (module 021). `MailArchive::exists()` is the only place
+that decides a letter is already here, and with `MAIL_DEDUP` — on out of the box — it looks
+across EVERY mailbox: the same letter addressed to two of our boxes, pulled back out of
+«Отправленные» and then imported from a Gmail mbox is one conversation entry, not four.
+The Message-ID is the first key; `dedup_hash` — sender, recipients, subject, normalised body
+and the sha1 of every attachment — is the second, for a gateway that rewrote the Message-ID.
+A letter shorter than 40 characters is NEVER matched by content: two «Спасибо!» in one thread
+are two letters. Any new way into the archive goes through `storeIncoming()`, or it brings the
+duplicates back.
+
+History is not a new request. An mbox import (`MboxImport`, `storage/mbox/`) and «Скачать весь
+архив» store letters `processed_at` and `is_read = 1`, resume from a saved cursor — a byte
+offset, never mid-letter — and attach the letter to the company it belongs to through
+`MailArchive::linkCounterparty()`: nothing else would ever set `counterparty_id` on a letter
+that skipped the request pipeline, and the imported conversation would live in the archive and
+nowhere else. It matches EXISTING cards only (`Crm::findCounterparty()`) unless the operator
+asked otherwise — a three-year archive would open a company card per newsletter — and it never
+calls `Crm::logEvent()`, which would stamp `last_inbound_at = now` and make a 2022 letter look
+like a client waiting for an answer today. An mbox is parsed by `Mime`, in plain PHP: importing
+one is exactly what an operator does when the host has no `ext/imap` at all.
+
 Anything that archives a letter must set `thread_key`, and an answer must inherit the thread
 of the letter it answers, whichever mailbox it leaves from. A copy in the IMAP
 «Отправленные» is not optional and not silent: `Mailer::send()` resolves the real folder and
@@ -149,6 +175,9 @@ a border colour. Keep every text/background pair at WCAG AA and say so in the CS
 
 There is ONE «Настройки» item in the header: everything lives under `#settings/<tab>`, admin-only
 tabs hidden from a plain manager. Do not add a second top-level entry for a settings screen.
+«Ликбез» is a tab like any other (module 021) — the manual for the SCREEN, and it stays there,
+never in the company wiki: the wiki is product knowledge that goes into prompts, and an
+instruction about a button inside a reply to a client is noise in the context.
 
 Nothing is ever wider than the phone. A grid column is `minmax(0, 1fr)` and its items get
 `min-width: 0`: bare `1fr` is `minmax(auto, 1fr)`, and that `auto` is the column's MIN-CONTENT —
