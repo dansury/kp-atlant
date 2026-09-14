@@ -159,7 +159,7 @@ nowhere else. It matches EXISTING cards only (`Crm::findCounterparty()`) unless 
 asked otherwise — a three-year archive would open a company card per newsletter — and it never
 calls `Crm::logEvent()`, which would stamp `last_inbound_at = now` and make a 2022 letter look
 like a client waiting for an answer today. An mbox is parsed by `Mime`, in plain PHP: importing
-one is exactly what an operator does when the host has no `ext/imap` at all.
+one is exactly what an operator does when the host has no `ext/imap` at all. The file itself arrives in PIECES: a Gmail export is hundreds of megabytes, nginx answers `413` with an HTML page before PHP is reached, and Google will not cut the export below a gigabyte — so the browser cuts it (`mbox_upload_init` / `_chunk` / `_finish`, `storage/mbox/.parts/`), halves the piece on every refusal and resumes from the byte the server actually holds. A piece the file already has is never appended twice and a piece out of place is refused: a letter cut in half is worse than a failed upload.
 
 Anything that archives a letter must set `thread_key`, and an answer must inherit the thread
 of the letter it answers, whichever mailbox it leaves from. A copy in the IMAP

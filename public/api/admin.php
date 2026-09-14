@@ -294,6 +294,46 @@ try {
             }
             jsonOk(['filename' => MboxImport::accept($_FILES['file'])]);
 
+        /**
+         * Загрузка кусками. Выгрузка Gmail — сотни мегабайт, и одним запросом её
+         * не берёт ни nginx (413 HTML-страницей, до PHP дело не доходит), ни сам
+         * PHP. Браузер режет файл, сервер дописывает куски в один файл и собирает
+         * его на последнем байте. `received` в ответе — байт, с которого
+         * продолжать: оборвавшаяся на 600 МБ загрузка не начинается заново.
+         */
+        case 'mbox_upload_init':
+            require_once ROOT . '/lib/mbox.php';
+            jsonOk(MboxImport::chunkInit((string)($input['name'] ?? ''), (int)($input['size'] ?? 0)));
+
+        case 'mbox_upload_chunk':
+            require_once ROOT . '/lib/mbox.php';
+            // Тело крупнее post_max_size PHP выбрасывает целиком: ни $_POST, ни
+            // $_FILES не доедут. Это тот же «слишком большой кусок», что и 413 у
+            // прокси, и браузеру нужен тот же ответ — он уменьшит кусок вдвое.
+            if (!$_POST && !$_FILES && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+                jsonError('Кусок не прошёл через PHP (post_max_size = ' . ini_get('post_max_size') . ')', 413);
+            }
+            if (empty($_FILES['chunk']) || ($_FILES['chunk']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                $code = (int)($_FILES['chunk']['error'] ?? UPLOAD_ERR_NO_FILE);
+                jsonError('Кусок не дошёл (код загрузки ' . $code . ')',
+                          in_array($code, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true) ? 413 : 400);
+            }
+            if (!is_uploaded_file((string)$_FILES['chunk']['tmp_name'])) jsonError('Кусок пришёл не загрузкой', 400);
+            jsonOk(MboxImport::chunkAppend(
+                (string)($_POST['upload_id'] ?? ''),
+                (int)($_POST['offset'] ?? 0),
+                (string)$_FILES['chunk']['tmp_name']
+            ));
+
+        case 'mbox_upload_finish':
+            require_once ROOT . '/lib/mbox.php';
+            jsonOk(['filename' => MboxImport::chunkFinish((string)($input['upload_id'] ?? ''))]);
+
+        case 'mbox_upload_abort':
+            require_once ROOT . '/lib/mbox.php';
+            MboxImport::chunkAbort((string)($input['upload_id'] ?? ''));
+            jsonOk();
+
         case 'mbox_start':
             require_once ROOT . '/lib/mbox.php';
             jsonOk(['import' => MboxImport::register((string)($input['filename'] ?? ''), [

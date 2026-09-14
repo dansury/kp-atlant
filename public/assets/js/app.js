@@ -2352,8 +2352,10 @@ const App = {
                 </ul>
                 <p><strong>Импорт mbox</strong> («Настройки → Почта») переносит историю из Gmail или Thunderbird:
                    письма встают на карточки контрагентов в хронологическом порядке, со всеми файлами.
-                   Файл до размера загрузки кладётся через панель, архив на гигабайты — в <code>storage/mbox</code>
-                   по FTP: он появится в списке сам. Импорт идёт шагами и продолжается с того же места.</p>`)}
+                   Файл любого размера кладётся через панель: браузер режет его на куски, поэтому «413 Request
+                   Entity Too Large» от сервера больше не мешает, а оборванная загрузка продолжается с того же
+                   места. Архив на гигабайты быстрее положить в <code>storage/mbox</code> по FTP: он появится
+                   в списке сам. Импорт тоже идёт шагами и продолжается с того же места.</p>`)}
 
             ${section('Каталог — <a href="#settings/catalog">«Каталог товаров»</a>', `
                 <ul>
@@ -4550,8 +4552,11 @@ const App = {
                     <div class="form-group">
                         <label>Файл .mbox</label>
                         <input type="file" id="mboxFile" accept=".mbox,.mbx,.txt,.eml">
-                        <div class="muted">Сервер принимает не больше ${this.esc(d.upload_max || '')}. Архив крупнее
-                            положите по FTP в <code>${this.esc(d.dir)}</code> — он появится в списке сам.</div>
+                        <div class="muted">Файл уходит кусками, поэтому ограничение сервера на один запрос
+                            (${this.esc(d.upload_max || '')}) размеру архива не мешает — резать выгрузку Gmail
+                            вручную не нужно. Оборвалась связь — выберите тот же файл снова, загрузка продолжится
+                            с того же места. Многогигабайтный архив быстрее положить по FTP
+                            в <code>${this.esc(d.dir)}</code> — он появится в списке сам.</div>
                     </div>
                     <div class="form-group">
                         <label>Ящик, в который лягут письма</label>
@@ -4673,24 +4678,117 @@ const App = {
         const input = document.getElementById('mboxFile');
         const btn = document.getElementById('mboxUploadBtn');
         if (!input || !input.files.length) { this.toast('Выберите файл .mbox', 'error'); return; }
-        const fd = new FormData();
-        fd.append('file', input.files[0]);
         btn.disabled = true;
         btn.textContent = 'Загружаем...';
         try {
-            const res = await fetch('/api/admin.php?action=mbox_upload', {method: 'POST', body: fd, credentials: 'same-origin'});
-            const raw = await res.text();
-            let d;
-            try { d = JSON.parse(raw); } catch { throw new Error(`Сервер вернул не JSON (HTTP ${res.status}). ${raw.slice(0, 200)}`); }
-            if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+            const filename = await this.sendMboxFile(input.files[0]);
             this.toast('Файл загружен, начинаем импорт', 'success');
-            await this.startMboxImport(d.filename);
+            await this.startMboxImport(filename);
         } catch (err) {
             this.toast(err.message, 'error');
         } finally {
             btn.disabled = false;
             btn.textContent = 'Загрузить файл';
         }
+    },
+
+    /**
+     * Файл уходит кусками. Выгрузка Gmail — сотни мегабайт (меньше гигабайта
+     * Google её и не режет), а одним запросом такое не принимает никто: nginx
+     * отвечает «413 Request Entity Too Large» HTML-страницей ещё до PHP, у PHP
+     * есть свой upload_max_filesize. Режет файл сам браузер, сервер дописывает
+     * куски в один файл и собирает его на последнем байте — руками делить
+     * архив не нужно.
+     *
+     * Размер, который берёт прокси, из браузера не узнать, поэтому кусок,
+     * который не прошёл, уменьшается вдвое. Оборванная связь не теряет
+     * загруженное: сервер помнит файл по имени и размеру и говорит, с какого
+     * байта продолжать.
+     */
+    async sendMboxFile(file) {
+        const out = document.getElementById('mboxProgress');
+        const MIN = 256 * 1024;
+        const mb = (n) => (n / 1024 / 1024).toFixed(1);
+        const init = await this.api('admin.php?action=mbox_upload_init', {
+            method: 'POST', body: {name: file.name, size: file.size},
+        });
+        let sent = Math.min(Number(init.received) || 0, file.size);
+        let chunk = Math.max(MIN, Math.min(Number(init.chunk_max) || MIN, 8 * 1024 * 1024));
+        let fails = 0;
+        this.mboxUploadStop = false;
+
+        const draw = (note = '') => {
+            if (!out) return;
+            const percent = Math.floor(100 * sent / Math.max(1, file.size));
+            out.innerHTML = `
+                <div class="progress"><div class="progress__bar" style="width:${percent}%"></div></div>
+                <p>Загружено ${mb(sent)} из ${mb(file.size)} МБ (${percent}%)
+                   ${note ? `· <span class="muted">${this.esc(note)}</span>` : ''}</p>
+                <button class="btn btn--outline btn--sm" onclick="App.mboxUploadStop = true">Остановить</button>`;
+        };
+        draw(sent ? 'продолжаем прерванную загрузку' : '');
+
+        while (sent < file.size) {
+            if (this.mboxUploadStop) {
+                throw new Error('Загрузка остановлена. Выберите тот же файл снова — она продолжится с этого места');
+            }
+            const fd = new FormData();
+            fd.append('upload_id', init.upload_id);
+            fd.append('offset', String(sent));
+            fd.append('chunk', file.slice(sent, Math.min(sent + chunk, file.size)), 'chunk');
+
+            let status = 0, data = null;
+            try {
+                const res = await fetch('/api/admin.php?action=mbox_upload_chunk',
+                    {method: 'POST', body: fd, credentials: 'same-origin'});
+                status = res.status;
+                const raw = await res.text();
+                try { data = JSON.parse(raw); } catch { data = null; }   // 413 прокси отдаёт HTML
+            } catch (e) {
+                status = 0;                                              // связь оборвалась
+            }
+
+            if (status === 200 && data && typeof data.received === 'number') {
+                // Счётчик, не сдвинувшийся с места, — это вечный цикл, а не загрузка
+                if (data.received <= sent) throw new Error('Сервер принял кусок, но файл не вырос — попробуйте заново');
+                sent = Math.min(data.received, file.size);
+                fails = 0;
+                draw();
+                continue;
+            }
+            if (status === 401) throw new Error('Сессия кончилась — войдите заново и повторите загрузку');
+            // Кусок не пролез через прокси или PHP: половиним и пробуем снова
+            if ((status === 413 || status === 0) && chunk > MIN) {
+                chunk = Math.max(MIN, Math.floor(chunk / 2));
+                draw(`кусок уменьшен до ${mb(chunk)} МБ`);
+                continue;
+            }
+            // Сервер принял другое число байт, чем мы думаем: спрашиваем его
+            if (status === 400 && data && data.error && fails < 3) {
+                fails++;
+                const again = await this.api('admin.php?action=mbox_upload_init', {
+                    method: 'POST', body: {name: file.name, size: file.size},
+                });
+                sent = Math.min(Number(again.received) || 0, file.size);
+                draw('сверяемся с сервером');
+                continue;
+            }
+            if (++fails > 4) {
+                if (status === 413) {
+                    throw new Error(`Сервер не принимает даже кусок в ${mb(chunk)} МБ — поднимите`
+                        + ' client_max_body_size у прокси или положите файл по FTP в storage/mbox');
+                }
+                if (status === 0) throw new Error('Связь оборвалась. Выберите тот же файл снова — загрузка продолжится');
+                throw new Error((data && data.error) || `Кусок не загрузился (HTTP ${status})`);
+            }
+            draw(`повтор ${fails}`);
+            await new Promise(r => setTimeout(r, 1000 * fails));
+        }
+
+        draw('собираем файл');
+        const fin = await this.api('admin.php?action=mbox_upload_finish',
+            {method: 'POST', body: {upload_id: init.upload_id}});
+        return fin.filename;
     },
 
     async startMboxImport(filename, restart = false) {
