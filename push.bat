@@ -2,7 +2,7 @@
 chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 
-set TOKEN=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
+set TOKEN=github_pat_...
 set REPO=dansury/kp-atlant
 set GH_TOKEN=%TOKEN%
 set OPENURL=https://kp.atlant-armour.ru/pull.php
