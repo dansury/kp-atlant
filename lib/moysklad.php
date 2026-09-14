@@ -156,7 +156,221 @@ class MoySklad {
             $offset += $limit;
         } while (count($data['rows']) === $limit);
 
+        // Модификации и остатки — часть того же каталога (модуль 022). Обе
+        // выгрузки необязательные: у токена может не быть прав на отчёт по
+        // остаткам, и каталог от этого не должен перестать обновляться.
+        try {
+            $count += self::refreshVariantCache();
+        } catch (Throwable $e) {
+            Logger::warning('catalog', 'Модификации не загрузились: ' . $e->getMessage());
+        }
+        if ((int)Settings::get('MOYSKLAD_STOCK_SYNC', 1) === 1) {
+            try {
+                self::refreshStock();
+            } catch (Throwable $e) {
+                Logger::warning('catalog', 'Остатки не загрузились: ' . $e->getMessage());
+            }
+        }
+
         return $count;
+    }
+
+    // ======================= Склады и остатки (модуль 022) =======================
+
+    /**
+     * Склады МойСклад: id, имя, адрес, архивный ли.
+     *
+     * Нужны, чтобы можно было ВЫБРАТЬ, с каких складов считать остаток.
+     * Раньше остаток не читался вовсе — `mapProduct()` писал в кэш ноль, и
+     * каждая позиция КП уходила «под заказ», даже когда товар лежал на полке.
+     */
+    public static function stores(): array {
+        $data = self::get('/entity/store?limit=200');
+        if (!$data || empty($data['rows'])) return [];
+
+        return array_map(fn($s) => [
+            'id'       => self::extractId($s['id'] ?? $s['meta']['href'] ?? ''),
+            'name'     => (string)($s['name'] ?? ''),
+            'address'  => (string)($s['address'] ?? ''),
+            'archived' => (bool)($s['archived'] ?? false),
+        ], $data['rows']);
+    }
+
+    /** Выбранные склады — то, что стоит в `MOYSKLAD_STORES`. Пусто = все. */
+    public static function selectedStores(): array {
+        $raw = (string)Settings::get('MOYSKLAD_STORES', '');
+        $ids = array_values(array_filter(array_map('trim', preg_split('/[\s,;]+/', $raw) ?: [])));
+        return $ids;
+    }
+
+    /**
+     * Перечитать остатки и записать их в `products_cache`.
+     *
+     * Отчёт `/report/stock/all` отдаёт и товары, и модификации одной таблицей —
+     * это ровно то, что нам нужно: у размера L остаток свой, а не общий на
+     * товар. Склады выбираются в настройках; ни одного не выбрано — считаем по
+     * всем, как считает сам МойСклад.
+     *
+     * `reserve` — то, что уже обещано другим, и оно вычитается из свободного
+     * остатка везде дальше (`Alternatives::freeStock`). Обещать зарезервированное
+     * второй раз — это сорванный срок, а не оптимизм.
+     *
+     * @return array{rows:int,updated:int,stores:int}
+     */
+    public static function refreshStock(): array {
+        $stores = self::selectedStores();
+        $filter = '';
+        if ($stores) {
+            // Несколько значений одного поля МойСклад читает как «или»
+            $parts = array_map(fn($id) => 'store=' . self::$base . '/entity/store/' . $id, $stores);
+            $filter = '&filter=' . urlencode(implode(';', $parts));
+        }
+
+        $offset = 0;
+        $limit = 1000;
+        $rows = 0;
+        $updated = 0;
+
+        do {
+            $data = self::get("/report/stock/all?limit=$limit&offset=$offset$filter");
+            if (!$data || empty($data['rows'])) break;
+
+            foreach ($data['rows'] as $row) {
+                $rows++;
+                $id = self::extractId((string)($row['meta']['href'] ?? ''));
+                if ($id === '') continue;
+                // `stock` — на складе всего, `reserve` — уже обещано
+                $stock = (int)round((float)($row['stock'] ?? 0));
+                $reserved = (int)round((float)($row['reserve'] ?? 0));
+                $updated += Db::q(
+                    "UPDATE products_cache SET stock=?, reserved=?, updated_at=datetime('now') WHERE moysklad_id=?",
+                    [$stock, $reserved, $id]
+                )->rowCount();
+            }
+
+            $offset += $limit;
+        } while (count($data['rows']) === $limit);
+
+        Logger::info('catalog', "Остатки из МойСклад: строк $rows, обновлено $updated",
+                     ['stores' => count($stores)]);
+        return ['rows' => $rows, 'updated' => $updated, 'stores' => count($stores)];
+    }
+
+    // ===================== Модификации товара (модуль 022) =====================
+
+    /**
+     * Перечитать модификации — то, что МойСклад зовёт `variant`.
+     *
+     * Размер и цвет в МойСклад — это отдельная карточка со своим артикулом,
+     * своей ценой и своим остатком, привязанная к товару. Без них запрос
+     * «шлем: S-5, M-13, L-7» ложился в КП одной строкой на 25 штук, потому что
+     * в каталоге просто не было, из чего выбрать.
+     *
+     * Строка кэша выглядит так же, как у импорта из Excel (модуль 008):
+     * `product_type = 'variant'`, `parent_id` товара, характеристики строкой.
+     * Так обе дороги в каталог дают одинаковый ответ.
+     */
+    public static function refreshVariantCache(): int {
+        if ((int)Settings::get('MOYSKLAD_VARIANTS', 1) !== 1) return 0;
+
+        $offset = 0;
+        $limit = 1000;
+        $count = 0;
+
+        do {
+            $data = self::get("/entity/variant?limit=$limit&offset=$offset&expand=product");
+            if (!$data || empty($data['rows'])) break;
+
+            foreach ($data['rows'] as $v) {
+                $mapped = self::mapVariant($v);
+                if ($mapped['id'] === '' || $mapped['name'] === '') continue;
+                $normalized = trim(mb_strtolower((string)preg_replace('/[\s\-\"\'«»()]+/u', ' ', $mapped['name'])));
+
+                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, code, price,
+                        prices_json, unit, description, category, vat, product_type, parent_id, characteristics,
+                        is_archived, source, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'variant', ?, ?, ?, 'moysklad', datetime('now'))
+                    ON CONFLICT(moysklad_id) DO UPDATE SET
+                        name=excluded.name, name_normalized=excluded.name_normalized,
+                        article=excluded.article, code=excluded.code, price=excluded.price,
+                        prices_json=excluded.prices_json, unit=excluded.unit,
+                        description=excluded.description, category=excluded.category,
+                        vat=COALESCE(excluded.vat, products_cache.vat),
+                        product_type='variant', parent_id=excluded.parent_id,
+                        characteristics=excluded.characteristics, is_archived=excluded.is_archived,
+                        source='moysklad', updated_at=datetime('now')", [
+                    $mapped['id'], $mapped['name'], $normalized,
+                    $mapped['article'], $mapped['code'], $mapped['price'],
+                    $mapped['prices'] ? json_encode($mapped['prices'], JSON_UNESCAPED_UNICODE) : null,
+                    $mapped['unit'], $mapped['description'], $mapped['category'], $mapped['vat'],
+                    $mapped['parent_id'], $mapped['characteristics'], $mapped['archived'],
+                ]);
+                $count++;
+            }
+
+            $offset += $limit;
+        } while (count($data['rows']) === $limit);
+
+        return $count;
+    }
+
+    /** Модификация МойСклад → строка каталога: имя с характеристиками в скобках. */
+    private static function mapVariant(array $v): array {
+        $product = $v['product'] ?? [];
+        $parentId = self::extractId((string)($product['id'] ?? $product['meta']['href'] ?? ''));
+
+        $pairs = [];
+        foreach ($v['characteristics'] ?? [] as $c) {
+            $name = trim((string)($c['name'] ?? ''));
+            $value = trim((string)($c['value'] ?? ''));
+            if ($value === '') continue;
+            $pairs[] = $name !== '' ? "$name: $value" : $value;
+        }
+        $characteristics = implode('; ', $pairs);
+
+        $prices = [];
+        foreach ($v['salePrices'] ?? [] as $sp) {
+            $name = (string)($sp['priceType']['name'] ?? '');
+            if ($name === '') continue;
+            $prices[$name] = ($sp['value'] ?? 0) / 100;
+        }
+        // Своей цены у модификации может не быть — тогда она наследует товар,
+        // и подставить ноль вместо неё значит выставить КП на ноль рублей
+        if (!$prices && $parentId !== '') {
+            $cached = Db::val("SELECT prices_json FROM products_cache WHERE moysklad_id=?", [$parentId]);
+            $prices = $cached ? (json_decode((string)$cached, true) ?: []) : [];
+        }
+
+        $wanted = (string)Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '');
+        $price = ($wanted !== '' && array_key_exists($wanted, $prices))
+            ? $prices[$wanted]
+            : (float)(reset($prices) ?: 0);
+
+        // Имя товара-родителя: из ответа, а если его там нет — из кэша
+        $parentName = trim((string)($product['name'] ?? ''));
+        if ($parentName === '' && $parentId !== '') {
+            $parentName = (string)(Db::val("SELECT name FROM products_cache WHERE moysklad_id=?", [$parentId]) ?: '');
+        }
+        $own = trim((string)($v['name'] ?? ''));
+        $name = $parentName !== '' ? $parentName : $own;
+        if ($characteristics !== '') $name .= ' (' . $characteristics . ')';
+
+        return [
+            'id'              => self::extractId((string)($v['id'] ?? $v['meta']['href'] ?? '')),
+            'name'            => trim($name),
+            'article'         => (string)($v['article'] ?? $product['article'] ?? ''),
+            'code'            => (string)($v['code'] ?? ''),
+            'price'           => $price,
+            'prices'          => $prices,
+            'unit'            => (string)($product['uom']['name'] ?? 'шт.'),
+            'description'     => (string)($v['description'] ?? $product['description'] ?? ''),
+            'category'        => (string)($product['productFolder']['name'] ?? ''),
+            'vat'             => array_key_exists('vat', $product)
+                                    ? ((($product['vatEnabled'] ?? true)) ? (int)$product['vat'] : 0) : null,
+            'parent_id'       => $parentId ?: null,
+            'characteristics' => $characteristics,
+            'archived'        => !empty($v['archived']) ? 1 : 0,
+        ];
     }
 
     // Product images (FR-040). Downloads up to $limit images into

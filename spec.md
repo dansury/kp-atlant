@@ -23,6 +23,7 @@
 | Архив писем, выключаемые ящики, карточка с телефона | `specs/019-archive-mailboxes-mobile/spec.md` | Implemented |
 | Прочитанное, свёрнутое и размеченное | `specs/020-correspondence-markup-folding/spec.md` | Implemented |
 | История из mbox, дедупликация, логотипы и ликбез | `specs/021-mbox-import-dedup/spec.md` | Implemented |
+| Модификации, склады, «не наша номенклатура» и обучение на правках | `specs/022-variants-scope-learning/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -39,6 +40,7 @@
 | Модуль 019: архив писем, выключение и удаление ящика, колонка цены = тип цены | `php tests/module_019.php` |
 | Модуль 020: прочитанное ставит человек, письма в переписке, разметка описаний | `php tests/module_020.php` |
 | Модуль 021: импорт mbox, дедупликация писем со всех ящиков, логотипы | `php tests/module_021.php` |
+| Модуль 022: модификации, «не наша номенклатура», документ, обучение на правках | `php tests/module_022.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

@@ -188,7 +188,7 @@ switch ($action) {
         }
 
         // Generate cover letter
-        $tov = file_exists(ROOT . '/reference/tov.md') ? file_get_contents(ROOT . '/reference/tov.md') : '';
+        $tov = Tov::read();
         $corrections = Db::all(
             "SELECT auto_text, manager_text FROM corrections WHERE field='cover_letter' ORDER BY created_at DESC LIMIT 5"
         );
@@ -324,7 +324,10 @@ switch ($action) {
             jsonError('PDF not found', 404);
         }
         header('Content-Type: application/pdf');
-        header('Content-Disposition: inline; filename="KP-' . $id . '.pdf"');
+        // Имя видно и во вкладке предпросмотра, и в «Сохранить как» (модуль 022)
+        $name = PdfGenerator::fileName($id, 'pdf');
+        header('Content-Disposition: inline; filename="KP-' . $id . '.pdf"; '
+             . "filename*=UTF-8''" . rawurlencode($name));
         readfile($proposal['pdf_path']);
         exit;
 

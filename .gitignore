@@ -19,6 +19,9 @@ storage/invoices/*
 !storage/invoices/.gitkeep
 storage/product_images/*
 !storage/product_images/.gitkeep
+# Tone of Voice, отредактированный в панели (модуль 022): живёт в storage/,
+# потому что деплой перезаписывает файлы репозитория
+storage/tov.md
 .DS_Store
 
 # graphify local-only artifacts (cache, manifest, labels) — graph.json and GRAPH_REPORT.md are committed

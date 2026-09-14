@@ -39,18 +39,54 @@ switch ($action) {
         if ($fields) Db::update('legal_entities', $fields, 'id=?', [$entity['id']]);
         jsonOk();
 
+    /**
+     * Подпись. Своя у каждого менеджера (модуль 022) — КП подписывает тот, кто
+     * его отправляет. `scope=company` кладёт общую подпись организации: её
+     * печатает КП менеджера, который своей не завёл.
+     */
     case 'upload_signature':
         $manager = requireAuth();
-        if (empty($_FILES['file'])) jsonError('No file uploaded');
-        $file = $_FILES['file'];
-        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        if (!in_array($ext, ['png','jpg','jpeg'])) jsonError('PNG or JPG only');
+        require_once ROOT . '/lib/signatures.php';
+        if (empty($_FILES['file'])) jsonError('Файл не выбран');
 
-        $dest = ROOT . '/storage/signatures/signature.' . $ext;
-        move_uploaded_file($file['tmp_name'], $dest);
+        $scope = (string)($_GET['scope'] ?? 'manager');
+        try {
+            if ($scope === 'company') {
+                if (empty($manager['is_admin'])) jsonError('Общую подпись меняет администратор', 403);
+                $ext = strtolower(pathinfo((string)$_FILES['file']['name'], PATHINFO_EXTENSION));
+                if (!in_array($ext, ['png', 'jpg', 'jpeg'], true)) jsonError('Поддерживаются png и jpg');
+                $dest = Signatures::dir() . '/signature.' . ($ext === 'jpeg' ? 'jpg' : $ext);
+                if (!move_uploaded_file($_FILES['file']['tmp_name'], $dest)) jsonError('Файл не сохранился');
+                Db::q("UPDATE legal_entities SET signature_path=? WHERE is_active=1", [$dest]);
+                jsonOk(['path' => $dest, 'scope' => 'company']);
+            }
+            $path = Signatures::store((int)$manager['id'], $_FILES['file']);
+        } catch (Throwable $e) {
+            jsonError($e->getMessage());
+        }
+        jsonOk(['path' => $path, 'scope' => 'manager'] + Signatures::describe((int)$manager['id']));
 
-        Db::q("UPDATE legal_entities SET signature_path=? WHERE is_active=1", [$dest]);
-        jsonOk(['path' => $dest]);
+    // Картинка подписи — чтобы менеджер видел, что именно уйдёт в документ.
+    // Отдаём только СВОЮ: чужая подпись картинкой — это то, чем подписывают
+    // чужие документы.
+    case 'signature_image':
+        $manager = requireAuth();
+        $path = (string)(Db::val("SELECT signature_path FROM managers WHERE id=?", [(int)$manager['id']]) ?: '');
+        if ($path === '' || !is_file($path)) jsonError('Подпись не загружена', 404);
+        require_once ROOT . '/lib/branding.php';
+        header('Content-Type: ' . Branding::mime($path));
+        header('Cache-Control: private, max-age=60');
+        readfile($path);
+        exit;
+
+    // Расшифровка подписи менеджера: то, что печатается под КП строкой
+    case 'signatory_name':
+        $manager = requireAuth();
+        require_once ROOT . '/lib/signatures.php';
+        $name = trim((string)(getInput()['signatory_name'] ?? ''));
+        Db::update('managers', ['signatory_name' => $name !== '' ? $name : null,
+                                'updated_at' => date('Y-m-d H:i:s')], 'id=?', [(int)$manager['id']]);
+        jsonOk(Signatures::describe((int)$manager['id']));
 
     // Старый адрес загрузки логотипа КП. Теперь все три знака — КП, приложение
     // и значок вкладки — живут в `Branding` и грузятся через api/branding.php;
@@ -75,8 +111,11 @@ switch ($action) {
         // PUT — update
         $input = getInput();
         $content = $input['content'] ?? '';
-        if (!$content) jsonError('Content required');
+        if (!$content) jsonError('Правила писем пустые — сохранять нечего');
+        $before = (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: '');
         Db::insert('email_rules', ['content' => $content, 'updated_by' => $manager['id']]);
+        // Правила писем правит и менеджер — админ видит правку в ленте (модуль 022)
+        ContentLog::record('email', 'email_rules', 'Правила писем', (int)$manager['id'], $before, (string)$content);
         jsonOk();
 
     case 'general':
@@ -87,7 +126,9 @@ switch ($action) {
         // PUT
         $input = getInput();
         foreach ($input as $k => $v) {
+            $was = (string)(Db::val("SELECT value FROM settings WHERE key=?", [$k]) ?: '');
             Db::q("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [$k, $v]);
+            ContentLog::record('kp', (string)$k, 'Оформление КП: ' . $k, (int)$manager['id'], $was, (string)$v);
         }
         jsonOk();
 

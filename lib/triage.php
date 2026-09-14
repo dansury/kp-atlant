@@ -189,7 +189,7 @@ final class Triage {
             return $parsed;
         }
 
-        $system = Prompts::render('classify_request');
+        $system = Prompts::render('classify_request') . self::learned();
         // The subject is half the letter here: «Атлант Армор: Новый заказ N6764»
         // and «Счёт на оплату» are answers to a notification whose body says only
         // «почему не отправляете» — 141 such letters in the archive (module 015).
@@ -216,6 +216,71 @@ final class Triage {
         $parsed['request_type'] = self::requestType($category) ?? 'kp_request';
         $parsed['items'] = is_array($parsed['items'] ?? null) ? $parsed['items'] : [];
         return $parsed;
+    }
+
+    /**
+     * Чему классификатор научился у менеджера (модуль 022).
+     *
+     * Вопрос «есть ли возможность отстегнуть слой у спальника» — это вопрос о
+     * товаре, а модель прочитала его как запрос цены и пообещала «уточнить
+     * наличие, цену и сроки». Менеджер поправил категорию прямо перед
+     * генерацией ответа; правка попала сюда — и в следующем таком письме
+     * модель видит её как пример.
+     *
+     * Примеры берутся ПОСЛЕДНИЕ: мнение офиса меняется, и сегодняшнее правило
+     * важнее прошлогоднего. Их немного нарочно — промпт классификатора и так
+     * несёт двадцать категорий, а десяток писем целиком его перевесит.
+     */
+    public static function learned(int $limit = 0): string {
+        if ((int)Settings::get('TRIAGE_LEARN', 1) !== 1) return '';
+        $limit = $limit > 0 ? $limit : max(0, (int)Settings::get('TRIAGE_LEARN_SAMPLES', 8));
+        if ($limit === 0) return '';
+
+        $samples = Learning::fewShot('category', $limit);
+        if (!$samples) return '';
+
+        $out = "\n\n===== ИСПРАВЛЕНИЯ МЕНЕДЖЕРА =====\n"
+             . "Так эти письма классифицировал человек, и он был прав. Держись его решений: "
+             . "в похожем письме отвечай той же категорией.\n";
+        foreach ($samples as $s) {
+            $subject = trim((string)($s['subject'] ?? ''));
+            $body = self::clip(trim((string)($s['question'] ?? '')), 400);
+            $was = (string)($s['auto_answer'] ?? '');
+            $became = (string)($s['correct_answer'] ?? '');
+            $out .= "\n---\n";
+            if ($subject !== '') $out .= "Тема: $subject\n";
+            if ($body !== '')    $out .= "Письмо: $body\n";
+            $out .= "Модель поставила: $was (" . self::label($was) . ")\n";
+            $out .= "Правильно: $became (" . self::label($became) . ")\n";
+            if (trim((string)($s['comment'] ?? '')) !== '') $out .= "Почему: {$s['comment']}\n";
+        }
+        return $out;
+    }
+
+    /**
+     * Менеджер поменял категорию письма — запомнить это.
+     *
+     * Категорию, которую поставил человек, пишем и на письмо, и в правки:
+     * первое чинит одно письмо, второе — все следующие.
+     */
+    public static function correct(array $message, string $category, ?int $managerId = null, string $comment = ''): void {
+        $was = trim((string)($message['category'] ?? ''));
+        if (!isset(self::CATEGORIES[$category]) || $category === $was) return;
+
+        Learning::record('category', [
+            'subject'        => (string)($message['subject'] ?? ''),
+            'question'       => MailText::forAnalysis((string)($message['body_text'] ?? '')),
+            'auto_answer'    => $was !== '' ? $was : 'other',
+            'correct_answer' => $category,
+            'comment'        => $comment,
+            'manager_id'     => $managerId,
+            'context'        => [
+                'mail_message_id' => (int)($message['id'] ?? 0),
+                'from'            => (string)($message['from_email'] ?? ''),
+                'was_label'       => self::label($was !== '' ? $was : 'other'),
+                'became_label'    => self::label($category),
+            ],
+        ]);
     }
 
     // ---------------------------------------------------------------- drafting
@@ -278,6 +343,8 @@ final class Triage {
         }
         // Positions the catalog never answered — named, not quietly dropped
         $user .= RequestItems::unmatchedBlock((array)($ctx['unmatched'] ?? []));
+        // И то, чем мы не занимаемся, — про это письмо молчит (модуль 022)
+        $user .= RequestItems::outOfScopeBlock((array)($ctx['out_of_scope'] ?? []));
         return $user;
     }
 

@@ -13,6 +13,8 @@
  */
 require_once __DIR__ . '/catalog.php';
 require_once __DIR__ . '/alternatives.php';
+require_once __DIR__ . '/scope.php';
+require_once __DIR__ . '/variants.php';
 
 final class RequestItems {
 
@@ -27,7 +29,22 @@ final class RequestItems {
         if (!$items) return [];
 
         $counterpartyId = !empty($req['counterparty_id']) ? (int)$req['counterparty_id'] : null;
-        self::write($requestId, self::fromMatches(ProductMatcher::matchItems($items, $useLlm, $counterpartyId)));
+
+        // Один товар в трёх размерах — это ТРИ строки, а не одна на 25 штук
+        // (модуль 022). Разбор чисто текстовый и идёт до каталога: ошибка в
+        // количестве — это ошибка в деньгах, и решать её моделью нельзя.
+        $items = Variants::expand($items);
+        $matches = ProductMatcher::matchItems($items, $useLlm, $counterpartyId);
+        foreach ($matches as $i => $match) {
+            $src = $items[$i] ?? [];
+            if (empty($src['variant_label'])) continue;
+            // Клиент просил не «шлем», а «шлем размера S» — так строка и
+            // называется, хотя каталог искали по товару-родителю
+            $matches[$i]['raw_name']      = (string)$src['raw_name'];
+            $matches[$i]['variant_label'] = (string)$src['variant_label'];
+            $matches[$i]['variant_kind']  = (string)($src['variant_kind'] ?? 'size');
+        }
+        self::write($requestId, self::fromMatches($matches, $counterpartyId));
         // Every row was written by the matcher a line ago, so every row is up
         // for an analogue — `is_confirmed` here means «уверенное совпадение по
         // названию», not «менеджер это утвердил», and an exact name match on an
@@ -73,6 +90,9 @@ final class RequestItems {
                 continue;
             }
             if ((int)($row['is_alternative'] ?? 0) === 1) continue;
+            // Аналог тому, чем мы не занимаемся, — это предложение поставить
+            // пожарный рукав вместо пожарного топора (модуль 022)
+            if ((int)($row['is_out_of_scope'] ?? 0) === 1) continue;
             // `stock` on the row is the free remainder the matcher recorded;
             // a row with no product at all is just as much «нечего отгрузить»
             $hasProduct = trim((string)($row['product_name'] ?? '')) !== '';
@@ -230,10 +250,13 @@ final class RequestItems {
         }
 
         $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
-        $queries = array_map(fn($r) => [
-            'name' => ($r['raw_name'] !== '' ? $r['raw_name'] : (string)$r['product_name']),
-            'qty'  => $r['quantity'],
-        ], $open);
+        $queries = array_map(function ($r) {
+            $name = $r['raw_name'] !== '' ? $r['raw_name'] : (string)$r['product_name'];
+            // У строки с модификацией каталог ищется по товару-родителю:
+            // «(размер S)» в названии не помогает найти сам шлем (модуль 022)
+            if (trim((string)($r['variant_label'] ?? '')) !== '') $name = Variants::baseName($name);
+            return ['name' => $name, 'qty' => $r['quantity']];
+        }, $open);
         // matchItems answers positionally, so the query list is re-keyed and the
         // original row index is kept alongside it
         $rowIndex = array_keys($open);
@@ -247,23 +270,41 @@ final class RequestItems {
             $m = $matches[$n] ?? null;
             $best = $m['match'] ?? null;
             if ($best) $found++;
+
+            // Метка модификации живёт на строке и переезжает на свежий подбор:
+            // перебор ищет товар, а размер у строки остаётся тот же
+            $variant = $best ? Variants::resolveRow([
+                'moysklad_product_id' => $best['moysklad_id'] ?? '',
+                'variant_label'       => (string)($row['variant_label'] ?? ''),
+            ], $counterpartyId) : [];
+
             Db::update('request_items', [
-                'moysklad_product_id' => $best['moysklad_id'] ?? null,
-                'product_name'        => $best['name'] ?? null,
-                'article'             => $best['article'] ?? null,
-                'unit'                => $best['unit'] ?? $row['unit'],
-                'price'               => (float)($best['price'] ?? 0),
-                'stock'               => $best === null ? null : Alternatives::freeStock($best),
+                'moysklad_product_id' => $variant['moysklad_product_id'] ?? ($best['moysklad_id'] ?? null),
+                'product_name'        => $variant['product_name'] ?? ($best['name'] ?? null),
+                'article'             => $variant['article'] ?? ($best['article'] ?? null),
+                'unit'                => $variant['unit'] ?? ($best['unit'] ?? $row['unit']),
+                'price'               => (float)($variant['price'] ?? ($best['price'] ?? 0)),
+                'stock'               => array_key_exists('stock', $variant)
+                                            ? $variant['stock']
+                                            : ($best === null ? null : Alternatives::freeStock($best)),
                 'match_confidence'    => $best['score'] ?? null,
                 'match_variants'      => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
                 'needs_choice'        => !empty($m['needs_choice']) ? 1 : 0,
-                'match_source'        => $m['match_source'] ?? null,
+                'match_source'        => $variant['match_source'] ?? ($m['match_source'] ?? null),
+                'notes'               => $variant['notes'] ?? $row['notes'],
                 'is_confirmed'        => !empty($m['is_confirmed']) ? 1 : 0,
                 // A fresh match starts from what the client asked for again:
                 // the analogue is re-decided below against today's stock
                 'is_alternative'      => 0,
                 'alt_of'              => null,
                 'alt_specs_json'      => null,
+                // Список «не наша номенклатура» мог пополниться с прошлого раза —
+                // перебор подбора его перечитывает, а решение менеджера, уже
+                // стоящее на строке, остаётся в силе (модуль 022)
+                'is_out_of_scope'     => (int)($row['is_out_of_scope'] ?? 0) === 1
+                                            || Scope::match((string)$row['raw_name']) !== null ? 1 : 0,
+                'out_of_scope_reason' => (string)($row['out_of_scope_reason'] ?? '') !== ''
+                                            ? $row['out_of_scope_reason'] : Scope::match((string)$row['raw_name']),
                 'updated_at'          => date('Y-m-d H:i:s'),
             ], 'id=?', [$row['id']]);
         }
@@ -308,6 +349,8 @@ final class RequestItems {
                 // explaining it as a swap
                 'is_alternative'      => !empty($row['is_alternative']) ? 1 : 0,
                 'alt_of'              => trim((string)($row['alt_of'] ?? '')) ?: null,
+                // Решение «это не к нам» принимает человек и оно живёт на строке
+                'is_out_of_scope'     => !empty($row['is_out_of_scope']) ? 1 : 0,
                 'updated_at'          => date('Y-m-d H:i:s'),
             ];
 
@@ -338,6 +381,10 @@ final class RequestItems {
     public static function toProposalItems(array $rows): array {
         $out = [];
         foreach ($rows as $row) {
+            // Строка «не наша номенклатура» в КП не уходит ни в каком виде:
+            // ни ценой, ни строкой «уточняем». Мы этим не занимаемся, и
+            // документ не должен намекать на обратное (модуль 022).
+            if ((int)($row['is_out_of_scope'] ?? 0) === 1) continue;
             $hasProduct = trim((string)($row['product_name'] ?? '')) !== '';
             $out[] = [
                 'raw_name'     => (string)($row['raw_name'] ?? ''),
@@ -405,7 +452,7 @@ final class RequestItems {
         $rows = Db::all(
             "SELECT * FROM request_items
              WHERE request_id=? AND (moysklad_product_id IS NULL OR moysklad_product_id='')
-               AND is_confirmed=0
+               AND is_confirmed=0 AND COALESCE(is_out_of_scope, 0) = 0
              ORDER BY position, id", [$requestId]
         );
         $out = [];
@@ -427,6 +474,31 @@ final class RequestItems {
      * The unmatched lines as a block for a model prompt — one wording, used by
      * every place that drafts a letter, so the reply and the КП say the same.
      */
+    /**
+     * Инструкция модели про то, чем мы не занимаемся (модуль 022).
+     *
+     * Без неё нейросеть отвечала «уточним по ним наличие, сроки и цену» — по
+     * топору пожарному и рукаву 5ELEM, которых у нас нет и не будет. Обещание,
+     * которого никто не выполнит, дороже молчания: по умолчанию письмо про эти
+     * позиции просто молчит, а `SCOPE_REPLY_MODE = decline` заставляет сказать
+     * одной фразой, что мы ими не занимаемся.
+     */
+    public static function outOfScopeBlock(array $rows): string {
+        if (!$rows) return '';
+        $mode = (string)Settings::get('SCOPE_REPLY_MODE', 'silent');
+
+        $out = "\n===== ЧЕМ МЫ НЕ ЗАНИМАЕМСЯ =====\n";
+        $out .= $mode === 'decline'
+            ? "Это не наша номенклатура. Скажи об этом ОДНОЙ фразой на все позиции сразу: мы их не поставляем. "
+            . "Не обещай уточнить наличие, сроки или цену и не предлагай замену.\n"
+            : "Это не наша номенклатура. НЕ упоминай эти позиции в ответе вообще: ни списком, ни одной строкой. "
+            . "Не обещай уточнить по ним наличие, сроки или цену, не предлагай им замену и не извиняйся за них.\n";
+        foreach ($rows as $r) {
+            $out .= "- {$r['requested']}\n";
+        }
+        return $out;
+    }
+
     public static function unmatchedBlock(array $unmatched): string {
         if (!$unmatched) return '';
         $out = "\n===== ЧЕГО НЕТ В НАШЕМ КАТАЛОГЕ =====\n"
@@ -439,18 +511,81 @@ final class RequestItems {
         return $out;
     }
 
+    /**
+     * Строки, которыми мы не занимаемся (модуль 022).
+     *
+     * Их видит менеджер на карточке — и только он. В КП и в ответ клиенту они
+     * не уходят: `toProposalItems()` их пропускает, `unmatched()` про них не
+     * знает, и в промпт ответа они не попадают ни одной буквой.
+     *
+     * @return array<int,array{id:int,position:int,requested:string,quantity:mixed,unit:string,reason:string}>
+     */
+    public static function outOfScope(int $requestId): array {
+        $rows = Db::all(
+            "SELECT * FROM request_items WHERE request_id=? AND COALESCE(is_out_of_scope, 0) = 1
+             ORDER BY position, id", [$requestId]
+        );
+        $out = [];
+        foreach ($rows as $row) {
+            $asked = trim((string)($row['raw_name'] ?? '')) ?: trim((string)($row['product_name'] ?? ''));
+            if ($asked === '') continue;
+            $out[] = [
+                'id'        => (int)$row['id'],
+                'position'  => (int)$row['position'],
+                'requested' => $asked,
+                'quantity'  => $row['quantity'],
+                'unit'      => (string)($row['unit'] ?: 'шт.'),
+                'reason'    => (string)($row['out_of_scope_reason'] ?? ''),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Отметить строку как не нашу — или вернуть её в работу.
+     *
+     * Нажатие запоминается: слова строки уходят в список `CATALOG_OUT_OF_SCOPE`,
+     * и следующее такое письмо отсеется само, без модели и без сети. Возврат
+     * строки правило НЕ удаляет: список правится в «Настройках», а один
+     * возврат — ещё не отмена правила для всех.
+     */
+    public static function setScope(int $requestId, int $itemId, bool $outOfScope): array {
+        $row = Db::one("SELECT * FROM request_items WHERE id=? AND request_id=?", [$itemId, $requestId]);
+        if (!$row) throw new RuntimeException('Строка не найдена');
+
+        $name = trim((string)($row['raw_name'] ?? '')) ?: trim((string)($row['product_name'] ?? ''));
+        $reason = null;
+        if ($outOfScope) {
+            $reason = Scope::match($name) ?? Scope::remember($name) ?? 'отмечено менеджером';
+        }
+
+        Db::update('request_items', [
+            'is_out_of_scope'     => $outOfScope ? 1 : 0,
+            'out_of_scope_reason' => $reason,
+            'updated_at'          => date('Y-m-d H:i:s'),
+        ], 'id=?', [$itemId]);
+
+        return self::all($requestId);
+    }
+
     /** How many lines of a request are still waiting for that answer. */
     public static function openChoices(int $requestId): int {
         return (int)Db::val("SELECT COUNT(*) FROM request_items WHERE request_id=? AND needs_choice=1", [$requestId]);
     }
 
     /** ProductMatcher output → table rows. */
-    private static function fromMatches(array $matches): array {
+    private static function fromMatches(array $matches, ?int $counterpartyId = null): array {
         $out = [];
         foreach ($matches as $m) {
             $best = $m['match'] ?? null;
+            // «Не наша номенклатура» решается по самому названию и ДО каталога:
+            // рукав пожарный не становится нашей позицией оттого, что похожее
+            // слово нашлось в описании чехла (модуль 022)
+            $rule = Scope::match((string)($m['raw_name'] ?? ''));
             $out[] = [
                 'raw_name'            => (string)($m['raw_name'] ?? ''),
+                'is_out_of_scope'     => $rule !== null ? 1 : 0,
+                'out_of_scope_reason' => $rule,
                 'quantity'            => (float)($m['quantity'] ?? 1),
                 'moysklad_product_id' => $best['moysklad_id'] ?? null,
                 'product_name'        => $best['name'] ?? null,
@@ -468,7 +603,22 @@ final class RequestItems {
                 'match_source'        => $m['match_source'] ?? null,
                 'is_confirmed'        => !empty($m['is_confirmed']) ? 1 : 0,
                 'notes'               => ($best && Alternatives::freeStock($best) === 0) ? 'под заказ' : null,
+                'variant_label'       => (string)($m['variant_label'] ?? '') ?: null,
+                'variant_kind'        => (string)($m['variant_kind'] ?? '') ?: null,
             ];
+
+            // Строка просила конкретный размер или цвет — пусть и карточка
+            // каталога будет его: свой артикул, своя цена, свой остаток
+            $last = array_key_last($out);
+            $resolved = Variants::resolveRow($out[$last], $counterpartyId);
+            foreach ($resolved as $field => $value) {
+                $out[$last][$field] = $value;
+            }
+            // Остаток теперь принадлежит модификации, значит и «под заказ» —
+            // тоже её: у размера L склад свой, а не общий на товар
+            if ($resolved && array_key_exists('stock', $resolved)) {
+                $out[$last]['notes'] = (int)$resolved['stock'] === 0 ? 'под заказ' : null;
+            }
         }
         return $out;
     }

@@ -25,7 +25,7 @@ final class DocxGenerator {
         $number = (string)($proposal['number'] ?? '') !== '' ? $proposal['number'] : (string)$proposalId;
         $dir = ROOT . '/data/kp';
         if (!is_dir($dir)) mkdir($dir, 0755, true);
-        $path = $dir . '/KP-' . self::slug($number) . '.docx';
+        $path = $dir . '/' . PdfGenerator::fileName($proposalId, 'docx');
 
         (new Html2Docx())->write($html, $path, [
             'title'  => 'Коммерческое предложение ' . $number,
@@ -36,18 +36,16 @@ final class DocxGenerator {
         return $path;
     }
 
-    /** Name of the file the client receives: «КП_ООО_ТЕХНОВА_15.07.2026.docx». */
+    /**
+     * Имя файла, который получит клиент:
+     * «КП_Атлант_Армор_для_ООО_Воевода_от_14.09.2026.docx».
+     *
+     * Одно имя на оба формата — его собирает `PdfGenerator::fileName()`
+     * (модуль 022): Word и PDF одного КП должны называться одинаково, иначе в
+     * папке у клиента это два разных документа.
+     */
     public static function filename(int $proposalId): string {
-        $row = Db::one("SELECT p.number, c.name AS company FROM proposals p
-                        LEFT JOIN counterparties c ON c.id = p.counterparty_id WHERE p.id=?", [$proposalId]);
-        $company = self::slug((string)($row['company'] ?? ''));
-        return 'КП' . ($company !== '' ? '_' . $company : '_' . ($row['number'] ?? $proposalId))
-             . '_' . date('d.m.Y') . '.docx';
-    }
-
-    private static function slug(string $s): string {
-        $s = (string)preg_replace('/[^\p{L}\p{N}]+/u', '_', trim($s));
-        return trim(mb_substr($s, 0, 60), '_');
+        return PdfGenerator::fileName($proposalId, 'docx');
     }
 }
 

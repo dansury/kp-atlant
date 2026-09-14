@@ -24,7 +24,7 @@ $stale = Db::all(
 if (empty($stale)) exit(0);
 
 // Load ToV and email rules
-$tov = file_exists(ROOT . '/reference/tov.md') ? file_get_contents(ROOT . '/reference/tov.md') : '';
+$tov = Tov::read();
 $emailRules = Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: '';
 
 foreach ($stale as $proposal) {

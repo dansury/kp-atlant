@@ -6,6 +6,7 @@ use Mpdf\Mpdf;
 
 require_once __DIR__ . '/kp_content.php';
 require_once __DIR__ . '/requisites.php';
+require_once __DIR__ . '/signatures.php';
 
 class PdfGenerator {
 
@@ -33,11 +34,16 @@ class PdfGenerator {
         $dir = ROOT . '/data/kp';
         if (!is_dir($dir)) mkdir($dir, 0755, true);
 
-        $proposal = Db::one("SELECT number FROM proposals WHERE id=?", [$proposalId]);
+        $proposal = Db::one("SELECT number, pdf_path FROM proposals WHERE id=?", [$proposalId]);
         $number = $proposal['number'] ?: self::generateNumber();
-        $filename = "KP-$number.pdf";
-        $path = "$dir/$filename";
+        $path = "$dir/" . self::fileName($proposalId, 'pdf');
         $mpdf->Output($path, \Mpdf\Output\Destination::FILE);
+
+        // В имени файла стоит дата (модуль 022), поэтому перевыпуск назавтра —
+        // это НОВЫЙ файл. Вчерашний не оставляем: в `data/kp` иначе копится по
+        // документу на каждое нажатие «Сохранить».
+        $was = (string)($proposal['pdf_path'] ?? '');
+        if ($was !== '' && $was !== $path && is_file($was) && str_starts_with($was, $dir . '/')) @unlink($was);
 
         // Update proposal
         Db::update('proposals', [
@@ -155,30 +161,25 @@ class PdfGenerator {
             }
         }
 
-        // Логотип слева вверху документа (модуль 020).
+        // Логотип слева вверху документа (модули 020 и 022).
         //
         // Раньше путь брался как `$legal['logo_path'] ?? <по умолчанию>`, а в
         // базе там стоит пустая строка, а не NULL: `??` её пропускал, запасной
-        // путь не проверялся, и КП уходило вообще без логотипа. Теперь адрес
-        // ищется по очереди — загруженный в «Настройках», затем встроенный, —
-        // и берётся первый, который существует на диске.
-        $logo = '';
-        foreach ([trim((string)($legal['logo_path'] ?? '')), ...self::bundledLogos()] as $candidate) {
-            if ($candidate === '' || !is_file($candidate)) continue;
-            $ext = strtolower(pathinfo($candidate, PATHINFO_EXTENSION)) ?: 'png';
-            if ($ext === 'jpg') $ext = 'jpeg';
-            if ($ext === 'svg') $ext = 'svg+xml';
-            $logo = 'data:image/' . $ext . ';base64,' . base64_encode((string)file_get_contents($candidate));
-            break;
+        // путь не проверялся, и КП уходило вообще без логотипа. Затем нашлась
+        // вторая, тихая причина: mPDF рисует ПРОЗРАЧНЫЙ PNG только через GD, а
+        // без неё выбрасывает картинку без единой строчки в логе. Поэтому знак
+        // берётся у `Branding` уже сведённым на белое — `documentImage()`.
+        $logo = self::logoDataUri($legal);
+        if ($logo === '') {
+            Logger::warning('kp', 'КП печатается без логотипа: знак не найден или не читается',
+                            ['proposal_id' => $proposalId, 'logo_path' => (string)($legal['logo_path'] ?? '')]);
         }
 
-        // Signature path
-        $signaturePath = '';
-        if (!empty($legal['signature_path']) && file_exists($legal['signature_path'])) {
-            $sigData = base64_encode(file_get_contents($legal['signature_path']));
-            $ext = pathinfo($legal['signature_path'], PATHINFO_EXTENSION);
-            $signaturePath = "data:image/$ext;base64,$sigData";
-        }
+        // Подпись менеджера, который делает это КП, а не одна на всю компанию
+        // (модуль 022): у каждого своя картинка и своя расшифровка, а по
+        // умолчанию — подписант организации.
+        $signatory = Signatures::forProposal($proposalId, $legal);
+        $signaturePath = $signatory['image'];
 
         // Render template
         $templateVars = [
@@ -209,6 +210,7 @@ class PdfGenerator {
             'validityDays' => $proposal['validity_days'] ?? 14,
             'date' => date('d.m.Y') . 'г.',
             'signaturePath' => $signaturePath,
+            'signatoryName' => $signatory['name'],
             'totalIsFrom' => $totalIsFrom,
             'showImages' => (bool)($proposal['show_images'] ?? 1),
             'imagesNote' => $imagesNote,
@@ -227,25 +229,100 @@ class PdfGenerator {
     }
 
     /**
-     * Логотип, который лежит в репозитории. Он же — то, что печатается, пока
-     * в «Настройках» не загрузили свой файл: КП без логотипа выглядит как
-     * черновик, а имя отправителя в шапке — не замена знаку.
+     * Знак для шапки документа как data:URI.
+     *
+     * Путь из `legal_entities.logo_path` проверяется первым — это то, что
+     * выбрал оператор, — и только потом в дело идёт `Branding` с загруженным и
+     * встроенным файлом. Прозрачность снимается у всех одинаково: mPDF без GD
+     * прозрачный PNG не печатает (модуль 022).
      */
-    private static function bundledLogos(): array {
+    public static function logoDataUri(array $legal): string {
         require_once __DIR__ . '/branding.php';
-        return [
-            // Загруженный в «Настройках → Логотипы» — он лежит в storage/, вне
-            // репозитория, потому что деплой перезаписывает public/assets/
-            ...array_filter([Branding::uploaded('kp')]),
-            // Встроенный запасной знак: КП не уходит клиенту без логотипа
-            ...Branding::bundled('kp'),
-        ];
+
+        $configured = trim((string)($legal['logo_path'] ?? ''));
+        if ($configured !== '' && is_file($configured) && $configured !== Branding::resolve('kp')) {
+            $uri = Branding::fileAsDocumentImage($configured);
+            if ($uri !== '') return $uri;
+        }
+        return Branding::documentImage('kp');
     }
 
     // Preview: return PDF as string (for streaming)
     public static function preview(int $proposalId): string {
         $path = self::generate($proposalId);
         return file_get_contents($path);
+    }
+
+    /**
+     * Имя файла КП: «КП_Атлант_Армор_для_ООО_Воевода_от_14.09.2026.pdf».
+     *
+     * Клиент сохраняет вложение в свою папку и через неделю ищет его там среди
+     * десятка других — «KP-2026-002.pdf» в такой папке не ищется никак
+     * (модуль 022). Поэтому в имени стоит НАШ бренд, имя адресата и дата.
+     *
+     * Адресат берётся в том же порядке, в каком его знает документ:
+     * юридическое название из реквизитов, затем карточка компании, затем имя
+     * отправителя письма. Не знаем никого — пишем номер КП: имя файла без
+     * адресата всё равно должно оставаться разным у разных документов.
+     */
+    public static function fileName(int $proposalId, string $ext = 'pdf'): string {
+        $brand = self::translitPart((string)Settings::get('KP_FILE_BRAND', 'Атлант Армор')) ?: 'Атлант_Армор';
+        $addressee = self::translitPart(self::addresseeName($proposalId));
+        $date = date('d.m.Y');
+
+        $name = 'КП_' . $brand;
+        if ($addressee !== '') {
+            $name .= '_для_' . $addressee;
+        } else {
+            $number = (string)(Db::val("SELECT number FROM proposals WHERE id=?", [$proposalId]) ?: $proposalId);
+            $name .= '_' . self::translitPart($number);
+        }
+        return $name . '_от_' . $date . '.' . $ext;
+    }
+
+    /** Кому адресовано КП: организация или ФИО отправителя запроса. */
+    public static function addresseeName(int $proposalId): string {
+        $requisites = Requisites::forProposal($proposalId);
+        $buyer = $requisites['buyer'] ?? [];
+        foreach ([$buyer['legal_title'] ?? '', $buyer['name'] ?? ''] as $candidate) {
+            $candidate = trim((string)$candidate);
+            if ($candidate !== '') return $candidate;
+        }
+
+        $row = Db::one(
+            "SELECT c.name AS company, c.contact_person, r.email_from
+             FROM proposals p
+             LEFT JOIN counterparties c ON c.id = p.counterparty_id
+             LEFT JOIN requests r ON r.id = p.request_id
+             WHERE p.id=?", [$proposalId]
+        ) ?: [];
+
+        foreach (['company', 'contact_person', 'email_from'] as $field) {
+            $value = trim((string)($row[$field] ?? ''));
+            // Адрес почты в имени файла — крайний случай: «ivanov@mail.ru»
+            // читается хуже фамилии, но лучше, чем никакого адресата
+            if ($field === 'email_from' && $value !== '') {
+                if (preg_match('/[\w.+-]+@[\w.-]+/u', $value, $m)) $value = strstr($m[0], '@', true) ?: $m[0];
+            }
+            if ($value !== '') return $value;
+        }
+        return '';
+    }
+
+    /**
+     * Кусок имени файла: кириллица остаётся кириллицей — её понимают и Windows,
+     * и почта, — а всё, что ломает файловые системы и заголовок вложения
+     * (слэши, кавычки, двоеточия, пробелы), становится подчёркиванием.
+     */
+    private static function translitPart(string $value): string {
+        $value = trim(preg_replace('/\s+/u', ' ', $value) ?? '');
+        $value = str_replace(['«', '»', '"', "'", '“', '”'], '', $value);
+        $value = (string)preg_replace('#[\\\\/:*?<>|\#%&{}$!@+`=\[\]]+#u', ' ', $value);
+        $value = (string)preg_replace('/[\s,.;]+/u', '_', $value);
+        $value = trim($value, '_');
+        // Имя файла целиком должно пережить почтовый заголовок — 60 символов
+        // адресата на это с запасом хватает
+        return mb_substr($value, 0, 60);
     }
 
     // Generate KP number: YYYY-NNN

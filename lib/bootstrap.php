@@ -28,6 +28,9 @@ require_once __DIR__ . '/prompts.php';
 require_once __DIR__ . '/llm.php';
 require_once __DIR__ . '/knowledge.php';
 require_once __DIR__ . '/triage.php';
+require_once __DIR__ . '/tov.php';
+require_once __DIR__ . '/learning.php';
+require_once __DIR__ . '/content_log.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/auto_pull.php';
 
@@ -1239,6 +1242,70 @@ SQL);
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '23')");
         $current = 23;
+    }
+
+    // v24 — модуль 022: модификации товара, «не наша номенклатура», подпись
+    // менеджера, правки, на которых сервис учится, и лента изменений текстов.
+    if ($current < 24) {
+        // Размер и цвет, которые просила строка письма. Метка живёт на строке,
+        // а не в названии: подбор ищет товар-родителя, а модификацию выбирает
+        // по ней (модуль 022).
+        Db::ensureColumn('request_items', 'variant_label', 'TEXT');
+        Db::ensureColumn('request_items', 'variant_kind', 'TEXT');
+
+        // Третье состояние строки: не «нашли» и не «уточняем», а «это не к нам».
+        // Такая строка не уходит ни в КП, ни в ответ клиенту.
+        Db::ensureColumn('request_items', 'is_out_of_scope', 'INTEGER', '0');
+        Db::ensureColumn('request_items', 'out_of_scope_reason', 'TEXT');
+
+        // Подпись у каждого менеджера своя; пусто — подписант организации
+        Db::ensureColumn('managers', 'signatory_name', 'TEXT');
+        Db::ensureColumn('managers', 'signature_path', 'TEXT');
+
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS learning_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            subject TEXT,
+            question TEXT,
+            auto_answer TEXT,
+            correct_answer TEXT,
+            comment TEXT,
+            context_json TEXT,
+            manager_id INTEGER REFERENCES managers(id),
+            exported_at TEXT,
+            export_batch TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_learning_kind ON learning_samples(kind, id);
+        CREATE INDEX IF NOT EXISTS idx_learning_new ON learning_samples(exported_at);
+
+        CREATE TABLE IF NOT EXISTS content_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            area TEXT NOT NULL,
+            item_key TEXT,
+            title TEXT,
+            manager_id INTEGER REFERENCES managers(id),
+            before_len INTEGER NOT NULL DEFAULT 0,
+            after_len INTEGER NOT NULL DEFAULT 0,
+            excerpt TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_content_changes_at ON content_changes(id DESC);
+SQL);
+
+        // Tone of Voice жил файлом в репозитории — деплой его перезаписывал, и
+        // правка менеджера исчезала на следующем обновлении кода. Переносим в
+        // storage/, один раз (модуль 022).
+        $tovFile = ROOT . '/reference/tov.md';
+        if (!is_file(ROOT . '/storage/tov.md') && is_file($tovFile)) {
+            @mkdir(ROOT . '/storage', 0755, true);
+            @copy($tovFile, ROOT . '/storage/tov.md');
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '24')");
+        $current = 24;
     }
 }
 

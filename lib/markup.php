@@ -51,6 +51,11 @@ final class Markup {
         // Скрипты и стили — не текст товара ни в каком виде
         $html = (string)preg_replace('#<(script|style)\b[^>]*>.*?</\1>#isu', '', $html);
 
+        // На хостинге может не быть ext-dom, и тогда `new DOMDocument()` — это
+        // фатальная ошибка посреди генерации КП. Разбираем регулярками: хуже,
+        // чем деревом, но лучше, чем `<ul><li>` в подписанном документе.
+        if (!class_exists('DOMDocument')) return self::htmlToMarkdownFallback($html);
+
         $doc = new DOMDocument();
         $prev = libxml_use_internal_errors(true);
         // МойСклад отдаёт фрагмент, а не документ, и нередко с незакрытыми тегами
@@ -64,6 +69,30 @@ final class Markup {
         if (!$body instanceof DOMElement) return '';
 
         return self::tidy(self::walk($body, ''));
+    }
+
+    /**
+     * То же самое без ext-dom. Понимает ровно то, чем бывает описание товара из
+     * МойСклад: списки, абзацы, переносы и выделение. Всё остальное теряет
+     * теги, но сохраняет текст — а текст здесь и есть ценность.
+     */
+    private static function htmlToMarkdownFallback(string $html): string {
+        $out = $html;
+        $out = (string)preg_replace('#<br\s*/?>#iu', "\n", $out);
+        $out = (string)preg_replace('#</?(?:p|div|section|article|header|footer|blockquote|h[1-6]|table)\b[^>]*>#iu', "\n\n", $out);
+        $out = (string)preg_replace('#</li\s*>#iu', "\n", $out);
+        $out = (string)preg_replace('#<li\b[^>]*>#iu', '- ', $out);
+        $out = (string)preg_replace('#</?(?:ul|ol)\b[^>]*>#iu', "\n", $out);
+        $out = (string)preg_replace('#</?(?:b|strong)\b[^>]*>#iu', '**', $out);
+        $out = (string)preg_replace('#</?(?:i|em)\b[^>]*>#iu', '*', $out);
+        $out = (string)preg_replace('#</?(?:td|th)\b[^>]*>#iu', ' · ', $out);
+        $out = (string)preg_replace('#</tr\s*>#iu', "\n", $out);
+        $out = strip_tags($out);
+        $out = html_entity_decode($out, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        // «** **» вокруг пустоты и осиротевшие маркеры списка — мусор обхода
+        $out = (string)preg_replace('/\*\*\s*\*\*/u', '', $out);
+        $out = (string)preg_replace('/^[ \t]*-[ \t]*$/mu', '', $out);
+        return self::tidy($out);
     }
 
     /** Обход дерева: каждый узел отдаёт свой кусок Markdown. */
@@ -165,7 +194,16 @@ final class Markup {
      * должно превращаться в теги само по себе.
      */
     public static function markdownToHtml(string $md): string {
-        $md = self::tidy(utf8Text($md));
+        $md = utf8Text($md);
+
+        // В поле может лежать HTML — из МойСклад, из письма, из старого КП,
+        // который не застал миграцию. Экранировать его значит напечатать
+        // `<ul><li>Класс защиты Бр1.</li>` буквой в подписанном документе; это
+        // и случилось. Разметку приводим к Markdown прямо здесь, на печати:
+        // печать — последняя дверь, и дальше проверять уже негде (модуль 022).
+        if (self::looksLikeHtml($md)) $md = self::toMarkdown($md);
+
+        $md = self::tidy($md);
         if ($md === '') return '';
 
         $html = '';

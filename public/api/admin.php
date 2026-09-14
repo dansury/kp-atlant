@@ -8,9 +8,31 @@ require_once ROOT . '/lib/push.php';
 require_once ROOT . '/lib/managers.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/mailsync.php';
+require_once ROOT . '/lib/branding.php';
 
-$admin  = requireAdmin();
 $action = $_GET['action'] ?? '';
+
+/**
+ * Что здесь может делать обычный менеджер (модуль 022).
+ *
+ * Оформление КП, база знаний, промпты и Tone of Voice — это ТЕКСТЫ, с которыми
+ * менеджер работает каждый день; он замечает кривую формулировку раньше всех и
+ * до сих пор мог только пожаловаться админу. Теперь правит сам, а админ видит
+ * каждую правку в ленте на первой странице.
+ *
+ * Тумблеры, ключи, почтовые ящики, логи и «Все параметры» остаются админскими:
+ * там ломается не текст, а сервис.
+ */
+const MANAGER_ACTIONS = [
+    'prompts', 'prompt_save', 'prompt_reset', 'prompt_history',
+    'knowledge', 'knowledge_sync', 'knowledge_preview', 'knowledge_vector_stats',
+    'tov', 'tov_save', 'tov_reset',
+    'learning', 'learning_save', 'learning_add',
+    'signature', 'signature_reset',
+];
+
+$admin = in_array($action, MANAGER_ACTIONS, true) ? requireAuth() : requireAdmin();
+$isAdmin = !empty($admin['is_admin']);
 $input  = in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT'], true) ? getInput() : [];
 
 try {
@@ -456,11 +478,153 @@ try {
         case 'knowledge_preview':
             $task = (string)($input['task'] ?? $_GET['task'] ?? 'mail_reply');
             if (!isset(Knowledge::TASKS[$task])) jsonError('Неизвестная задача');
-            jsonData([
+            $query = (string)($input['query'] ?? $_GET['query'] ?? '');
+            $out = [
                 'task'    => $task,
                 'enabled' => Knowledge::taskEnabled($task),
-                'items'   => Knowledge::preview((string)($input['query'] ?? $_GET['query'] ?? ''), $task),
+                'items'   => Knowledge::preview($query, $task),
+                'answer'  => null,
+                'error'   => null,
+            ];
+
+            // «Проверка подбора» отвечала, КАКИЕ разделы вики попадут в промпт, и
+            // на этом останавливалась — а вопрос у человека всегда был другой:
+            // «что сервис на это ответит?». Теперь она отвечает и им, и этот
+            // ответ можно тут же забраковать кнопкой 👎 (модуль 022).
+            if (!empty($input['draft']) && trim($query) !== '') {
+                try {
+                    $out['answer'] = Triage::draft(
+                        ['subject' => (string)($input['subject'] ?? 'Проверка подбора'), 'body_text' => $query],
+                        (string)($input['category'] ?? 'other'),
+                        ['email_rules' => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
+                         'tov'         => Tov::read()]
+                    );
+                } catch (Throwable $e) {
+                    // Недоступная модель не должна прятать сам подбор разделов
+                    Logger::warning('knowledge', 'Пробный ответ не сгенерирован: ' . $e->getMessage());
+                    $out['error'] = $e->getMessage();
+                }
+            }
+            jsonData($out);
+
+        // ---------- Tone of Voice (модуль 022) ----------
+        //
+        // Текст переехал из репозитория в storage/: деплой перезаписывает файлы
+        // репозитория, и правка менеджера исчезала на следующем обновлении кода.
+
+        case 'tov':
+            jsonData([
+                'content'    => Tov::read(),
+                'is_custom'  => Tov::isCustom(),
+                'updated_at' => Tov::updatedAt(),
+                'can_edit'   => true,
             ]);
+
+        case 'tov_save':
+            Tov::save((string)($input['content'] ?? ''), (int)$admin['id']);
+            jsonOk(['updated_at' => Tov::updatedAt()]);
+
+        case 'tov_reset':
+            Tov::reset((int)$admin['id']);
+            jsonOk(['content' => Tov::read()]);
+
+        // ---------- Подпись менеджера (модуль 022) ----------
+
+        case 'signature':
+            require_once ROOT . '/lib/signatures.php';
+            // Админ смотрит чужую подпись, менеджер — только свою
+            $who = $isAdmin ? (int)($_GET['manager_id'] ?? $admin['id']) : (int)$admin['id'];
+            jsonData(Signatures::describe($who));
+
+        case 'signature_reset':
+            require_once ROOT . '/lib/signatures.php';
+            $who = $isAdmin ? (int)($input['manager_id'] ?? $admin['id']) : (int)$admin['id'];
+            Signatures::forget($who);
+            jsonOk(Signatures::describe($who));
+
+        // ---------- Правки, на которых сервис учится (модуль 022) ----------
+
+        case 'learning':
+            // Менеджер видит свои правки, админ — все: править чужую правку
+            // значит переписывать чужое решение, и это админская работа
+            $filter = [
+                'kind'     => (string)($_GET['kind'] ?? ''),
+                'only_new' => !empty($_GET['only_new']),
+                'page'     => (int)($_GET['page'] ?? 1),
+            ];
+            $data = Learning::query($filter);
+            $data['can_edit'] = $isAdmin;
+            $data['export'] = Learning::exportTarget() + [
+                'last'      => (string)(Db::val("SELECT value FROM settings WHERE key='learning_last_export'") ?: ''),
+                'token_set' => trim((string)Settings::get('GITHUB_TOKEN', '')) !== '',
+            ];
+            jsonData($data);
+
+        // Кнопка 👎 «как должен звучать правильный ответ?» — и ручная правка
+        case 'learning_add':
+            $id = Learning::record((string)($input['kind'] ?? 'answer'), [
+                'subject'        => (string)($input['subject'] ?? ''),
+                'question'       => (string)($input['question'] ?? ''),
+                'auto_answer'    => (string)($input['auto_answer'] ?? ''),
+                'correct_answer' => (string)($input['correct_answer'] ?? ''),
+                'comment'        => (string)($input['comment'] ?? ''),
+                'context'        => (array)($input['context'] ?? []),
+                'manager_id'     => (int)$admin['id'],
+            ]);
+            if (!$id) jsonError('Напишите, как должно было быть — иначе учиться не на чем', 400);
+            jsonOk(['id' => $id]);
+
+        case 'learning_save':
+            if (!$isAdmin) jsonError('Править чужие правки может администратор', 403);
+            Learning::update((int)($input['id'] ?? 0), $input);
+            jsonOk();
+
+        case 'learning_delete':
+            Learning::delete((int)($input['id'] ?? $_GET['id'] ?? 0));
+            jsonOk();
+
+        case 'learning_export':
+            try {
+                jsonOk(['result' => Learning::export((int)$admin['id'])]);
+            } catch (Throwable $e) {
+                Logger::exception('learning', $e, ['manager_id' => $admin['id']]);
+                jsonError($e->getMessage());
+            }
+
+        // ---------- Склады МойСклад (модуль 022) ----------
+        //
+        // Остаток считается только с тех складов, которые здесь отмечены:
+        // остаток витрины или брака в КП — это обещание, которого не выполнить.
+
+        case 'moysklad_stores':
+            require_once ROOT . '/lib/moysklad.php';
+            MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+            try {
+                $stores = MoySklad::stores();
+            } catch (Throwable $e) {
+                jsonError('Склады не получены: ' . $e->getMessage());
+            }
+            jsonData(['items' => $stores, 'selected' => MoySklad::selectedStores()]);
+
+        case 'moysklad_stock_refresh':
+            require_once ROOT . '/lib/moysklad.php';
+            MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+            try {
+                jsonOk(['result' => MoySklad::refreshStock()]);
+            } catch (Throwable $e) {
+                Logger::exception('catalog', $e, ['stage' => 'stock']);
+                jsonError('Остатки не загрузились: ' . $e->getMessage());
+            }
+
+        case 'moysklad_variants_refresh':
+            require_once ROOT . '/lib/moysklad.php';
+            MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+            try {
+                jsonOk(['variants' => MoySklad::refreshVariantCache()]);
+            } catch (Throwable $e) {
+                Logger::exception('catalog', $e, ['stage' => 'variants']);
+                jsonError('Модификации не загрузились: ' . $e->getMessage());
+            }
 
         // ---------- Logs ----------
 
@@ -509,6 +673,17 @@ try {
                     'subscribers' => (int)Db::val("SELECT COUNT(DISTINCT manager_id) FROM push_subscriptions"),
                     'devices'     => (int)Db::val("SELECT COUNT(*) FROM push_subscriptions"),
                 ],
+                // Что менеджеры поменяли в текстах и чему сервис научился на их
+                // правках — первое, что админ видит, заходя в панель (модуль 022)
+                'changes'    => ContentLog::recent(12),
+                'changes_24h'=> ContentLog::countSince('-1 day'),
+                'learning'   => [
+                    'pending' => (int)Db::val("SELECT COUNT(*) FROM learning_samples WHERE exported_at IS NULL"),
+                    'total'   => (int)Db::val("SELECT COUNT(*) FROM learning_samples"),
+                    'last'    => (string)(Db::val("SELECT value FROM settings WHERE key='learning_last_export'") ?: ''),
+                ],
+                // Логотип КП: «загружен» и «печатается» — не одно и то же
+                'logo'       => ['warning' => Branding::documentWarning('kp')],
             ]);
 
         default:
