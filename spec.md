@@ -19,6 +19,8 @@
 | Письма с форм сайта, недоставленные ответы, вторая половина сделки | `specs/015-inbound-channels/spec.md` | Implemented |
 | КП уходит клиенту в Word (.docx) | `specs/016-kp-docx/spec.md` | Implemented |
 | Модуль сайта: ссылки и QR-коды на товары | `specs/017-bitrix-site-module/spec.md` | Implemented |
+| КП не уходит клиенту с молчаливой дырой | `specs/018-kp-completeness/spec.md` | Implemented |
+| Архив писем, выключаемые ящики, карточка с телефона | `specs/019-archive-mailboxes-mobile/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -32,6 +34,7 @@
 | Модуль 013 целиком: аналоги, таблица соответствия, карточка, реквизиты, НДС | `php tests/module_013.php` |
 | Модули 015 и 016: формы сайта, спам, bounce, вложения, единый адрес, .docx | `php tests/module_015_016.php` |
 | Модуль 017: QR-код и разбор выгрузки каталога с сайта | `php tests/module_017.php` |
+| Модуль 019: архив писем, выключение и удаление ящика, колонка цены = тип цены | `php tests/module_019.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

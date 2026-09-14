@@ -92,6 +92,7 @@ const App = {
         const cls = {
             order: 'badge--order', kp_request: 'badge--kp',
             spam: 'badge--muted', service: 'badge--muted', supplier_offer: 'badge--muted',
+            not_our_profile: 'badge--muted',
         }[key] || 'badge--kp';
         return `<span class="badge ${cls}" title="Категория запроса">${this.esc(label || key)}</span>`;
     },
@@ -1467,7 +1468,6 @@ const App = {
                     ${this.answerBadge(cp.answer_state)}
                 </div>
                 <div class="flex flex--wrap">
-                    <button class="btn btn--primary btn--sm" onclick="App.mailCompose(null, false, '', '${this.jsStr(cp.suggested_email || cp.contact_email || '')}')">✉ Написать</button>
                     <button class="btn btn--outline btn--sm" id="syncBtn" onclick="App.syncCompany(${cp.id})">Обновить из МойСклад</button>
                     ${cp.moysklad_id ? `<a class="btn btn--outline btn--sm" target="_blank"
                         href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">МойСклад ↗</a>` : ''}
@@ -1477,16 +1477,12 @@ const App = {
             <div class="grid grid--chat">
                 <div>
                     <div class="card card--flush">
-                        <div class="card__title" style="padding:12px 16px 0">Переписка</div>
-                        <div id="cpThreads"><div class="loading">Загрузка...</div></div>
-                    </div>
-                    <div class="card">
-                        <div class="card__title">Заметки и события</div>
-                        <div id="chatFeed" class="chat"><div class="loading">Загрузка...</div></div>
-                        <div class="chat__composer">
-                            <textarea id="noteText" rows="2" placeholder="Заметка для коллег (клиенту не уходит)..."></textarea>
-                            <button class="btn btn--outline" onclick="App.addNote(${cp.id})">Добавить заметку</button>
+                        <div class="card__title" style="padding:12px 16px 0">
+                            Переписка
+                            <button class="btn btn--outline btn--sm" style="float:right;margin-top:-4px"
+                                    onclick="App.toggleCompanyArchive(${cp.id}, this)">Архив</button>
                         </div>
+                        <div id="cpThreads"><div class="loading">Загрузка...</div></div>
                     </div>
                 </div>
                 <div id="companySide">${this.companySide(cp)}</div>
@@ -1513,15 +1509,48 @@ const App = {
     async loadCompanyThreads(id) {
         const box = document.getElementById('cpThreads');
         if (!box) return;
+        const archived = this.companyArchive ? 1 : 0;
         try {
-            const d = await this.api(`counterparties.php?action=threads&id=${id}`);
+            const d = await this.api(`counterparties.php?action=threads&id=${id}&archived=${archived}`);
             this.companyThreads = d.items || [];
+            this.companyMailboxes = d.mailboxes || this.companyMailboxes || [];
             box.innerHTML = this.companyThreads.length
                 ? `<div class="mlist">${this.companyThreads.map(t => this.companyThreadRow(t)).join('')}</div>`
-                : '<div class="mlist__empty">Писем от этой компании ещё нет</div>';
+                : (archived
+                    ? '<div class="mlist__empty">В архиве этой компании пусто</div>'
+                    : this.newLetterHtml(this.company || {id}));
+            // Открытая переписка — а не кнопка «написать»: письмо, позиции по
+            // каталогу и поле ответа видны сразу, без единого нажатия (модуль 019)
+            if (!archived && this.companyThreads.length) {
+                this.toggleCompanyThread(this.companyThreads[0].thread_key);
+            }
         } catch (err) {
             box.innerHTML = `<div class="mlist__empty">Переписка не загрузилась: ${this.esc(err.message)}</div>`;
         }
+    },
+
+    /** «Архив» карточки: письма, убранные как «не наш профиль» или вместе с ящиком. */
+    toggleCompanyArchive(id, btn) {
+        this.companyArchive = !this.companyArchive;
+        if (btn) {
+            btn.classList.toggle('btn--primary', this.companyArchive);
+            btn.classList.toggle('btn--outline', !this.companyArchive);
+            btn.textContent = this.companyArchive ? 'В работе' : 'Архив';
+        }
+        this.loadCompanyThreads(id);
+    },
+
+    /**
+     * Компании ещё не писали — поле ответа всё равно открыто. Раньше здесь была
+     * кнопка «Написать» наверху карточки, которая открывала окно поверх экрана;
+     * теперь письмо пишется там же, где читается переписка.
+     */
+    newLetterHtml(cp) {
+        const to = cp.suggested_email || cp.contact_email || '';
+        return `<div style="padding:0 16px 16px">
+            <p class="muted">Писем от этой компании ещё нет — напишите первым.</p>
+            ${this.threadComposer('', {to, subject: '', counterparty_id: cp.id}, this.companyMailboxes || [])}
+        </div>`;
     },
 
     companyThreadRow(t) {
@@ -1547,6 +1576,13 @@ const App = {
                         <span class="muted">${this.fmtDate(t.last_at)}</span>
                     </div>
                     <div class="mrow__preview">${this.esc(t.preview)}</div>
+                </div>
+                <div class="mrow__meta" style="margin-top:4px">
+                    ${t.archived_at
+                        ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(t.thread_key)}')">↩ Вернуть в работу</button>
+                           <span class="muted">${t.archived_reason === 'mailbox_off' ? 'ящик отключён' : 'не наш профиль'}</span>`
+                        : `<button class="btn btn--outline btn--sm" title="Убрать переписку с экрана: на сервере она уйдёт в «Архив»"
+                                   onclick="App.archiveThread('${this.jsStr(t.thread_key)}', ${t.count})">🗄 В архив (не наш профиль)</button>`}
                 </div>
                 <div class="thread-inline" id="th_${this.esc(this.threadDomId(t.thread_key))}" hidden></div>
             </div>`;
@@ -1584,6 +1620,7 @@ const App = {
             `;
             box.dataset.loaded = '1';
             if (reply.request_id) this.loadThreadItems(box, reply.request_id);
+            else this.noThreadItems(box);
             // Opening a conversation is reading it — the card stops shouting
             const row = box.closest('.mrow');
             if (row) { row.classList.remove('mrow--unread'); row.querySelectorAll('.pill--danger').forEach(p => p.remove()); }
@@ -1597,6 +1634,19 @@ const App = {
      * the request card — it is the same `request_items` — so a correction here
      * is the one the КП is built from.
      */
+    /**
+     * Переписка, из которой не завели запрос: подбирать нечего, и блок говорит
+     * это вслух. Молча пропущенная таблица читается как «подбор товаров пропал».
+     */
+    noThreadItems(box) {
+        const host = box.querySelector('[data-thread-items]');
+        if (!host) return;
+        host.className = 'card card--items';
+        host.innerHTML = `<div class="card__title">Подходящие позиции</div>
+            <p class="muted">По этой переписке запрос не заведён — подбирать по каталогу нечего.
+               Позиции появляются, когда письмо разобрано как запрос КП или заказ.</p>`;
+    },
+
     async loadThreadItems(box, requestId) {
         const host = box.querySelector('[data-thread-items]');
         if (!host) return;
@@ -1631,12 +1681,14 @@ const App = {
                 </div>
                 <input type="hidden" data-cmp-to value="${this.esc(reply.to || '')}">
                 <input type="hidden" data-cmp-reply value="${reply.reply_to_id || ''}">
+                <input type="hidden" data-cmp-cp value="${reply.counterparty_id || ''}">
                 <input type="text" data-cmp-subject value="${this.esc(reply.subject || '')}" placeholder="Тема">
                 <textarea data-cmp-text rows="5" placeholder="Ответьте клиенту — или попросите черновик у нейросети"></textarea>
                 <div class="composer__actions">
                     <button class="btn btn--primary btn--sm" onclick="App.threadSend('${this.jsStr(key)}', this)">Отправить</button>
-                    ${reply.reply_to_id ? `<button class="btn btn--outline btn--sm" data-cmp-draft
-                        onclick="App.threadDraft('${this.jsStr(key)}', this)">✨ Черновик нейросетью</button>` : ''}
+                    <button class="btn btn--outline btn--sm" data-cmp-draft
+                            ${reply.reply_to_id ? '' : 'disabled title="Отвечать нечего: в переписке нет входящего письма"'}
+                            onclick="App.threadDraft('${this.jsStr(key)}', this)">✨ Сгенерировать ответ</button>
                     <span class="muted" data-cmp-note></span>
                 </div>
             </div>`;
@@ -1690,18 +1742,19 @@ const App = {
                 to:          c.querySelector('[data-cmp-to]').value.trim(),
                 subject:     c.querySelector('[data-cmp-subject]').value.trim(),
                 text,
-                mailbox_id:  c.querySelector('[data-cmp-box]').value || null,
+                mailbox_id:  (c.querySelector('[data-cmp-box]') || {}).value || null,
                 reply_to_id: Number(c.querySelector('[data-cmp-reply]').value) || null,
-                thread_key:  key,
+                counterparty_id: Number(c.querySelector('[data-cmp-cp]').value) || null,
+                thread_key:  key || null,
             }});
             // «Отправлено» is only half the news when the copy never reached the
             // server's «Отправленные» — the manager hears it now, not in a month
             if (res.warning) this.toast(res.warning, 'error');
             else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
             // The answer belongs in the conversation it answers — reopen it
-            const box = document.getElementById('th_' + this.threadDomId(key));
+            const box = key ? document.getElementById('th_' + this.threadDomId(key)) : null;
             if (box) { box.dataset.loaded = ''; box.hidden = true; this.toggleCompanyThread(key); }
-            if (this.company) this.loadCompanyThreads(this.company.id);
+            if (this.company) { this.loadCompanyThreads(this.company.id); this.loadChat(this.company.id); }
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
     },
@@ -1774,6 +1827,15 @@ const App = {
                     <select id="cpPriceType" onchange="App.setCounterpartyPriceType(${cp.id}, this.value)">
                         <option value="">как в настройках каталога</option>
                     </select>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card__title">Заметки и события</div>
+                <div id="chatFeed" class="chat"><div class="loading">Загрузка...</div></div>
+                <div class="chat__composer">
+                    <textarea id="noteText" rows="2" placeholder="Заметка для коллег (клиенту не уходит)..."></textarea>
+                    <button class="btn btn--outline" onclick="App.addNote(${cp.id})">Добавить заметку</button>
                 </div>
             </div>
 
@@ -1878,7 +1940,12 @@ const App = {
             await this.api(`invoices.php?action=sync&counterparty_id=${id}`, {method: 'POST'});
             const cp = await this.api(`counterparties.php?action=get&id=${id}`);
             const side = document.getElementById('companySide');
+            // Фоновое обновление правой колонки не должно съесть недописанную
+            // заметку — она теперь живёт именно там (модуль 019)
+            const draft = (document.getElementById('noteText') || {}).value || '';
             if (side) side.innerHTML = this.companySide(cp);
+            const note = document.getElementById('noteText');
+            if (note && draft) note.value = draft;
             this.loadChat(id);
             if (!silent) this.toast('Данные из МойСклад обновлены', 'success');
         } catch (err) {
@@ -2041,9 +2108,12 @@ const App = {
                         <input type="file" id="catalogFile" accept=".xlsx,.csv">
                     </div>
                     <div class="form-group">
-                        <label>Колонка цены</label>
-                        <input type="text" id="catalogPriceCol" placeholder="Цена: Опт безнал">
-                        <div class="muted">Пусто — берётся «Цена: Опт безнал», затем «Опт», затем «Розница»</div>
+                        <label>Колонка цены = тип цены по умолчанию</label>
+                        <input type="text" id="catalogPriceCol" list="priceTypeList" placeholder="Опт безнал">
+                        <datalist id="priceTypeList"></datalist>
+                        <div class="muted">Колонка «Цена: …» выгрузки. Она же становится типом цены по умолчанию —
+                            тем, по которому считается КП, когда для контрагента не выбран свой.
+                            Пусто — «Опт безнал», затем «Опт», затем «Розница».</div>
                     </div>
                 </div>
                 <label style="display:block;margin-bottom:10px">
@@ -2067,12 +2137,26 @@ const App = {
         `;
         this.loadCatalogStats();
         this.loadVectorStats();
+        this.loadPriceTypeList();
         try {
             const s = await this.api('admin.php?action=settings');
-            const col = (s.items || []).find(i => i.key === 'CATALOG_PRICE_COLUMN');
             const el = document.getElementById('catalogPriceCol');
-            if (el && col) el.value = col.value || '';
+            // Колонка импорта и тип цены по умолчанию — одна настройка: показываем
+            // ту, что реально применяется (модуль 019)
+            const col = (s.items || []).find(i => i.key === 'CATALOG_PRICE_COLUMN');
+            const def = (s.items || []).find(i => i.key === 'CATALOG_DEFAULT_PRICE_TYPE');
+            if (el) el.value = (col && col.value) || (def && def.value) || '';
         } catch { /* a plain manager cannot read settings — the field just stays empty */ }
+    },
+
+    /** Типы цен, которые каталог реально знает — и после API, и после Excel. */
+    async loadPriceTypeList() {
+        const list = document.getElementById('priceTypeList');
+        if (!list) return;
+        try {
+            const d = await this.api('products.php?action=price_types');
+            list.innerHTML = (d.items || []).map(t => `<option value="${this.esc(t)}"></option>`).join('');
+        } catch { /* каталог ещё не загружен — подсказывать нечем */ }
     },
 
     async loadCatalogStats() {
@@ -2205,11 +2289,16 @@ const App = {
         const btn = document.getElementById('catalogImportBtn');
         if (!input || !input.files.length) { this.toast('Выберите файл выгрузки', 'error'); return; }
 
-        // The price column is a stored setting, so the next import repeats this choice
+        // Колонка цены — это и есть тип цены по умолчанию, поэтому выбор
+        // сохраняется в обе настройки сразу; импорт запишет туда же ту колонку,
+        // которую в файле действительно нашёл
         const col = (document.getElementById('catalogPriceCol') || {}).value;
         if (col !== undefined && this.manager.is_admin) {
             try {
-                await this.api('admin.php?action=settings', {method: 'PUT', body: {values: {CATALOG_PRICE_COLUMN: col}}});
+                await this.api('admin.php?action=settings', {method: 'PUT', body: {values: {
+                    CATALOG_PRICE_COLUMN: col,
+                    ...(col.trim() ? {CATALOG_DEFAULT_PRICE_TYPE: col.trim()} : {}),
+                }}});
             } catch { /* not fatal — the import falls back to the usual columns */ }
         }
 
@@ -2232,7 +2321,10 @@ const App = {
                 <p class="ok">Загружено позиций: <strong>${r.imported}</strong> из ${r.total}
                    · модификаций: ${r.variants} · с фотографиями: ${r.images}
                    ${r.skipped ? ` · пропущено: ${r.skipped}` : ''}${r.pruned ? ` · удалено: ${r.pruned}` : ''}</p>
-                ${r.price_column ? `<p class="muted">Цены взяты из колонки «${this.esc(r.price_column)}».</p>` : ''}
+                ${r.price_column ? `<p class="muted">Цены взяты из колонки «Цена: ${this.esc(r.price_column)}» —
+                    она же теперь тип цены по умолчанию.
+                    ${(r.price_types || []).length > 1 ? `Остальные типы цен файла сохранены и доступны в подборе позиций:
+                        ${r.price_types.map(t => this.esc(t)).join(', ')}.` : ''}</p>` : ''}
                 ${(r.warnings || []).map(w => `<p class="muted">${this.esc(w)}</p>`).join('')}
             `;
             this.loadCatalogStats();
@@ -2599,10 +2691,11 @@ const App = {
             ...(state.mailbox_id ? {mailbox_id: state.mailbox_id} : {}),
             ...(state.q ? {q: state.q} : {}),
             ...(state.unread ? {unread: 1} : {}),
+            ...(state.archived ? {archived: 1} : {}),
         });
         const d = await this.api('mail.php?action=threads&' + qs);
-        const tab = (key, label) => `<button class="btn btn--sm ${state.direction === key && !state.unread ? 'btn--primary' : 'btn--outline'}"
-            onclick="App.mailFilter({direction:'${key}',unread:0})">${label}</button>`;
+        const tab = (key, label) => `<button class="btn btn--sm ${state.direction === key && !state.unread && !state.archived ? 'btn--primary' : 'btn--outline'}"
+            onclick="App.mailFilter({direction:'${key}',unread:0,archived:0})">${label}</button>`;
 
         document.getElementById('mailBody').innerHTML = `
             ${(d.mailboxes || []).filter(b => b.last_error).map(b => `
@@ -2612,7 +2705,10 @@ const App = {
                 ${this.manager.is_admin ? '<a href="#settings/mail">Добавить ящик</a>' : 'Обратитесь к администратору.'}</div>` : ''}
             <div class="card card--inline">
                 ${tab('', 'Все')}${tab('in', 'Входящие')}${tab('out', 'Исходящие')}
-                <button class="btn btn--sm ${state.unread ? 'btn--primary' : 'btn--outline'}" onclick="App.mailFilter({unread:1,direction:''})">Непрочитанные</button>
+                <button class="btn btn--sm ${state.unread ? 'btn--primary' : 'btn--outline'}" onclick="App.mailFilter({unread:1,direction:'',archived:0})">Непрочитанные</button>
+                <button class="btn btn--sm ${state.archived ? 'btn--primary' : 'btn--outline'}"
+                        title="Не наш профиль и письма отключённых ящиков"
+                        onclick="App.mailFilter({archived:1,unread:0,direction:''})">🗄 Архив</button>
                 <select id="mailBox" onchange="App.mailFilter({mailbox_id:this.value})">
                     <option value="">Все ящики</option>
                     ${(d.mailboxes || []).map(b => `<option value="${b.id}" ${String(state.mailbox_id) === String(b.id) ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
@@ -2660,7 +2756,9 @@ const App = {
                     </div>
                     <div class="mrow__preview">${this.esc(t.preview)}</div>
                 </div>
-                <div class="mrow__date">${this.fmtDate(t.last_at)}</div>
+                <div class="mrow__date">${this.fmtDate(t.last_at)}
+                    ${t.archived_at ? `<div><a onclick="event.stopPropagation();App.unarchiveThread('${this.jsStr(t.thread_key)}')">↩ в работу</a></div>` : ''}
+                </div>
                 <button class="mrow__del" title="Удалить переписку"
                         onclick="event.stopPropagation();App.deleteThread('${this.jsStr(t.thread_key)}', ${t.count})">🗑</button>
             </div>`;
@@ -2711,6 +2809,9 @@ const App = {
                 <div class="flex flex--wrap">
                     <a href="#mail/inbox" class="btn btn--outline btn--sm">← К списку</a>
                     <button class="btn btn--outline btn--sm" onclick="App.boardPick('${this.jsStr(key)}')">▦ В доску</button>
+                    ${t.archived_at
+                        ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(key)}')">↩ Вернуть в работу</button>`
+                        : `<button class="btn btn--outline btn--sm" onclick="App.archiveThread('${this.jsStr(key)}', ${t.count})">🗄 В архив</button>`}
                     <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteThread('${this.jsStr(key)}', ${t.count})">🗑 Удалить переписку</button>
                 </div>
             </div>
@@ -2752,6 +2853,9 @@ const App = {
                         <button class="btn btn--outline btn--sm"
                                 onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
                             Ответить на это письмо</button>
+                        ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" title="Не наш профиль: письмо уйдёт в «Архив» на сервере"
+                            onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
+                        ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
                         ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                         <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id})">🗑 Удалить</button>
                     </div>
@@ -2784,6 +2888,8 @@ const App = {
                     ${m.thread_key
                         ? `<a href="#mail/t/${encodeURIComponent(m.thread_key)}" class="btn btn--primary btn--sm">Вся переписка и ответ →</a>`
                         : `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>`}
+                    ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
+                    ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
                     ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                     <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail/inbox'}')">🗑 Удалить</button>
                 </div>
@@ -3137,6 +3243,51 @@ const App = {
             const r = await this.api('mail.php?action=delete_thread', {method: 'POST', body: {thread_key: key}});
             this.toast(r.warning || `Удалено писем: ${r.deleted}`, r.warning ? 'error' : 'success');
             this.goAfterDelete('mail/inbox');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
+     * «В архив (не наш профиль)» — половина входящих про то, чем мы не торгуем.
+     * Спамом это не назвать (писал живой человек и по делу), удалять нельзя
+     * (вернётся с другим запросом — надо найти), поэтому письмо уходит в
+     * «Архив» на самом сервере и перестаёт числиться в работе: ни в списках,
+     * ни на доске, ни в счётчике неотвеченных.
+     */
+    async archiveMail(id) {
+        if (!confirm('Убрать письмо в архив? На почтовом сервере оно уйдёт в «Архив», из панели пропадёт, но останется в архиве компании.')) return;
+        try {
+            const r = await this.api('mail.php?action=archive', {method: 'POST', body: {id}});
+            this.toast(r.warning || ('Письмо в архиве' + (r.folder ? ` · «${r.folder}» на сервере` : '')),
+                       r.warning ? 'error' : 'success');
+            this.route();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async archiveThread(key, count) {
+        const what = count > 1 ? `Убрать в архив всю переписку (${count} писем)?` : 'Убрать переписку в архив?';
+        if (!confirm(what + ' Письма уйдут в «Архив» на почтовом сервере и пропадут из работы.')) return;
+        try {
+            const r = await this.api('mail.php?action=archive_thread', {method: 'POST', body: {thread_key: key}});
+            this.toast(r.warning || `В архив убрано писем: ${r.archived}`, r.warning ? 'error' : 'success');
+            if (this.company) this.loadCompanyThreads(this.company.id);
+            else this.goAfterDelete('mail/inbox');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async unarchiveThread(key) {
+        try {
+            await this.api('mail.php?action=unarchive', {method: 'POST', body: {thread_key: key}});
+            this.toast('Переписка вернулась в работу', 'success');
+            if (this.company) this.loadCompanyThreads(this.company.id);
+            else this.route();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async unarchiveMail(id) {
+        try {
+            await this.api('mail.php?action=unarchive', {method: 'POST', body: {id}});
+            this.toast('Письмо вернулось в работу', 'success');
+            this.route();
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -3912,6 +4063,7 @@ const App = {
                                 <tr>
                                     <td><strong>${this.esc(b.name)}</strong> ${b.is_default ? '<span class="badge badge--sent">основной</span>' : ''}
                                         ${b.is_active ? '' : '<span class="badge badge--draft">выключен</span>'}
+                                        ${b.hidden_messages ? `<span class="badge badge--warning">письма скрыты: ${b.hidden_messages}</span>` : ''}
                                         <div class="muted">${this.esc(b.email)} · ${this.esc(this.providerTitle(b.provider))} · IMAP ${this.esc(b.imap_host)}</div></td>
                                     <td>${this.esc(b.manager_name) || '<em>общий</em>'}</td>
                                     <td class="num">${b.messages}${b.oldest_at ? `<div class="muted">с ${this.fmtDate(b.oldest_at)}</div>` : ''}</td>
@@ -3919,6 +4071,9 @@ const App = {
                                     <td class="muted">${b.last_error ? `<span class="no">${this.esc(b.last_error)}</span>` : this.fmtDate(b.last_check_at)}</td>
                                     <td>
                                         <button class="btn btn--sm btn--outline" onclick="App.editMailbox(${b.id})">Изменить</button>
+                                        <button class="btn btn--sm btn--outline" onclick="App.toggleMailbox(${b.id}, ${b.is_active ? 0 : 1})"
+                                                title="${b.is_active ? 'Перестать опрашивать ящик, не удаляя его' : 'Снова опрашивать ящик'}">
+                                            ${b.is_active ? '⏸ Отключить' : '▶ Включить'}</button>
                                         <button class="btn btn--sm btn--outline" onclick="App.syncMailbox(${b.id})">Забрать почту</button>
                                         <button class="btn btn--sm btn--outline" onclick="App.backfillMailbox(${b.id})">Скачать весь архив</button>
                                         <button class="btn btn--sm btn--outline" onclick="App.checkSentFolder(${b.id})"
@@ -3932,6 +4087,9 @@ const App = {
                     <p class="muted">«Скачать весь архив» забирает ВСЮ переписку ящика, а не только новое: письма идут шагами,
                         кнопку можно нажать повторно — загрузка продолжится с того же места. Старые письма попадают в архив,
                         но запросы КП из них не создаются.</p>
+                    <p class="muted">«Отключить» оставляет ящик со всеми настройками и паролями — его просто перестают
+                        опрашивать, и он исчезает из выбора отправителя. Письма отключённого ящика можно убрать с экрана
+                        вместе с ним и вернуть, когда ящик включат обратно.</p>
                 </div>
                 <div class="card">
                     <div class="card__title">Цепочки писем</div>
@@ -4143,11 +4301,80 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    async deleteMailbox(id) {
-        if (!confirm('Удалить ящик? Архив писем останется.')) return;
+    /**
+     * Выключить ящик вместо удаления: настройки и пароли на месте, опрос
+     * прекращается. Письма по желанию уходят с экрана вместе с ящиком —
+     * выключенный ящик, чьи письма продолжают висеть в списках, ничего не решает.
+     */
+    toggleMailbox(id, on) {
+        const box = (this.mailboxes || []).find(b => b.id === id) || {};
+        if (on) return this.doToggleMailbox(id, 1, 'keep');
+        this.modal(`Отключить ящик «${box.name || id}»`, `
+            <p class="muted">Почта из него забираться не будет, из выбора отправителя он исчезнет.
+               Настройки и пароли останутся — включить обратно можно одной кнопкой.</p>
+            <div class="form-group">
+                <label>Письма этого ящика (${box.messages || 0})</label>
+                <select id="mbOffLetters">
+                    <option value="hide">Скрыть из панели — вернутся при включении</option>
+                    <option value="keep">Оставить на экране</option>
+                    <option value="delete">Удалить из базы вместе с вложениями</option>
+                </select>
+            </div>
+            <div class="flex flex--end">
+                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
+                <button class="btn btn--primary" onclick="App.doToggleMailbox(${id}, 0)">Отключить</button>
+            </div>
+        `);
+    },
+
+    async doToggleMailbox(id, on, letters) {
+        letters = letters || (document.getElementById('mbOffLetters') || {}).value || 'keep';
+        if (letters === 'delete' && !confirm('Письма этого ящика будут удалены из базы вместе с вложениями. Продолжить?')) return;
         try {
-            await this.api('admin.php?action=mailbox_delete', {method: 'POST', body: {id}});
-            this.toast('Ящик удалён', 'success');
+            const r = await this.api('admin.php?action=mailbox_toggle', {method: 'POST',
+                body: {id, is_active: !!on, letters}});
+            const n = (r.result || {}).messages || 0;
+            this.closeModal();
+            const what = on ? 'вернулось' : (letters === 'delete' ? 'удалено' : 'скрыто');
+            this.toast((on ? 'Ящик включён' : 'Ящик отключён') + (n ? ` · писем ${what}: ${n}` : ''), 'success');
+            this.adminMail();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
+     * Удаление ящика с архивом падало на «FOREIGN KEY constraint failed»: на
+     * ящик ссылается каждое его письмо. Теперь удаление спрашивает, что делать
+     * с этими письмами, и делает это одной транзакцией.
+     */
+    deleteMailbox(id) {
+        const box = (this.mailboxes || []).find(b => b.id === id) || {};
+        this.modal(`Удалить ящик «${box.name || id}»`, `
+            <p>В базе писем этого ящика: <strong>${box.messages || 0}</strong>.</p>
+            <p class="muted">Ящик можно не удалять, а отключить — тогда настройки и пароли останутся,
+               а почта перестанет забираться.</p>
+            <div class="form-group">
+                <label>Что сделать с письмами</label>
+                <select id="mbLetters">
+                    <option value="keep">Оставить в базе (уйдут в архив панели)</option>
+                    <option value="delete">Удалить вместе с ящиком, с вложениями</option>
+                </select>
+            </div>
+            <p class="muted">На почтовом сервере письма не трогаем: доступа к нему после удаления ящика уже нет.</p>
+            <div class="flex flex--end">
+                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
+                <button class="btn btn--danger" onclick="App.doDeleteMailbox(${id})">Удалить ящик</button>
+            </div>
+        `);
+    },
+
+    async doDeleteMailbox(id) {
+        const letters = (document.getElementById('mbLetters') || {}).value || 'keep';
+        if (letters === 'delete' && !confirm('Письма этого ящика будут удалены из базы вместе с вложениями. Продолжить?')) return;
+        try {
+            const r = await this.api('admin.php?action=mailbox_delete', {method: 'POST', body: {id, letters}});
+            const n = (r.result || {}).messages || 0;
+            this.closeModal();
+            this.toast(`Ящик удалён${n ? ` · писем ${letters === 'delete' ? 'удалено' : 'сохранено'}: ${n}` : ''}`, 'success');
             this.adminMail();
         } catch (err) { this.toast(err.message, 'error'); }
     },

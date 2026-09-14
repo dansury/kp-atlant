@@ -42,6 +42,10 @@ final class Triage {
         // nothing to answer to, so there is no prompt: the card is a call to make.
         'callback'         => ['Заявка на звонок',          'kp_request', null,                 []],
         'supplier_offer'   => ['Нам предлагают товар',      null,         null,                 []],
+        // Ставится только руками, кнопкой «В архив» на письме: модель этой
+        // категории не знает и в `classify_request` она не перечислена —
+        // «не наш профиль» решает менеджер, а не классификатор.
+        'not_our_profile'  => ['Не наш профиль',            null,         null,                 []],
         'bounce'           => ['Письмо не доставлено',      null,         null,                 []],
         'spam'             => ['Спам и рассылки',           null,         null,                 []],
         'service'          => ['Служебное уведомление',     null,         null,                 []],

@@ -62,6 +62,11 @@ through the API, and `CatalogImport::run()` from a МойСклад Excel export
 KP, a match or a draft depend on the API being reachable — a dead token must degrade to the imported
 catalog, not to an error. Stock never comes from the file. Prices and names for a client-facing
 document come from `products_cache`, never from a model.
+The Excel import reads EVERY «Цена: …» column into `prices_json` under the МойСклад type name,
+so a catalog loaded from a file knows as many price types as one synced through the API. The
+import column and `CATALOG_DEFAULT_PRICE_TYPE` are ONE choice, not two settings: the import
+falls back to the setting and writes the column it actually found back into it. Two separate
+knobs meant a default price type that matched no price in the base and silently did nothing.
 
 ## Matching positions
 A line of a letter gets its catalog row by itself — `RequestItems::ensure()` runs on the
@@ -82,6 +87,18 @@ belongs to the Yandex conversation while «Запрос КП» from two differen
 conversations. The party of a letter WE send is its addressee, never us. A thread's request
 and company are the whole conversation's (`MAX(request_id)`), never the newest letter's — a
 client's «спасибо» carries neither.
+A letter that is not ours to answer leaves the SCREEN, not the mailbox (module 019):
+`MailSync::archiveMessage()` stamps `archived_at`/`archived_reason` and moves the letter into
+the account's own «Архив», and every list — threads, letters, the unread counter, the company
+card, `Boards::sync()` — drops `archived_at IS NOT NULL` unless it was asked for it. Adding a
+query over `mail_messages` that forgets that filter puts «не наш профиль» back in the manager's
+face. The category `not_our_profile` is set BY HAND and is not in `classify_request`: it is a
+verdict, not a classification.
+A mailbox is switched off (`Mailboxes::setActive()`), not deleted, and its letters go off the
+screen with it — reversibly, under `archived_reason = 'mailbox_off'`. Deleting one must say what
+happens to its archive: every letter points at the mailbox by a foreign key, so `DELETE FROM
+mailboxes` alone is the `FOREIGN KEY constraint failed` this module exists to end.
+
 Anything that archives a letter must set `thread_key`, and an answer must inherit the thread
 of the letter it answers, whichever mailbox it leaves from. A copy in the IMAP
 «Отправленные» is not optional and not silent: `Mailer::send()` resolves the real folder and
@@ -96,6 +113,13 @@ a border colour. Keep every text/background pair at WCAG AA and say so in the CS
 
 There is ONE «Настройки» item in the header: everything lives under `#settings/<tab>`, admin-only
 tabs hidden from a plain manager. Do not add a second top-level entry for a settings screen.
+
+Nothing is ever wider than the phone. A grid column is `minmax(0, 1fr)` and its items get
+`min-width: 0`: bare `1fr` is `minmax(auto, 1fr)`, and that `auto` is the column's MIN-CONTENT —
+one `white-space: nowrap` line inside made the page 907 px wide on a 412 px screen, and
+`overflow-x: hidden` then simply cut the text off. The text of a letter wraps
+(`overflow-wrap: anywhere`); only a table, a diagram or a code block may scroll, inside its own
+box. `document.body.scrollWidth` must equal the viewport width.
 
 The screen wears the shop's own skin (atlant-armour.ru): a light chrome bar carrying the red
 wordmark — never a red bar — white blocks standing on a warm charcoal stage, one vivid brand red,
@@ -113,7 +137,12 @@ the reply box are drawn under the conversation, so a КП is priced and an answe
 without leaving the company card. The positions table is scoped to its host block
 (`[data-match-host]`) because several can be open at once — never go back to page-wide
 element ids for it. One reply box per conversation: do not add a second button that opens
-another way to answer.
+another way to answer. On a company card that box is ALREADY OPEN — the newest conversation
+unfolds with the card, and «Подходящие позиции» and «Сгенерировать ответ» are on the screen
+without a click (module 019). Do not put a «Написать» button back at the top of the card, and
+do not hide the draft button when there is nothing to answer: disable it and say why. A
+conversation with no request says so in the positions block — a silently missing table reads
+as a feature that disappeared.
 
 «Письма» is ONE board and a card on it is a COMPANY (module 011) — its letters, its requests
 and its КП are things you open the card to see, never a second list beside it. New mail puts

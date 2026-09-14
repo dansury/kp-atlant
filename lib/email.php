@@ -260,6 +260,33 @@ class EmailReader {
         return $configured !== '' ? $configured : null;
     }
 
+    /**
+     * The account's «Архив» — the same matching game as Junk, Trash and Sent.
+     * «Не наш профиль» is not spam and not rubbish: the letter is filed away
+     * where the client's own account keeps read-and-done mail, so it stops
+     * asking for an answer without disappearing from the mailbox.
+     */
+    public function findArchiveFolder(string $configured = ''): ?string {
+        $folders = $this->folders();
+        if (!$folders) return $configured !== '' ? $configured : null;
+
+        $eq = fn(string $a, string $b) => mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+        foreach ($folders as $f) {
+            if ($configured !== '' && $eq($f, $configured)) return $f;
+        }
+
+        $known = ['Архив', 'Archive', 'Archives', 'All Mail', '[Gmail]/Вся почта',
+                  '[Gmail]/All Mail', 'INBOX.Archive', 'INBOX.Архив'];
+        foreach ($known as $name) {
+            foreach ($folders as $f) if ($eq($f, $name)) return $f;
+        }
+        foreach ($folders as $f) {
+            $leaf = mb_strtolower((string)preg_replace('#^.*[/.]#u', '', $f));
+            if (in_array($leaf, ['archive', 'archives', 'архив'], true)) return $f;
+        }
+        return $configured !== '' ? $configured : null;
+    }
+
     /** Move one message by UID into any folder. Returns false if the server refused. */
     public function moveToFolder(int $uid, string $folder): bool {
         $ok = @imap_mail_move($this->imap, (string)$uid, $folder, CP_UID);

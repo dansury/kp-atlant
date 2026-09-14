@@ -133,9 +133,15 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 .pdf-frame { width: 100%; height: 600px; border: 1px solid var(--border); border-radius: var(--radius); }
 
 /* Grid */
-.grid { display: grid; gap: 16px; }
-.grid--2 { grid-template-columns: 1fr 1fr; }
-.grid--3 { grid-template-columns: 1fr 1fr 1fr; }
+/* `1fr` is `minmax(auto, 1fr)`, and that `auto` minimum is the column's
+   MIN-CONTENT width: one non-wrapping line inside (the preview of a letter,
+   a long address) pushed the whole column — and the page — past the width of
+   a phone, where it was simply cut off by `overflow-x: hidden`. Every column
+   is therefore allowed to shrink below its content, and the content wraps. */
+.grid { display: grid; gap: 16px; min-width: 0; }
+.grid > * { min-width: 0; }
+.grid--2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.grid--3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); }
 
 /* Flex */
 .flex { display: flex; gap: 10px; align-items: center; }
@@ -203,7 +209,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .msg { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; font-size: 13px; }
 .msg__head { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .msg__subject { font-weight: 600; margin-bottom: 4px; }
-.msg__body { white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
+.msg__body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
 .msg__files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .msg--in { background: var(--surface); border-left: 3px solid var(--border-strong); }
 .msg--out { background: var(--primary-bg); border-left: 3px solid var(--primary); margin-left: 24px; }
@@ -237,7 +243,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .preview-frame { height: 75vh; }
 
 @media (max-width: 768px) {
-    .grid--chat { grid-template-columns: 1fr; }
+    .grid--chat { grid-template-columns: minmax(0, 1fr); }
     .msg--out { margin-left: 0; }
     .chat { max-height: none; }
 }
@@ -316,8 +322,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .mrow--unread .mrow__subject { font-weight: 700; }
 .mrow__dir { font-size: 14px; white-space: nowrap; }
 .mrow__clip { margin-left: 2px; }
-.mrow__main { min-width: 0; }
-.mrow__subject { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mrow__main { min-width: 0; overflow: hidden; }
+.mrow__subject { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px;
+                 flex-wrap: wrap; overflow-wrap: anywhere; }
 /* «Тема · 4» — how many letters the conversation already holds */
 .mrow__count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 2px;
                background: var(--border); color: var(--text-muted); font-size: 11px; text-align: center; font-weight: 600; }
@@ -345,7 +352,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .tmsg__who { font-weight: 600; font-size: 13px; }
 .tmsg__folder { font-size: 11px; }
 .tmsg__date { margin-left: auto; }
-.tmsg__body { display: none; padding: 0 14px 14px; font-size: 13px; }
+.tmsg__body { display: none; padding: 0 14px 14px; font-size: 13px; overflow-wrap: anywhere; }
+.tmsg__body pre, .tmsg__body .mail-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tmsg--open .tmsg__body { display: block; }
 
 /* ==== Matched positions: the «равнозначные» question (module 009) ==== */
@@ -517,6 +525,19 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     /* Kanban: one column at a time, swiped between, rather than a strip of
        narrow ones that only a horizontal scroll can reach */
     .bcol { flex: 0 0 84vw; }
+
+    /* The text of a letter is the point of the screen: on a phone it wraps at
+       the card's edge instead of running off it. Everything that a desktop lets
+       stand on one line — the composer's mailbox picker, the chips of a
+       conversation — wraps too, so the card stops being wider than the screen. */
+    .card, .mrow, .tmsg, .msg, .composer { max-width: 100%; }
+    .tmsg__body, .msg__body, .mrow__subject, .mrow__meta, .mrow__preview,
+    .bcard__title, .bcard__subject { overflow-wrap: anywhere; }
+    .tmsg__head { gap: 6px; }
+    .tmsg__date { margin-left: 0; }
+    .composer__head select { margin-left: 0; max-width: 100%; }
+    .chat__composer { flex-direction: column; align-items: stretch; }
+    .chat__composer .btn { width: 100%; justify-content: center; }
 
     .grid--3 { grid-template-columns: 1fr; }
 

@@ -225,9 +225,23 @@ try {
             $id = isset($input['id']) && $input['id'] ? (int)$input['id'] : null;
             jsonOk(['id' => Mailboxes::save($input, $id, (int)$admin['id'])]);
 
+        // Ящик можно просто выключить: настройки и пароли остаются, опрос
+        // прекращается, письма по желанию уходят с экрана вместе с ним.
+        case 'mailbox_toggle':
+            $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!$id) jsonError('Не указан ящик');
+            $letters = (string)($input['letters'] ?? 'keep');
+            if (!in_array($letters, ['keep', 'hide', 'delete'], true)) $letters = 'keep';
+            jsonOk(['result' => Mailboxes::setActive($id, !empty($input['is_active']), $letters)]);
+
+        // `letters`: keep — письма остаются (и уходят с экрана вместе с ящиком),
+        // delete — уходят вместе с ним. Без этого выбора удаление ящика с
+        // архивом падало на FOREIGN KEY constraint.
         case 'mailbox_delete':
-            Mailboxes::delete((int)($input['id'] ?? $_GET['id'] ?? 0));
-            jsonOk();
+            $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!$id) jsonError('Не указан ящик');
+            $letters = ((string)($input['letters'] ?? 'keep')) === 'delete' ? 'delete' : 'keep';
+            jsonOk(['result' => Mailboxes::delete($id, $letters)]);
 
         case 'mailbox_sync':
             $id = (int)($input['id'] ?? $_GET['id'] ?? 0);

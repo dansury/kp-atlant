@@ -285,9 +285,100 @@ final class Mailboxes {
         return (int)$id;
     }
 
-    public static function delete(int $id): void {
-        Db::q("DELETE FROM mailboxes WHERE id=?", [$id]);
-        Logger::info('mail', 'Почтовый ящик удалён', ['mailbox_id' => $id]);
+    /**
+     * Выключить ящик, не удаляя его (модуль 019).
+     *
+     * Ящик перестаёт опрашиваться и исчезает из выбора отправителя, но остаётся
+     * со всеми настройками и паролями — включить обратно можно одной кнопкой.
+     *
+     * $letters решает судьбу его переписки — выключенный ящик, чьи письма
+     * продолжают висеть в списках и на доске, ничего не решает:
+     *   keep   — оставить на экране;
+     *   hide   — убрать с экрана (вернутся, когда ящик включат обратно);
+     *   delete — удалить вместе с вложениями, на сервере не трогая.
+     * Включение всегда возвращает то, что было скрыто.
+     */
+    public static function setActive(int $id, bool $active, string $letters = 'keep'): array {
+        $box = self::get($id);
+        if (!$box) throw new RuntimeException('Ящик не найден');
+
+        Db::update('mailboxes', ['is_active' => $active ? 1 : 0], 'id=?', [$id]);
+        // Выключенный ящик не может быть основным для отправки — иначе ответ
+        // уйдёт в никуда; основным становится первый оставшийся активный.
+        if (!$active && !empty($box['is_default'])) {
+            Db::update('mailboxes', ['is_default' => 0], 'id=?', [$id]);
+            $next = Db::val("SELECT id FROM mailboxes WHERE is_active=1 AND id<>? ORDER BY id LIMIT 1", [$id]);
+            if ($next) Db::update('mailboxes', ['is_default' => 1], 'id=?', [(int)$next]);
+        }
+
+        require_once __DIR__ . '/mailsync.php';
+        $touched = 0;
+        if ($active) {
+            $touched = MailSync::setMailboxMessagesHidden($id, false);
+        } elseif ($letters === 'hide') {
+            $touched = MailSync::setMailboxMessagesHidden($id, true);
+        } elseif ($letters === 'delete') {
+            Db::begin();
+            try {
+                foreach (Db::all("SELECT id FROM mail_messages WHERE mailbox_id=?", [$id]) as $m) {
+                    MailSync::forgetMessage((int)$m['id']);
+                    $touched++;
+                }
+                Db::commit();
+            } catch (Throwable $e) {
+                Db::rollback();
+                throw $e;
+            }
+        }
+
+        Logger::info('mail', 'Почтовый ящик ' . ($active ? 'включён' : 'выключен'),
+                     ['mailbox_id' => $id, 'letters' => $letters, 'messages' => $touched]);
+        return ['is_active' => $active, 'letters' => $letters, 'messages' => $touched];
+    }
+
+    /**
+     * Удалить ящик. Письма ссылаются на него внешним ключом, поэтому прямое
+     * `DELETE FROM mailboxes` падало на `FOREIGN KEY constraint failed` — ящик
+     * с архивом удалить было нельзя вообще.
+     *
+     * $letters говорит, что делать с этим архивом:
+     *   keep   — письма остаются, но теряют ящик (и уходят с экрана: читать их
+     *            больше неоткуда, забрать заново тоже нечем);
+     *   delete — письма уходят вместе с ящиком, с вложениями и карточками.
+     * Сервер при удалении ящика не трогаем: доступа к нему у нас уже нет.
+     */
+    public static function delete(int $id, string $letters = 'keep'): array {
+        $box = self::get($id);
+        if (!$box) throw new RuntimeException('Ящик не найден');
+
+        require_once __DIR__ . '/mailsync.php';
+        $count = (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE mailbox_id=?", [$id]);
+
+        Db::begin();
+        try {
+            if ($letters === 'delete') {
+                foreach (Db::all("SELECT id FROM mail_messages WHERE mailbox_id=?", [$id]) as $m) {
+                    MailSync::forgetMessage((int)$m['id']);
+                }
+            } else {
+                MailSync::setMailboxMessagesHidden($id, true);
+                Db::q("UPDATE mail_messages SET mailbox_id=NULL WHERE mailbox_id=?", [$id]);
+            }
+            Db::q("UPDATE mail_deleted SET mailbox_id=NULL WHERE mailbox_id=?", [$id]);
+            Db::q("DELETE FROM mailboxes WHERE id=?", [$id]);
+            // Ящик по умолчанию не может исчезнуть вместе с удалённым
+            if (!Db::val("SELECT COUNT(*) FROM mailboxes WHERE is_default=1 AND is_active=1")) {
+                $next = Db::val("SELECT id FROM mailboxes WHERE is_active=1 ORDER BY id LIMIT 1");
+                if ($next) Db::q("UPDATE mailboxes SET is_default=1 WHERE id=?", [(int)$next]);
+            }
+            Db::commit();
+        } catch (Throwable $e) {
+            Db::rollback();
+            throw $e;
+        }
+
+        Logger::info('mail', 'Почтовый ящик удалён', ['mailbox_id' => $id, 'letters' => $letters, 'messages' => $count]);
+        return ['messages' => $count, 'letters' => $letters];
     }
 
     /** Panel view — never leaks a password, only whether one is stored. */
@@ -299,6 +390,8 @@ final class Mailboxes {
             $box['imap_password_set'] = trim((string)($row['imap_password'] ?? '')) !== '';
             $box['smtp_password_set'] = trim((string)($row['smtp_password'] ?? '')) !== '';
             $box['messages'] = (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE mailbox_id=?", [$box['id']]);
+            $box['hidden_messages'] = (int)Db::val(
+                "SELECT COUNT(*) FROM mail_messages WHERE mailbox_id=? AND archived_reason='mailbox_off'", [$box['id']]);
             $box['oldest_at'] = (string)Db::val("SELECT MIN(date_at) FROM mail_messages WHERE mailbox_id=?", [$box['id']]);
             $box['backfill']  = self::backfillProgress($box);
             $out[] = $box;
@@ -576,6 +669,9 @@ final class MailArchive {
     public static function query(array $f = []): array {
         $where = ['1=1'];
         $params = [];
+        // Архив («не наш профиль», письма выключенного ящика) виден только тогда,
+        // когда его спросили — иначе список показывает работу, а не историю.
+        $where[] = !empty($f['archived']) ? 'm.archived_at IS NOT NULL' : 'm.archived_at IS NULL';
         if (!empty($f['mailbox_id'])) { $where[] = 'm.mailbox_id = ?'; $params[] = (int)$f['mailbox_id']; }
         if (!empty($f['direction']) && in_array($f['direction'], ['in', 'out'], true)) {
             $where[] = 'm.direction = ?'; $params[] = $f['direction'];
@@ -602,7 +698,8 @@ final class MailArchive {
         return [
             'items'  => Db::all($sql, [...$params, $limit, $offset]),
             'total'  => (int)Db::val("SELECT COUNT(*) FROM mail_messages m WHERE " . implode(' AND ', $where), $params),
-            'unread' => (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE direction='in' AND is_read=0"),
+            'unread' => (int)Db::val("SELECT COUNT(*) FROM mail_messages
+                                      WHERE direction='in' AND is_read=0 AND archived_at IS NULL"),
         ];
     }
 
