@@ -345,6 +345,119 @@ switch ($action) {
 
         jsonOk(['pdf_preview_url' => "/api/proposals.php?action=preview&id=$id"]);
 
+    /**
+     * Текст документа — как он идёт в документе (issue #38).
+     *
+     * «Редактировать docx и pdf прямо в интерфейсе» — это про содержание, а не
+     * про байты файла: менеджер хочет переписать абзац и переотправить КП, не
+     * выгружая Word и не загружая его обратно. Документ целиком описан базой,
+     * поэтому править надо базу — но показывать её надо ПОРЯДКОМ ДОКУМЕНТА, а
+     * не полями таблицы. Отсюда этот список: сверху вниз, как читает клиент.
+     */
+    case 'doc_text': {
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        $p = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
+        if (!$p) jsonError('КП не найдено', 404);
+
+        $blocks = [];
+        $add = function (string $key, string $label, ?string $value, string $hint = '', int $rows = 3)
+                        use (&$blocks): void {
+            $blocks[] = ['key' => $key, 'label' => $label, 'hint' => $hint,
+                         'rows' => $rows, 'value' => (string)($value ?? '')];
+        };
+
+        $add('cover_letter_final', 'Сопроводительное письмо',
+             $p['cover_letter_final'] !== null && $p['cover_letter_final'] !== ''
+                 ? $p['cover_letter_final'] : $p['cover_letter'],
+             'Текст письма, с которым уходит КП', 6);
+        $add('intro_text',      'Вступление в документе', $p['intro_text'] ?? '');
+        $add('pre_table_text',  'Текст перед таблицей',   $p['pre_table_text'] ?? '');
+
+        foreach (Db::all("SELECT id, position, product_name, comment_text, notes
+                          FROM proposal_items WHERE proposal_id=? ORDER BY position", [$id]) as $n => $it) {
+            $no = $n + 1;
+            $add("item.{$it['id']}.product_name", "Позиция $no · название в документе", $it['product_name'], '', 1);
+            $add("item.{$it['id']}.comment_text", "Позиция $no · комментарий",          $it['comment_text'],
+                 'Уйдёт и в документ, и в письмо клиенту', 3);
+            $add("item.{$it['id']}.notes",        "Позиция $no · примечание в таблице", $it['notes'], '', 1);
+        }
+
+        $add('post_table_text',  'Текст после таблицы',     $p['post_table_text'] ?? '');
+        $add('match_table_note', 'Пояснение над таблицей соответствия', $p['match_table_note'] ?? '');
+        $add('conditions_text',  'Условия поставки',        $p['conditions_text'] ?? '');
+        $add('warranty_text',    'Гарантия и обслуживание', $p['warranty_text'] ?? '');
+        $add('images_note',      'Оговорка под фотографиями', $p['images_note'] ?? '', '', 2);
+        $add('upsell_intro',     'Доукомплектование · вступление', $p['upsell_intro'] ?? '', '', 2);
+        $add('upsell_note',      'Доукомплектование · подпись',    $p['upsell_note'] ?? '', '', 2);
+
+        jsonData(['id' => $id, 'blocks' => $blocks]);
+    }
+
+    /**
+     * Сохранить правки текста документа и пересобрать файлы.
+     *
+     * Правки видит админ: каждая уходит в ленту «Что изменили менеджеры» тем же
+     * способом, что и правки оформления КП, — «падали админу» из issue #38.
+     */
+    case 'doc_text_save': {
+        $manager = requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        $p = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
+        if (!$p) jsonError('КП не найдено', 404);
+
+        $blocks = $input['blocks'] ?? [];
+        if (!is_array($blocks) || !$blocks) jsonError('Нечего сохранять');
+
+        $ownFields = ['cover_letter_final', 'intro_text', 'pre_table_text', 'post_table_text',
+                      'match_table_note', 'conditions_text', 'warranty_text', 'images_note',
+                      'upsell_intro', 'upsell_note'];
+        $itemFields = ['product_name', 'comment_text', 'notes'];
+
+        $fields = [];
+        $changed = 0;
+        foreach ($blocks as $b) {
+            $key   = (string)($b['key'] ?? '');
+            $value = (string)($b['value'] ?? '');
+            if (str_starts_with($key, 'item.')) {
+                [, $itemId, $field] = array_pad(explode('.', $key, 3), 3, '');
+                if (!in_array($field, $itemFields, true)) continue;
+                $itemId = (int)$itemId;
+                $before = (string)Db::val("SELECT $field FROM proposal_items WHERE id=? AND proposal_id=?",
+                                          [$itemId, $id]);
+                // Комментарий печатается разметкой, а правится текстом — как везде
+                $store = $field === 'comment_text' ? Markup::toMarkdown($value) : $value;
+                if ($store === $before) continue;
+                Db::update('proposal_items', [$field => $store], 'id=? AND proposal_id=?', [$itemId, $id]);
+                $changed++;
+                continue;
+            }
+            if (!in_array($key, $ownFields, true)) continue;
+            if ((string)($p[$key] ?? '') === $value) continue;
+            $fields[$key] = $value;
+            $changed++;
+        }
+
+        if ($fields) {
+            $fields['updated_at'] = date('Y-m-d H:i:s');
+            Db::update('proposals', $fields, 'id=?', [$id]);
+        }
+        if (!$changed) jsonOk(['changed' => 0, 'pdf_preview_url' => "/api/proposals.php?action=preview&id=$id"]);
+
+        ContentLog::record('kp', "proposal.$id", "Текст КП #$id правил менеджер",
+                           (int)$manager['id'], '', "изменено блоков: $changed");
+        Logger::info('kp', "Текст КП #$id отредактирован в браузере ($changed бл.)",
+                     ['proposal_id' => $id, 'manager_id' => (int)$manager['id']]);
+
+        // Файлы пересобираются сразу: предпросмотр и Word должны показывать то,
+        // что менеджер только что написал, а не прошлую версию
+        // Word собирается на каждое скачивание заново, так что чинить надо
+        // только PDF: он лежит файлом и иначе показал бы прошлую версию
+        PdfGenerator::generate($id);
+
+        jsonOk(['changed' => $changed, 'pdf_preview_url' => "/api/proposals.php?action=preview&id=$id"]);
+    }
+
     case 'preview':
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);

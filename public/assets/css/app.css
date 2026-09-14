@@ -308,9 +308,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* ==== Письмо: переписка слева, подбор справа (модуль 023) ====
    Одна раскладка на все входы в письмо. Раньше «Подходящие позиции» стояли то
    справа, то внизу — смотря откуда письмо открыли. */
-.letter { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); gap: 16px; align-items: start; }
+.letter { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 480px); gap: 16px; align-items: start; }
 .letter__main { min-width: 0; }
-.letter__side { min-width: 0; position: sticky; top: 12px; }
+.letter__side { min-width: 0; }
 .letter__side .card { margin-bottom: 12px; }
 
 .thread-head__who { font-size: 13px; color: var(--text); display: flex; flex-wrap: wrap; gap: 8px; }
@@ -320,6 +320,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .facts__row { display: flex; justify-content: space-between; gap: 10px; }
 .facts__row span { color: var(--text-muted); }
 .facts__row b { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+
+/* Место, где раскрывается КП: во всю ширину под карточкой, и так, чтобы
+   липкая шапка не накрывала его верх при прокрутке к нему */
+#kpWide { scroll-margin-top: 64px; }
+#kpWide:empty { display: none; }
 
 /* Предпросмотр КП прямо в карточке письма — «Открыть КП» больше никуда не уводит */
 .kp-preview { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: var(--radius); margin-top: 10px; }
@@ -336,18 +341,34 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .composer__files .chip a { margin-left: 6px; cursor: pointer; }
 
 /* Вторая строка позиции: скидка, ожидание и комментарий (модуль 023) */
-.match-extra { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.match-extra { flex: 1 1 100%; display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .match-extra__money { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; }
 .match-extra__money input[type="number"] { width: 62px; }
 .match-extra__comment { width: 100%; font-size: 13px; }
 .match-row__tools { display: flex; gap: 4px; align-items: center; }
 .match-row--moved { background: var(--surface-3); transition: background .4s; }
 
-.match-row { display: grid; grid-template-columns: 76px 66px 90px minmax(0,130px) minmax(0,1fr) auto auto;
-             gap: 6px; align-items: center; padding-bottom: 10px; margin-bottom: 10px;
+/* Строка подбора живёт в колонке шириной 420px — и в ней же на телефоне.
+   Жёсткая сетка из семи колонок туда не влезала: поля сжимались до
+   нечитаемых огрызков, а «Примечание» уезжало под кнопки. Поэтому поля
+   ПЕРЕНОСЯТСЯ, у каждого своя минимальная ширина, и строка занимает
+   столько рядов, сколько ей нужно. */
+.match-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+             padding-bottom: 10px; margin-bottom: 10px;
              border-bottom: 1px solid var(--border); }
 .match-row input[type="text"], .match-row input[type="number"] { width: 100%; }
-.match-row__name { grid-column: 1 / -1; position: relative; min-width: 0; }
+.match-row > input[data-field="quantity"] { flex: 0 1 72px; }
+.match-row > input[data-field="unit"]     { flex: 0 1 62px; }
+.match-row > input[data-field="price"]    { flex: 0 1 96px; }
+.match-row > .price-opts-slot             { flex: 0 1 auto; min-width: 0; }
+.match-row > input[data-field="notes"]    { flex: 1 1 150px; min-width: 0; }
+.match-row__name { flex: 1 1 100%; position: relative; min-width: 0; }
+
+/* Порядок позиций мышью: ручка тащит строку, всё остальное остаётся кликабельным */
+.match-row__grip { cursor: grab; user-select: none; padding: 0 4px; color: var(--text-muted);
+                   font-size: 15px; line-height: 1; }
+.match-row__grip:active { cursor: grabbing; }
+.match-row--dragging { opacity: .5; background: var(--surface-3); }
 .match-row__name .muted { font-size: 12px; margin-bottom: 2px; }
 .match-row label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .price-opts-slot:empty { display: none; }
@@ -434,6 +455,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .tmsg--open .tmsg__body { display: block; }
 
 /* ==== Matched positions: the «равнозначные» question (module 009) ==== */
+/* Поясняющая строка под заголовком блока: всё, что подписано `note`, —
+   пояснение, а не содержание, и читается как пояснение. Класс годами
+   стоял в разметке без единого правила в файле. */
+.note { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+
 .note--choice { background: var(--warning-bg); border: 1px solid #f0dcbb; border-radius: var(--radius-sm);
                 padding: 8px 12px; font-size: 12px; margin-bottom: 10px; color: var(--warning); }
 .match-row--choice { background: var(--warning-bg); border-left: 3px solid var(--warning); padding-left: 8px; }
@@ -574,7 +600,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Подбор рядом с перепиской нужен только там, где для него есть место */
 @media (max-width: 1024px) {
     .letter { grid-template-columns: minmax(0, 1fr); }
-    .letter__side { position: static; }
 }
 
 @media (max-width: 640px) {
@@ -612,12 +637,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     .table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .table thead, .table tbody { display: table; width: 100%; min-width: 100%; }
 
-    /* «Подходящие позиции»: one wide row of six fields becomes two columns
-       that stack, instead of a row wider than the phone */
-    .match-row { grid-template-columns: 1fr 1fr; }
-    .match-row__name, .price-opts-slot, .match-row label, .match-row > button:last-child {
-        grid-column: 1 / -1;
-    }
+    /* «Подходящие позиции» на телефоне: поля и так переносятся, здесь им
+       только задаются пальцевые размеры — цена и примечание во всю ширину */
+    .match-row > input[data-field="price"] { flex: 1 1 120px; }
+    .match-row > input[data-field="notes"], .match-row > .price-opts-slot { flex: 1 1 100%; }
+    .match-row__tools { flex: 1 1 100%; justify-content: flex-end; }
+    /* Тащить строку пальцем всё равно нечем — остаются стрелки ↑↓ */
+    .match-row__grip { display: none; }
 
     /* Kanban: one column at a time, swiped between, rather than a strip of
        narrow ones that only a horizontal scroll can reach */
@@ -730,3 +756,58 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
                 min-width: 0; font-size: 13px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 .changes__row:last-child { border-bottom: none; }
 .changes__row > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* ==== Правка текста документа в браузере (issue #38) ====
+   Форма живёт внутри раскрытого КП, поэтому она подчёркнуто плоская:
+   подпись, поле, следующая подпись — и ничего, что отвлекало бы от текста. */
+/* На широком экране текст документа правится в две колонки: иначе поле
+   «Примечание в таблице» растягивается на 1200px под три слова */
+.kp-edit { margin: 10px 0; display: grid; gap: 10px 16px; align-items: start;
+           grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.kp-edit > p, .kp-edit > .flex { grid-column: 1 / -1; }
+.kp-edit__row { display: block; }
+.kp-edit__label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+.kp-edit__label .muted { font-weight: 400; }
+.kp-edit textarea { resize: vertical; }
+
+/* Счёт, выставленный из карточки: удача — зелёная, как и всё удавшееся */
+.note--ok { background: var(--success-bg); border: 1px solid #cfe3d4; border-radius: var(--radius-sm);
+            padding: 8px 10px; font-size: 13px; }
+
+/* ==== Фильтры, отметки и групповые действия доски ====
+
+   Доска — это место, где разбирают почту. Разбор — это «отметить десяток и
+   сказать им одно и то же», поэтому у карточки есть галочка, а у отмеченных —
+   панель с действиями. Фильтры стоят над доской одной строкой: период,
+   состояние, ящик, архив — то, по чему письма ищут в любом почтовом клиенте. */
+.bfilters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+/* Свёрнутые фильтры показывают только свою строку-заголовок */
+.bfilters:not([open]) > :not(.bfilters__summary) { display: none; }
+.bfilters__summary { font-size: 13px; font-weight: 600; cursor: pointer; list-style: none;
+                     color: var(--text-muted); padding: 2px 0; }
+.bfilters__summary::-webkit-details-marker { display: none; }
+.bfilters__summary::before { content: '☰ '; }
+.bfilters[open] > .bfilters__summary { display: none; }
+.bfilter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.bfilter select { width: auto; min-width: 110px; padding: 5px 8px; font-size: 12px; }
+.bfilter--check { gap: 4px; }
+.bfilter input[type="checkbox"] { width: auto; }
+
+/* Панель групповых действий: она про то, что отмечено, и потому липнет к
+   верху экрана — иначе на длинной доске её приходится искать прокруткой */
+.bulkbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+           position: sticky; top: 56px; z-index: 20;
+           border-color: var(--primary); background: var(--primary-bg); }
+
+.bcard__pick { width: 16px; height: 16px; margin: 2px 6px 0 0; flex: none;
+               align-self: start; cursor: pointer; }
+.bcard--picked { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+/* Поиск с крестиком: набранный запрос должен убираться одним нажатием, а не
+   выделением текста и Backspace — поле без этого читается как заклинившее */
+.searchbox { position: relative; display: inline-flex; flex: 0 1 280px; min-width: 160px; }
+.searchbox input { padding-right: 30px; }
+.searchbox__x { position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+                width: 26px; height: 26px; border: none; background: none; cursor: pointer;
+                color: var(--text-muted); font-size: 18px; line-height: 1; padding: 0; }
+.searchbox__x:hover { color: var(--accent-ink); }

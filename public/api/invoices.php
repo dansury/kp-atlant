@@ -9,6 +9,23 @@ require_once ROOT . '/lib/mail.php';
 
 $action = $_GET['action'] ?? '';
 
+// Юрлицо-продавец: из конфига, иначе первое юрлицо аккаунта (с запоминанием).
+// Тот же выбор, что у заказов в orders.php, — счёт и заказ не должны уходить
+// от разных организаций.
+function msOrgId(): string {
+    $cfgOrg = $GLOBALS['cfg']['MOYSKLAD_ORG_ID'] ?? '';
+    if ($cfgOrg) return $cfgOrg;
+
+    $cached = Db::val("SELECT value FROM settings WHERE key='moysklad_org_id'");
+    if ($cached) return (string)$cached;
+
+    $orgs = MoySklad::getOrganizations();
+    if (empty($orgs)) jsonError('МойСклад: не найдено ни одного юрлица (организации) в аккаунте', 400);
+    Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('moysklad_org_id', ?)", [$orgs[0]['id']]);
+    return $orgs[0]['id'];
+}
+
+
 switch ($action) {
 
     // Invoices of one company, newest first
@@ -57,6 +74,93 @@ switch ($action) {
         header('Content-Length: ' . filesize($path));
         readfile($path);
         exit;
+    }
+
+    /**
+     * Счёт по КП — из карточки, а не из МойСклад (issue #38).
+     *
+     * Менеджер, дошедший до «клиент согласен», выставляет счёт теми же
+     * позициями, что ушли в КП: в МойСклад создаётся «Счёт покупателю», тут же
+     * скачивается его печатная форма — и счёт готов к тому, чтобы приложить его
+     * к письму (`attach_url`) или отдать отдельным файлом.
+     *
+     * Позиции без привязки к номенклатуре МойСклад в счёт не попадают: счёт с
+     * выдуманной строкой хуже счёта, в котором строки не хватает, — и о каждой
+     * пропущенной ответ говорит вслух.
+     */
+    case 'create_from_proposal': {
+        $manager = requireAuth();
+        $proposalId = (int)($_GET['proposal_id'] ?? 0);
+        $p = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
+        if (!$p) jsonError('КП не найдено', 404);
+
+        $cpId = (int)($p['counterparty_id'] ?? 0);
+        $cp = $cpId ? Db::one("SELECT * FROM counterparties WHERE id=?", [$cpId]) : null;
+        if (!$cp || empty($cp['moysklad_id'])) {
+            jsonError('Компания не связана с МойСклад — свяжите её в карточке, иначе счёт выставлять не на кого', 400);
+        }
+
+        MoySklad::init($GLOBALS['cfg']['MOYSKLAD_TOKEN'] ?? '');
+        $perms = MoySklad::checkPermissions();
+        if (empty($perms['invoices'])) jsonError('МойСклад: нет доступа к счетам покупателям', 403);
+
+        // «Нет в наличии» из КП исключено — в счёт такая позиция тем более не идёт
+        $rows = Db::all("SELECT * FROM proposal_items
+                         WHERE proposal_id=? AND (is_excluded IS NULL OR is_excluded=0)
+                         ORDER BY position", [$proposalId]);
+
+        $positions = [];
+        $skipped   = [];
+        foreach ($rows as $r) {
+            $price = (float)$r['price'];
+            $qty   = (float)$r['quantity'];
+            if (empty($r['moysklad_product_id'])) { $skipped[] = (string)$r['product_name']; continue; }
+            if ($price <= 0 || $qty <= 0)         { $skipped[] = (string)$r['product_name']; continue; }
+            $positions[] = [
+                'product_id' => $r['moysklad_product_id'],
+                'quantity'   => $qty,
+                'price'      => $price,
+                'discount'   => (float)($r['discount_percent'] ?? 0),
+                'vat'        => (int)($r['vat_rate'] ?? $p['vat_rate'] ?? 0),
+            ];
+        }
+        if (!$positions) {
+            jsonError('Ни одной позиции с ценой и карточкой МойСклад — счёт выставлять не из чего', 400);
+        }
+
+        $appUrl = rtrim($GLOBALS['cfg']['APP_URL'] ?? '', '/');
+        $note = 'Счёт по КП ' . ((string)$p['number'] !== '' ? $p['number'] : '#' . $proposalId)
+              . ($appUrl ? ", CRM: $appUrl/#mail/proposal/$proposalId" : '');
+
+        try {
+            $inv = MoySklad::createInvoice([
+                'counterparty_id' => $cp['moysklad_id'],
+                'organization_id' => msOrgId(),
+                'positions'       => $positions,
+                'description'     => $note,
+            ]);
+        } catch (MoySkladPermissionException $e) {
+            jsonError('МойСклад: нет прав на создание счетов', 403);
+        } catch (Throwable $e) {
+            jsonError('МойСклад не принял счёт: ' . $e->getMessage(), 502);
+        }
+
+        $localId = MsSync::upsertInvoice($inv, null, $cpId);
+        $pdf = MsSync::ensureInvoicePdf($localId);
+
+        Logger::info('moysklad', "Счёт {$inv['name']} выставлен по КП #$proposalId",
+                     ['proposal_id' => $proposalId, 'invoice_id' => $localId, 'manager_id' => (int)$manager['id']]);
+
+        jsonOk([
+            'invoice_id' => $localId,
+            'name'       => $inv['name'],
+            'sum'        => $inv['sum'],
+            'url'        => MoySklad::invoiceUrl($inv['id']),
+            // Файл, который можно приложить к письму прямо из карточки
+            'pdf_url'    => $pdf ? "/api/invoices.php?action=pdf&id=$localId" : null,
+            'pdf_error'  => $pdf ? null : 'Печатная форма в МойСклад пока недоступна — счёт создан, файл появится позже',
+            'skipped'    => $skipped,
+        ]);
     }
 
     // One-click send to the client (FR-032)

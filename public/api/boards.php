@@ -26,6 +26,11 @@ try {
             $sync = isset($_GET['sync']) && !$_GET['sync'] ? ['created' => 0, 'upgraded' => 0] : Boards::sync($id);
             $board = Boards::get($id);
             if (!$board) jsonError('Доска не найдена', 404);
+            // Ящики едут вместе с доской: фильтр по ящику не стоит второго запроса
+            $board['mailboxes'] = array_map(
+                fn($b) => ['id' => (int)$b['id'], 'name' => $b['name']],
+                Mailboxes::forManager($manager)
+            );
             jsonData($board + ['sync' => $sync]);
         }
 
@@ -90,6 +95,23 @@ try {
         case 'card_delete':
             Boards::deleteCard((int)($input['id'] ?? 0));
             jsonOk();
+
+        /**
+         * Групповая операция над отмеченными карточками (прочитано, в архив,
+         * спам, переместить, убрать). Ответ всегда говорит, сколько сделано и
+         * что не получилось: молча наполовину выполненная операция над сорока
+         * письмами — худшее, что может случиться на этом экране.
+         */
+        case 'bulk': {
+            $ids = (array)($input['ids'] ?? []);
+            $op  = (string)($input['op'] ?? '');
+            if (!$ids) jsonError('Не отмечено ни одной карточки');
+            if ($op === '') jsonError('Не указана операция');
+            $res = Boards::bulk($ids, $op, $input, (int)$manager['id']);
+            Logger::info('boards', "Групповая операция «$op»: {$res['done']} карточек",
+                         ['manager_id' => (int)$manager['id'], 'failed' => $res['failed']]);
+            jsonOk($res);
+        }
 
         // Where a thread already sits — the mail page shows it, and «в доску»
         // moves the existing card instead of making a second one

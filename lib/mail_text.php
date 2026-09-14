@@ -76,6 +76,76 @@ final class MailText {
     }
 
     /**
+     * Строка письма для списка переписок.
+     *
+     * Пересланное письмо начинается служебной шапкой — «-------- Исходное
+     * сообщение -------- ТЕМА: … ДАТА: … ОТ: … КОМУ: …», — и именно она
+     * попадала в превью всех писем из mbox-импорта: список выглядел так, будто
+     * все письма одинаковые. Шапка здесь снимается, а показывается то, что
+     * человек написал.
+     */
+    public static function preview(string $text, int $max = 160): string {
+        $t = self::stripForwardHeader($text);
+        $t = self::stripBanners($t);
+        // Цитаты в превью не нужны совсем: показываем первое своё слово
+        $t = (string)preg_replace('/^\s*(?:>|&gt;).*$/mu', '', $t);
+        $t = trim((string)preg_replace('/\s+/u', ' ', $t));
+        if ($t === '') $t = trim((string)preg_replace('/\s+/u', ' ', $text));
+        return mb_substr($t, 0, $max);
+    }
+
+    /** Разделители пересылки — русские и английские, какими их пишут клиенты. */
+    private const FORWARD_MARK =
+        '/(?:-{2,}\s*(?:Исходное сообщение|Пересылаемое сообщение|Original Message|Forwarded message)\s*-{2,}'
+        . '|^\s*Начало пересланного сообщения:)/imu';
+
+    /**
+     * Снять служебную шапку пересылки: сам разделитель и поля «ТЕМА / ДАТА /
+     * ОТ / КОМУ», которые за ним идут. Всё, что ниже, — это письмо.
+     */
+    public static function stripForwardHeader(string $text): string {
+        if (!preg_match(self::FORWARD_MARK, $text, $m, PREG_OFFSET_CAPTURE)) return $text;
+        $rest = substr($text, $m[0][1] + strlen($m[0][0]));
+        // Поля шапки идут подряд сразу после разделителя; первая строка, которая
+        // полем не является, и есть начало письма
+        $lines = preg_split('/\R/u', $rest) ?: [];
+        $field = '/^\s*(?:ТЕМА|ДАТА|ОТ|КОМУ|КОПИЯ|Subject|Date|From|To|Cc|Sent|Тема|Дата|От|Кому|Копия)\s*:/iu';
+        $i = 0;
+        while ($i < count($lines) && (trim($lines[$i]) === '' || preg_match($field, $lines[$i]))) $i++;
+        $body = trim(implode("\n", array_slice($lines, $i)));
+        return $body !== '' ? $body : $text;
+    }
+
+    /**
+     * Кто написал письмо на самом деле, если его переслали.
+     *
+     * Импортированная из mbox переписка вся «от нас»: в поле From стоит наш
+     * собственный ящик, а настоящий отправитель — внутри, строкой «ОТ: Евгений
+     * Шигуев <ip.shiguev@yandex.ru>». Карточка должна называть человека, а не
+     * наш ящик.
+     *
+     * @return array{name:string,email:string}|null
+     */
+    public static function forwardedFrom(string $text): ?array {
+        if (!preg_match(self::FORWARD_MARK, $text)) return null;
+        if (!preg_match('/^\s*(?:ОТ|От|From)\s*:\s*(.+)$/mu', $text, $m)) return null;
+
+        $raw = trim($m[1]);
+        $email = '';
+        $name = $raw;
+        if (preg_match('/<([^>]+)>/u', $raw, $e)) {
+            $email = trim($e[1]);
+            $name = trim(str_replace($e[0], '', $raw));
+        } elseif (filter_var($raw, FILTER_VALIDATE_EMAIL)) {
+            $email = $raw;
+            $name = '';
+        }
+        $name = trim($name, " \t\"'<>");
+        if ($email === '' && $name === '') return null;
+        return ['name' => $name, 'email' => $email];
+    }
+
+    /**
      * Gateway banners and signatures. These repeat in every letter from a big
      * client and would otherwise be the most «relevant» text in the mailbox.
      */

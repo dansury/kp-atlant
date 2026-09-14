@@ -310,6 +310,44 @@ try {
             if (empty($_FILES['file'])) jsonError('Файл не передан');
             jsonOk(['file' => Outbox::accept($_FILES['file'], (int)$manager['id'])]);
 
+        /**
+         * Приложить к письму то, что сервис собрал сам: счёт из МойСклад или
+         * файл КП (issue #38). Загружать их через браузер незачем — они уже
+         * лежат на сервере, и менеджеру нужен один щелчок, а не «скачать,
+         * потом приложить».
+         */
+        case 'attach_doc': {
+            $kind = (string)($input['kind'] ?? '');
+            $id   = (int)($input['id'] ?? 0);
+            if (!$id) jsonError('Не указан документ');
+
+            if ($kind === 'invoice') {
+                require_once ROOT . '/lib/sync.php';
+                $inv = Db::one("SELECT * FROM invoices WHERE id=?", [$id]);
+                if (!$inv) jsonError('Счёт не найден', 404);
+                $path = MsSync::ensureInvoicePdf($id);
+                if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад', 502);
+                $name = 'Счёт ' . $inv['name'] . '.pdf';
+            } elseif ($kind === 'kp' || $kind === 'kp_docx') {
+                require_once ROOT . '/lib/pdf.php';
+                require_once ROOT . '/lib/docx.php';
+                if (!Db::val("SELECT 1 FROM proposals WHERE id=?", [$id])) jsonError('КП не найдено', 404);
+                if ($kind === 'kp_docx') {
+                    $path = DocxGenerator::generate($id);
+                    $name = DocxGenerator::filename($id);
+                } else {
+                    $path = (string)Db::val("SELECT pdf_path FROM proposals WHERE id=?", [$id]);
+                    if (!$path || !is_file($path)) { PdfGenerator::generate($id); $path = (string)Db::val("SELECT pdf_path FROM proposals WHERE id=?", [$id]); }
+                    $name = PdfGenerator::fileName($id, 'pdf');
+                }
+                if (!$path || !is_file($path)) jsonError('Файл КП не собрался', 500);
+            } else {
+                jsonError('Неизвестный документ');
+            }
+
+            jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'])]);
+        }
+
         // ---- Черновик ответа: вкладку закрыли — текст остался (модуль 023) ----
 
         case 'draft_get': {
@@ -411,6 +449,44 @@ try {
             jsonOk($res + ['warning' => $res['server_error']
                 ? 'Часть писем осталась на почтовом сервере: ' . (string)$res['server_error']
                 : null]);
+
+        /**
+         * Групповое действие над отмеченными переписками (issue: разбор архива).
+         *
+         * То же, что групповые операции на доске, но по ключам цепочек: в
+         * архиве карточек нет, а разбирать его партиями нужно ровно так же.
+         */
+        case 'bulk_threads': {
+            $keys = array_values(array_filter(array_map('strval', (array)($input['keys'] ?? []))));
+            $op   = (string)($input['op'] ?? '');
+            if (!$keys) jsonError('Не отмечено ни одной переписки');
+
+            $done = 0; $failed = 0; $errors = [];
+            foreach ($keys as $key) {
+                try {
+                    switch ($op) {
+                        case 'unarchive': MailSync::unarchiveThread($key); break;
+                        case 'archive':   MailSync::archiveThread($key, (int)$manager['id']); break;
+                        case 'read':      MailThreads::markRead($key); break;
+                        case 'delete':    MailSync::deleteThread($key, (int)$manager['id']); break;
+                        case 'spam':
+                            foreach (Db::all("SELECT id FROM mail_messages WHERE thread_key=? AND direction='in'",
+                                             [$key]) as $m) {
+                                MailSync::markAsSpam((int)$m['id']);
+                            }
+                            break;
+                        default: jsonError('Неизвестная операция: ' . $op);
+                    }
+                    $done++;
+                } catch (Throwable $e) {
+                    $failed++;
+                    $errors[] = $e->getMessage();
+                }
+            }
+            Logger::info('mail', "Групповая операция «$op» по $done перепискам",
+                         ['manager_id' => (int)$manager['id'], 'failed' => $failed]);
+            jsonOk(['done' => $done, 'failed' => $failed, 'errors' => array_slice($errors, 0, 5)]);
+        }
 
         case 'categories':
             // For the «тип запроса» selector in the reply dialog
