@@ -391,6 +391,137 @@ final class MailSync {
         return ['moved' => $moved, 'move_error' => $moveError];
     }
 
+    // ---- Archive: письмо уходит с экрана, а не из ящика (модуль 019) ----
+
+    /**
+     * «В архив (не наш профиль)».
+     *
+     * Половина входящих — запросы на то, чем мы не торгуем. Спамом это назвать
+     * нельзя (отправитель живой и писал по делу), удалять — тоже: письмо нужно
+     * найти, если клиент вернётся с другим запросом. Поэтому оно уходит в
+     * «Архив» на самом сервере и перестаёт числиться в панели: из списков, из
+     * доски и из счётчика неотвеченных. Категория ставится руками — модель
+     * `not_our_profile` не выдаёт.
+     *
+     * Ответ на такое письмо не готовится: запрос, который оно завело, закрывается
+     * вместе с ним.
+     */
+    public static function archiveMessage(int $mailMessageId, ?int $managerId = null,
+                                          string $reason = 'not_our_profile'): array {
+        $row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$mailMessageId]);
+        if (!$row) throw new RuntimeException('Письмо не найдено');
+
+        $data = ['archived_at' => date('Y-m-d H:i:s'), 'archived_reason' => $reason, 'is_read' => 1];
+        if ($reason === 'not_our_profile') {
+            $data['category']      = 'not_our_profile';
+            $data['triage_reason'] = 'В архив вручную: не наш профиль';
+        }
+        Db::update('mail_messages', $data, 'id=?', [$mailMessageId]);
+
+        if ($reason === 'not_our_profile' && !empty($row['request_id'])) {
+            Db::update('requests', ['category' => 'not_our_profile', 'category_source' => 'manager'],
+                       'id=?', [(int)$row['request_id']]);
+        }
+        // Карточка доски, построенная вокруг этого письма, уходит с ним; карточка
+        // компании остаётся — заархивировано письмо, а не контрагент.
+        Db::q("DELETE FROM board_cards WHERE mail_message_id=? AND counterparty_id IS NULL", [$mailMessageId]);
+
+        [$moved, $folder, $moveError] = self::moveToArchiveFolder($row);
+
+        Logger::info('mail', "Письмо #$mailMessageId убрано в архив" . ($moved ? " и перемещено в «$folder» на сервере" : ''),
+            ['mail_message_id' => $mailMessageId, 'manager_id' => $managerId,
+             'reason' => $reason, 'moved' => $moved, 'move_error' => $moveError]);
+
+        return ['archived' => 1, 'moved' => $moved, 'folder' => $folder, 'move_error' => $moveError];
+    }
+
+    /** Вся переписка разом — «не наш профиль» редко бывает про одно письмо. */
+    public static function archiveThread(string $threadKey, ?int $managerId = null,
+                                         string $reason = 'not_our_profile'): array {
+        $ids = array_column(Db::all("SELECT id FROM mail_messages WHERE thread_key=? AND archived_at IS NULL", [$threadKey]), 'id');
+        if (!$ids) throw new RuntimeException('Цепочка не найдена или уже в архиве');
+
+        $archived = 0;
+        $errors = [];
+        foreach ($ids as $id) {
+            try {
+                $res = self::archiveMessage((int)$id, $managerId, $reason);
+                $archived++;
+                if (!empty($res['move_error'])) $errors[] = (string)$res['move_error'];
+            } catch (Throwable $e) {
+                $errors[] = $e->getMessage();
+                Logger::exception('mail', $e, ['mail_message_id' => $id, 'stage' => 'archive_thread']);
+            }
+        }
+        Db::q("DELETE FROM board_cards WHERE thread_key=? AND counterparty_id IS NULL", [$threadKey]);
+
+        return ['archived' => $archived, 'move_error' => $errors ? implode('; ', array_unique($errors)) : null];
+    }
+
+    /** Вернуть письмо на экран. Папку на сервере не трогаем — письмо там и лежит. */
+    public static function unarchiveMessage(int $mailMessageId): array {
+        $row = Db::one("SELECT id, category FROM mail_messages WHERE id=?", [$mailMessageId]);
+        if (!$row) throw new RuntimeException('Письмо не найдено');
+        $data = ['archived_at' => null, 'archived_reason' => null];
+        // Категорию возвращаем в «не определено»: прежнюю никто не помнит, а
+        // «не наш профиль» на видимом письме — это уже неправда.
+        if (($row['category'] ?? '') === 'not_our_profile') $data['category'] = 'other';
+        Db::update('mail_messages', $data, 'id=?', [$mailMessageId]);
+        return ['restored' => 1];
+    }
+
+    /** Вся цепочка обратно на экран. */
+    public static function unarchiveThread(string $threadKey): array {
+        $ids = array_column(Db::all("SELECT id FROM mail_messages WHERE thread_key=? AND archived_at IS NOT NULL", [$threadKey]), 'id');
+        foreach ($ids as $id) self::unarchiveMessage((int)$id);
+        return ['restored' => count($ids)];
+    }
+
+    /**
+     * Письма ящика — с экрана и обратно. Так выключенный ящик перестаёт засорять
+     * доску, а включённый возвращает всё, что унёс: reason помнит, чьи это были
+     * письма, поэтому «не наш профиль» обратно не всплывает.
+     */
+    public static function setMailboxMessagesHidden(int $mailboxId, bool $hidden): int {
+        if ($hidden) {
+            Db::q("UPDATE mail_messages SET archived_at=datetime('now'), archived_reason='mailbox_off'
+                   WHERE mailbox_id=? AND archived_at IS NULL", [$mailboxId]);
+        } else {
+            Db::q("UPDATE mail_messages SET archived_at=NULL, archived_reason=NULL
+                   WHERE mailbox_id=? AND archived_reason='mailbox_off'", [$mailboxId]);
+        }
+        return (int)Db::pdo()->query("SELECT changes()")->fetchColumn();
+    }
+
+    /**
+     * Положить письмо в «Архив» на сервере. Best-effort целиком: недоступный
+     * ящик не должен мешать убрать письмо с экрана.
+     * @return array{0:bool,1:?string,2:?string} [moved, folder, error]
+     */
+    private static function moveToArchiveFolder(array $row): array {
+        if ((string)($row['direction'] ?? '') !== 'in') return [false, null, null];
+        if ((int)($row['uid'] ?? 0) <= 0 || empty($row['mailbox_id'])) return [false, null, null];
+        if (!EmailReader::available()) return [false, null, 'Расширение PHP imap не установлено на сервере'];
+
+        $box = Mailboxes::get((int)$row['mailbox_id']);
+        if (!$box) return [false, null, null];
+
+        $reader = null;
+        try {
+            $reader = new EmailReader(Mailboxes::cfg($box));
+            $reader->connect((string)($row['folder'] ?: 'INBOX'));
+            $archive = $reader->findArchiveFolder();
+            if ($archive === null) return [false, null, 'На сервере нет папки «Архив» — письмо убрано только из панели'];
+            if ($archive === (string)($row['folder'] ?: 'INBOX')) return [false, $archive, null];
+            return [$reader->moveToFolder((int)$row['uid'], $archive), $archive, null];
+        } catch (Throwable $e) {
+            Logger::exception('mail', $e, ['mail_message_id' => $row['id'], 'stage' => 'archive']);
+            return [false, null, $e->getMessage()];
+        } finally {
+            if ($reader) { try { $reader->close(); } catch (Throwable $e) { /* already gone */ } }
+        }
+    }
+
     // ---- Delete ----
 
     /**
@@ -444,6 +575,18 @@ final class MailSync {
             'server_state' => $serverState,
             'server_error' => $serverError,
         ];
+    }
+
+    /**
+     * Забыть письмо, не трогая почтовый сервер. Так уходит архив вместе с
+     * удаляемым ящиком: доступа к серверу уже нет (пароль удаляется в той же
+     * операции), а надгробие в `mail_deleted` бессмысленно — заново это письмо
+     * скачивать нечем.
+     */
+    public static function forgetMessage(int $mailMessageId): void {
+        self::dropAttachments($mailMessageId);
+        Db::q("DELETE FROM board_cards WHERE mail_message_id=? AND counterparty_id IS NULL", [$mailMessageId]);
+        Db::q("DELETE FROM mail_messages WHERE id=?", [$mailMessageId]);
     }
 
     /** The whole conversation at once — «удалить переписку» in the thread view. */

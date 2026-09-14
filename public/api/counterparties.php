@@ -6,6 +6,7 @@
 require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/mail_threads.php';
+require_once ROOT . '/lib/mail.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -92,14 +93,18 @@ switch ($action) {
      * back with it, and the card can be painted from one answer.
      */
     case 'threads': {
-        requireAuth();
+        $manager = requireAuth();
         $id = Crm::rootId((int)($_GET['id'] ?? 0));
         $ids = array_map(fn($r) => (int)$r['id'],
             Db::all("SELECT id FROM counterparties WHERE id=? OR merged_into_id=?", [$id, $id]));
 
         $items = [];
         foreach ($ids as $cpId) {
-            foreach (MailThreads::query(['counterparty_id' => $cpId, 'limit' => 100])['items'] as $t) {
+            foreach (MailThreads::query([
+                'counterparty_id' => $cpId,
+                'archived'        => !empty($_GET['archived']),
+                'limit'           => 100,
+            ])['items'] as $t) {
                 $items[$t['thread_key']] = $t;
             }
         }
@@ -115,7 +120,15 @@ switch ($action) {
             $t['unanswered'] = $t['last_direction'] === 'in';
         }
         unset($t);
-        jsonData(['items' => $items]);
+        // Ящики нужны здесь же: поле ответа на карточке открыто всегда, в том
+        // числе когда переписки ещё нет и письмо будет первым (модуль 019)
+        jsonData([
+            'items'     => $items,
+            'mailboxes' => array_map(
+                fn($b) => ['id' => $b['id'], 'name' => $b['name'], 'email' => $b['email']],
+                Mailboxes::forManager($manager)
+            ),
+        ]);
     }
 
     // Unified company feed (FR-033)

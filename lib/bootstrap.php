@@ -1151,6 +1151,20 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '20')");
         $current = 20;
     }
+
+    // v21 — модуль 019: письмо уходит с экрана, а не из ящика; ящик выключают,
+    // а не удаляют, и его письма уходят с экрана вместе с ним.
+    if ($current < 21) {
+        // Когда письмо убрали с экрана и почему: 'not_our_profile' — менеджер
+        // сказал «не наш профиль», 'mailbox_off' — ящик выключили или удалили.
+        // NULL — письмо в работе, как и было до миграции.
+        Db::ensureColumn('mail_messages', 'archived_at', 'TEXT');
+        Db::ensureColumn('mail_messages', 'archived_reason', 'TEXT');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_mail_archived ON mail_messages(archived_at)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '21')");
+        $current = 21;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

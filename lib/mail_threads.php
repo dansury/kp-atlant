@@ -147,6 +147,12 @@ final class MailThreads {
         $where  = ['m.thread_key IS NOT NULL'];
         $params = [];
 
+        // Убранное в архив («не наш профиль», письма выключенного ящика) с
+        // экрана уходит целиком — и из списка, и из счётчиков. Отдельная
+        // вкладка «Архив» показывает ровно обратное (модуль 019).
+        $archived = !empty($f['archived']);
+        $where[] = $archived ? 'm.archived_at IS NOT NULL' : 'm.archived_at IS NULL';
+
         // A filter narrows WHICH THREADS are shown, never which letters are in
         // one: a thread with an unread letter must open with its whole history.
         if (!empty($f['mailbox_id'])) { $where[] = 'm.mailbox_id = ?'; $params[] = (int)$f['mailbox_id']; }
@@ -177,18 +183,29 @@ final class MailThreads {
 
         $items = [];
         foreach ($keys as $k) {
-            $t = self::summary((string)$k['thread_key']);
+            $t = self::summary((string)$k['thread_key'], $archived);
             if ($t) $items[] = $t;
         }
         return [
             'items'  => $items,
             'total'  => $total,
-            'unread' => (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE direction='in' AND is_read=0"),
+            'unread' => self::unreadCount(),
         ];
     }
 
-    /** One row of the thread list — everything the list needs, nothing more. */
-    public static function summary(string $key): ?array {
+    /** Неотвеченных писем на экране — архив в счётчик не входит. */
+    public static function unreadCount(): int {
+        return (int)Db::val("SELECT COUNT(*) FROM mail_messages
+                             WHERE direction='in' AND is_read=0 AND archived_at IS NULL");
+    }
+
+    /**
+     * One row of the thread list — everything the list needs, nothing more.
+     * $withArchived переворачивает выборку для вкладки «Архив»: там цепочка
+     * состоит ровно из тех писем, которых нет в обычном списке.
+     */
+    public static function summary(string $key, bool $withArchived = false): ?array {
+        $only = $withArchived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL';
         $agg = Db::one(
             "SELECT COUNT(*) AS total,
                     SUM(CASE WHEN direction='in'  THEN 1 ELSE 0 END) AS in_count,
@@ -196,7 +213,7 @@ final class MailThreads {
                     SUM(CASE WHEN direction='in' AND is_read=0 THEN 1 ELSE 0 END) AS unread,
                     SUM(has_attachment) AS files,
                     MIN(date_at) AS first_at, MAX(date_at) AS last_at
-             FROM mail_messages WHERE thread_key=?", [$key]
+             FROM mail_messages WHERE thread_key=? AND $only", [$key]
         );
         if (!$agg || !(int)$agg['total']) return null;
 
@@ -205,7 +222,7 @@ final class MailThreads {
              FROM mail_messages m
              LEFT JOIN mailboxes b ON b.id = m.mailbox_id
              LEFT JOIN counterparties c ON c.id = m.counterparty_id
-             WHERE m.thread_key=? ORDER BY m.date_at DESC, m.id DESC LIMIT 1", [$key]
+             WHERE m.thread_key=? AND m.$only ORDER BY m.date_at DESC, m.id DESC LIMIT 1", [$key]
         );
 
         // The request (and the company) belong to the CONVERSATION, not to its
@@ -213,14 +230,14 @@ final class MailThreads {
         // them from the last row alone lost the КП positions of the whole thread.
         $linked = Db::one(
             "SELECT MAX(request_id) AS request_id, MAX(counterparty_id) AS counterparty_id
-             FROM mail_messages WHERE thread_key=?", [$key]
+             FROM mail_messages WHERE thread_key=? AND $only", [$key]
         );
 
         // Which mailboxes this conversation lives in — «яндекс + gmail» is the
         // whole reason the thread exists, so the list says it out loud
         $boxes = Db::all(
             "SELECT DISTINCT b.id, b.name, b.email FROM mail_messages m
-             JOIN mailboxes b ON b.id = m.mailbox_id WHERE m.thread_key=?", [$key]
+             JOIN mailboxes b ON b.id = m.mailbox_id WHERE m.thread_key=? AND m.$only", [$key]
         );
 
         return [
@@ -247,6 +264,8 @@ final class MailThreads {
                 ? Db::val("SELECT name FROM counterparties WHERE id=?", [$linked['counterparty_id']]) : null),
             'request_id'      => $linked['request_id'] ? (int)$linked['request_id'] : null,
             'category'        => $last['category'] ?? null,
+            'archived_at'     => $last['archived_at'] ?? null,
+            'archived_reason' => $last['archived_reason'] ?? null,
             'participants'    => self::participants($key),
         ];
     }
@@ -270,7 +289,7 @@ final class MailThreads {
             "SELECT m.id, m.mailbox_id, m.direction, m.folder, m.subject, m.thread_subject,
                     m.from_email, m.from_name, m.to_emails, m.cc_emails, m.body_text, m.body_html,
                     m.has_attachment, m.is_read, m.date_at, m.request_id, m.counterparty_id,
-                    m.category, m.error, m.sent_state, m.message_id,
+                    m.category, m.error, m.sent_state, m.message_id, m.archived_at, m.archived_reason,
                     b.name AS mailbox_name, b.email AS mailbox_email, c.name AS counterparty_name,
                     g.name AS manager_name
              FROM mail_messages m

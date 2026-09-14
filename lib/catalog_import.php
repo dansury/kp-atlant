@@ -58,7 +58,11 @@ final class CatalogImport {
         if (!$rows) throw new CatalogImportException('В файле нет строк — проверьте, что выгрузка не пустая.');
 
         $header = array_shift($rows);
-        $map = self::mapHeader($header, (string)($opts['price_column'] ?? ''));
+        // Колонка цены не выбрана — берём ту, что уже стоит типом цены по
+        // умолчанию: это один и тот же выбор, а не две настройки (модуль 019)
+        $wantColumn = trim((string)($opts['price_column'] ?? ''));
+        if ($wantColumn === '') $wantColumn = trim((string)Settings::get('CATALOG_DEFAULT_PRICE_TYPE', ''));
+        $map = self::mapHeader($header, $wantColumn);
         if (!isset($map['name']) && !isset($map['moysklad_id'])) {
             throw new CatalogImportException(
                 'Это не похоже на выгрузку товаров МойСклад: в первой строке нет колонок «Наименование» и «UUID».');
@@ -66,7 +70,8 @@ final class CatalogImport {
 
         $withArchived = !empty($opts['with_archived']);
         $report = ['total' => 0, 'imported' => 0, 'skipped' => 0, 'variants' => 0,
-                   'images' => 0, 'pruned' => 0, 'price_column' => $map['price_label'] ?? '', 'warnings' => []];
+                   'images' => 0, 'pruned' => 0, 'price_column' => $map['price_label'] ?? '',
+                   'price_types' => array_values($map['prices'] ?? []), 'warnings' => []];
 
         // uuid AND code → [id, name]: the export links a variant to its product by
         // «Код товара модификации» — the UUID it prints there is NOT the UUID of
@@ -129,6 +134,13 @@ final class CatalogImport {
 
         if ($report['price_column'] === '') {
             $report['warnings'][] = 'Колонка с ценой не найдена — цены остались прежними.';
+        } else {
+            // Тип цены по умолчанию — это и есть колонка, из которой взята цена.
+            // Две разные настройки означали каталог, где «Тип цены по умолчанию»
+            // не совпадал ни с одной ценой в базе, и КП уходил по прайсу из
+            // `products_cache.price` молча.
+            Settings::set('CATALOG_DEFAULT_PRICE_TYPE', $report['price_column']);
+            Settings::set('CATALOG_PRICE_COLUMN', $report['price_column']);
         }
         $report['warnings'][] = 'Остатки из файла не берутся: в выгрузке лежит неснижаемый остаток, '
                               . 'а не наличие. Наличие обновляется синхронизацией с МойСклад.';
@@ -155,19 +167,37 @@ final class CatalogImport {
             }
         }
 
-        // Price: the operator's column first, then the usual wholesale/retail ones
-        $wanted = array_values(array_filter([$priceColumn, 'Цена: Опт безнал', 'Цена: Опт', 'Цена: Розница']));
+        // Все «Цена: …» разом — это типы цен МойСклад, и в базе они лежат в
+        // prices_json под теми же именами, что и после синхронизации по API.
+        // Иначе каталог из Excel знал ровно одну цену и «Тип цены по умолчанию»
+        // выбирать было не из чего.
+        foreach ($titles as $i => $title) {
+            if (str_starts_with($title, 'Цена:')) $map['prices'][$i] = self::priceTypeName($title);
+        }
+
+        // Price: the operator's column first, then the usual wholesale/retail ones.
+        // Имя сравнивается и с заголовком целиком, и без приставки «Цена: » —
+        // настройка хранит тип цены («Опт безнал»), а в файле стоит колонка.
+        $wanted = array_values(array_filter([$priceColumn, 'Опт безнал', 'Опт', 'Розница']));
         foreach ($wanted as $candidate) {
-            $i = array_search($candidate, $titles, true);
-            if ($i !== false) { $map['price'] = $i; $map['price_label'] = $candidate; break; }
+            $want = mb_strtolower(self::priceTypeName($candidate));
+            foreach ($map['prices'] ?? [] as $i => $label) {
+                if (mb_strtolower($label) === $want) { $map['price'] = $i; $map['price_label'] = $label; break 2; }
+            }
         }
         // Any «Цена: …» will do if none of the expected ones is there
         if (!isset($map['price'])) {
-            foreach ($titles as $i => $title) {
-                if (str_starts_with($title, 'Цена:')) { $map['price'] = $i; $map['price_label'] = $title; break; }
+            foreach ($map['prices'] ?? [] as $i => $label) {
+                $map['price'] = $i; $map['price_label'] = $label; break;
             }
         }
         return $map;
+    }
+
+    /** «Цена: Опт безнал» → «Опт безнал» — так тип цены называется в МойСклад. */
+    private static function priceTypeName(string $title): string {
+        $t = trim($title);
+        return trim((string)preg_replace('/^Цена\s*:\s*/ui', '', $t));
     }
 
     /** One export row → the fields products_cache stores. */
@@ -181,6 +211,12 @@ final class CatalogImport {
         foreach ((array)($map['characteristics'] ?? []) as $i => $label) {
             $v = trim((string)($raw[$i] ?? ''));
             if ($v !== '' && $v !== '-') $chars[] = "$label: $v";
+        }
+
+        $prices = [];
+        foreach ((array)($map['prices'] ?? []) as $i => $label) {
+            $v = self::money((string)($raw[$i] ?? ''));
+            if ($v > 0) $prices[$label] = $v;
         }
 
         $images = [];
@@ -201,6 +237,7 @@ final class CatalogImport {
             'description'     => $get('description'),
             'category'        => $get('category'),
             'price'           => self::money(isset($map['price']) ? (string)($raw[$map['price']] ?? '') : ''),
+            'prices'          => $prices,
             'archived'        => in_array(mb_strtolower($get('archived')), ['да', 'yes', '1', 'true'], true),
             'parent_id'       => $get('parent_id'),
             'parent_code'     => $get('parent_code'),
@@ -245,13 +282,14 @@ final class CatalogImport {
 
         Db::q(
             "INSERT INTO products_cache
-                (moysklad_id, name, name_normalized, article, code, price, unit, description,
+                (moysklad_id, name, name_normalized, article, code, price, prices_json, unit, description,
                  category, product_type, parent_id, characteristics, image_urls, is_archived,
                  is_addon, source, imported_at, updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'excel', datetime('now'), datetime('now'))
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'excel', datetime('now'), datetime('now'))
              ON CONFLICT(moysklad_id) DO UPDATE SET
                 name=excluded.name, name_normalized=excluded.name_normalized,
                 article=excluded.article, code=excluded.code, price=excluded.price,
+                prices_json=excluded.prices_json,
                 unit=excluded.unit, description=excluded.description, category=excluded.category,
                 product_type=excluded.product_type, parent_id=excluded.parent_id,
                 characteristics=excluded.characteristics, image_urls=excluded.image_urls,
@@ -259,7 +297,9 @@ final class CatalogImport {
                 source='excel', imported_at=datetime('now'), updated_at=datetime('now')",
             [
                 $row['moysklad_id'], $row['name'], trim((string)$normalized), $row['article'], $row['code'],
-                $row['price'], $row['unit'], $row['description'], $row['category'], $row['type'],
+                $row['price'],
+                $row['prices'] ? json_encode($row['prices'], JSON_UNESCAPED_UNICODE) : null,
+                $row['unit'], $row['description'], $row['category'], $row['type'],
                 $row['parent_id'], $row['characteristics'],
                 $row['images'] ? json_encode($row['images'], JSON_UNESCAPED_UNICODE) : null,
                 $row['archived'] ? 1 : 0, $isAddon,

@@ -26,6 +26,7 @@ try {
                 'unread'          => !empty($_GET['unread']),
                 'category'        => $_GET['category'] ?? null,
                 'q'               => trim((string)($_GET['q'] ?? '')),
+                'archived'        => !empty($_GET['archived']),
                 'limit'           => $_GET['limit'] ?? 50,
                 'offset'          => $_GET['offset'] ?? 0,
             ]);
@@ -45,6 +46,7 @@ try {
                 'unread'          => !empty($_GET['unread']),
                 'category'        => $_GET['category'] ?? null,
                 'q'               => trim((string)($_GET['q'] ?? '')),
+                'archived'        => !empty($_GET['archived']),
                 'limit'           => $_GET['limit'] ?? 50,
                 'offset'          => $_GET['offset'] ?? 0,
             ]);
@@ -57,7 +59,9 @@ try {
         case 'thread':
             $key = trim((string)($_GET['key'] ?? ''));
             if ($key === '') jsonError('Не указана цепочка');
-            $summary = MailThreads::summary($key);
+            // Цепочка целиком в архиве всё равно открывается — иначе из вкладки
+            // «Архив» некуда нажать
+            $summary = MailThreads::summary($key) ?: MailThreads::summary($key, true);
             if (!$summary) jsonError('Цепочка не найдена', 404);
             $messages = MailThreads::messages($key);
             // HTML is sanitized (allowlist, no scripts, no remote stylesheets) and
@@ -256,6 +260,30 @@ try {
             $res = MailSync::markAsSpam($id);
             Logger::info('mail', "Письмо #$id отмечено как спам менеджером", ['manager_id' => (int)$manager['id']]);
             jsonOk($res);
+
+        // ---- «В архив»: письмо уходит с экрана, но остаётся в ящике (модуль 019) ----
+
+        case 'archive':
+            $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!$id) jsonError('Не указано письмо');
+            $res = MailSync::archiveMessage($id, (int)$manager['id']);
+            jsonOk($res + ['warning' => $res['move_error']
+                ? 'Письмо убрано из панели, но на сервере осталось в прежней папке: ' . (string)$res['move_error']
+                : null]);
+
+        case 'archive_thread':
+            $key = trim((string)($input['thread_key'] ?? $_GET['thread_key'] ?? ''));
+            if ($key === '') jsonError('Не указана цепочка');
+            $res = MailSync::archiveThread($key, (int)$manager['id']);
+            jsonOk($res + ['warning' => $res['move_error']
+                ? 'Часть писем осталась на сервере в прежней папке: ' . (string)$res['move_error']
+                : null]);
+
+        case 'unarchive':
+            $id  = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            $key = trim((string)($input['thread_key'] ?? ''));
+            if (!$id && $key === '') jsonError('Не указано письмо');
+            jsonOk($id ? MailSync::unarchiveMessage($id) : MailSync::unarchiveThread($key));
 
         case 'delete':
             // «Удалить»: out of the archive here and into «Корзина» on the server,

@@ -27,7 +27,7 @@ final class Boards {
     ];
 
     /** Letters of these categories never make a card of their own. */
-    private const IGNORED_CATEGORIES = ['spam', 'service'];
+    private const IGNORED_CATEGORIES = ['spam', 'service', 'not_our_profile'];
 
     /** Never flood the board on the first run over a large archive. */
     private const SYNC_LIMIT = 400;
@@ -213,7 +213,8 @@ final class Boards {
                     MAX(date_at) AS last_at,
                     MAX(CASE WHEN direction='in'  THEN date_at END) AS last_in_at,
                     MAX(CASE WHEN direction='out' THEN date_at END) AS last_out_at
-             FROM mail_messages WHERE counterparty_id IN ($mIn) GROUP BY counterparty_id", $mailIds
+             FROM mail_messages WHERE counterparty_id IN ($mIn) AND archived_at IS NULL
+             GROUP BY counterparty_id", $mailIds
         );
         foreach ($rows as $r) {
             $id = $map[(int)$r['counterparty_id']] ?? null;
@@ -235,7 +236,8 @@ final class Boards {
             $root = $map[$mid];
             if (!isset($out[$root])) continue;
             $last = Db::one("SELECT thread_subject, subject, body_text, date_at FROM mail_messages
-                             WHERE counterparty_id=? ORDER BY date_at DESC, id DESC LIMIT 1", [$mid]);
+                             WHERE counterparty_id=? AND archived_at IS NULL
+                             ORDER BY date_at DESC, id DESC LIMIT 1", [$mid]);
             if (!$last) continue;
             if ($out[$root]['subject'] === null || (string)$last['date_at'] >= (string)$out[$root]['last_at']) {
                 $out[$root]['subject'] = $last['thread_subject'] ?: $last['subject'];
@@ -321,7 +323,8 @@ final class Boards {
         $companies = Db::all(
             "SELECT COALESCE(c.merged_into_id, c.id) AS cp_id, MAX(m.date_at) AS last_at
              FROM mail_messages m JOIN counterparties c ON c.id = m.counterparty_id
-             WHERE m.date_at >= ? AND (m.category IS NULL OR m.category NOT IN ($ignored))
+             WHERE m.date_at >= ? AND m.archived_at IS NULL
+               AND (m.category IS NULL OR m.category NOT IN ($ignored))
              GROUP BY cp_id ORDER BY last_at DESC LIMIT ?", [$since, self::SYNC_LIMIT]
         );
         foreach ($companies as $row) {
@@ -361,6 +364,7 @@ final class Boards {
             "SELECT m.thread_key, MAX(m.date_at) AS last_at, MAX(COALESCE(m.counterparty_id, 0)) AS cp
              FROM mail_messages m
              WHERE m.thread_key IS NOT NULL AND m.direction='in' AND m.date_at >= ?
+               AND m.archived_at IS NULL
                AND (m.category IS NULL OR m.category NOT IN ($ignored))
              GROUP BY m.thread_key HAVING cp = 0
              ORDER BY last_at DESC LIMIT ?", [$since, self::SYNC_LIMIT]
