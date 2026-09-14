@@ -7,6 +7,7 @@ use Mpdf\Mpdf;
 require_once __DIR__ . '/kp_content.php';
 require_once __DIR__ . '/requisites.php';
 require_once __DIR__ . '/signatures.php';
+require_once __DIR__ . '/terms.php';
 
 class PdfGenerator {
 
@@ -90,7 +91,13 @@ class PdfGenerator {
         // в котором клиент сам должен заметить, что его просьбу потеряли.
         $unmatched = KpContent::unmatchedRows($proposalId);
 
-        $maxImages = (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
+        // Сколько фотографий печатать. Настройка задаёт общий потолок, а
+        // редактор КП может поставить свой на ЭТОТ документ (модуль 023):
+        // раз количество ограничивается в настройках, ограничивать его должно
+        // быть можно и на сборке.
+        $maxImages = $proposal['photos_per_item'] !== null && $proposal['photos_per_item'] !== ''
+            ? max(0, (int)$proposal['photos_per_item'])
+            : (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
         $addons = Db::all(
             "SELECT * FROM proposal_addons WHERE proposal_id=? AND is_selected=1 ORDER BY position",
             [$proposalId]
@@ -101,7 +108,13 @@ class PdfGenerator {
         $total = 0;
         $totalIsFrom = false;
         foreach ($items as &$item) {
-            $item['sum'] = $item['price'] * $item['quantity'];
+            // Цена, которая печатается: базовая, затем ручная скидка, затем
+            // скидка за ожидание — обе считаются друг на друга (модуль 023)
+            $item['effective_price'] = Terms::price($item);
+            $item['wait_note'] = Terms::note($item);
+            $discount = Terms::totalDiscount($item);
+            $item['discount_shown'] = $discount > 0 ? rtrim(rtrim(number_format($discount, 2, ',', ''), '0'), ',') : '';
+            $item['sum'] = $item['effective_price'] * $item['quantity'];
             $total += $item['sum'];
             if (!empty($item['price_from'])) $totalIsFrom = true;
             // Photos are embedded as data URIs — mPDF cannot read storage/ paths.
@@ -204,6 +217,8 @@ class PdfGenerator {
             'unmatchedNote' => (string)Settings::get('KP_UNMATCHED_NOTE',
                 'По этим позициям запроса мы уточняем наличие, сроки и цену и вернёмся с ответом отдельно.'),
             'showSiteLink' => (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1,
+            'qrHint' => trim((string)Settings::get('KP_QR_HINT', '')),
+            'pageBreakPerItem' => (int)Settings::get('KP_PAGE_BREAK', 1) === 1,
             'showVatTotal' => (bool)($proposal['show_vat_total'] ?? false),
             'conditionsText' => $conditionsText,
             'executionDays' => $proposal['execution_days'] ?? 30,

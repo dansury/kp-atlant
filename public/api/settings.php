@@ -118,6 +118,25 @@ switch ($action) {
         ContentLog::record('email', 'email_rules', 'Правила писем', (int)$manager['id'], $before, (string)$content);
         jsonOk();
 
+    /**
+     * Настройки, которые нужны САМОМУ интерфейсу (модуль 023).
+     *
+     * Значения «под заказ» по умолчанию, интервал автоопроса ящиков и звук
+     * нового письма. Отдаются любому вошедшему: это не секреты, а то, без чего
+     * экран считает скидку не так, как её посчитает КП.
+     */
+    case 'ui':
+        requireAuth();
+        jsonData(['ui' => [
+            'wait_months'        => (int)Settings::get('KP_WAIT_MONTHS', 3),
+            'wait_discount'      => (float)Settings::get('KP_WAIT_DISCOUNT', 10),
+            'wait_prepay'        => (int)Settings::get('KP_WAIT_PREPAY', 100),
+            'wait_auto'          => (int)Settings::get('KP_WAIT_AUTO', 0) === 1,
+            'mail_poll_min'      => max(0, (int)Settings::get('MAIL_AUTO_POLL_MIN', 10)),
+            'mail_sound'         => (string)Settings::get('MAIL_SOUND', ''),
+            'mail_sound_volume'  => max(0, min(100, (int)Settings::get('MAIL_SOUND_VOLUME', 60))),
+        ]]);
+
     case 'general':
         $manager = requireAuth();
         if ($_SERVER['REQUEST_METHOD'] === 'GET') {

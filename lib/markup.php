@@ -42,6 +42,23 @@ final class Markup {
         return self::looksLikeHtml($text) ? self::htmlToMarkdown($text) : self::tidy($text);
     }
 
+    /**
+     * Тот же текст без всякой разметки — для поиска и подбора (модуль 023).
+     *
+     * Подбору всё равно, был ли «монокуляр» пунктом списка или строкой абзаца;
+     * ему важно, что это слово в описании есть. Теги, сущности и звёздочки
+     * Markdown уходят, слова остаются.
+     */
+    public static function toPlainText(string $text): string {
+        $text = utf8Text($text);
+        if (trim($text) === '') return '';
+        if (self::looksLikeHtml($text)) $text = self::htmlToMarkdown($text);
+        $text = (string)preg_replace('/\[([^\]]*)\]\([^)]*\)/u', '$1', $text);  // ссылки — только их текст
+        $text = str_replace(['**', '__', '`'], '', $text);
+        $text = (string)preg_replace('/^\s*(?:[-*+]|\d+\.|#{1,6})\s+/mu', '', $text);
+        return trim((string)preg_replace('/\s+/u', ' ', $text));
+    }
+
     // ------------------------------------------------------------ HTML → MD
 
     public static function htmlToMarkdown(string $html): string {

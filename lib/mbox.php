@@ -68,6 +68,7 @@ final class MboxImport {
             Db::update('mbox_imports', [
                 'mailbox_id'       => $mailboxId,
                 'create_companies' => !empty($opts['create_companies']) ? 1 : 0,
+                'force'            => !empty($opts['force']) ? 1 : 0,
                 'size'             => (int)filesize($path),
                 'error'            => null,
             ], 'id=?', [$existing['id']]);
@@ -80,6 +81,7 @@ final class MboxImport {
             'byte_offset'      => 0,
             'mailbox_id'       => $mailboxId,
             'create_companies' => !empty($opts['create_companies']) ? 1 : 0,
+            'force'            => !empty($opts['force']) ? 1 : 0,
             'manager_id'       => $opts['manager_id'] ?? null,
             'started_at'       => date('Y-m-d H:i:s'),
         ]);
@@ -254,7 +256,10 @@ final class MboxImport {
             $msg['import_id'] = (int)$import['id'];
             if (($msg['date'] ?? '') === '') $msg['date'] = date('Y-m-d H:i:s');
 
-            $id = MailArchive::storeIncoming($box, $msg, $direction, true);
+            // «Загрузить заново» — это просьба положить письма, даже если такие
+            // уже считались дубликатами: архив успели потерять вместе с ящиком,
+            // а файл вот он (модуль 023)
+            $id = MailArchive::storeIncoming($box, $msg, $direction, true, !empty($import['force']));
             if (!$id) { $res['duplicates']++; return; }
 
             // OCR stays off for the same reason the full-archive download keeps it
@@ -291,11 +296,18 @@ final class MboxImport {
         return Crm::isOurAddress($from) ? 'out' : 'in';
     }
 
-    /** Start the file over — after «Импортировать заново». */
-    public static function reset(int $id): void {
+    /**
+     * Start the file over — after «Импортировать заново».
+     *
+     * $force — читать файл, не считаясь с дубликатами: ровно тот случай, когда
+     * письма из прошлого импорта потеряны вместе с ящиком, и «всё дубликаты»
+     * означает «ничего не загрузилось» (модуль 023).
+     */
+    public static function reset(int $id, bool $force = false): void {
         Db::update('mbox_imports', [
             'byte_offset' => 0, 'scanned' => 0, 'imported' => 0, 'duplicates' => 0,
             'failed' => 0, 'done' => 0, 'finished_at' => null, 'error' => null,
+            'force' => $force ? 1 : 0,
             'started_at' => date('Y-m-d H:i:s'),
         ], 'id=?', [$id]);
         Logger::info('mail', 'Импорт mbox начат заново', ['import_id' => $id]);

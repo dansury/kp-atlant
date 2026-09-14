@@ -353,15 +353,28 @@ final class MailSync {
         $row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$mailMessageId]);
         if (!$row) throw new RuntimeException('Письмо не найдено');
 
+        // Спам уходит С ЭКРАНА, а не только меняет категорию. Раньше здесь
+        // проставлялась одна метка: письмо оставалось в списках и на доске, и
+        // менеджер жал «спам» второй и третий раз, ничего не добиваясь.
+        // Архив — то же самое место, куда уходит «не наш профиль» (модуль 023).
         Db::update('mail_messages', [
-            'category'      => 'spam',
-            'triage_reason' => 'Отмечено спамом вручную',
+            'category'        => 'spam',
+            'triage_reason'   => 'Отмечено спамом вручную',
+            'archived_at'     => date('Y-m-d H:i:s'),
+            'archived_reason' => 'spam',
+            'is_read'         => 1,
         ], 'id=?', [$mailMessageId]);
         if (!empty($row['request_id'])) {
             Db::update('requests', [
                 'category'        => 'spam',
                 'category_source' => 'manager',
             ], 'id=?', [(int)$row['request_id']]);
+        }
+        // Карточка доски, построенная вокруг письма, уходит вместе с ним;
+        // карточка компании остаётся — спамом объявлено письмо, а не контрагент
+        Db::q("DELETE FROM board_cards WHERE mail_message_id=? AND counterparty_id IS NULL", [$mailMessageId]);
+        if (!empty($row['thread_key'])) {
+            Db::q("DELETE FROM board_cards WHERE thread_key=? AND counterparty_id IS NULL", [(string)$row['thread_key']]);
         }
 
         $moved = false;
@@ -474,7 +487,7 @@ final class MailSync {
         $data = ['archived_at' => null, 'archived_reason' => null];
         // Категорию возвращаем в «не определено»: прежнюю никто не помнит, а
         // «не наш профиль» на видимом письме — это уже неправда.
-        if (($row['category'] ?? '') === 'not_our_profile') $data['category'] = 'other';
+        if (in_array((string)($row['category'] ?? ''), ['not_our_profile', 'spam'], true)) $data['category'] = 'other';
         Db::update('mail_messages', $data, 'id=?', [$mailMessageId]);
         return ['restored' => 1];
     }

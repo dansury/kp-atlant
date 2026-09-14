@@ -1,0 +1,116 @@
+<?php
+/**
+ * КП текстом письма (модуль 023).
+ *
+ * Не всякому клиенту нужен файл. Закупщику нужен Word, чтобы перенести позиции
+ * в свою форму; человеку, который спросил «сколько стоит шлем», файл только
+ * мешает — он открывает письмо с телефона и хочет прочитать ответ, а не
+ * скачивать вложение.
+ *
+ * Поэтому третий формат отправки: то же самое КП, теми же цифрами и теми же
+ * условиями, но прямо в теле письма. Отличие ровно одно — нет QR-кода: его
+ * незачем фотографировать с экрана, на котором ссылка и так нажимается.
+ *
+ * Считает здесь только `Terms` и сама база. Ни одной цифры, придуманной по
+ * дороге, в письме быть не может — это то же КП, а не его пересказ.
+ */
+require_once __DIR__ . '/kp_content.php';
+require_once __DIR__ . '/requisites.php';
+require_once __DIR__ . '/terms.php';
+
+final class KpText {
+
+    /**
+     * @return array{text:string,html:string}
+     */
+    public static function render(int $proposalId): array {
+        $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
+        if (!$proposal) throw new RuntimeException("Proposal $proposalId not found");
+
+        $items = KpContent::printedItems($proposalId);
+        $requisites = Requisites::forProposal($proposalId);
+        $lines = [];
+
+        $n = 0;
+        $total = 0.0;
+        foreach ($items as $item) {
+            $n++;
+            $price = Terms::price($item);
+            $sum = $price * (float)$item['quantity'];
+            $total += $sum;
+
+            $lines[] = sprintf('%d. %s — %s %s × %s = %s',
+                $n,
+                (string)$item['product_name'],
+                self::num((float)$item['quantity']),
+                (string)($item['unit'] ?: 'шт.'),
+                self::money($price),
+                self::money($sum)
+            );
+
+            foreach ([$item['notes'] ?? '', Terms::note($item)] as $note) {
+                $note = trim((string)$note);
+                if ($note !== '') $lines[] = '   ' . $note;
+            }
+            // Развёрнутый комментарий по товару — то же, что печатается в файле
+            $comment = trim(Markup::toPlainText((string)($item['comment_text'] ?? '')));
+            if ($comment === '') $comment = trim(Markup::toPlainText((string)($item['description_text'] ?? '')));
+            if ($comment !== '') $lines[] = '   ' . mb_substr($comment, 0, 600);
+            // Ссылка на товар остаётся: в письме она нажимается, в отличие от бумаги
+            if (trim((string)($item['site_url'] ?? '')) !== '') $lines[] = '   ' . (string)$item['site_url'];
+        }
+
+        $body = [];
+        $body[] = 'Коммерческое предложение' . ($proposal['number'] ? ' № ' . $proposal['number'] : '')
+                . ' от ' . date('d.m.Y');
+        $buyer = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? '')));
+        if ($buyer !== '') $body[] = 'Покупатель: ' . $buyer;
+        $body[] = '';
+        $body[] = $lines ? implode("\n", $lines) : 'Позиции уточняются.';
+        $body[] = '';
+        $body[] = 'Итого: ' . self::money($total);
+
+        $vat = $requisites['vat'] ?? [];
+        $paysVat = !array_key_exists('pays_vat', $vat) || (bool)$vat['pays_vat'];
+        if (!$paysVat) {
+            $body[] = (string)($vat['statement'] ?? 'НДС не облагается');
+        } elseif (!empty($proposal['show_vat_total'])) {
+            $rate = (int)($vat['rate'] ?? ($proposal['vat_rate'] ?? 0));
+            if ($rate > 0) $body[] = "в т.ч. НДС $rate%: " . self::money($total - $total / (1 + $rate / 100));
+        }
+
+        // Позиции, на которые каталог не ответил, — словами клиента, как в файле
+        $unmatched = KpContent::unmatchedRows($proposalId);
+        if ($unmatched) {
+            $body[] = '';
+            $body[] = 'Позиции запроса, по которым нужно уточнение:';
+            foreach ($unmatched as $row) {
+                $body[] = '— ' . $row['requested'] . ' — ' . $row['quantity'] . ' ' . $row['unit'];
+            }
+            $note = trim((string)Settings::get('KP_UNMATCHED_NOTE', ''));
+            if ($note !== '') $body[] = $note;
+        }
+
+        $terms = [];
+        if ((int)($proposal['execution_days'] ?? 0) > 0) $terms[] = 'Срок поставки: ' . (int)$proposal['execution_days'] . ' дней';
+        if ((int)($proposal['validity_days'] ?? 0) > 0) $terms[] = 'Предложение действительно: ' . (int)$proposal['validity_days'] . ' дней';
+        $conditions = trim((string)($proposal['conditions_text'] ?? ''));
+        if ($conditions !== '') $terms[] = $conditions;
+        if ($terms) {
+            $body[] = '';
+            $body[] = implode("\n", $terms);
+        }
+
+        $text = implode("\n", $body);
+        return ['text' => $text, 'html' => '<p>' . nl2br(htmlspecialchars($text)) . '</p>'];
+    }
+
+    private static function money(float $v): string {
+        return number_format($v, 2, ',', ' ') . ' руб.';
+    }
+
+    /** 3.0 → «3», 2.5 → «2,5»: количество в письме читает человек. */
+    private static function num(float $v): string {
+        return rtrim(rtrim(number_format($v, 3, ',', ' '), '0'), ',');
+    }
+}

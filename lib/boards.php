@@ -555,7 +555,32 @@ final class Boards {
      * «Глори Эйр» should find the card even when only the letter mentions it.
      */
     public static function search(string $q, int $limit = 50): array {
-        $like = '%' . $q . '%';
+        require_once __DIR__ . '/mail.php';
+
+        // Слова ищутся ВСЕ: «уралэлемент счёт» — это карточка, где есть и то, и
+        // другое. И каждое слово ищется по всему, что за карточкой стоит —
+        // письма целиком, вложения, запрос (модуль 023).
+        $terms = MailArchive::searchTerms($q);
+        if (!$terms) return [];
+
+        $where = [];
+        $params = [];
+        foreach ($terms as $term) {
+            $like = '%' . $term . '%';
+            $where[] = "(d.title LIKE ? OR d.note LIKE ?
+                OR cp.name LIKE ? OR cp.inn LIKE ?
+                OR r.email_subject LIKE ? OR r.raw_text LIKE ? OR r.email_from LIKE ?
+                OR EXISTS (SELECT 1 FROM mail_messages m
+                           LEFT JOIN attachments a ON a.mail_message_id = m.id
+                           WHERE (m.thread_key = d.thread_key
+                                  OR (d.counterparty_id IS NOT NULL AND m.counterparty_id = d.counterparty_id))
+                             AND (m.subject LIKE ? OR m.body_text LIKE ? OR m.body_html LIKE ?
+                                  OR m.from_email LIKE ? OR m.from_name LIKE ?
+                                  OR m.to_emails LIKE ? OR m.cc_emails LIKE ?
+                                  OR a.filename LIKE ? OR a.extracted_text LIKE ?)))";
+            array_push($params, ...array_fill(0, 16, $like));
+        }
+
         return Db::all(
             "SELECT d.id AS card_id, d.title, d.note, d.thread_key, d.counterparty_id, d.request_id, d.moved_at,
                     col.id AS column_id, col.title AS column_title, col.color,
@@ -564,16 +589,12 @@ final class Boards {
              JOIN board_columns col ON col.id = d.column_id
              JOIN boards b ON b.id = col.board_id
              LEFT JOIN counterparties cp ON cp.id = d.counterparty_id
-             LEFT JOIN mail_messages m ON m.thread_key = d.thread_key OR m.counterparty_id = d.counterparty_id
              LEFT JOIN requests r ON r.id = d.request_id
-             WHERE d.title LIKE ? OR d.note LIKE ?
-                OR cp.name LIKE ? OR cp.inn LIKE ?
-                OR m.subject LIKE ? OR m.body_text LIKE ? OR m.from_email LIKE ? OR m.from_name LIKE ?
-                OR r.email_subject LIKE ? OR r.raw_text LIKE ? OR r.email_from LIKE ?
+             WHERE " . implode(' AND ', $where) . "
              GROUP BY d.id
              ORDER BY d.moved_at DESC
              LIMIT ?",
-            [$like, $like, $like, $like, $like, $like, $like, $like, $like, $like, $like, $limit]
+            [...$params, $limit]
         );
     }
 

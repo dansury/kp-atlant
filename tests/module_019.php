@@ -113,8 +113,10 @@ try { $res = Mailboxes::delete($boxA, 'keep'); } catch (Throwable $e) { $err = $
 ok('ящик удалён без ошибки внешнего ключа', $err === null, (string)$err);
 ok('письма остались', (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE id IN (?,?)", [$kp, $paper]) === 2);
 ok('и потеряли только ящик', Db::val("SELECT mailbox_id FROM mail_messages WHERE id=?", [$kp]) === null);
-ok('с экрана они ушли вместе с ящиком',
-   (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE id=? AND archived_reason='mailbox_off'", [$kp]) === 1);
+// Модуль 023: удалённый ящик включить обратно нельзя, поэтому прятать его
+// письма — значит потерять их навсегда. «Оставить письма» оставляет их на экране.
+ok('и остались на экране — ящик уже не включить обратно',
+   (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE id=? AND archived_at IS NULL", [$kp]) === 1);
 
 $err = null;
 try { Mailboxes::delete($boxB, 'delete'); } catch (Throwable $e) { $err = $e->getMessage(); }

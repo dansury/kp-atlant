@@ -1,4 +1,8 @@
-config.php
+# ТОЛЬКО корневой config.php — он с секретами. Без ведущего слэша это правило
+# ловило `config.php` на любой глубине, из-за чего
+# `bitrix-module/atlant.kpsync/lib/config.php` молча не попал в репозиторий,
+# а модуль на сайте падал на `Failed opening required …/lib/config.php`.
+/config.php
 data/kp.db
 data/secret.key
 data/auto-pull.json
@@ -19,6 +23,9 @@ storage/invoices/*
 !storage/invoices/.gitkeep
 storage/product_images/*
 !storage/product_images/.gitkeep
+# Файлы, которые менеджер приложил к письму и ещё не отправил (модуль 023)
+storage/outbox/*
+!storage/outbox/.gitkeep
 # Tone of Voice, отредактированный в панели (модуль 022): живёт в storage/,
 # потому что деплой перезаписывает файлы репозитория
 storage/tov.md

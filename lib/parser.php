@@ -170,6 +170,9 @@ class RequestParser {
         }
         // Positions the catalog never answered. Until now the draft simply left
         // them out and the client was told nothing at all (module 018).
+        // То, что уже подобрано на карточке: ответ говорит о тех же
+        // позициях и тех же ценах, что уйдут в КП (модуль 023)
+        $user .= RequestItems::matchedBlock((array)($ctx['matched'] ?? []));
         $user .= RequestItems::unmatchedBlock((array)($ctx['unmatched'] ?? []));
         // И то, чем мы не занимаемся: про эти позиции письмо молчит (модуль 022)
         $user .= RequestItems::outOfScopeBlock((array)($ctx['out_of_scope'] ?? []));

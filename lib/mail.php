@@ -361,8 +361,14 @@ final class Mailboxes {
                     MailSync::forgetMessage((int)$m['id']);
                 }
             } else {
-                MailSync::setMailboxMessagesHidden($id, true);
-                Db::q("UPDATE mail_messages SET mailbox_id=NULL WHERE mailbox_id=?", [$id]);
+                // «Оставить письма» — значит оставить их НА ЭКРАНЕ. Прятать их,
+                // как у выключенного ящика, нельзя: выключенный включают
+                // обратно, а удалённый — уже никогда, и переписка оставалась в
+                // архиве навсегда (модуль 023).
+                Db::q("UPDATE mail_messages SET mailbox_id=NULL,
+                              archived_at = CASE WHEN archived_reason='mailbox_off' THEN NULL ELSE archived_at END,
+                              archived_reason = CASE WHEN archived_reason='mailbox_off' THEN NULL ELSE archived_reason END
+                       WHERE mailbox_id=?", [$id]);
             }
             Db::q("UPDATE mail_deleted SET mailbox_id=NULL WHERE mailbox_id=?", [$id]);
             Db::q("DELETE FROM mailboxes WHERE id=?", [$id]);
@@ -441,7 +447,13 @@ final class MailArchive {
      * download must land in the archive WITHOUT waking the request pipeline —
      * a three-year-old letter is history, not a new КП request.
      */
-    public static function storeIncoming(array $box, array $msg, string $direction = 'in', bool $markProcessed = false): int {
+    /**
+     * @param bool $force Класть письмо, даже если такое уже есть и даже если
+     *   такое когда-то удаляли. Так работает повторный импорт mbox «заново»:
+     *   архив успели потерять вместе с ящиком, а файл — вот он (модуль 023).
+     */
+    public static function storeIncoming(array $box, array $msg, string $direction = 'in',
+                                         bool $markProcessed = false, bool $force = false): int {
         // A letter the site form sent us is really the visitor's letter (module
         // 015). It is unwrapped FIRST, before the thread key and the sender are
         // read off it — otherwise every form submission is the same party, the
@@ -450,7 +462,7 @@ final class MailArchive {
         // is not the fingerprint it was STORED under (module 021).
         if ($direction === 'in') $msg = SiteForm::unwrap($msg);
 
-        if (self::exists($box, $msg, $direction)) return 0;
+        if (!$force && self::exists($box, $msg, $direction)) return 0;
 
         $limit = max(16, (int)Settings::get('MAIL_BODY_MAX_KB', 512)) * 1024;
 
@@ -833,13 +845,37 @@ final class MailArchive {
         return false;
     }
 
+    /**
+     * Вернуть на экран письма, которые унёс с собой удалённый ящик.
+     *
+     * Выключенный ящик прячет свои письма (модуль 019) и возвращает их, когда
+     * его включают обратно. Удалённый ящик включить нельзя — и письма
+     * оставались в архиве навсегда: «я удалила ящик, и переписка из mbox
+     * исчезла». Строки, спрятанные по причине `mailbox_off`, чей ящик больше не
+     * существует, возвращаются сюда (модуль 023).
+     *
+     * @return int сколько писем вернулось
+     */
+    public static function restoreOrphaned(): int {
+        Db::q("UPDATE mail_messages SET archived_at=NULL, archived_reason=NULL
+               WHERE archived_reason='mailbox_off'
+                 AND (mailbox_id IS NULL OR mailbox_id NOT IN (SELECT id FROM mailboxes))");
+        $restored = (int)Db::pdo()->query("SELECT changes()")->fetchColumn();
+        if ($restored) Logger::info('mail', "Возвращены письма удалённых ящиков: $restored");
+        return $restored;
+    }
+
     /** Message list for the mail page. */
     public static function query(array $f = []): array {
         $where = ['1=1'];
         $params = [];
         // Архив («не наш профиль», письма выключенного ящика) виден только тогда,
         // когда его спросили — иначе список показывает работу, а не историю.
-        $where[] = !empty($f['archived']) ? 'm.archived_at IS NOT NULL' : 'm.archived_at IS NULL';
+        // `all` — поиск, которому всё равно, где лежит письмо: менеджер ищет
+        // письмо, а не раздел, в который оно попало (модуль 023).
+        if (($f['archived'] ?? null) !== 'all') {
+            $where[] = !empty($f['archived']) ? 'm.archived_at IS NOT NULL' : 'm.archived_at IS NULL';
+        }
         if (!empty($f['mailbox_id'])) { $where[] = 'm.mailbox_id = ?'; $params[] = (int)$f['mailbox_id']; }
         if (!empty($f['direction']) && in_array($f['direction'], ['in', 'out'], true)) {
             $where[] = 'm.direction = ?'; $params[] = $f['direction'];
@@ -847,10 +883,23 @@ final class MailArchive {
         if (!empty($f['counterparty_id'])) { $where[] = 'm.counterparty_id = ?'; $params[] = (int)$f['counterparty_id']; }
         if (!empty($f['unread'])) $where[] = 'm.is_read = 0';
         if (!empty($f['category'])) { $where[] = 'm.category = ?'; $params[] = (string)$f['category']; }
-        if (!empty($f['q'])) {
-            $where[] = '(m.subject LIKE ? OR m.from_email LIKE ? OR m.to_emails LIKE ? OR m.body_text LIKE ?)';
-            $like = '%' . $f['q'] . '%';
-            array_push($params, $like, $like, $like, $like);
+        if (trim((string)($f['q'] ?? '')) !== '') {
+            // Поиск по ВСЕМУ письму, а не по четырём полям (модуль 023).
+            // «Не могу найти письмо по адресу» получалось потому, что адрес
+            // стоял в копии, в имени отправителя или в теле как HTML — ни одно
+            // из этих мест раньше не просматривалось. Слова ищутся все сразу:
+            // «иванов счёт» — это письмо, где есть и то, и другое, а не любое
+            // из двух.
+            foreach (self::searchTerms((string)$f['q']) as $term) {
+                $like = '%' . $term . '%';
+                $where[] = '(m.subject LIKE ? OR m.from_email LIKE ? OR m.from_name LIKE ?
+                             OR m.to_emails LIKE ? OR m.cc_emails LIKE ?
+                             OR m.body_text LIKE ? OR m.body_html LIKE ?
+                             OR EXISTS (SELECT 1 FROM attachments a
+                                        WHERE a.mail_message_id = m.id
+                                          AND (a.filename LIKE ? OR a.extracted_text LIKE ?)))';
+                array_push($params, $like, $like, $like, $like, $like, $like, $like, $like, $like);
+            }
         }
         $limit  = min(200, max(1, (int)($f['limit'] ?? 50)));
         $offset = max(0, (int)($f['offset'] ?? 0));
@@ -869,6 +918,34 @@ final class MailArchive {
             'unread' => (int)Db::val("SELECT COUNT(*) FROM mail_messages
                                       WHERE direction='in' AND is_read=0 AND archived_at IS NULL"),
         ];
+    }
+
+    /**
+     * Запрос → слова, по которым искать. Кавычки оставляют фразу целой,
+     * короткие обрывки («по», «на») отбрасываются, а запрос, который целиком
+     * короче трёх символов, ищется как есть — иначе поиск по «КП» ничего не
+     * находит вообще.
+     */
+    public static function searchTerms(string $q): array {
+        $q = trim(preg_replace('/\s+/u', ' ', $q) ?? '');
+        if ($q === '') return [];
+
+        $terms = [];
+        if (preg_match_all('/"([^"]+)"/u', $q, $m)) {
+            foreach ($m[1] as $phrase) {
+                $phrase = trim($phrase);
+                if ($phrase !== '') $terms[] = $phrase;
+            }
+            $q = trim((string)preg_replace('/"[^"]*"/u', ' ', $q));
+        }
+        foreach (preg_split('/\s+/u', $q) ?: [] as $word) {
+            if ($word === '') continue;
+            if (mb_strlen($word) < 3 && $terms) continue;
+            $terms[] = $word;
+        }
+        if (!$terms) $terms[] = trim($q);
+        // Восемь слов — это уже не поиск, а полный проход по архиву на каждое
+        return array_slice(array_values(array_unique(array_filter($terms))), 0, 8);
     }
 
     public static function get(int $id): ?array {

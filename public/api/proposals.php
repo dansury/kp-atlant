@@ -8,6 +8,9 @@ require_once ROOT . '/lib/moysklad.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
 require_once ROOT . '/lib/pdf.php';
+require_once ROOT . '/lib/terms.php';
+require_once ROOT . '/lib/kp_text.php';
+require_once ROOT . '/lib/outbox.php';
 require_once ROOT . '/lib/docx.php';
 require_once ROOT . '/lib/kp_content.php';
 require_once ROOT . '/lib/markup.php';
@@ -180,6 +183,15 @@ switch ($action) {
                 'notes' => $m['notes'] ?? (($match && $free === 0) ? 'под заказ' : null),
                 // An analogue offered because we could not ship what was asked
                 // for, and the proof that it fits (module 013)
+                // Комментарий по товару и деньги, проставленные на карточке
+                // письма, переезжают в КП как есть (модуль 023)
+                'comment_text'     => $m['comment_text'] ?? null,
+                'discount_percent' => (float)($m['discount_percent'] ?? 0),
+                'price_is_manual'  => (int)($m['price_is_manual'] ?? 0),
+                'wait_on'          => (int)($m['wait_on'] ?? 0),
+                'wait_months'      => $m['wait_months'] ?? null,
+                'wait_discount'    => $m['wait_discount'] ?? null,
+                'wait_prepay'      => $m['wait_prepay'] ?? null,
                 'is_alternative' => !empty($m['is_alternative']) ? 1 : 0,
                 'alt_reason'     => $m['alt_specs']['reason'] ?? null,
                 'alt_specs_json' => !empty($m['alt_specs'])
@@ -214,6 +226,11 @@ switch ($action) {
 
         // Pull descriptions, specs and photos for the product cards (FR-040, FR-042)
         KpContent::enrichItems($proposalId);
+
+        // Позициям, которых нет на складе, проставляются срок ожидания, скидка
+        // за ожидание и предоплата — готовыми, но выключенными: цену они не
+        // двигают, пока менеджер их не включит (модуль 023)
+        Terms::prepareProposal($proposalId);
 
         // Pre-fill the upsell table with modules from the addon folder (FR-044)
         KpContent::seedAddons($proposalId);
@@ -263,7 +280,9 @@ switch ($action) {
         $fields = [];
         foreach (['pre_table_text', 'post_table_text', 'intro_text', 'conditions_text', 'execution_days', 'validity_days', 'vat_rate', 'show_vat_total',
                   'warranty_text', 'images_note', 'show_images', 'show_upsell', 'upsell_intro', 'upsell_note',
-                  'show_match_table', 'match_table_note'] as $f) {
+                  'show_match_table', 'match_table_note',
+                  // Сколько фото печатать в ЭТОМ КП; пусто — общая настройка
+                  'photos_per_item'] as $f) {
             if (array_key_exists($f, $input)) $fields[$f] = $input[$f];
         }
         if (array_key_exists('cover_letter_final', $input)) {
@@ -284,9 +303,19 @@ switch ($action) {
                 $upd = [];
                 foreach (['quantity', 'price', 'product_name', 'is_confirmed', 'notes', 'vat_rate', 'moysklad_product_id',
                           'description_text', 'specs_text', 'included_text', 'show_images', 'price_from', 'qty_from',
-                          'alt_reason', 'site_url', 'is_excluded'] as $f) {
+                          'alt_reason', 'site_url', 'is_excluded',
+                          // Позиция «под заказ» и деньги, которые менеджер ставит руками (модуль 023)
+                          'comment_text', 'discount_percent', 'price_is_manual',
+                          'wait_on', 'wait_months', 'wait_discount', 'wait_prepay', 'position'] as $f) {
                     if (array_key_exists($f, $itemData)) $upd[$f] = $itemData[$f];
                 }
+                // Цену, проставленную руками, пересборка КП больше не перетирает
+                if (array_key_exists('price', $itemData) && !array_key_exists('price_is_manual', $itemData)) {
+                    $upd['price_is_manual'] = 1;
+                }
+                // Комментарий правится как текст, а печатается как разметка —
+                // ровно так же, как описание позиции
+                if (isset($upd['comment_text'])) $upd['comment_text'] = Markup::toMarkdown((string)$upd['comment_text']);
                 // Карточка правится как текст, а печатается как разметка: что бы
                 // ни вставили в поле — HTML из МойСклад или из письма, — в базу
                 // ложится Markdown, и в PDF он уходит списком, а не тегами.
@@ -320,8 +349,23 @@ switch ($action) {
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         $proposal = Db::one("SELECT pdf_path FROM proposals WHERE id=?", [$id]);
-        if (!$proposal || !$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) {
-            jsonError('PDF not found', 404);
+        if (!$proposal) jsonError('КП не найдено', 404);
+
+        // Файла нет на диске — это не «нет КП». Имя файла содержит дату, деплой
+        // чистит `data/`, а строка в базе всё ещё указывает на вчерашний путь:
+        // раньше предпросмотр отвечал на это «PDF not found» и менеджер упирался
+        // в стену. Собираем заново — документ полностью описан базой (модуль 023).
+        if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) {
+            try {
+                PdfGenerator::generate($id);
+                $proposal = Db::one("SELECT pdf_path FROM proposals WHERE id=?", [$id]);
+            } catch (Throwable $e) {
+                Logger::exception('kp', $e, ['proposal_id' => $id, 'stage' => 'preview_rebuild']);
+                jsonError('КП не удалось собрать: ' . $e->getMessage(), 500);
+            }
+            if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) {
+                jsonError('КП не удалось собрать', 500);
+            }
         }
         header('Content-Type: application/pdf');
         // Имя видно и во вкладке предпросмотра, и в «Сохранить как» (модуль 022)
@@ -419,22 +463,35 @@ switch ($action) {
         // 35 of the 37 КП in the archive left as a Word file — a закупщик puts
         // our positions into his own form, and cannot do that with a printout
         // (module 016). The manager's choice for THIS letter beats the setting.
+        // `text` — КП прямо в теле письма, без файла: то же самое, теми же
+        // цифрами, только без QR (модуль 023). Человеку, спросившему «сколько
+        // стоит шлем», вложение мешает, а закупщику по-прежнему нужен Word.
         $format = (string)($input['format'] ?? Settings::get('KP_ATTACH_FORMAT', 'docx'));
-        if (!in_array($format, ['docx', 'pdf', 'both'], true)) $format = 'docx';
+        if (!in_array($format, ['docx', 'pdf', 'both', 'text'], true)) $format = 'docx';
         $attachments = [];
         $docxPath = null;
-        if ($format !== 'pdf') {
+        if ($format === 'docx' || $format === 'both') {
             $docxPath = DocxGenerator::generate($id);
             $attachments[] = $docxPath;
         }
-        if ($format !== 'docx') {
+        if ($format === 'pdf' || $format === 'both') {
             if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) PdfGenerator::generate($id);
             $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]) + $proposal;
             $attachments[] = $proposal['pdf_path'];
         }
 
+        // Файлы, которые менеджер приложил сам: он мог переделать документ
+        // руками и прислать свой (модуль 023)
+        foreach (Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']) as $path) {
+            $attachments[] = $path;
+        }
+
         $subject = $input['subject'] ?? 'Коммерческое предложение от Atlant Armour';
         $body = $proposal['cover_letter_final'] ?? $proposal['cover_letter'] ?? '';
+        if ($format === 'text') {
+            $kp = KpText::render($id);
+            $body = trim($body) !== '' ? rtrim($body) . "\n\n" . $kp['text'] : $kp['text'];
+        }
         $htmlBody = '<p>' . nl2br(htmlspecialchars($body)) . '</p>';
 
         // Goes out through the manager's mailbox and lands in the mail archive

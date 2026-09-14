@@ -361,6 +361,9 @@ try {
             jsonOk(['import' => MboxImport::register((string)($input['filename'] ?? ''), [
                 'mailbox_id'       => (int)($input['mailbox_id'] ?? 0),
                 'create_companies' => !empty($input['create_companies']),
+                // «Не считаться с дубликатами»: архив потеряли вместе с ящиком,
+                // а файл тот же самый (модуль 023)
+                'force'            => !empty($input['force']),
                 'manager_id'       => (int)$admin['id'],
             ])]);
 
@@ -375,8 +378,16 @@ try {
 
         case 'mbox_reset':
             require_once ROOT . '/lib/mbox.php';
-            MboxImport::reset((int)($input['id'] ?? 0));
+            MboxImport::reset((int)($input['id'] ?? 0), !empty($input['force']));
             jsonOk(['import' => MboxImport::get((int)($input['id'] ?? 0))]);
+
+        // Письма ящиков, которых больше нет, — обратно на экран (модуль 023)
+        case 'mail_restore_orphaned':
+            jsonOk(['restored' => MailArchive::restoreOrphaned()]);
+
+        // Звуки уведомлений: то, что реально лежит в папке sounds/
+        case 'sounds':
+            jsonData(['items' => Notifier::sounds(), 'current' => (string)Settings::get('MAIL_SOUND', '')]);
 
         case 'mbox_delete':
             require_once ROOT . '/lib/mbox.php';

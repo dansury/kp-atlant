@@ -65,6 +65,21 @@ switch ($action) {
 
         jsonData(['items' => $rows, 'total' => (int)$total, 'page' => $page]);
 
+    /**
+     * Переписка, из которой завели этот запрос (модуль 023).
+     *
+     * Запрос и письмо — одна сущность, и открывать их двумя разными экранами
+     * значит показывать одни и те же позиции в двух разных вёрстках. Экран
+     * спрашивает здесь, есть ли у запроса письмо, и открывает карточку письма.
+     */
+    case 'thread':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        jsonData(['thread_key' => (string)(Db::val(
+            "SELECT thread_key FROM mail_messages
+             WHERE request_id=? AND thread_key IS NOT NULL AND archived_at IS NULL
+             ORDER BY date_at DESC, id DESC LIMIT 1", [$id]) ?: '')]);
+
     case 'get':
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);

@@ -15,6 +15,8 @@ require_once __DIR__ . '/catalog.php';
 require_once __DIR__ . '/alternatives.php';
 require_once __DIR__ . '/scope.php';
 require_once __DIR__ . '/variants.php';
+require_once __DIR__ . '/terms.php';
+require_once __DIR__ . '/markup.php';
 
 final class RequestItems {
 
@@ -205,6 +207,11 @@ final class RequestItems {
             // shows it, and so does the КП
             $row['alternative'] = !empty($row['alt_specs_json'])
                 ? (json_decode((string)$row['alt_specs_json'], true) ?: null) : null;
+            // То же, что напечатает КП: цена после скидок и одна строка условий
+            $row['effective_price'] = Terms::price($row);
+            $row['wait_note']       = Terms::note($row);
+            $row['is_backorder']    = ($row['stock'] !== null && (int)$row['stock'] <= 0
+                                       && trim((string)($row['moysklad_product_id'] ?? '')) !== '') ? 1 : 0;
         }
         return $rows;
     }
@@ -278,7 +285,7 @@ final class RequestItems {
                 'variant_label'       => (string)($row['variant_label'] ?? ''),
             ], $counterpartyId) : [];
 
-            Db::update('request_items', [
+            Db::update('request_items', self::keepManualPrice($row, [
                 'moysklad_product_id' => $variant['moysklad_product_id'] ?? ($best['moysklad_id'] ?? null),
                 'product_name'        => $variant['product_name'] ?? ($best['name'] ?? null),
                 'article'             => $variant['article'] ?? ($best['article'] ?? null),
@@ -306,7 +313,7 @@ final class RequestItems {
                 'out_of_scope_reason' => (string)($row['out_of_scope_reason'] ?? '') !== ''
                                             ? $row['out_of_scope_reason'] : Scope::match((string)$row['raw_name']),
                 'updated_at'          => date('Y-m-d H:i:s'),
-            ], 'id=?', [$row['id']]);
+            ]), 'id=?', [$row['id']]);
         }
         // Only the rows rematch() actually re-picked are up for an analogue —
         // it left the manager's confirmed lines alone and so does this
@@ -339,6 +346,19 @@ final class RequestItems {
                 'article'             => trim((string)($row['article'] ?? '')) ?: null,
                 'unit'                => trim((string)($row['unit'] ?? '')) ?: 'шт.',
                 'price'               => (float)($row['price'] ?? 0),
+                // Цену и скидку менеджер ставит руками, и повторный подбор их
+                // больше не перетирает: цена в КП — это его решение (модуль 023)
+                'price_is_manual'     => !empty($row['price_is_manual']) ? 1 : 0,
+                'discount_percent'    => max(0.0, min(100.0, (float)($row['discount_percent'] ?? 0))),
+                // Развёрнутый комментарий по товару: хранится разметкой,
+                // печатается ею же — теги из МойСклад не уезжают в документ
+                'comment_text'        => trim((string)($row['comment_text'] ?? '')) !== ''
+                                            ? Markup::toMarkdown((string)$row['comment_text']) : null,
+                // «Под заказ»: срок, скидка за ожидание и предоплата
+                'wait_on'             => !empty($row['wait_on']) ? 1 : 0,
+                'wait_months'         => isset($row['wait_months']) && $row['wait_months'] !== '' ? max(0, (int)$row['wait_months']) : null,
+                'wait_discount'       => isset($row['wait_discount']) && $row['wait_discount'] !== '' ? max(0.0, min(100.0, (float)$row['wait_discount'])) : null,
+                'wait_prepay'         => isset($row['wait_prepay']) && $row['wait_prepay'] !== '' ? max(0, min(100, (int)$row['wait_prepay'])) : null,
                 'stock'               => isset($row['stock']) && $row['stock'] !== '' ? (int)$row['stock'] : null,
                 'is_confirmed'        => !empty($row['is_confirmed']) ? 1 : 0,
                 // A row the manager saved is answered: the choice prompt goes away
@@ -392,6 +412,13 @@ final class RequestItems {
                 'is_confirmed' => (int)($row['is_confirmed'] ?? 0) === 1,
                 'needs_choice' => (int)($row['needs_choice'] ?? 0) === 1,
                 'notes'        => $row['notes'] ?? null,
+                'comment_text' => $row['comment_text'] ?? null,
+                'discount_percent' => (float)($row['discount_percent'] ?? 0),
+                'price_is_manual'  => (int)($row['price_is_manual'] ?? 0),
+                'wait_on'      => (int)($row['wait_on'] ?? 0),
+                'wait_months'  => $row['wait_months'] ?? null,
+                'wait_discount'=> $row['wait_discount'] ?? null,
+                'wait_prepay'  => $row['wait_prepay'] ?? null,
                 'variants'     => $row['variants'] ?? [],
                 'is_alternative' => (int)($row['is_alternative'] ?? 0) === 1,
                 'alt_of'         => $row['alt_of'] ?? null,
@@ -419,7 +446,7 @@ final class RequestItems {
         $row = Db::one("SELECT * FROM request_items WHERE id=? AND request_id=?", [$itemId, $requestId]);
         if (!$row) throw new RuntimeException('Строка не найдена');
 
-        $p = Db::one("SELECT moysklad_id, name, article, unit, price, prices_json, stock, reserved FROM products_cache WHERE moysklad_id=?", [$productId]);
+        $p = Db::one("SELECT moysklad_id, name, article, unit, price, prices_json, stock, reserved, parent_id FROM products_cache WHERE moysklad_id=?", [$productId]);
         if (!$p) throw new RuntimeException('Позиция каталога не найдена');
 
         $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
@@ -497,6 +524,53 @@ final class RequestItems {
             $out .= "- {$r['requested']}\n";
         }
         return $out;
+    }
+
+    /**
+     * Подобранные позиции — блок для промпта ответа (модуль 023).
+     *
+     * «Создать ответ» писал письмо по одному тексту запроса, как будто подбора
+     * не было вовсе: менеджер уже выбрал позиции, проставил цены, дописал
+     * комментарии — а ответ шёл мимо всего этого и обещал «уточнить». Теперь то
+     * же, что попадёт в КП, попадает и в письмо: название, количество, цена,
+     * наличие, условия ожидания и комментарий менеджера.
+     *
+     * @param array $rows строки `request_items` — то, что вернул `all()`
+     */
+    public static function matchedBlock(array $rows): string {
+        $lines = [];
+        foreach ($rows as $row) {
+            if ((int)($row['is_out_of_scope'] ?? 0) === 1) continue;
+            $name = trim((string)($row['product_name'] ?? ''));
+            if ($name === '') continue;
+
+            $line = '- ' . $name;
+            if (trim((string)($row['article'] ?? '')) !== '') $line .= ' (арт. ' . $row['article'] . ')';
+            $line .= ' — ' . $row['quantity'] . ' ' . ($row['unit'] ?: 'шт.');
+
+            $price = (float)($row['effective_price'] ?? $row['price'] ?? 0);
+            if ($price > 0) $line .= ', ' . number_format($price, 2, ',', ' ') . ' руб. за ед.';
+
+            $stock = $row['stock'] === null ? null : (int)$row['stock'];
+            if ($stock !== null) $line .= $stock > 0 ? ", в наличии $stock" : ', под заказ';
+
+            $wait = trim((string)($row['wait_note'] ?? ''));
+            if ($wait !== '') $line .= ' (' . $wait . ')';
+
+            // Комментарий менеджера — это то, что он сам решил сказать клиенту
+            // про эту позицию. Пересказывать его своими словами нельзя.
+            $comment = trim(Markup::toPlainText((string)($row['comment_text'] ?? '')));
+            if ($comment !== '') $line .= "\n  комментарий менеджера (передай его смысл целиком): " . mb_substr($comment, 0, 800);
+
+            $lines[] = $line;
+        }
+        if (!$lines) return '';
+
+        return "\n===== ЧТО МЫ ПРЕДЛАГАЕМ ПО ЭТОМУ ЗАПРОСУ =====\n"
+             . "Это уже подобрано и проверено менеджером. Назови в ответе ИМЕННО эти позиции, "
+             . "эти количества и эти цены — не придумывай других и не меняй цифры. "
+             . "Если у позиции есть комментарий менеджера, он важнее твоих формулировок.\n"
+             . implode("\n", $lines) . "\n";
     }
 
     public static function unmatchedBlock(array $unmatched): string {
@@ -621,6 +695,17 @@ final class RequestItems {
             }
         }
         return $out;
+    }
+
+    /**
+     * Строка, у которой цену поставили руками, переживает пересчёт: подбор
+     * может уточнить название и остаток, но не цену (модуль 023).
+     */
+    private static function keepManualPrice(array $was, array $now): array {
+        if ((int)($was['price_is_manual'] ?? 0) !== 1) return $now;
+        $now['price'] = (float)($was['price'] ?? 0);
+        $now['price_is_manual'] = 1;
+        return $now;
     }
 
     private static function write(int $requestId, array $rows): void {
