@@ -83,6 +83,9 @@ switch ($action) {
         );
         $cp['merged_cards'] = Db::all("SELECT id, name FROM counterparties WHERE merged_into_id=?", [$id]);
         $cp['suggested_email'] = Crm::primaryEmail($id);
+        // Сколько компаний на самом деле пишет из этой карточки: больше одной —
+        // и на карточке появляется кнопка «Разделить по отправителям»
+        $cp['senders_count'] = count(Crm::sendersOf($id));
         jsonData($cp);
     }
 
@@ -202,6 +205,41 @@ switch ($action) {
             jsonError($e->getMessage());
         }
         jsonOk(['id' => $newId]);
+    }
+
+    /**
+     * Разложить карточку по отправителям (модуль 025).
+     *
+     * Кнопка для того случая, когда в одной карточке оказались разные
+     * компании: домен общий, а фирмы за ним свои. Домен после этого
+     * перестаёт склеивать и будущие письма.
+     */
+    case 'split_senders': {
+        requireAuth();
+        $id = Crm::rootId((int)($_GET['id'] ?? 0));
+        try {
+            $created = Crm::splitBySender($id);
+        } catch (Throwable $e) {
+            jsonError($e->getMessage());
+        }
+        jsonOk([
+            'created' => count($created),
+            'ids'     => $created,
+            'message' => $created
+                ? 'Отделено карточек: ' . count($created)
+                : 'В карточке один отправитель — делить нечего',
+        ]);
+    }
+
+    /** Кого видно в карточке: адрес и сколько с него писем. */
+    case 'senders': {
+        requireAuth();
+        $id = Crm::rootId((int)($_GET['id'] ?? 0));
+        $items = [];
+        foreach (Crm::sendersOf($id) as $email => $count) {
+            $items[] = ['email' => $email, 'messages' => $count];
+        }
+        jsonData(['items' => $items]);
     }
 
     case 'create': {

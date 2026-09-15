@@ -43,26 +43,15 @@ final class MailThreads {
     }
 
     /**
-     * Mailbox providers where the domain says nothing about who is writing.
-     * Two clients on gmail.com are two companies; two clients on «zavod.ru»
-     * are two people at one.
-     */
-    private const FREE_MAIL = [
-        'gmail.com', 'googlemail.com', 'yandex.ru', 'yandex.com', 'ya.ru', 'yandex.by', 'yandex.kz',
-        'mail.ru', 'bk.ru', 'list.ru', 'inbox.ru', 'internet.ru', 'rambler.ru', 'lenta.ru', 'ro.ru',
-        'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'icloud.com', 'me.com',
-        'proton.me', 'protonmail.com', 'yahoo.com', 'aol.com', 'qq.com', '163.com',
-    ];
-
-    /**
      * WHO the conversation is with — the other side of it, never us.
      *
      * The subject alone was the thread: «Запрос КП на бронежилеты» from three
      * different companies in one week collapsed into one conversation, and the
      * card showed the wrong client's letters. The party is therefore part of the
      * key: the corporate domain (so a colleague writing from the same company
-     * lands in the same thread) or, on a free mailbox where the domain means
-     * nothing, the address itself.
+     * lands in the same thread) or, on a mailbox service where the domain means
+     * nothing, the address itself. Какой домен что значит — знает MailDomains,
+     * и знает это один раз на весь сервис (модуль 025).
      */
     public static function party(array $row): string {
         $direction = (string)($row['direction'] ?? 'in');
@@ -71,15 +60,7 @@ final class MailThreads {
             ? (string)($row['to_emails'] ?? '')
             : (string)($row['from_email'] ?? '');
 
-        $addr = '';
-        foreach (preg_split('/[,;]/', $raw) ?: [] as $candidate) {
-            $candidate = trim($candidate);
-            if (preg_match('/[\w.+-]+@[\w.-]+\.\w+/u', $candidate, $m)) { $addr = mb_strtolower($m[0]); break; }
-        }
-        if ($addr === '') return '';
-
-        $domain = substr($addr, strpos($addr, '@') + 1);
-        return in_array($domain, self::FREE_MAIL, true) ? $addr : $domain;
+        return MailDomains::party(MailDomains::firstAddress($raw));
     }
 
     /**
@@ -125,17 +106,63 @@ final class MailThreads {
      */
     public static function backfill(bool $all = false): int {
         $where = $all ? '1=1' : "(thread_key IS NULL OR thread_key = '')";
-        $rows = Db::all("SELECT id, subject, message_id, in_reply_to, from_email, to_emails, direction, date_at
-                         FROM mail_messages WHERE $where ORDER BY date_at, id");
+        return self::rekey(Db::all(
+            "SELECT id, thread_key, subject, message_id, in_reply_to, from_email, to_emails, direction, date_at
+             FROM mail_messages WHERE $where ORDER BY date_at, id"
+        ));
+    }
+
+    /**
+     * Пересчитать ключи переписок для этих писем.
+     *
+     * Переписка может при этом развалиться на несколько — так и бывает, когда
+     * домен признан общим и «Запрос КП» от двух разных фирм перестаёт быть
+     * одной цепочкой. Карточки доски идут за своим письмом, чтобы доска не
+     * осталась со ссылкой в никуда.
+     *
+     * @param array<int,array<string,mixed>> $rows письма в порядке date_at, id
+     */
+    public static function rekey(array $rows): int {
+        $moved = [];
         $n = 0;
         foreach ($rows as $row) {
+            $old = (string)($row['thread_key'] ?? '');
+            $new = self::keyFor($row);
             Db::update('mail_messages', [
-                'thread_key'     => self::keyFor($row),
+                'thread_key'     => $new,
                 'thread_subject' => self::displaySubject((string)$row['subject']),
             ], 'id=?', [$row['id']]);
+            if ($old !== '' && $old !== $new) $moved[$old] = $new;
             $n++;
         }
+        self::followBoardCards($moved);
         return $n;
+    }
+
+    /** Карточка доски переезжает на ключ своего письма, иначе — на общий новый. */
+    private static function followBoardCards(array $moved): void {
+        if (!$moved || !Db::hasTable('board_cards')) return;
+        foreach (Db::all("SELECT id, thread_key, mail_message_id FROM board_cards WHERE thread_key IS NOT NULL") as $c) {
+            $old = (string)$c['thread_key'];
+            if (!isset($moved[$old])) continue;
+            $new = $moved[$old];
+            if (!empty($c['mail_message_id'])) {
+                $own = Db::val("SELECT thread_key FROM mail_messages WHERE id=?", [(int)$c['mail_message_id']]);
+                if ($own) $new = (string)$own;
+            }
+            Db::update('board_cards', ['thread_key' => $new], 'id=?', [$c['id']]);
+        }
+    }
+
+    /** Пересчёт ключей у писем этих карточек — после разделения по отправителям. */
+    public static function rekeyCounterparties(array $ids): int {
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        if (!$ids) return 0;
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        return self::rekey(Db::all(
+            "SELECT id, thread_key, subject, message_id, in_reply_to, from_email, to_emails, direction, date_at
+             FROM mail_messages WHERE counterparty_id IN ($in) ORDER BY date_at, id", $ids
+        ));
     }
 
     /**

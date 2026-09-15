@@ -2170,6 +2170,9 @@ const App = {
                     ${this.answerBadge(cp.answer_state)}
                 </div>
                 <div class="flex flex--wrap">
+                    ${(cp.senders_count || 0) > 1 ? `<button class="btn btn--outline btn--sm" id="splitBtn"
+                        title="В карточке ${cp.senders_count} разных отправителей — развести по своим компаниям"
+                        onclick="App.splitSenders(${cp.id}, ${cp.senders_count})">Разделить по отправителям (${cp.senders_count})</button>` : ''}
                     <button class="btn btn--outline btn--sm" id="syncBtn" onclick="App.syncCompany(${cp.id})">Обновить из МойСклад</button>
                     ${cp.moysklad_id ? `<a class="btn btn--outline btn--sm" target="_blank"
                         href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">МойСклад ↗</a>` : ''}
@@ -2948,6 +2951,29 @@ const App = {
             el.value = '';
             this.loadChat(id);
         } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
+     * Развести карточку по отправителям (модуль 025).
+     *
+     * Домен оказался общим — сервис-ретранслятор или публичная почта, — и в
+     * одну карточку сложились разные фирмы. Каждый адрес уходит в свою
+     * карточку вместе с письмами, запросами и КП; домен больше не склеивает.
+     */
+    async splitSenders(id, count) {
+        if (!confirm(`В карточке ${count} разных отправителей. Развести их по отдельным компаниям?\n\n`
+                   + 'Письма, запросы и КП уйдут за своим адресом. Обратно можно объединить вручную.')) return;
+
+        const btn = document.getElementById('splitBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Разделяем...'; }
+        try {
+            const res = await this.api(`counterparties.php?action=split_senders&id=${id}`, {method: 'POST'});
+            this.toast(res.message || 'Готово', res.created ? 'success' : 'info');
+            this.pageCounterparty(id);
+        } catch (err) {
+            this.toast(err.message, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = `Разделить по отправителям (${count})`; }
+        }
     },
 
     // Pull fresh orders and invoices, then repaint the right column (FR-030)

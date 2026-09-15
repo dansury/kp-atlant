@@ -57,12 +57,28 @@ class Crm {
             $found = Db::one("SELECT id FROM counterparties WHERE inn = ? AND merged_into_id IS NULL", [$inn]);
         }
         if (!$found && $domain) {
-            $found = Db::one("SELECT id FROM counterparties WHERE email_domain = ? AND merged_into_id IS NULL", [$domain]);
+            $byDomain = Db::one(
+                "SELECT id, inn, name, name_normalized FROM counterparties
+                 WHERE email_domain = ? AND merged_into_id IS NULL", [$domain]);
+            // Домен один, а компания за ним другая — значит домен общий, и
+            // объединять по нему больше нельзя ни это письмо, ни следующие.
+            // Так тринадцать покупателей перестают быть одной карточкой.
+            if ($byDomain && self::holdsAnotherCompany($byDomain, $inn, $name)) {
+                MailDomains::markShared($domain, self::conflictReason($byDomain, $inn, $name));
+                $domain = null;
+            } else {
+                $found = $byDomain;
+            }
         }
         if (!$found && $name !== '') {
             $norm = normalizeCompanyName($name);
             if ($norm !== '') {
-                $found = Db::one("SELECT id FROM counterparties WHERE name_normalized = ? AND merged_into_id IS NULL", [$norm]);
+                $byName = Db::one(
+                    "SELECT id, inn FROM counterparties WHERE name_normalized = ? AND merged_into_id IS NULL", [$norm]);
+                // «Поставка» и «Поставка» с разными ИНН — две фирмы, а не одна:
+                // название в России не уникально, ИНН уникален
+                $innClash = $inn && !empty($byName['inn']) && (string)$byName['inn'] !== $inn;
+                if ($byName && !$innClash) $found = $byName;
             }
         }
 
@@ -481,6 +497,231 @@ class Crm {
         }
     }
 
+    /**
+     * Стоит ли за этим доменом другая компания, а не та, что уже в карточке.
+     *
+     * Разные ИНН — довод окончательный. Названия сравниваются осторожно:
+     * «Байтек» и «Байтек Интернэшнл» — одна фирма, названная короче, а вот
+     * «ИП Попков» и «Байтек Интернэшнл» — две. Адрес вместо названия не
+     * доказывает ничего.
+     */
+    private static function holdsAnotherCompany(array $card, ?string $inn, string $name): bool {
+        if ($inn && !empty($card['inn']) && (string)$card['inn'] !== $inn) return true;
+
+        // Сравниваются только названия фирм. «Пётр Иванов» из поля From — имя
+        // человека, и то, что оно не похоже на «ООО Технотрейд», не значит
+        // ровно ничего: коллега с того же завода должен остаться в карточке.
+        $theirRaw = trim((string)($card['name'] ?? ''));
+        if (!self::looksLikeCompany($name) || !self::looksLikeCompany($theirRaw)) return false;
+
+        $mine  = normalizeCompanyName($name);
+        $their = (string)($card['name_normalized'] ?? '') ?: normalizeCompanyName($theirRaw);
+        if (mb_strlen($mine) < 3 || mb_strlen($their) < 3 || $mine === $their) return false;
+
+        return !str_contains($mine, $their) && !str_contains($their, $mine);
+    }
+
+    /** Название с правовой формой — это фирма, а не имя человека из поля From. */
+    private static function looksLikeCompany(string $name): bool {
+        $name = trim($name);
+        if ($name === '' || filter_var($name, FILTER_VALIDATE_EMAIL) !== false) return false;
+        return (bool)preg_match('/\b(' . self::LEGAL_FORMS . ')\b/u', $name);
+    }
+
+    /** Строчка для журнала: чем именно домен себя выдал. */
+    private static function conflictReason(array $card, ?string $inn, string $name): string {
+        if ($inn && !empty($card['inn']) && (string)$card['inn'] !== $inn) {
+            return 'ИНН ' . $inn . ' и ' . $card['inn'] . ' на одном домене';
+        }
+        return 'разные компании: «' . trim((string)($card['name'] ?? '')) . '» и «' . $name . '»';
+    }
+
+    /**
+     * Разложить карточку по отправителям: каждому адресу — своя компания.
+     *
+     * Так чинится то, что уже слиплось: домен-ретранслятор собрал в одну
+     * карточку тринадцать покупателей, и разбирать это руками по письму
+     * никто не станет. Свой адрес карточка оставляет себе, остальные уходят
+     * в новые — вместе с письмами, запросами, КП и счетами.
+     *
+     * @return int[] id заведённых карточек
+     */
+    public static function splitBySender(int $counterpartyId, bool $rekeyThreads = true): array {
+        $id = self::rootId($counterpartyId);
+        $card = Db::one("SELECT * FROM counterparties WHERE id=?", [$id]);
+        if (!$card) throw new RuntimeException('Карточка не найдена');
+
+        // Домен, на котором это случилось, больше не признак компании —
+        // иначе следующее же письмо соберёт карточку заново
+        if (!empty($card['email_domain'])) {
+            MailDomains::markShared((string)$card['email_domain'], 'карточка разделена по отправителям');
+        }
+
+        $senders = self::sendersOf($id);
+        if (count($senders) < 2) return [];
+
+        // Карточка остаётся за своим адресом: контактным, иначе самым частым
+        $keep = mb_strtolower(trim((string)($card['contact_email'] ?? '')));
+        if ($keep === '' || !isset($senders[$keep])) $keep = (string)array_key_first($senders);
+
+        $created = [];
+        Db::begin();
+        try {
+            foreach (array_keys($senders) as $addr) {
+                if ($addr === $keep) continue;
+                $created[] = self::moveSenderOut($id, (string)$addr, $card);
+            }
+            Db::update('counterparties', [
+                'email_domain'  => null,
+                'contact_email' => $keep,
+                'updated_at'    => date('Y-m-d H:i:s'),
+            ], 'id=?', [$id]);
+
+            foreach (array_merge([$id], $created) as $cpId) self::recalcAnswerState($cpId);
+            Db::commit();
+        } catch (Throwable $e) {
+            Db::rollback();
+            throw $e;
+        }
+
+        // Переписки пересобираются под новых владельцев: «Запрос КП» от двух
+        // разных фирм перестаёт быть одной цепочкой
+        if ($rekeyThreads && class_exists('MailThreads')) {
+            MailThreads::rekeyCounterparties(array_merge([$id], $created));
+        }
+        return $created;
+    }
+
+    /** Адреса, с которых в этой карточке писали, — частые первыми. @return array<string,int> */
+    public static function sendersOf(int $counterpartyId): array {
+        $counts = [];
+        $bump = function (string $raw) use (&$counts) {
+            $addr = MailDomains::firstAddress($raw);
+            if ($addr !== '' && !self::isOurAddress($addr)) $counts[$addr] = ($counts[$addr] ?? 0) + 1;
+        };
+
+        if (Db::hasTable('mail_messages')) {
+            foreach (Db::all("SELECT direction, from_email, to_emails FROM mail_messages WHERE counterparty_id=?",
+                             [$counterpartyId]) as $m) {
+                $bump((string)(($m['direction'] ?? '') === 'out' ? $m['to_emails'] : $m['from_email']));
+            }
+        }
+        foreach (Db::all("SELECT direction, email_from, email_to FROM correspondence WHERE counterparty_id=?",
+                         [$counterpartyId]) as $c) {
+            $bump((string)(($c['direction'] ?? '') === 'out' ? $c['email_to'] : $c['email_from']));
+        }
+        foreach (Db::all("SELECT email_from FROM requests WHERE counterparty_id=?", [$counterpartyId]) as $r) {
+            $bump((string)$r['email_from']);
+        }
+        if (Db::hasTable('contacts')) {
+            foreach (Db::all("SELECT email FROM contacts WHERE counterparty_id=?", [$counterpartyId]) as $c) {
+                $bump((string)$c['email']);
+            }
+        }
+        arsort($counts);
+        return $counts;
+    }
+
+    /** Увести один адрес со всем его хозяйством в свою карточку. */
+    private static function moveSenderOut(int $fromId, string $addr, array $card): int {
+        // Адрес идёт в LIKE, а `_` в нём — обычная буква, не подстановка:
+        // без экранирования `adm_postavka@` утащил бы и `admXpostavka@`
+        $like = '%' . addcslashes($addr, '%_\\') . '%';
+        $newId = self::cardForSender($fromId, $addr, $card);
+
+        if (Db::hasTable('contacts')) {
+            // Уникальный индекс не даст двум одинаковым контактам сойтись в
+            // одной карточке — свой уже есть, этот лишний
+            Db::q("DELETE FROM contacts WHERE counterparty_id=? AND lower(email)=?
+                     AND EXISTS (SELECT 1 FROM contacts t WHERE t.counterparty_id=? AND lower(t.email)=?)",
+                  [$fromId, $addr, $newId, $addr]);
+            Db::q("UPDATE contacts SET counterparty_id=? WHERE counterparty_id=? AND lower(email)=?",
+                  [$newId, $fromId, $addr]);
+        }
+        Db::q("UPDATE requests SET counterparty_id=? WHERE counterparty_id=?
+                 AND lower(email_from) LIKE ? ESCAPE '\\'", [$newId, $fromId, $like]);
+        Db::q("UPDATE correspondence SET counterparty_id=? WHERE counterparty_id=?
+                 AND ((direction='out' AND lower(email_to) LIKE ? ESCAPE '\\')
+                   OR (direction<>'out' AND lower(email_from) LIKE ? ESCAPE '\\'))",
+              [$newId, $fromId, $like, $like]);
+        if (Db::hasTable('mail_messages')) {
+            Db::q("UPDATE mail_messages SET counterparty_id=? WHERE counterparty_id=?
+                     AND ((direction='out' AND lower(to_emails) LIKE ? ESCAPE '\\')
+                       OR (direction<>'out' AND lower(from_email) LIKE ? ESCAPE '\\'))",
+                  [$newId, $fromId, $like, $like]);
+        }
+
+        // КП, вложения, заказы, счета и напоминания идут за своим запросом
+        Db::q("UPDATE proposals SET counterparty_id=? WHERE counterparty_id=?
+                 AND request_id IN (SELECT id FROM requests WHERE counterparty_id=?)", [$newId, $fromId, $newId]);
+        if (Db::hasTable('attachments')) {
+            Db::q("UPDATE attachments SET counterparty_id=? WHERE counterparty_id=?
+                     AND (request_id IN (SELECT id FROM requests WHERE counterparty_id=?)
+                          OR correspondence_id IN (SELECT id FROM correspondence WHERE counterparty_id=?))",
+                  [$newId, $fromId, $newId, $newId]);
+        }
+        if (Db::hasTable('orders')) {
+            Db::q("UPDATE orders SET counterparty_id=? WHERE counterparty_id=?
+                     AND request_id IN (SELECT id FROM requests WHERE counterparty_id=?)", [$newId, $fromId, $newId]);
+        }
+        if (Db::hasTable('invoices')) {
+            Db::q("UPDATE invoices SET counterparty_id=? WHERE counterparty_id=?
+                     AND order_id IN (SELECT id FROM orders WHERE counterparty_id=?)", [$newId, $fromId, $newId]);
+        }
+        Db::q("UPDATE followups SET counterparty_id=? WHERE counterparty_id=?
+                 AND proposal_id IN (SELECT id FROM proposals WHERE counterparty_id=?)", [$newId, $fromId, $newId]);
+
+        return $newId;
+    }
+
+    /**
+     * Куда переселять адрес: в свою уже заведённую карточку, если такая есть,
+     * иначе в новую. Иначе разделение плодило бы вторую карточку того же ИП.
+     */
+    private static function cardForSender(int $fromId, string $addr, array $card): int {
+        $existing = Db::one("SELECT id FROM counterparties
+                             WHERE merged_into_id IS NULL AND id <> ? AND lower(contact_email) = ?",
+                            [$fromId, $addr]);
+        if (!$existing && Db::hasTable('contacts')) {
+            $existing = Db::one("SELECT c.counterparty_id AS id FROM contacts c
+                                 JOIN counterparties p ON p.id = c.counterparty_id AND p.merged_into_id IS NULL
+                                 WHERE c.counterparty_id <> ? AND lower(c.email) = ? LIMIT 1", [$fromId, $addr]);
+        }
+        if ($existing) return self::rootId((int)$existing['id']);
+
+        $name = self::nameForSender($fromId, $addr);
+        return Db::insert('counterparties', [
+            'name'            => $name,
+            'name_normalized' => normalizeCompanyName($name),
+            'contact_person'  => Db::val("SELECT name FROM contacts WHERE counterparty_id=? AND lower(email)=?",
+                                         [$fromId, $addr]),
+            'contact_email'   => $addr,
+            'notes'           => 'Отделено от карточки «' . $card['name'] . '»: домен общий, компании разные',
+        ]);
+    }
+
+    /** Как назвать новую карточку: контакт, подпись под письмом, иначе адрес. */
+    private static function nameForSender(int $cpId, string $addr): string {
+        $contact = Db::val("SELECT name FROM contacts WHERE counterparty_id=? AND lower(email)=? AND name<>''",
+                           [$cpId, $addr]);
+        if ($contact) return (string)$contact;
+
+        $rows = Db::hasTable('mail_messages')
+            ? Db::all("SELECT from_name, body_text FROM mail_messages
+                       WHERE counterparty_id=? AND direction<>'out' AND lower(from_email) LIKE ? ESCAPE '\\'
+                       ORDER BY date_at DESC LIMIT 5", [$cpId, '%' . addcslashes($addr, '%_\\') . '%'])
+            : [];
+        foreach ($rows as $r) {
+            $fromText = self::companyFromText((string)($r['body_text'] ?? ''));
+            if ($fromText !== '') return $fromText;
+        }
+        foreach ($rows as $r) {
+            $n = trim((string)($r['from_name'] ?? ''));
+            if ($n !== '' && filter_var($n, FILTER_VALIDATE_EMAIL) === false) return $n;
+        }
+        return $addr;
+    }
+
     // Recompute last inbound/outbound timestamps from the feed
     public static function recalcAnswerState(int $counterpartyId): void {
         $in  = Db::val("SELECT MAX(created_at) FROM correspondence WHERE counterparty_id=? AND direction='in'", [$counterpartyId]);
@@ -491,12 +732,11 @@ class Crm {
         ], 'id=?', [$counterpartyId]);
     }
 
-    // Corporate domain of an email, or null for public providers (C-012)
+    // Домен, который и есть компания, — или null, если домен общий (C-012)
     public static function corporateDomain(string $email): ?string {
         if (!$email || !str_contains($email, '@')) return null;
-        $domain = mb_strtolower(trim(explode('@', $email)[1]));
-        if ($domain === '' || in_array($domain, publicEmailDomains(), true)) return null;
-        return $domain;
+        $domain = MailDomains::normalize($email);
+        return ($domain === '' || MailDomains::isShared($domain)) ? null : $domain;
     }
 
     // INN is 10 (org) or 12 (individual) digits
