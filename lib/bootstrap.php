@@ -24,6 +24,7 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/crypt.php';
 require_once __DIR__ . '/settings.php';
 require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/domains.php';
 require_once __DIR__ . '/prompts.php';
 require_once __DIR__ . '/llm.php';
 require_once __DIR__ . '/knowledge.php';
@@ -1363,6 +1364,44 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '25')");
         $current = 25;
     }
+
+    // v26 — модуль 025: домен-ретранслятор больше не склеивает компании.
+    // Заявки приходят через сервис, где у каждой свой адрес и общий домен, —
+    // и тринадцать покупателей оказывались в одной карточке. Домен теперь
+    // считается признаком компании только там, где он ею и является.
+    if ($current < 26) {
+        Db::pdo()->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS shared_domains (
+            domain TEXT PRIMARY KEY,
+            reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+SQL);
+        MailDomains::reset();
+
+        require_once __DIR__ . '/crm.php';
+        require_once __DIR__ . '/mail_threads.php';
+
+        // Уже слипшееся разбирается сразу: иначе список доменов вырос, а
+        // карточка как была общей, так и осталась
+        $cards = 0;
+        foreach (Db::all("SELECT id, email_domain FROM counterparties
+                          WHERE email_domain IS NOT NULL AND email_domain <> '' AND merged_into_id IS NULL") as $cp) {
+            if (!MailDomains::isShared((string)$cp['email_domain'])) continue;
+            try {
+                $cards += count(Crm::splitBySender((int)$cp['id'], false));
+            } catch (Throwable $e) {
+                Logger::warning('crm', 'Миграция v26: карточка ' . $cp['id'] . ' не разделилась — ' . $e->getMessage());
+            }
+        }
+
+        // Ключ переписки считается теперь от адреса, а не от домена
+        MailThreads::backfill(true);
+        Logger::info('crm', "Миграция v26: карточек отделено по отправителю — $cards");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '26')");
+        $current = 26;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
@@ -1398,15 +1437,13 @@ function seedMailboxFromConfig(): void {
     ]);
 }
 
-// Public mail providers never used to merge companies (C-012)
+// Домены, по которым компании не объединяются (C-012).
+// Список один на весь сервис и живёт в MailDomains — раньше их было два,
+// и почта расходилась с карточками: там склеено, тут разделено.
 function publicEmailDomains(): array {
-    return [
-        'mail.ru','inbox.ru','bk.ru','list.ru','internet.ru',
-        'yandex.ru','ya.ru','yandex.com',
-        'gmail.com','googlemail.com','outlook.com','hotmail.com','live.com',
-        'rambler.ru','icloud.com','me.com','proton.me','protonmail.com',
-        'bcc.ru','vk.com','sberbank.ru',
-    ];
+    return array_values(array_unique(array_merge(
+        MailDomains::builtin(), MailDomains::configured(), MailDomains::learned()
+    )));
 }
 
 // Normalize company name for matching: drop legal form, quotes, case
