@@ -348,7 +348,7 @@ const App = {
                 case 'mail': {
                     const seg = params[0] || '';
                     if (!seg || seg === 'board') {
-                        // Архив — тот же экран «Письма», переключённый галочкой
+                        // Архив — тот же экран «Письма», переключённый ссылкой «Архив»
                         return (this.boardFilters || {}).archived ? this.pageBoardArchive() : this.pageMailBoard();
                     }
                     // Отдельной страницы «Архив писем» больше нет: она была
@@ -419,7 +419,7 @@ const App = {
     // page. The old lists stay reachable by URL for a link somebody saved, and
     // each of them opens with a way back to the board.
     mailShellHtml(active, extra = '') {
-        // Архив — это та же доска с включённой галочкой, отсюда и заголовок:
+        // Архив — это та же доска, открытая ссылкой «Архив», отсюда и заголовок:
         // «Письма · архив», а не отдельный раздел «Архив писем»
         const titles = {board: (this.boardFilters || {}).archived ? 'Письма · архив' : 'Письма',
                         requests: 'Запросы', companies: 'Компании'};
@@ -762,9 +762,16 @@ const App = {
                                 onclick="App.download('/api/proposals.php?action=docx&id=${id}', 'KP-${id}.docx')">⬇ Word</button>
                         <button class="btn btn--outline btn--sm"
                                 onclick="App.download('/api/proposals.php?action=preview&id=${id}', 'KP-${id}.pdf')">⬇ PDF</button>
+                        <!-- Отдельными файлами: закупщик кладёт позиции в разные
+                             заявки, и один документ на шесть строк он режет руками -->
+                        <button class="btn btn--outline btn--sm"
+                                title="По документу на каждую позицию, архивом"
+                                onclick="App.download('/api/proposals.php?action=split_files&id=${id}&format=docx', 'KP-${id}-split.zip')">⬇ Отдельными файлами</button>
                         <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)">✎ Править текст</button>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
+                        <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this, true)"
+                                title="По счёту на каждую позицию — заказ при этом один">🧾 Отдельные счета</button>
                         <button class="btn btn--primary btn--sm" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
                         <a class="btn btn--outline btn--sm" href="#mail/proposal/${id}"
                            title="Полный редактор: карточки товаров, фото, блоки вокруг таблицы">Все настройки КП →</a>
@@ -826,33 +833,46 @@ const App = {
      * печатная форма и появляется строкой в карточке: приложить к письму
      * одной кнопкой или забрать отдельным файлом — как и просили.
      */
-    async kpInvoice(id, btn) {
+    async kpInvoice(id, btn, split = false) {
         const card = btn.closest('.kp-open');
         btn.disabled = true;
         const label = btn.textContent;
         btn.textContent = 'Выставляем...';
         try {
             const r = await this.api(`invoices.php?action=create_from_proposal&proposal_id=${id}`,
-                                     {method: 'POST', body: {}});
-            this.toast(`Счёт ${r.name} выставлен`, 'success');
+                                     {method: 'POST', body: {split: split ? 1 : 0}});
+            const list = r.invoices && r.invoices.length ? r.invoices : [r];
+            this.toast(
+                (list.length > 1 ? `Счетов выставлено: ${list.length}` : `Счёт ${r.name} выставлен`)
+                + (r.order ? `, заказ ${r.order.name} в резерве` : ''), 'success');
             const out = card.querySelector('[data-kp-invoice]')
                 || card.insertBefore(Object.assign(document.createElement('div'), {dataset: {kpInvoice: '1'}}),
                                      card.querySelector('.kp-preview'));
             out.innerHTML = `
                 <div class="note note--ok" style="margin:10px 0">
-                    <strong>Счёт ${this.esc(r.name)}</strong> на ${this.fmtMoney(r.sum)}
+                    <strong>${list.length > 1 ? `Счетов: ${list.length}` : `Счёт ${this.esc(r.name)}`}</strong>
+                    ${list.length > 1 ? '' : ' на ' + this.fmtMoney(r.sum)}
+                    ${r.order
+                        ? `<div>Заказ <a href="${this.esc(r.order.url)}" target="_blank" rel="noopener">${this.esc(r.order.name)} ↗</a>
+                             в резерве — ${list.length > 1 ? 'счета привязаны' : 'счёт привязан'} к нему.</div>`
+                        : `<div class="muted">Заказ не создан${r.order_error ? ': ' + this.esc(r.order_error) : ''} —
+                             ${list.length > 1 ? 'счета выставлены' : 'счёт выставлен'} сам по себе.</div>`}
+                    ${(r.order_missing || []).length
+                        ? `<div class="muted">В МойСклад не нашлось: ${this.esc(r.order_missing.join('; '))}</div>` : ''}
                     ${(r.skipped || []).length
                         ? `<div class="muted">В счёт не вошли (нет цены или карточки МойСклад):
                            ${this.esc(r.skipped.join('; '))}</div>` : ''}
                     ${r.pdf_error ? `<div class="muted">${this.esc(r.pdf_error)}</div>` : ''}
-                    <div class="flex flex--wrap" style="margin-top:8px">
-                        ${r.pdf_url ? `
-                            <button class="btn btn--primary btn--sm"
-                                    onclick="App.attachDoc('invoice', ${r.invoice_id}, this)">📎 Приложить к письму</button>
-                            <button class="btn btn--outline btn--sm"
-                                    onclick="App.download('${r.pdf_url}', 'Счёт ${this.jsStr(r.name)}.pdf')">⬇ Файлом</button>` : ''}
-                        <a class="btn btn--outline btn--sm" href="${this.esc(r.url)}" target="_blank" rel="noopener">МойСклад ↗</a>
-                    </div>
+                    ${list.map(i => `
+                        <div class="flex flex--wrap" style="margin-top:8px;align-items:center">
+                            <span>${this.esc(i.name)} — ${this.fmtMoney(i.sum)}</span>
+                            ${i.pdf_url ? `
+                                <button class="btn btn--primary btn--sm"
+                                        onclick="App.attachDoc('invoice', ${i.invoice_id}, this)">📎 Приложить к письму</button>
+                                <button class="btn btn--outline btn--sm"
+                                        onclick="App.download('${i.pdf_url}', 'Счёт ${this.jsStr(i.name)}.pdf')">⬇ Файлом</button>` : ''}
+                            <a class="btn btn--outline btn--sm" href="${this.esc(i.url)}" target="_blank" rel="noopener">МойСклад ↗</a>
+                        </div>`).join('')}
                 </div>`;
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = label; }
@@ -918,7 +938,7 @@ const App = {
             ...(i.moysklad_product_id ? [{
                 moysklad_id: i.moysklad_product_id, name: i.product_name, article: i.article,
                 unit: i.unit, price: i.price, stock: i.stock, score: i.match_confidence,
-                source: i.match_source,
+                variant_stock: i.variant_stock, source: i.match_source,
             }] : []),
             ...(i.variants || []),
         ];
@@ -929,7 +949,7 @@ const App = {
                 ${options.map(v => `
                     <button type="button" class="choice__opt" onclick="App.chooseMatch(${i.id || 0}, '${this.jsStr(v.moysklad_id)}', this)">
                         <span class="choice__name">${this.esc(v.name)}</span>
-                        <span class="muted">${this.fmtMoney(v.price)}${v.stock !== null && v.stock !== undefined ? ` · остаток ${v.stock}` : ''}
+                        <span class="muted">${this.fmtMoney(v.price)}${this.stockLabel(v) ? ' · ' + this.stockLabel(v) : ''}
                             ${v.score ? ` · ${Math.round(v.score * 100)}%` : ''}
                             ${v.source ? ` · ${this.matchSourceLabel(v.source)}` : ''}</span>
                     </button>`).join('')}
@@ -976,6 +996,7 @@ const App = {
                 <div class="match-row__name">
                     ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}</div>` : ''}
                     ${this.variantNote(i)}
+                    ${this.stockNote(i)}
                     ${this.scopeNote(i)}
                     ${this.altNote(i)}
                     <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
@@ -1131,6 +1152,31 @@ const App = {
         </div>`;
     },
 
+    /**
+     * Остаток так, как его читает человек (модуль 026).
+     *
+     * У товара с модификациями собственного остатка в МойСклад нет — он лежит
+     * на размерах и цветах. Поэтому при выборе позиции показываются
+     * КОЛИЧЕСТВА МОДИФИКАЦИЙ, а не ноль абстрактного товара: «остаток 25
+     * (S 5, M 13, L 7)». У товара без модификаций — просто его остаток.
+     */
+    stockLabel(p) {
+        if (p === null || p === undefined) return '';
+        const free = p.stock;
+        if (free === null || free === undefined || free === '') return '';
+        const parts = (p.variant_stock || []).filter(v => v && v.label);
+        if (!parts.length) return `остаток ${free}`;
+        return `остаток ${free} (${parts.map(v => `${this.esc(v.label)} ${v.free}`).join(', ')})`;
+    },
+
+    /** Та же разбивка отдельной строкой — под выбранной позицией. */
+    stockNote(i) {
+        const parts = (i.variant_stock || []).filter(v => v && v.label);
+        if (!parts.length) return '';
+        return `<div class="muted">по модификациям: ${parts.map(v =>
+            `<strong>${this.esc(v.label)}</strong> — ${v.free}`).join(', ')}</div>`;
+    },
+
     /** Размер или цвет, который просила эта строка письма (модуль 022). */
     variantNote(i) {
         if (!i.variant_label) return '';
@@ -1231,7 +1277,7 @@ const App = {
                     }))}')">
                         <div>${this.esc(p.name)}</div>
                         <div class="muted">${this.esc(p.characteristics || p.article || p.code || '')}
-                            · ${this.fmtMoney(p.price)}${p.stock !== null && p.stock !== undefined ? ` · остаток ${p.stock}` : ''}</div>
+                            · ${this.fmtMoney(p.price)}${this.stockLabel(p) ? ' · ' + this.stockLabel(p) : ''}</div>
                     </div>`).join('');
                 box.hidden = false;
             } catch { box.hidden = true; }
@@ -1659,9 +1705,38 @@ const App = {
                         <div class="card__title">Текст после таблицы</div>
                         <textarea id="postTable" rows="3" placeholder="Дополнительные условия...">${this.esc(proposal.post_table_text || '')}</textarea>
                     </div>
+                    <!-- Условия одним правимым блоком вместо четырёх зашитых фраз
+                         внизу документа (модуль 026). Гарантию мы по умолчанию не
+                         обещаем, доставку в стоимость не включаем — и то и другое
+                         теперь видно и правится здесь. -->
                     <div class="card">
-                        <div class="card__title">Гарантия и обслуживание</div>
-                        <textarea id="warrantyText" rows="2">${this.esc(proposal.warranty_text || '')}</textarea>
+                        <div class="card__title">Условия поставки</div>
+                        <textarea id="termsText" rows="5"
+                            placeholder="Печатается в конце КП. Пусто — условий в документе не будет."
+                            >${this.esc(proposal.terms_text_edit || '')}</textarea>
+                        <div class="muted" style="margin-top:4px"><code>{execution_days}</code> и
+                            <code>{validity_days}</code> подставятся из полей ниже.
+                            Сохранение делает этот текст заготовкой для следующих КП.</div>
+                    </div>
+                    <!-- Доставка отдельной строкой: она не спрятана в цене товара -->
+                    <div class="card">
+                        <div class="card__title">Доставка</div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="deliveryOn" ${proposal.delivery_on == 1 ? 'checked' : ''}>
+                                Отдельной строкой в таблице и в итоге</label>
+                        </div>
+                        <div class="grid grid--2">
+                            <div class="form-group">
+                                <label>Как назвать в КП</label>
+                                <input type="text" id="deliveryName" placeholder="Доставка"
+                                       value="${this.esc(proposal.delivery_name || '')}">
+                            </div>
+                            <div class="form-group">
+                                <label>Стоимость, руб.</label>
+                                <input type="number" step="0.01" min="0" id="deliveryPrice"
+                                       value="${proposal.delivery_price ?? 0}">
+                            </div>
+                        </div>
                     </div>
                     <div class="card">
                         <div class="card__title">Фотографии</div>
@@ -1730,6 +1805,12 @@ const App = {
                     </select>
                     <div class="muted" style="margin-top:4px">В текстовом варианте то же самое:
                         позиции, цены, условия и комментарии. Нет только QR-кода.</div>
+                    <!-- Отдельные файлы: клиенту, который раскладывает позиции по
+                         разным заявкам, один документ на шесть строк приходится
+                         резать руками (модуль 026) -->
+                    <label style="margin-top:6px;display:block">
+                        <input type="checkbox" id="sendSplit"> Отдельный файл на каждую позицию
+                    </label>
                 </div>
                 <!-- Свои файлы к письму: менеджер мог переделать документ руками (модуль 023) -->
                 <div class="form-group" style="max-width:420px">
@@ -1994,7 +2075,10 @@ const App = {
             cover_letter_final: document.getElementById('coverLetter').value,
             pre_table_text: document.getElementById('preTable').value,
             post_table_text: document.getElementById('postTable').value,
-            warranty_text: document.getElementById('warrantyText').value,
+            terms_text: document.getElementById('termsText').value,
+            delivery_on: document.getElementById('deliveryOn').checked ? 1 : 0,
+            delivery_name: document.getElementById('deliveryName').value,
+            delivery_price: parseFloat(document.getElementById('deliveryPrice').value) || 0,
             images_note: document.getElementById('imagesNote').value,
             upsell_intro: document.getElementById('upsellIntro').value,
             upsell_note: document.getElementById('upsellNote').value,
@@ -2072,6 +2156,7 @@ const App = {
                 to,
                 subject: document.getElementById('sendSubject').value,
                 format: document.getElementById('sendFormat')?.value || undefined,
+                split: document.getElementById('sendSplit')?.checked ? 1 : 0,
                 files: [...document.querySelectorAll('#kpFiles [data-cmp-file]')].map(el => el.dataset.cmpFile),
             });
             if (sent) this.toast('КП отправлено!', 'success');
@@ -2187,10 +2272,13 @@ const App = {
             <div class="letter">
                 <div class="letter__main">
                     <div class="card card--flush">
-                        <div class="card__title flex flex--between" style="padding:12px 16px 0">
+                        <!-- Кнопки «Архив» здесь больше нет (модуль 026): она
+                             переключала ВЕСЬ список между работой и архивом, и
+                             найти одну убранную переписку среди двух видов было
+                             нечем. Архивные переписки стоят тут же, под рабочими,
+                             отдельным блоком. -->
+                        <div class="card__title" style="padding:12px 16px 0">
                             <span>Переписка${this.hint('thread')}</span>
-                            <button class="btn btn--outline btn--sm"
-                                    onclick="App.toggleCompanyArchive(${cp.id}, this)">Архив</button>
                         </div>
                         <div id="cpThreads"><div class="loading">Загрузка...</div></div>
                     </div>
@@ -2226,27 +2314,35 @@ const App = {
     async loadCompanyThreads(id) {
         const box = document.getElementById('cpThreads');
         if (!box) return;
-        const archived = this.companyArchive ? 1 : 0;
         try {
-            const d = await this.api(`counterparties.php?action=threads&id=${id}&archived=${archived}`);
-            this.companyThreads = d.items || [];
+            // Один запрос на обе половины: рабочие переписки и те, что убрали в
+            // архив. Раньше это были два разных вида одного экрана, между
+            // которыми переключала кнопка, — и переписка, которой на экране нет,
+            // выглядела как потерянная (модуль 026).
+            const d = await this.api(`counterparties.php?action=threads&id=${id}&archived=all`);
+            const all = d.items || [];
+            this.companyThreads = all.filter(t => !t.archived_at);
+            const archivedThreads = all.filter(t => t.archived_at);
             this.companyMailboxes = d.mailboxes || this.companyMailboxes || [];
-            box.innerHTML = this.companyThreads.length
-                ? `<div class="mlist">${this.companyThreads.map(t => this.companyThreadRow(t)).join('')}</div>`
-                : (archived
-                    ? '<div class="mlist__empty">В архиве этой компании пусто</div>'
-                    : this.newLetterHtml(this.company || {id}));
+            box.innerHTML = (this.companyThreads.length
+                    ? `<div class="mlist">${this.companyThreads.map(t => this.companyThreadRow(t)).join('')}</div>`
+                    : this.newLetterHtml(this.company || {id}))
+                + (archivedThreads.length ? `
+                    <details class="mlist-archive">
+                        <summary>Архив компании — переписок: ${archivedThreads.length}</summary>
+                        <div class="mlist">${archivedThreads.map(t => this.companyThreadRow(t)).join('')}</div>
+                    </details>` : '');
             // Открытая переписка — а не кнопка «написать»: письмо, позиции по
             // каталогу и поле ответа видны сразу, без единого нажатия (модуль 019).
             // Раскрывается ровно та, что ждёт ответа: отвеченные и отправленные
             // остаются свёрнутыми, как в почте (модуль 020). И раскрытие само по
             // себе письма не читает — отметку ставит нажатие менеджера.
-            const waiting = archived ? null : this.companyThreads.find(t => t.unanswered);
+            const waiting = this.companyThreads.find(t => t.unanswered);
             if (waiting) {
                 this.toggleCompanyThread(waiting.thread_key, {markRead: false});
             } else {
                 this.setCompanyItems(null);
-                if (!archived && this.companyThreads.length) {
+                if (this.companyThreads.length) {
                     // Отвечать некому — но писать первым по-прежнему не через
                     // кнопку поверх экрана. Поле спрятано за одной строкой:
                     // два одинаковых бланка «Ответ» подряд — у раскрытой
@@ -2263,17 +2359,6 @@ const App = {
         } catch (err) {
             box.innerHTML = `<div class="mlist__empty">Переписка не загрузилась: ${this.esc(err.message)}</div>`;
         }
-    },
-
-    /** «Архив» карточки: письма, убранные как «не наш профиль» или вместе с ящиком. */
-    toggleCompanyArchive(id, btn) {
-        this.companyArchive = !this.companyArchive;
-        if (btn) {
-            btn.classList.toggle('btn--primary', this.companyArchive);
-            btn.classList.toggle('btn--outline', !this.companyArchive);
-            btn.textContent = this.companyArchive ? 'В работе' : 'Архив';
-        }
-        this.loadCompanyThreads(id);
     },
 
     /**
@@ -2852,9 +2937,12 @@ const App = {
             <div class="card">
                 <div class="card__title">Заказы (${orders.length})</div>
                 ${orders.length ? orders.map(o => `
-                    <div class="flex flex--between" style="padding:6px 0;border-bottom:1px solid var(--border)">
-                        <a href="https://online.moysklad.ru/app/#customerorder/edit?id=${o.moysklad_id}" target="_blank">${this.esc(o.name)} ↗</a>
-                        <span class="muted">${this.fmtMoney(o.sum)}${o.state_name ? ' · ' + this.esc(o.state_name) : ''}</span>
+                    <div style="padding:6px 0;border-bottom:1px solid var(--border)">
+                        <div class="flex flex--between">
+                            <a href="https://online.moysklad.ru/app/#customerorder/edit?id=${o.moysklad_id}" target="_blank">${this.esc(o.name)} ↗</a>
+                            <span class="muted">${this.fmtMoney(o.sum)}${o.state_name ? ' · ' + this.esc(o.state_name) : ''}</span>
+                        </div>
+                        ${this.reserveRow(o)}
                     </div>`).join('') : '<p class="muted">Заказов нет</p>'}
             </div>
 
@@ -2880,6 +2968,48 @@ const App = {
                     </div>`).join('') : '<p class="muted">Счетов нет. Выставьте счёт в МойСклад — он появится здесь.</p>'}
             </div>
         `;
+    },
+
+    /**
+     * Резерв под неоплаченный счёт — строкой под заказом (модуль 026).
+     *
+     * Заказ, созданный кнопкой «Счёт», держит товар за клиентом. Срок вышел, а
+     * денег нет — здесь стоит кнопка, снимающая с заказа проведение: резерв
+     * уходит, заказ остаётся. Сервис этого сам не делает: решение про товар,
+     * обещанный клиенту, принимает человек.
+     */
+    reserveRow(o) {
+        const r = o.reserve || {};
+        if (r.released) return `<div class="muted" style="font-size:11px">резерв снят</div>`;
+        if (!r.held) return '';
+        if (r.paid) return `<div class="muted" style="font-size:11px">счёт оплачен — резерв обоснован</div>`;
+        if (!r.due) {
+            return `<div class="muted" style="font-size:11px">резерв держим до ${this.fmtDate(r.until, false)}</div>`;
+        }
+        return `<div class="note note--swap" style="margin-top:6px">
+            Резерв держится с ${this.fmtDate(r.until, false)}, счёт не оплачен
+            на ${this.fmtMoney(r.unpaid)}.
+            <button class="btn btn--outline btn--sm" style="margin-left:6px"
+                    onclick="App.releaseReserve(${o.id}, this)">Снять резерв</button>
+        </div>`;
+    },
+
+    /** Снять проведение заказа в МойСклад — товар возвращается в продажу. */
+    async releaseReserve(orderId, btn) {
+        if (!confirm('Снять резерв: заказ в МойСклад перестанет быть проведённым. Продолжить?')) return;
+        btn.disabled = true;
+        const label = btn.textContent;
+        btn.textContent = 'Снимаем...';
+        try {
+            const r = await this.api(`invoices.php?action=release_reserve&order_id=${orderId}`,
+                                     {method: 'POST', body: {}});
+            this.toast(`Резерв по заказу ${r.name} снят`, 'success');
+            if (this.company) this.syncCompany(this.company.id, true);
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = label;
+        }
     },
 
     /**
@@ -3101,7 +3231,7 @@ const App = {
     HINTS: {
         // Письма и ответ
         'board':        ['Доска «Письма»', 'Каждая карточка — КОМПАНИЯ, а не письмо: внутри вся её переписка, запросы и КП. Новые письма попадают сюда сами при открытии доски. Колонку карточке вы назначаете сами — сервис её никогда не двигает.'],
-        'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок.'],
+        'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Переписки, убранные как «не наш профиль», стоят тут же, отдельным блоком «Архив компании» внизу.'],
         'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика.'],
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки — модель на это не тратится. Равнозначные варианты сервис не выбирает молча: он спрашивает.'],
@@ -3110,7 +3240,7 @@ const App = {
         'kp-editor':    ['Редактор КП', 'Здесь правится всё, что попадёт в документ: цены, количества, тексты карточек товаров и блоки вокруг таблицы. Реквизиты и НДС правке не подлежат — они приходят из МойСклад и замораживаются на КП в момент создания.'],
         'kp-exclude':   ['Свернуть позицию', 'Позиции, которой нет в наличии, в таблице КП не будет — но в документе она останется: КП назовёт её словами клиента и скажет, что мы по ней уточняем. Молча выкинуть строку нельзя.'],
         // Настройки
-        'kp-settings':  ['Оформление КП', 'Тексты и значения по умолчанию для каждого нового КП: условия поставки, гарантия, сроки, подписи под фотографиями. В самом КП их можно переписать — здесь стоит то, с чего КП начинается.'],
+        'kp-settings':  ['Оформление КП', 'Тексты и значения по умолчанию для каждого нового КП: условия поставки, сроки, подписи под фотографиями. В самом КП их можно переписать — здесь стоит то, с чего КП начинается, и сюда же приезжает последняя правка условий из любого КП.'],
         'signature':    ['Моя подпись', 'КП подписывает тот, кто его отправляет. Загрузите картинку своей подписи и напишите расшифровку — они встанут под вашими КП. Пусто — печатается подписант организации.'],
         'knowledge':    ['База знаний', 'Вики компании из репозитория GitHub. В промпт она попадает не целиком, а теми разделами, которые относятся к тексту письма. Это ЗНАНИЯ О ТОВАРЕ — инструкции про кнопки сюда класть нельзя, они мешают модели отвечать.'],
         'knowledge-check': ['Проверка подбора', 'Вставьте текст письма — увидите, какие разделы вики попадут в промпт и что сервис на это ответит. Ответ можно тут же забраковать кнопкой 👎 и написать, как он должен был звучать: эта правка уйдёт в обучение.'],
@@ -4063,10 +4193,15 @@ const App = {
                         <div class="form-group"><label>Папка модулей в МойСклад</label>
                             <input type="text" id="kpAddonCategory" value="${this.esc(g.addon_category || '')}"></div>
                     </div>
-                    <div class="form-group"><label>Условия поставки</label>
-                        <textarea id="kpConditions" rows="2">${this.esc(g.default_conditions_text || '')}</textarea></div>
-                    <div class="form-group"><label>Гарантия</label>
-                        <textarea id="kpWarranty" rows="2">${this.esc(g.default_warranty_text || '')}</textarea></div>
+                    <!-- Условия одним блоком (модуль 026). Четыре зашитых абзаца внизу
+                         КП — упаковка, гарантия, срок исполнения, срок действия цены —
+                         стали правимым текстом; последняя правка в любом КП приезжает
+                         сюда и становится заготовкой для следующих. -->
+                    <div class="form-group"><label>Условия поставки — заготовка для новых КП</label>
+                        <textarea id="kpTerms" rows="5">${this.esc(g.default_terms_text || '')}</textarea>
+                        <div class="muted">Печатается в конце КП одним блоком.
+                            <code>{execution_days}</code> и <code>{validity_days}</code> подставляются
+                            из полей самого КП. Пусто — условия не печатаются вовсе.</div></div>
                     <div class="form-group"><label>Оговорка под фотографиями</label>
                         <textarea id="kpImagesNote" rows="2">${this.esc(g.kp_images_note || '')}</textarea></div>
                     <button class="btn btn--primary" onclick="App.saveKpSettings()">Сохранить</button>
@@ -4184,8 +4319,7 @@ const App = {
                 default_validity_days: document.getElementById('kpValid').value,
                 kp_max_images_per_item: document.getElementById('kpMaxImages').value,
                 addon_category: document.getElementById('kpAddonCategory').value,
-                default_conditions_text: document.getElementById('kpConditions').value,
-                default_warranty_text: document.getElementById('kpWarranty').value,
+                default_terms_text: document.getElementById('kpTerms').value,
                 kp_images_note: document.getElementById('kpImagesNote').value,
             }});
             this.toast('Сохранено', 'success');
@@ -4701,7 +4835,7 @@ const App = {
      *
      * Отдельная страница «Архив писем» показывала ВСЕ письма подряд, плоским
      * списком, со своим поиском и своими фильтрами — то есть второй почтовый
-     * клиент рядом с доской. Здесь архив — это галочка на доске: переписки,
+     * клиент рядом с доской. Здесь архив — это ссылка на доске: переписки,
      * убранные как «не наш профиль», с теми же групповыми действиями.
      */
     async pageBoardArchive() {
@@ -4880,10 +5014,11 @@ const App = {
                 ${sel('Ящик', 'mailbox', [['', 'все ящики'],
                         ...(b.mailboxes || []).map(m => [String(m.id), this.esc(m.name)])],
                       'Компании, писавшие в этот ящик')}
-                <label class="bfilter bfilter--check" title="Переписки, убранные как «не наш профиль»">
-                    <input type="checkbox" ${f.archived ? 'checked' : ''}
-                           onchange="App.setBoardFilter('archived', this.checked ? 1 : 0)"> показать архив
-                </label>
+                <!-- Ссылка, а не галочка (модуль 026): архив — это другой экран,
+                     а галочка в ряду фильтров читалась как ещё один фильтр. -->
+                <a class="bfilter bfilter--link" title="Переписки, убранные как «не наш профиль»"
+                   onclick="App.setBoardFilter('archived', ${f.archived ? 0 : 1})"
+                   >${f.archived ? '← К доске' : 'Архив'}</a>
                 <span class="flex flex--wrap" style="margin-left:auto">
                     <button class="btn btn--outline btn--sm"
                             onclick="App.${f.archived ? 'archivePickAll' : 'boardPickAll'}(true)">Выбрать все</button>

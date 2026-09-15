@@ -47,6 +47,10 @@ Extraction rules:
   Take the legal form with the name («АО "Уралэлемент"», «ООО Ромашка»), not just
   the bare word. Never use an e-mail address or a domain as org_name — leave it
   null instead. Never take the supplier's own name (Atlant Armour / ИП Сурков).
+- «в количестве N шт», «N шт.», «— N компл.» is a POSITION with a quantity, however
+  polite the sentence around it: «Тактические наушники AMP в количестве 5 шт. Или
+  аналог.» is one item {name: "Тактические наушники AMP", qty: 5}. «Или аналог» means
+  a substitute is allowed — it is not a second position and not a reason to skip it.
 - If no items found, return empty items array
 PROMPT,
             ],
@@ -143,6 +147,11 @@ Rules:
   Take the legal form with the name («АО "Уралэлемент"», «ООО Ромашка»), not just
   the bare word. Never use an e-mail address or a domain as org_name — leave it
   null instead. Never take the supplier's own name (Atlant Armour / ИП Сурков).
+- «в количестве N шт», «N шт.», «— N компл.» is a POSITION with a quantity, however
+  polite the sentence around it: «Тактические наушники AMP в количестве 5 шт. Или
+  аналог.» is one item {name: "Тактические наушники AMP", qty: 5}. «Или аналог» is
+  permission to offer a substitute, not a second position and not a reason to skip it.
+- A letter naming exactly one product still has an `items` array — of one item.
 - No items found → items is an empty array. Do not invent positions.
 PROMPT,
             ],

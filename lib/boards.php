@@ -161,6 +161,14 @@ final class Boards {
                     if (trim((string)$card['title']) === '') $card['title'] = $t['subject'];
                 }
             }
+            // «Прочитано», нажатое на карточке, гасит и жирный шрифт (модуль 026).
+            // Жирность даёт «ждёт ответа», а оно считается по датам писем —
+            // отметить карточку разобранной было нечем, и групповое «Прочитано»
+            // выглядело как кнопка, которая ничего не делает.
+            $card['seen_at'] = $card['seen_at'] ?? null;
+            if ($card['seen_at'] && $card['last_at'] && (string)$card['seen_at'] >= (string)$card['last_at']) {
+                $card['unanswered'] = false;
+            }
             // Bright and on top: a letter nobody has read, or one nobody has answered
             $card['hot'] = $card['unread'] > 0 || $card['unanswered'];
         }
@@ -302,6 +310,10 @@ final class Boards {
             $boardId,
             (string)Db::val("SELECT COALESCE(MAX(id), 0) FROM mail_messages"),
             (string)Db::val("SELECT COUNT(*) FROM mail_messages WHERE counterparty_id IS NOT NULL"),
+            // Письма, вернувшиеся из архива, — тоже изменение доски: без этого
+            // счётчика «Вернуть в работу» возвращало письма, а карточка, снятая
+            // вместе с ними, не возвращалась (модуль 026)
+            (string)Db::val("SELECT COUNT(*) FROM mail_messages WHERE archived_at IS NULL"),
             (string)Db::val("SELECT COALESCE(MAX(id), 0) FROM counterparties"),
             (string)Db::val("SELECT COUNT(*) FROM board_cards"),
         ]);
@@ -597,6 +609,11 @@ final class Boards {
 
                     case 'read':
                         foreach (self::cardThreadKeys($card) as $key) MailThreads::markRead($key);
+                        // Письма прочитаны — и карточка разобрана: иначе она
+                        // остаётся жирной, потому что клиент всё ещё «писал
+                        // последним». Новое письмо придёт позже этой отметки и
+                        // поднимет карточку обратно.
+                        Db::update('board_cards', ['seen_at' => date('Y-m-d H:i:s')], 'id=?', [(int)$card['id']]);
                         break;
 
                     case 'archive':
@@ -626,6 +643,43 @@ final class Boards {
             }
         }
         return ['done' => $done, 'failed' => $failed, 'errors' => array_slice($errors, 0, 5)];
+    }
+
+    /**
+     * Карточка компании, у которой не осталось ни одного живого письма, уходит
+     * с доски (модуль 026).
+     *
+     * «Не наш профиль» на последней переписке убирал письма, а карточка стояла
+     * дальше — пустая, без единого письма внутри, и разбирать её приходилось
+     * второй раз руками. Вернули письма из архива — `sync()` поставит карточку
+     * обратно сам, потому что компания снова пишет.
+     *
+     * @param int|null $counterpartyId проверить одну компанию; null — все на доске
+     * @return int сколько карточек убрано
+     */
+    public static function pruneEmptyCards(?int $counterpartyId = null): int {
+        // Карточка доски стоит на КОРНЕВОЙ компании, а письмо может числиться за
+        // слитой в неё — иначе слитая карточка никогда бы не убиралась
+        $rootId = $counterpartyId ? Crm::rootId($counterpartyId) : null;
+        $cards = $rootId
+            ? Db::all("SELECT id, counterparty_id FROM board_cards WHERE counterparty_id=?", [$rootId])
+            : Db::all("SELECT id, counterparty_id FROM board_cards WHERE counterparty_id IS NOT NULL");
+
+        $removed = 0;
+        foreach ($cards as $card) {
+            $cpId = (int)$card['counterparty_id'];
+            // Слитая карточка держит письма под своим прежним id — считаем семью
+            $live = (int)Db::val(
+                "SELECT COUNT(*) FROM mail_messages
+                 WHERE archived_at IS NULL
+                   AND counterparty_id IN (SELECT id FROM counterparties WHERE id=? OR merged_into_id=?)",
+                [$cpId, $cpId]
+            );
+            if ($live > 0) continue;
+            self::deleteCard((int)$card['id']);
+            $removed++;
+        }
+        return $removed;
     }
 
     /** Все цепочки, которые несёт карточка: у компании — её переписка целиком. */

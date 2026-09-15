@@ -58,6 +58,8 @@ class MsSync {
             'positions_json'      => json_encode($o['positions'], JSON_UNESCAPED_UNICODE),
             'moysklad_updated_at' => $o['updated'],
             'synced_at'           => $now,
+            // Проведён ли заказ — он же «держим ли резерв» (модуль 026)
+            'applicable'          => !empty($o['applicable']) ? 1 : 0,
         ];
 
         if ($existing) {

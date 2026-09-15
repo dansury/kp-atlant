@@ -8,12 +8,66 @@ require_once __DIR__ . '/bitrix.php';
 require_once __DIR__ . '/qr.php';
 require_once __DIR__ . '/request_shape.php';
 require_once __DIR__ . '/markup.php';
+require_once __DIR__ . '/terms.php';
+require_once __DIR__ . '/variants.php';
 
 class KpContent {
 
     // Fill description / specs / kit / photos for every item of a proposal.
     // Existing manager-edited text is never overwritten.
+    /**
+     * Перечитать остатки позиций КП и поправить автоматическое «под заказ».
+     *
+     * Остаток замораживался на позиции в момент сборки КП, а красная надпись
+     * «под заказ» — вместе с ним. Каталог обновился, товар лёг на полку, КП
+     * пересобрали — и надпись всё равно уходила клиенту (модуль 026).
+     * Примечание, написанное человеком, не трогается.
+     *
+     * @return int сколько позиций изменилось
+     */
+    public static function refreshStock(int $proposalId): int {
+        $rows = Db::all("SELECT id, moysklad_product_id, stock_available, stock_reserved, notes
+                         FROM proposal_items
+                         WHERE proposal_id=? AND moysklad_product_id IS NOT NULL AND moysklad_product_id <> ''",
+                        [$proposalId]);
+        if (!$rows) return 0;
+
+        $ids = array_values(array_unique(array_column($rows, 'moysklad_product_id')));
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        // У товара с модификациями остаток лежит на них, а не на нём (модуль 026)
+        $byVariants = Variants::stockFor($ids);
+        $cache = [];
+        foreach (Db::all("SELECT moysklad_id, stock, reserved FROM products_cache WHERE moysklad_id IN ($ph)", $ids) as $p) {
+            $id = (string)$p['moysklad_id'];
+            $cache[$id] = isset($byVariants[$id])
+                ? [$byVariants[$id]['free'], 0]
+                : [(int)$p['stock'], (int)$p['reserved']];
+        }
+
+        $changed = 0;
+        foreach ($rows as $row) {
+            $id = (string)$row['moysklad_product_id'];
+            // Позиции нет в кэше — это «не знаем», а не «ноль на складе»
+            if (!isset($cache[$id])) continue;
+            [$stock, $reserved] = $cache[$id];
+            $free = max(0, $stock - $reserved);
+            $note = Terms::stockNote($row['notes'] ?? null, $free, true);
+            if ((int)($row['stock_available'] ?? -1) === $stock
+                && (int)($row['stock_reserved'] ?? -1) === $reserved
+                && ($row['notes'] ?? null) === $note) continue;
+            Db::update('proposal_items', [
+                'stock_available' => $stock,
+                'stock_reserved'  => $reserved,
+                'notes'           => $note,
+            ], 'id=?', [(int)$row['id']]);
+            $changed++;
+        }
+        return $changed;
+    }
+
     public static function enrichItems(int $proposalId): void {
+        // Остатки — сегодняшние: «под заказ» не должно быть вчерашней цифрой
+        self::refreshStock($proposalId);
         $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
         $perItem = Db::val("SELECT photos_per_item FROM proposals WHERE id=?", [$proposalId]);
         $maxImages = ($perItem !== null && $perItem !== '')
@@ -405,7 +459,7 @@ class KpContent {
             'moysklad_product_id' => $p['moysklad_id'],
             'unit'                => $p['unit'] ?: 'шт.',
             'price'               => $p['price'],
-            'notes'               => ((int)($p['stock'] ?? 0) === 0) ? 'под заказ' : null,
+            'notes'               => Terms::stockNote(null, (int)($p['stock'] ?? 0), true),
         ], $suggested));
     }
 

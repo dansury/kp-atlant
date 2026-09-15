@@ -607,6 +607,53 @@ class MoySklad {
         return ['id' => self::extractId($resp['id'] ?? $resp['meta']['href'] ?? ''), 'name' => $resp['name']];
     }
 
+    /**
+     * Ссылка на номенклатуру позиции: товар или МОДИФИКАЦИЯ.
+     *
+     * Тип здесь был зашит как `product`, и заказ с размером L в позиции
+     * МойСклад либо не принимал, либо принимал не тот товар. Тип берётся из
+     * каталога: там у модификации стоит `product_type = 'variant'` (модуль 026).
+     */
+    private static function assortmentMeta(string $productId): array {
+        $type = (string)(Db::val("SELECT product_type FROM products_cache WHERE moysklad_id=?", [$productId]) ?: '');
+        $entity = $type === 'variant' ? 'variant' : 'product';
+        return ['meta' => [
+            'href'      => self::$base . '/entity/' . $entity . '/' . $productId,
+            'type'      => $entity,
+            'mediaType' => 'application/json',
+        ]];
+    }
+
+    /** Статусы заказа покупателя: имя → id. Читается один раз за запрос. */
+    public static function orderStates(): array {
+        static $cache = null;
+        if ($cache !== null) return $cache;
+        $cache = [];
+        $data = self::get('/entity/customerorder/metadata');
+        foreach ((array)($data['states'] ?? []) as $st) {
+            $name = trim((string)($st['name'] ?? ''));
+            if ($name !== '') $cache[$name] = self::extractId($st['id'] ?? $st['meta']['href'] ?? '');
+        }
+        return $cache;
+    }
+
+    /** Дополнительные поля заказа покупателя: имя → [id, type]. */
+    public static function orderAttributes(): array {
+        static $cache = null;
+        if ($cache !== null) return $cache;
+        $cache = [];
+        $data = self::get('/entity/customerorder/metadata/attributes');
+        foreach ((array)($data['rows'] ?? []) as $a) {
+            $name = trim((string)($a['name'] ?? ''));
+            if ($name === '') continue;
+            $cache[$name] = [
+                'id'   => self::extractId($a['id'] ?? $a['meta']['href'] ?? ''),
+                'type' => (string)($a['type'] ?? 'string'),
+            ];
+        }
+        return $cache;
+    }
+
     // Create customer order (US5)
     public static function createOrder(array $data): array {
         if (empty(self::$permissions['orders_read'])) {
@@ -616,11 +663,7 @@ class MoySklad {
         $positions = array_map(fn($p) => [
             'quantity' => $p['quantity'],
             'price' => $p['price'] * 100, // MoySklad uses kopeks
-            'assortment' => ['meta' => [
-                'href' => self::$base . '/entity/product/' . $p['product_id'],
-                'type' => 'product',
-                'mediaType' => 'application/json',
-            ]],
+            'assortment' => self::assortmentMeta((string)$p['product_id']),
         ], $data['positions']);
 
         $body = [
@@ -638,11 +681,62 @@ class MoySklad {
         ];
         if (!empty($data['description'])) $body['description'] = $data['description'];
 
+        // Статус («Резерв») и доп. поле («СОТРУДНИК») — по ИМЕНИ, как их видит
+        // человек в МойСклад. Имени нет в аккаунте — заказ всё равно создаётся:
+        // счёт клиенту важнее нашей внутренней раскладки (модуль 026).
+        $missing = [];
+        if (!empty($data['state_name'])) {
+            $stateId = self::orderStates()[(string)$data['state_name']] ?? null;
+            if ($stateId) {
+                $body['state'] = ['meta' => [
+                    'href'      => self::$base . '/entity/customerorder/metadata/states/' . $stateId,
+                    'type'      => 'state',
+                    'mediaType' => 'application/json',
+                ]];
+            } else {
+                $missing[] = 'статус «' . $data['state_name'] . '»';
+            }
+        }
+        if (!empty($data['attributes'])) {
+            $known = self::orderAttributes();
+            $attrs = [];
+            foreach ((array)$data['attributes'] as $name => $value) {
+                if (!isset($known[$name])) { $missing[] = 'доп. поле «' . $name . '»'; continue; }
+                $attrs[] = [
+                    'meta' => [
+                        'href'      => self::$base . '/entity/customerorder/metadata/attributes/' . $known[$name]['id'],
+                        'type'      => 'attributemetadata',
+                        'mediaType' => 'application/json',
+                    ],
+                    'value' => $value,
+                ];
+            }
+            if ($attrs) $body['attributes'] = $attrs;
+        }
+        if (array_key_exists('applicable', $data)) $body['applicable'] = (bool)$data['applicable'];
+
         $resp = self::post('/entity/customerorder', $body);
         return [
             'id' => self::extractId($resp['id'] ?? $resp['meta']['href'] ?? ''),
             'name' => $resp['name'] ?? '',
+            // Чего в аккаунте не нашлось — чтобы сказать это вслух, а не молча
+            'missing' => $missing,
         ];
+    }
+
+    /**
+     * Снять проведение заказа — «убрать резерв» (модуль 026).
+     *
+     * `applicable = false` в МойСклад и значит «документ не проведён»: товар
+     * перестаёт числиться зарезервированным за этим клиентом.
+     */
+    public static function setOrderApplicable(string $orderId, bool $applicable): array {
+        $resp = self::request('PUT', "/entity/customerorder/$orderId", ['applicable' => $applicable]);
+        if ($resp === null) {
+            throw new MoySkladException('PUT failed: /entity/customerorder/' . $orderId . self::lastErrorSuffix());
+        }
+        return ['id' => self::extractId($resp['id'] ?? $resp['meta']['href'] ?? ''),
+                'applicable' => (bool)($resp['applicable'] ?? $applicable)];
     }
 
     /**
@@ -659,11 +753,7 @@ class MoySklad {
             'price'      => $p['price'] * 100,   // МойСклад считает в копейках
             'discount'   => $p['discount'] ?? 0,
             'vat'        => $p['vat'] ?? 0,
-            'assortment' => ['meta' => [
-                'href'      => self::$base . '/entity/product/' . $p['product_id'],
-                'type'      => 'product',
-                'mediaType' => 'application/json',
-            ]],
+            'assortment' => self::assortmentMeta((string)$p['product_id']),
         ], $data['positions']);
 
         $body = [
@@ -856,6 +946,8 @@ class MoySklad {
             'agent_id'    => self::extractId($data['agent']['meta']['href'] ?? ''),
             'agent_name'  => $data['agent']['name'] ?? '',
             'updated'     => $data['updated'] ?? '',
+            // «Проведён» — то же самое, что «товар зарезервирован» (модуль 026)
+            'applicable'  => (bool)($data['applicable'] ?? true),
             'positions'   => $positions,
         ];
     }

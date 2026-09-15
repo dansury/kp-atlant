@@ -265,7 +265,7 @@ foreach (['ever@snipermail.ru', 'lutsenko@snipermail.ru'] as $addr) {
 }
 ok('домен ретранслятора снят со всех карточек',
    !Db::val("SELECT COUNT(*) FROM counterparties WHERE email_domain='snipermail.ru'"));
-ok('версия схемы поднялась', (string)Db::val("SELECT value FROM settings WHERE key='schema_version'") === '26');
+ok('версия схемы поднялась', (int)Db::val("SELECT value FROM settings WHERE key='schema_version'") >= 26);
 
 // =====================================================================
 

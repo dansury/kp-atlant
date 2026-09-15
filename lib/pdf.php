@@ -8,12 +8,21 @@ require_once __DIR__ . '/kp_content.php';
 require_once __DIR__ . '/requisites.php';
 require_once __DIR__ . '/signatures.php';
 require_once __DIR__ . '/terms.php';
+require_once __DIR__ . '/kp_terms.php';
 
 class PdfGenerator {
 
-    // Generate PDF for a proposal, return file path
-    public static function generate(int $proposalId): string {
-        $html = self::html($proposalId);
+    /**
+     * Собрать PDF коммерческого предложения.
+     *
+     * `$onlyItemIds` — отдельный файл на одну позицию (модуль 026). Такой файл
+     * не становится «тем самым КП»: `proposals.pdf_path` он не трогает, иначе
+     * предпросмотр и письмо показывали бы одну строку вместо всего документа.
+     *
+     * @param int[]|null $onlyItemIds позиции, которые печатаются; null — все
+     */
+    public static function generate(int $proposalId, ?array $onlyItemIds = null, string $suffix = ''): string {
+        $html = self::html($proposalId, $onlyItemIds);
         $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1") ?: [];
 
         // Generate PDF
@@ -36,9 +45,14 @@ class PdfGenerator {
         if (!is_dir($dir)) mkdir($dir, 0755, true);
 
         $proposal = Db::one("SELECT number, pdf_path FROM proposals WHERE id=?", [$proposalId]);
-        $number = $proposal['number'] ?: self::generateNumber();
-        $path = "$dir/" . self::fileName($proposalId, 'pdf');
+        $path = "$dir/" . self::fileName($proposalId, 'pdf', $suffix);
         $mpdf->Output($path, \Mpdf\Output\Destination::FILE);
+
+        // Файл на одну позицию — не документ КП: он не подменяет собой ни
+        // предпросмотр, ни вложение письма (модуль 026)
+        if ($onlyItemIds !== null) return $path;
+
+        $number = $proposal['number'] ?: self::generateNumber();
 
         // В имени файла стоит дата (модуль 022), поэтому перевыпуск назавтра —
         // это НОВЫЙ файл. Вчерашний не оставляем: в `data/kp` иначе копится по
@@ -64,7 +78,7 @@ class PdfGenerator {
      * checked in the file itself. Same variables, same template — this IS the
      * КП, one step earlier.
      */
-    public static function html(int $proposalId): string {
+    public static function html(int $proposalId, ?array $onlyItemIds = null): string {
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
         if (!$proposal) throw new RuntimeException("Proposal $proposalId not found");
 
@@ -72,6 +86,15 @@ class PdfGenerator {
         // карточкой, ни рублём в «Итого». Названы они отдельным блоком —
         // `KpContent::unmatchedRows()` забирает их себе (модуль 020).
         $items = KpContent::printedItems($proposalId);
+
+        // Отдельное КП на одну позицию (модуль 026): закупщик кладёт каждую
+        // строку в свою заявку, и присылать ему один документ на шесть позиций
+        // значит заставить его резать документ самому.
+        $onePosition = $onlyItemIds !== null;
+        if ($onePosition) {
+            $keep = array_map('intval', $onlyItemIds);
+            $items = array_values(array_filter($items, fn($i) => in_array((int)$i['id'], $keep, true)));
+        }
         $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1");
         if (!$legal) throw new RuntimeException('No active legal entity configured');
 
@@ -82,14 +105,16 @@ class PdfGenerator {
 
         // Таблица соответствия: запрос клиента слева, наш ответ справа.
         // Появляется, когда запрос пришёл таблицей, — решение принято по письму.
-        $showMatchTable = KpContent::showMatchTable($proposal);
+        // Таблица соответствия и «нужно уточнение» — про запрос целиком, а не
+        // про одну строку: в файле на одну позицию их нет
+        $showMatchTable = !$onePosition && KpContent::showMatchTable($proposal);
         $matchTable = $showMatchTable ? KpContent::matchTableRows($proposalId) : [];
         $matchTableNote = (string)($proposal['match_table_note'] ?? '');
 
         // Позиции запроса, на которые каталог не ответил (module 018). Печатаются
         // отдельным блоком словами клиента: КП с молчаливой дырой — это КП,
         // в котором клиент сам должен заметить, что его просьбу потеряли.
-        $unmatched = KpContent::unmatchedRows($proposalId);
+        $unmatched = $onePosition ? [] : KpContent::unmatchedRows($proposalId);
 
         // Сколько фотографий печатать. Настройка задаёт общий потолок, а
         // редактор КП может поставить свой на ЭТОТ документ (модуль 023):
@@ -130,6 +155,17 @@ class PdfGenerator {
         }
         unset($item);
 
+        // Доставка отдельной строкой: она не входит в цену товара. В файле на
+        // одну позицию её нет — иначе шесть файлов посчитали бы доставку шесть раз
+        $delivery = null;
+        if (!$onePosition && (int)($proposal['delivery_on'] ?? 0) === 1) {
+            $delivery = [
+                'name'  => trim((string)($proposal['delivery_name'] ?? '')) ?: 'Доставка',
+                'price' => (float)($proposal['delivery_price'] ?? 0),
+            ];
+            $total += $delivery['price'];
+        }
+
         // The rate is МойСклад's answer, not a house default: the организация
         // says whether we charge VAT at all, and the catalog says at what rate
         $vat = $requisites['vat'] ?? [];
@@ -144,15 +180,11 @@ class PdfGenerator {
             $legal['full_name']
         );
 
-        // Default conditions
-        $conditionsText = $proposal['conditions_text']
-            ?: Db::val("SELECT value FROM settings WHERE key='default_conditions_text'")
-            ?: 'Стоимость включает расходы на упаковку, маркировку, хранение, погрузку и страхование грузов.';
+        // Условия поставки — один правимый блок (модуль 026). КП, собранное до
+        // него, печатает те же четыре абзаца, что и печатало: документ,
+        // переоткрытый через полгода, обязан выглядеть как подписанный.
+        $termsText = KpTerms::forProposal($proposal);
 
-        // Blocks introduced with the product-card layout. Proposal value wins,
-        // then the editable default in settings.
-        $warrantyText = $proposal['warranty_text']
-            ?: Db::val("SELECT value FROM settings WHERE key='default_warranty_text'") ?: '';
         $imagesNote = $proposal['images_note']
             ?: Db::val("SELECT value FROM settings WHERE key='kp_images_note'") ?: '';
         $upsellIntro = $proposal['upsell_intro']
@@ -220,16 +252,14 @@ class PdfGenerator {
             'qrHint' => trim((string)Settings::get('KP_QR_HINT', '')),
             'pageBreakPerItem' => (int)Settings::get('KP_PAGE_BREAK', 1) === 1,
             'showVatTotal' => (bool)($proposal['show_vat_total'] ?? false),
-            'conditionsText' => $conditionsText,
-            'executionDays' => $proposal['execution_days'] ?? 30,
-            'validityDays' => $proposal['validity_days'] ?? 14,
+            'termsText' => $termsText,
+            'delivery' => $delivery,
             'date' => date('d.m.Y') . 'г.',
             'signaturePath' => $signaturePath,
             'signatoryName' => $signatory['name'],
             'totalIsFrom' => $totalIsFrom,
             'showImages' => (bool)($proposal['show_images'] ?? 1),
             'imagesNote' => $imagesNote,
-            'warrantyText' => $warrantyText,
             'showUpsell' => (bool)($proposal['show_upsell'] ?? 1) && $addons,
             'upsellIntro' => $upsellIntro,
             'upsellNote' => $upsellNote,
@@ -280,7 +310,7 @@ class PdfGenerator {
      * отправителя письма. Не знаем никого — пишем номер КП: имя файла без
      * адресата всё равно должно оставаться разным у разных документов.
      */
-    public static function fileName(int $proposalId, string $ext = 'pdf'): string {
+    public static function fileName(int $proposalId, string $ext = 'pdf', string $suffix = ''): string {
         $brand = self::translitPart((string)Settings::get('KP_FILE_BRAND', 'Атлант Армор')) ?: 'Атлант_Армор';
         $addressee = self::translitPart(self::addresseeName($proposalId));
         $date = date('d.m.Y');
@@ -292,6 +322,7 @@ class PdfGenerator {
             $number = (string)(Db::val("SELECT number FROM proposals WHERE id=?", [$proposalId]) ?: $proposalId);
             $name .= '_' . self::translitPart($number);
         }
+        if ($suffix !== '') $name .= '_' . self::translitPart($suffix);
         return $name . '_от_' . $date . '.' . $ext;
     }
 

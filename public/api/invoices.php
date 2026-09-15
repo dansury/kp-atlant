@@ -111,6 +111,7 @@ switch ($action) {
 
         $positions = [];
         $skipped   = [];
+        $names     = [];
         foreach ($rows as $r) {
             $price = (float)$r['price'];
             $qty   = (float)$r['quantity'];
@@ -123,44 +124,177 @@ switch ($action) {
                 'discount'   => (float)($r['discount_percent'] ?? 0),
                 'vat'        => (int)($r['vat_rate'] ?? $p['vat_rate'] ?? 0),
             ];
+            $names[] = (string)$r['product_name'];
         }
         if (!$positions) {
             jsonError('Ни одной позиции с ценой и карточкой МойСклад — счёт выставлять не из чего', 400);
         }
 
+        // «Отдельные счета» — по счёту на позицию (модуль 026). Заказ при этом
+        // один: резерв на товар один, а счетов у закупщика столько, сколько
+        // строк в его смете.
+        $body = getInput();
+        $split = !empty($_GET['split']) || !empty($body['split']);
+
         $appUrl = rtrim($GLOBALS['cfg']['APP_URL'] ?? '', '/');
         $note = 'Счёт по КП ' . ((string)$p['number'] !== '' ? $p['number'] : '#' . $proposalId)
               . ($appUrl ? ", CRM: $appUrl/#mail/proposal/$proposalId" : '');
 
+        // Счёт не висит в воздухе: сначала ЗАКАЗ покупателя, и счёт привязан к
+        // нему (модуль 026). Заказ встаёт в статус «Резерв» и несёт имя
+        // менеджера в доп. поле «СОТРУДНИК» — оба имени настраиваются.
+        // Заказ не создался — счёт всё равно выставляем: клиенту нужен счёт,
+        // а не наша внутренняя раскладка.
+        $orgId = msOrgId();
+        $order = null;
+        $orderLocalId = null;
+        $orderError = null;
+        $orderMissing = [];
+        if (!empty($perms['orders_write'])) {
+            try {
+                $order = MoySklad::createOrder([
+                    'counterparty_id' => $cp['moysklad_id'],
+                    'organization_id' => $orgId,
+                    'positions'       => $positions,
+                    'description'     => $note,
+                    'state_name'      => trim((string)Settings::get('MS_ORDER_STATE', 'Резерв')),
+                    'attributes'      => array_filter([
+                        trim((string)Settings::get('MS_EMPLOYEE_ATTR', 'СОТРУДНИК'))
+                            => trim((string)($manager['name'] ?? '')),
+                    ], fn($v, $k) => $k !== '' && $v !== '', ARRAY_FILTER_USE_BOTH),
+                ]);
+                $orderMissing = $order['missing'] ?? [];
+            } catch (Throwable $e) {
+                $orderError = $e->getMessage();
+                Logger::warning('moysklad', 'Заказ под счёт не создался: ' . $orderError,
+                                ['proposal_id' => $proposalId]);
+            }
+        } else {
+            $orderError = 'нет прав на создание заказов';
+        }
+
+        // Наборы позиций, каждый из которых станет счётом
+        $batches = $split
+            ? array_map(fn($pos, $name) => ['positions' => [$pos], 'note' => $note . ' — ' . $name],
+                        $positions, $names)
+            : [['positions' => $positions, 'note' => $note]];
+
+        $created = [];
         try {
-            $inv = MoySklad::createInvoice([
-                'counterparty_id' => $cp['moysklad_id'],
-                'organization_id' => msOrgId(),
-                'positions'       => $positions,
-                'description'     => $note,
-            ]);
+            foreach ($batches as $batch) {
+                $created[] = MoySklad::createInvoice([
+                    'counterparty_id' => $cp['moysklad_id'],
+                    'organization_id' => $orgId,
+                    'positions'       => $batch['positions'],
+                    'description'     => $batch['note'],
+                    'order_id'        => $order['id'] ?? null,
+                ]);
+            }
         } catch (MoySkladPermissionException $e) {
             jsonError('МойСклад: нет прав на создание счетов', 403);
         } catch (Throwable $e) {
-            jsonError('МойСклад не принял счёт: ' . $e->getMessage(), 502);
+            // Часть счетов могла уже создаться — не молчим об этом
+            if ($created) {
+                Logger::warning('moysklad', 'Отдельные счета созданы не все: ' . $e->getMessage(),
+                                ['proposal_id' => $proposalId, 'created' => count($created)]);
+            }
+            jsonError('МойСклад не принял счёт: ' . $e->getMessage()
+                . ($created ? ' (успели выставить: ' . count($created) . ')' : ''), 502);
+        }
+        $inv = $created[0];
+
+        if ($order) {
+            $orderLocalId = MsSync::upsertOrder($order['id'], [
+                'proposal_id'     => $proposalId,
+                'request_id'      => $p['request_id'] ? (int)$p['request_id'] : null,
+                'counterparty_id' => $cpId,
+                'manager_id'      => (int)$manager['id'],
+            ]);
+            // До какого числа держим резерв. Дальше — напоминание его снять
+            // (cron/check_reserves.php), с кнопкой, снимающей проведение.
+            $days = max(0, (int)Settings::get('MS_RESERVE_DAYS', 14));
+            if ($orderLocalId && $days > 0) {
+                Db::update('orders', ['reserve_until' => date('Y-m-d H:i:s', time() + $days * 86400)],
+                           'id=?', [$orderLocalId]);
+            }
+            Db::update('proposals', ['moysklad_order_id' => $order['id'], 'updated_at' => date('Y-m-d H:i:s')],
+                       'id=?', [$proposalId]);
         }
 
-        $localId = MsSync::upsertInvoice($inv, null, $cpId);
-        $pdf = MsSync::ensureInvoicePdf($localId);
+        $invoices = [];
+        foreach ($created as $one) {
+            $oneId = MsSync::upsertInvoice($one, $orderLocalId, $cpId);
+            $onePdf = MsSync::ensureInvoicePdf($oneId);
+            $invoices[] = [
+                'invoice_id' => $oneId,
+                'name'       => $one['name'],
+                'sum'        => $one['sum'],
+                'url'        => MoySklad::invoiceUrl($one['id']),
+                'pdf_url'    => $onePdf ? "/api/invoices.php?action=pdf&id=$oneId" : null,
+            ];
+        }
+        $localId = $invoices[0]['invoice_id'];
+        $pdf = $invoices[0]['pdf_url'] !== null;
 
-        Logger::info('moysklad', "Счёт {$inv['name']} выставлен по КП #$proposalId",
-                     ['proposal_id' => $proposalId, 'invoice_id' => $localId, 'manager_id' => (int)$manager['id']]);
+        Logger::info('moysklad', "Счёт {$inv['name']} выставлен по КП #$proposalId"
+                     . ($order ? " вместе с заказом {$order['name']}" : ' без заказа'),
+                     ['proposal_id' => $proposalId, 'invoice_id' => $localId,
+                      'order_id' => $orderLocalId, 'manager_id' => (int)$manager['id'],
+                      'order_error' => $orderError, 'missing' => $orderMissing]);
 
         jsonOk([
             'invoice_id' => $localId,
             'name'       => $inv['name'],
             'sum'        => $inv['sum'],
             'url'        => MoySklad::invoiceUrl($inv['id']),
+            // Все выставленные счета: при «отдельных счетах» их столько, сколько позиций
+            'invoices'   => $invoices,
+            'split'      => $split ? 1 : 0,
             // Файл, который можно приложить к письму прямо из карточки
             'pdf_url'    => $pdf ? "/api/invoices.php?action=pdf&id=$localId" : null,
             'pdf_error'  => $pdf ? null : 'Печатная форма в МойСклад пока недоступна — счёт создан, файл появится позже',
             'skipped'    => $skipped,
+            // Заказ, к которому привязан счёт, — и то, чего для него не нашлось
+            'order'      => $order ? [
+                'id'   => $orderLocalId,
+                'name' => $order['name'],
+                'url'  => MoySklad::orderUrl($order['id']),
+            ] : null,
+            'order_error'   => $orderError,
+            'order_missing' => $orderMissing,
         ]);
+    }
+
+    /**
+     * Снять резерв: заказ перестаёт быть проведённым в МойСклад (модуль 026).
+     *
+     * Это кнопка из напоминания «счёт не оплачен две недели». Товар перестаёт
+     * числиться за этим клиентом, сам заказ остаётся — его видно и можно
+     * провести обратно руками.
+     */
+    case 'release_reserve': {
+        $manager = requireAuth();
+        $id = (int)($_GET['order_id'] ?? 0);
+        $order = Db::one("SELECT * FROM orders WHERE id=?", [$id]);
+        if (!$order) jsonError('Заказ не найден', 404);
+
+        MoySklad::init($GLOBALS['cfg']['MOYSKLAD_TOKEN'] ?? '');
+        try {
+            MoySklad::setOrderApplicable((string)$order['moysklad_id'], false);
+        } catch (Throwable $e) {
+            jsonError('МойСклад не снял проведение заказа: ' . $e->getMessage(), 502);
+        }
+
+        Db::update('orders', [
+            'applicable'          => 0,
+            'reserve_released_at' => date('Y-m-d H:i:s'),
+        ], 'id=?', [$id]);
+
+        Logger::info('moysklad', "Резерв по заказу {$order['name']} снят",
+                     ['order_id' => $id, 'manager_id' => (int)$manager['id']]);
+
+        jsonOk(['order_id' => $id, 'name' => $order['name'],
+                'url' => MoySklad::orderUrl((string)$order['moysklad_id'])]);
     }
 
     // One-click send to the client (FR-032)

@@ -7,6 +7,7 @@ require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/moysklad.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
+require_once ROOT . '/lib/variants.php';
 require_once ROOT . '/lib/pdf.php';
 require_once ROOT . '/lib/terms.php';
 require_once ROOT . '/lib/kp_text.php';
@@ -19,6 +20,7 @@ require_once ROOT . '/lib/notifier.php';
 require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/request_shape.php';
 require_once ROOT . '/lib/requisites.php';
+require_once ROOT . '/lib/kp_terms.php';
 
 /**
  * SC-005 with teeth (module 018).
@@ -88,6 +90,10 @@ switch ($action) {
         }
         unset($row);
         $proposal['show_match_table_effective'] = KpContent::showMatchTable($proposal);
+        // Условия так, как их правят: с {execution_days}/{validity_days} на месте.
+        // У КП, собранного до модуля 026, своего блока нет — он складывается из
+        // прежних четырёх полей, чтобы документ не изменился задним числом.
+        $proposal['terms_text_edit'] = KpTerms::rawForProposal($proposal);
         $proposal['request_shape'] = $proposal['request_id']
             ? RequestShape::of((int)$proposal['request_id']) : RequestShape::TEXT;
         // Which positions are analogues rather than what was asked for — the
@@ -144,6 +150,9 @@ switch ($action) {
             'execution_days' => (int)(Db::val("SELECT value FROM settings WHERE key='default_execution_days'") ?: 30),
             'validity_days' => (int)(Db::val("SELECT value FROM settings WHERE key='default_validity_days'") ?: 14),
             'conditions_text' => Db::val("SELECT value FROM settings WHERE key='default_conditions_text'") ?: '',
+            // Условия — одним блоком, и ровно тем, который менеджер правил в
+            // прошлый раз: house rule пишется один раз (модуль 026)
+            'terms_text' => KpTerms::defaultText(),
             // «Чтобы всё, что мы дописываем, система учитывала»: whatever the
             // manager typed around the table last time is already here, so a
             // house rule is written once instead of retyped on every КП
@@ -162,6 +171,16 @@ switch ($action) {
             // подбора приходит сырой остаток и резерв отдельно; оба пути
             // складываются в одну и ту же пару колонок КП.
             $free = $match ? max(0, (int)($match['stock'] ?? 0) - (int)($match['reserved'] ?? 0)) : 0;
+            // Товар с модификациями отвечает их суммой: своего остатка у него нет,
+            // и КП уходило «под заказ» при полном складе размеров (модуль 026)
+            if ($match && !empty($match['moysklad_id'])) {
+                $byVariants = Variants::stockOf((string)$match['moysklad_id']);
+                if ($byVariants !== null) {
+                    $free = $byVariants['free'];
+                    $match['stock'] = $free;
+                    $match['reserved'] = 0;   // резерв модификаций уже вычтен
+                }
+            }
             Db::insert('proposal_items', [
                 'proposal_id' => $proposalId,
                 'position' => $i + 1,
@@ -179,8 +198,10 @@ switch ($action) {
                 'match_confidence' => $match['score'] ?? null,
                 'match_variants' => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
                 'is_confirmed' => $m['is_confirmed'] ? 1 : 0,
-                // The manager's own note wins over the automatic «под заказ»
-                'notes' => $m['notes'] ?? (($match && $free === 0) ? 'под заказ' : null),
+                // Своё примечание менеджера сильнее автоматического «под заказ»,
+                // а автоматическое пересчитывается по сегодняшнему остатку, а не
+                // переезжает из строки подбора как есть (модуль 026)
+                'notes' => Terms::stockNote($m['notes'] ?? null, $free, (bool)$match),
                 // An analogue offered because we could not ship what was asked
                 // for, and the proof that it fits (module 013)
                 // Комментарий по товару и деньги, проставленные на карточке
@@ -281,6 +302,8 @@ switch ($action) {
         foreach (['pre_table_text', 'post_table_text', 'intro_text', 'conditions_text', 'execution_days', 'validity_days', 'vat_rate', 'show_vat_total',
                   'warranty_text', 'images_note', 'show_images', 'show_upsell', 'upsell_intro', 'upsell_note',
                   'show_match_table', 'match_table_note',
+                  // Условия одним блоком и доставка отдельной строкой (модуль 026)
+                  'terms_text', 'delivery_on', 'delivery_name', 'delivery_price',
                   // Сколько фото печатать в ЭТОМ КП; пусто — общая настройка
                   'photos_per_item'] as $f) {
             if (array_key_exists($f, $input)) $fields[$f] = $input[$f];
@@ -288,6 +311,8 @@ switch ($action) {
         if (array_key_exists('cover_letter_final', $input)) {
             $fields['cover_letter_final'] = $input['cover_letter_final'];
         }
+        // Последняя правка условий — значение по умолчанию для следующих КП
+        if (array_key_exists('terms_text', $fields)) KpTerms::remember((string)$fields['terms_text']);
         if ($fields) {
             $fields['updated_at'] = date('Y-m-d H:i:s');
             Db::update('proposals', $fields, 'id=?', [$id]);
@@ -340,6 +365,10 @@ switch ($action) {
             KpContent::setAddons($id, $input['addons']);
         }
 
+        // Остатки перечитываются перед пересборкой: «под заказ» в документе
+        // должно отвечать сегодняшнему складу, а не дню сборки КП (модуль 026)
+        KpContent::refreshStock($id);
+
         // Regenerate PDF
         PdfGenerator::generate($id);
 
@@ -385,8 +414,9 @@ switch ($action) {
 
         $add('post_table_text',  'Текст после таблицы',     $p['post_table_text'] ?? '');
         $add('match_table_note', 'Пояснение над таблицей соответствия', $p['match_table_note'] ?? '');
-        $add('conditions_text',  'Условия поставки',        $p['conditions_text'] ?? '');
-        $add('warranty_text',    'Гарантия и обслуживание', $p['warranty_text'] ?? '');
+        $add('terms_text',       'Условия поставки',        KpTerms::rawForProposal($p),
+             '{execution_days} и {validity_days} подставляются из полей КП. '
+             . 'Последняя правка станет заготовкой для следующих КП', 5);
         $add('images_note',      'Оговорка под фотографиями', $p['images_note'] ?? '', '', 2);
         $add('upsell_intro',     'Доукомплектование · вступление', $p['upsell_intro'] ?? '', '', 2);
         $add('upsell_note',      'Доукомплектование · подпись',    $p['upsell_note'] ?? '', '', 2);
@@ -410,7 +440,7 @@ switch ($action) {
         if (!is_array($blocks) || !$blocks) jsonError('Нечего сохранять');
 
         $ownFields = ['cover_letter_final', 'intro_text', 'pre_table_text', 'post_table_text',
-                      'match_table_note', 'conditions_text', 'warranty_text', 'images_note',
+                      'match_table_note', 'terms_text', 'conditions_text', 'warranty_text', 'images_note',
                       'upsell_intro', 'upsell_note'];
         $itemFields = ['product_name', 'comment_text', 'notes'];
 
@@ -433,11 +463,17 @@ switch ($action) {
                 continue;
             }
             if (!in_array($key, $ownFields, true)) continue;
-            if ((string)($p[$key] ?? '') === $value) continue;
+            // У КП, собранного до модуля 026, своего блока условий нет, и
+            // редактор показывает сложенный из прежних полей. Сравниваем с тем
+            // же текстом — иначе нетронутый блок считался бы правкой и уезжал
+            // в заготовку следующих КП.
+            $before = $key === 'terms_text' ? KpTerms::rawForProposal($p) : (string)($p[$key] ?? '');
+            if ($before === $value) continue;
             $fields[$key] = $value;
             $changed++;
         }
 
+        if (isset($fields['terms_text'])) KpTerms::remember((string)$fields['terms_text']);
         if ($fields) {
             $fields['updated_at'] = date('Y-m-d H:i:s');
             Db::update('proposals', $fields, 'id=?', [$id]);
@@ -503,6 +539,55 @@ switch ($action) {
         readfile($path);
         exit;
 
+    /**
+     * КП отдельными файлами — по одному на позицию, одним архивом (модуль 026).
+     *
+     * Закупщик кладёт каждую позицию в свою строку сметы, и документ на шесть
+     * позиций он режет руками. Здесь он получает шесть документов, каждый —
+     * полноценное КП со своей шапкой, реквизитами и подписью.
+     */
+    case 'split_files': {
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::val("SELECT 1 FROM proposals WHERE id=?", [$id])) jsonError('КП не найдено', 404);
+        $format = ($_GET['format'] ?? 'docx') === 'pdf' ? 'pdf' : 'docx';
+
+        try {
+            $files = DocxGenerator::perItem($id, $format);
+        } catch (Throwable $e) {
+            jsonError('Не удалось собрать отдельные файлы: ' . $e->getMessage(), 400);
+        }
+
+        // Один файл архивом не заворачиваем — отдаём как есть
+        if (count($files) === 1) {
+            $one = $files[0];
+            header('Content-Type: application/octet-stream');
+            header('Content-Disposition: attachment; filename="KP-' . $id . '.' . $format . '"; '
+                 . "filename*=UTF-8''" . rawurlencode($one['name']));
+            header('Content-Length: ' . (string)filesize($one['path']));
+            readfile($one['path']);
+            exit;
+        }
+
+        $zipPath = ROOT . '/data/tmp/kp-' . $id . '-' . bin2hex(random_bytes(4)) . '.zip';
+        if (!is_dir(dirname($zipPath))) mkdir(dirname($zipPath), 0755, true);
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            jsonError('Архив не создался на сервере', 500);
+        }
+        foreach ($files as $f) $zip->addFile($f['path'], $f['name']);
+        $zip->close();
+
+        $zipName = 'КП_отдельными_файлами_' . $id . '.zip';
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="KP-' . $id . '-split.zip"; '
+             . "filename*=UTF-8''" . rawurlencode($zipName));
+        header('Content-Length: ' . (string)filesize($zipPath));
+        readfile($zipPath);
+        @unlink($zipPath);
+        exit;
+    }
+
     case 'confirm':
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
@@ -550,6 +635,7 @@ switch ($action) {
         }
 
         // Regenerate final PDF
+        KpContent::refreshStock($id);
         PdfGenerator::generate($id);
 
         Db::update('proposals', ['status' => 'confirmed', 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$id]);
@@ -581,16 +667,28 @@ switch ($action) {
         // стоит шлем», вложение мешает, а закупщику по-прежнему нужен Word.
         $format = (string)($input['format'] ?? Settings::get('KP_ATTACH_FORMAT', 'docx'));
         if (!in_array($format, ['docx', 'pdf', 'both', 'text'], true)) $format = 'docx';
+        // «Отдельными файлами» — по документу на позицию (модуль 026): клиенту,
+        // который раскладывает позиции по разным заявкам, один файл на шесть
+        // строк приходится резать руками
+        $split = !empty($input['split']) && $format !== 'text';
+
         $attachments = [];
         $docxPath = null;
-        if ($format === 'docx' || $format === 'both') {
-            $docxPath = DocxGenerator::generate($id);
-            $attachments[] = $docxPath;
-        }
-        if ($format === 'pdf' || $format === 'both') {
-            if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) PdfGenerator::generate($id);
-            $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]) + $proposal;
-            $attachments[] = $proposal['pdf_path'];
+        if ($split) {
+            $each = $format === 'pdf' ? ['pdf'] : ($format === 'both' ? ['docx', 'pdf'] : ['docx']);
+            foreach ($each as $ext) {
+                foreach (DocxGenerator::perItem($id, $ext) as $f) $attachments[] = $f['path'];
+            }
+        } else {
+            if ($format === 'docx' || $format === 'both') {
+                $docxPath = DocxGenerator::generate($id);
+                $attachments[] = $docxPath;
+            }
+            if ($format === 'pdf' || $format === 'both') {
+                if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) PdfGenerator::generate($id);
+                $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]) + $proposal;
+                $attachments[] = $proposal['pdf_path'];
+            }
         }
 
         // Файлы, которые менеджер приложил сам: он мог переделать документ
@@ -628,7 +726,7 @@ switch ($action) {
             'email_to'   => $to,
             'manager_id' => $manager['id'] ?? null,
             'event_type' => 'kp_sent',
-            'meta'       => ['proposal_id' => (int)$id, 'format' => $format,
+            'meta'       => ['proposal_id' => (int)$id, 'format' => $format, 'split' => $split ? 1 : 0,
                              'files' => array_map('basename', $attachments)],
         ]);
         Db::q("UPDATE correspondence SET has_attachment=1, attachment_path=? WHERE id=(SELECT MAX(id) FROM correspondence)",

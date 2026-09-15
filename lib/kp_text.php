@@ -17,6 +17,7 @@
 require_once __DIR__ . '/kp_content.php';
 require_once __DIR__ . '/requisites.php';
 require_once __DIR__ . '/terms.php';
+require_once __DIR__ . '/kp_terms.php';
 
 final class KpText {
 
@@ -60,6 +61,16 @@ final class KpText {
             if (trim((string)($item['site_url'] ?? '')) !== '') $lines[] = '   ' . (string)$item['site_url'];
         }
 
+        // Доставка отдельной строкой — как и в файле (модуль 026): в цену
+        // товара она не входит, и в письме это должно быть видно цифрой
+        if ((int)($proposal['delivery_on'] ?? 0) === 1) {
+            $deliveryPrice = (float)($proposal['delivery_price'] ?? 0);
+            $total += $deliveryPrice;
+            $lines[] = sprintf('%d. %s — %s', $n + 1,
+                trim((string)($proposal['delivery_name'] ?? '')) ?: 'Доставка',
+                self::money($deliveryPrice));
+        }
+
         $body = [];
         $body[] = 'Коммерческое предложение' . ($proposal['number'] ? ' № ' . $proposal['number'] : '')
                 . ' от ' . date('d.m.Y');
@@ -91,14 +102,12 @@ final class KpText {
             if ($note !== '') $body[] = $note;
         }
 
-        $terms = [];
-        if ((int)($proposal['execution_days'] ?? 0) > 0) $terms[] = 'Срок поставки: ' . (int)$proposal['execution_days'] . ' дней';
-        if ((int)($proposal['validity_days'] ?? 0) > 0) $terms[] = 'Предложение действительно: ' . (int)$proposal['validity_days'] . ' дней';
-        $conditions = trim((string)($proposal['conditions_text'] ?? ''));
-        if ($conditions !== '') $terms[] = $conditions;
-        if ($terms) {
+        // Условия — тот же блок, что в файле (модуль 026): письмо и документ
+        // не должны обещать клиенту разного
+        $terms = trim(KpTerms::forProposal($proposal));
+        if ($terms !== '') {
             $body[] = '';
-            $body[] = implode("\n", $terms);
+            $body[] = $terms;
         }
 
         $text = implode("\n", $body);

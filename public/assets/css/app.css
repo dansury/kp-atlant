@@ -791,6 +791,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bfilter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
 .bfilter select { width: auto; min-width: 110px; padding: 5px 8px; font-size: 12px; }
 .bfilter--check { gap: 4px; }
+/* «Архив» на доске — ссылка, а не галочка: это другой экран (модуль 026) */
+.bfilter--link { cursor: pointer; color: var(--accent-ink); text-decoration: underline; }
+.bfilter--link:hover { color: var(--primary); }
+/* Архив компании стоит под её рабочими переписками, а не вместо них */
+.mlist-archive { border-top: 1px solid var(--border); margin-top: 6px; }
+.mlist-archive > summary { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--text-muted); }
+.mlist-archive[open] > summary { font-weight: 600; }
+.mlist-archive .mrow { opacity: .8; }
 .bfilter input[type="checkbox"] { width: auto; }
 
 /* Панель групповых действий: она про то, что отмечено, и потому липнет к

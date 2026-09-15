@@ -201,6 +201,101 @@ final class Variants {
         );
     }
 
+    /**
+     * Остатки по модификациям — для многих товаров за один запрос (модуль 026).
+     *
+     * У товара-родителя в МойСклад собственного остатка нет: он лежит на
+     * размерах и цветах. Поэтому «Тактические штаны» показывались нулём и
+     * уезжали в КП с красным «под заказ», хотя на складе было двадцать пар
+     * четырёх размеров. Здесь родитель отвечает своими модификациями: сколько
+     * какой и сколько всего.
+     *
+     * @param string[] $productIds id товаров-родителей
+     * @return array<string,array{free:int,items:array<int,array{id:string,label:string,free:int}>}>
+     */
+    public static function stockFor(array $productIds): array {
+        require_once __DIR__ . '/alternatives.php';
+        $ids = array_values(array_unique(array_filter(array_map('strval', $productIds), fn($v) => $v !== '')));
+        if (!$ids) return [];
+
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $rows = Db::all(
+            "SELECT moysklad_id, parent_id, name, characteristics, stock, reserved
+             FROM products_cache
+             WHERE parent_id IN ($ph) AND COALESCE(is_archived, 0) = 0
+             ORDER BY name", $ids
+        );
+
+        $out = [];
+        foreach ($rows as $r) {
+            $parent = (string)$r['parent_id'];
+            if (!isset($out[$parent])) $out[$parent] = ['free' => 0, 'items' => []];
+            $free = Alternatives::freeStock($r);
+            $out[$parent]['free'] += $free;
+            $out[$parent]['items'][] = [
+                'id'    => (string)$r['moysklad_id'],
+                'label' => self::label($r),
+                'free'  => $free,
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Дописать строкам каталога остаток по модификациям — пачкой, одним запросом.
+     *
+     * `variant_stock` — разбивка («S — 5, M — 13»), `stock` становится суммой:
+     * при выборе позиции человек должен видеть количества модификаций, а не
+     * ноль абстрактного товара (модуль 026).
+     *
+     * @param array<int,array> $rows строки с ключом `moysklad_id`
+     */
+    public static function decorateStock(array $rows): array {
+        $map = self::stockFor(array_column($rows, 'moysklad_id'));
+        if (!$map) return $rows;
+        foreach ($rows as &$row) {
+            $id = (string)($row['moysklad_id'] ?? '');
+            if (!isset($map[$id])) continue;
+            $row['variant_stock'] = $map[$id]['items'];
+            $row['stock'] = $map[$id]['free'];
+            // Резерв модификаций уже вычтен — второй раз его вычитать нельзя
+            $row['reserved'] = 0;
+        }
+        unset($row);
+        return $rows;
+    }
+
+    /** Остатки по модификациям одного товара, или null — модификаций нет. */
+    public static function stockOf(string $productId): ?array {
+        return self::stockFor([$productId])[$productId] ?? null;
+    }
+
+    /**
+     * Свободный остаток строки каталога так, как его видит человек: у товара с
+     * модификациями это сумма модификаций, у товара без них — его собственный.
+     */
+    public static function freeStock(array $product): int {
+        require_once __DIR__ . '/alternatives.php';
+        $id = (string)($product['moysklad_id'] ?? '');
+        // У самой модификации своих модификаций нет — её остаток и есть её остаток
+        if ($id !== '' && (string)($product['product_type'] ?? '') !== 'variant') {
+            $byVariants = self::stockOf($id);
+            if ($byVariants !== null) return $byVariants['free'];
+        }
+        return Alternatives::freeStock($product);
+    }
+
+    /** Чем модификация называется в списке: «S», «олива», иначе — имя целиком. */
+    public static function label(array $variant): string {
+        foreach (self::values($variant) as $value) {
+            $value = trim($value);
+            // «Размер: S» уже разложено values() на «S» и на строку целиком —
+            // берём короткое, оно и есть метка
+            if ($value !== '' && mb_strlen($value) <= 24 && mb_strpos($value, ':') === false) return $value;
+        }
+        return trim((string)($variant['name'] ?? ''));
+    }
+
     /** Есть ли у товара модификации — вопрос, который задаёт карточка запроса. */
     public static function has(string $productId): bool {
         return $productId !== '' && (int)Db::val(
@@ -284,6 +379,7 @@ final class Variants {
 
         require_once __DIR__ . '/catalog.php';
         require_once __DIR__ . '/alternatives.php';
+        require_once __DIR__ . '/terms.php';
         return [
             'moysklad_product_id' => $pick['moysklad_id'],
             'product_name'        => $pick['name'],

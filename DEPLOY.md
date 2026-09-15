@@ -102,7 +102,11 @@
    менеджера (логин/пароль).
 3. Настроить в панели хостинга cron на `cron/check_mail.php`,
    `cron/check_followups.php`, `cron/check_notifications.php`,
-   `cron/sync_moysklad.php`, `cron/sync_knowledge.php` (пути — см. `plan.md`, D-004).
+   `cron/check_reserves.php`, `cron/sync_moysklad.php`,
+   `cron/sync_knowledge.php` (пути — см. `plan.md`, D-004).
+   `check_reserves.php` хватает раза в сутки: он напоминает снять резерв по
+   заказу, счёт к которому не оплачен дольше срока из «Настройки → МойСклад →
+   Держать резерв, дней».
 
 ## Модуль 013 — аналоги, таблица соответствия, реквизиты и сайт
 
