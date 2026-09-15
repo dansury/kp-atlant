@@ -20,14 +20,61 @@ require_once __DIR__ . '/markup.php';
 
 final class RequestItems {
 
+    /**
+     * Перечитать остатки строк из каталога и поправить автоматическое «под заказ».
+     *
+     * Остаток записывался в строку ОДИН раз — в момент подбора. Каталог потом
+     * обновлялся, товар возвращался на полку, а строка так и уходила в КП с
+     * красной надписью «под заказ»: цифра в ней была вчерашняя (модуль 026).
+     * Примечание, написанное человеком, не трогается — только то, что поставил
+     * подбор сам.
+     *
+     * @return int сколько строк изменилось
+     */
+    public static function refreshStock(int $requestId): int {
+        $rows = Db::all("SELECT * FROM request_items WHERE request_id=? AND moysklad_product_id IS NOT NULL
+                          AND moysklad_product_id <> ''", [$requestId]);
+        if (!$rows) return 0;
+
+        $ids = array_values(array_unique(array_column($rows, 'moysklad_product_id')));
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $stock = [];
+        $byVariants = Variants::stockFor($ids);
+        foreach (Db::all("SELECT moysklad_id, stock, reserved FROM products_cache WHERE moysklad_id IN ($ph)", $ids) as $p) {
+            $id = (string)$p['moysklad_id'];
+            $stock[$id] = isset($byVariants[$id]) ? $byVariants[$id]['free'] : Alternatives::freeStock($p);
+        }
+
+        $changed = 0;
+        foreach ($rows as $row) {
+            $id = (string)$row['moysklad_product_id'];
+            // Позиции нет в кэше — молчим: это «не знаем», а не «ноль на складе»
+            if (!array_key_exists($id, $stock)) continue;
+            $free = $stock[$id];
+            $note = Terms::stockNote($row['notes'] ?? null, $free, true);
+            if ((int)($row['stock'] ?? -1) === $free && ($row['notes'] ?? null) === $note) continue;
+            Db::update('request_items', ['stock' => $free, 'notes' => $note], 'id=?', [(int)$row['id']]);
+            $changed++;
+        }
+        return $changed;
+    }
+
     /** Rows of a request; built from the parsed letter the first time it is opened. */
     public static function ensure(int $requestId, bool $useLlm = false): array {
         $rows = self::all($requestId);
-        if ($rows) return $rows;
+        // Карточка открывается — остатки в ней сегодняшние, а не те, что были
+        // в день подбора (модуль 026)
+        if ($rows) { self::refreshStock($requestId); return self::all($requestId); }
 
-        $req = Db::one("SELECT parsed_json, counterparty_id FROM requests WHERE id=?", [$requestId]);
+        $req = Db::one("SELECT parsed_json, raw_text, counterparty_id FROM requests WHERE id=?", [$requestId]);
         $parsed = $req && $req['parsed_json'] ? (json_decode($req['parsed_json'], true) ?: []) : [];
         $items = $parsed['items'] ?? [];
+        if (!$items) {
+            // Письмо разобрали, когда модель позиций не нашла, — попробуем
+            // правилами: «… в количестве 5 шт» тоже строка заказа (модуль 026)
+            require_once __DIR__ . '/item_lines.php';
+            $items = ItemLines::extract((string)($req['raw_text'] ?? ''));
+        }
         if (!$items) return [];
 
         $counterpartyId = !empty($req['counterparty_id']) ? (int)$req['counterparty_id'] : null;
@@ -199,9 +246,24 @@ final class RequestItems {
             }
         }
 
+        // Остатки по модификациям — одним запросом на всю карточку (модуль 026)
+        $variantStock = Variants::stockFor(array_merge($ids, array_reduce($rows, function ($acc, $r) {
+            $list = $r['match_variants'] ? (json_decode((string)$r['match_variants'], true) ?: []) : [];
+            return array_merge($acc, array_column($list, 'moysklad_id'));
+        }, [])));
+
         foreach ($rows as &$row) {
             $row['variants'] = $row['match_variants'] ? (json_decode($row['match_variants'], true) ?: []) : [];
             unset($row['match_variants']);
+            // Кандидат с модификациями отвечает их количествами, а не нулём
+            foreach ($row['variants'] as &$cand) {
+                $vs = $variantStock[(string)($cand['moysklad_id'] ?? '')] ?? null;
+                if (!$vs) continue;
+                $cand['variant_stock'] = $vs['items'];
+                $cand['stock'] = $vs['free'];
+            }
+            unset($cand);
+            $row['variant_stock'] = $variantStock[(string)($row['moysklad_product_id'] ?? '')]['items'] ?? [];
             $row['price_options'] = $prices[$row['moysklad_product_id']] ?? [];
             // Which of the client's requirements this analogue meets — the card
             // shows it, and so does the КП
@@ -670,13 +732,15 @@ final class RequestItems {
                 // already reserved for someone else is not ours to promise, and
                 // this column is what decides «в наличии» / «под заказ» all the
                 // way through to the КП and to the analogue search (module 013)
-                'stock'               => $best === null ? null : Alternatives::freeStock($best),
+                // Остаток товара с модификациями — сумма его размеров и цветов:
+                // у родителя в МойСклад своего остатка нет (модуль 026)
+                'stock'               => $best === null ? null : Variants::freeStock($best),
                 'match_confidence'    => $best['score'] ?? null,
                 'match_variants'      => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
                 'needs_choice'        => !empty($m['needs_choice']) ? 1 : 0,
                 'match_source'        => $m['match_source'] ?? null,
                 'is_confirmed'        => !empty($m['is_confirmed']) ? 1 : 0,
-                'notes'               => ($best && Alternatives::freeStock($best) === 0) ? 'под заказ' : null,
+                'notes'               => Terms::stockNote(null, $best ? Variants::freeStock($best) : 0, (bool)$best),
                 'variant_label'       => (string)($m['variant_label'] ?? '') ?: null,
                 'variant_kind'        => (string)($m['variant_kind'] ?? '') ?: null,
             ];
@@ -691,7 +755,7 @@ final class RequestItems {
             // Остаток теперь принадлежит модификации, значит и «под заказ» —
             // тоже её: у размера L склад свой, а не общий на товар
             if ($resolved && array_key_exists('stock', $resolved)) {
-                $out[$last]['notes'] = (int)$resolved['stock'] === 0 ? 'под заказ' : null;
+                $out[$last]['notes'] = Terms::stockNote($out[$last]['notes'], (int)$resolved['stock'], true);
             }
         }
         return $out;

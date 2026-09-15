@@ -376,6 +376,9 @@ final class MailSync {
         if (!empty($row['thread_key'])) {
             Db::q("DELETE FROM board_cards WHERE thread_key=? AND counterparty_id IS NULL", [(string)$row['thread_key']]);
         }
+        // Спам унёс последнее письмо компании — карточке на доске больше нечего
+        // показывать (модуль 026)
+        self::pruneBoard($row['counterparty_id'] ?? null);
 
         $moved = false;
         $moveError = null;
@@ -429,7 +432,7 @@ final class MailSync {
      * вместе с ним.
      */
     public static function archiveMessage(int $mailMessageId, ?int $managerId = null,
-                                          string $reason = 'not_our_profile'): array {
+                                          string $reason = 'not_our_profile', bool $prune = true): array {
         $row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$mailMessageId]);
         if (!$row) throw new RuntimeException('Письмо не найдено');
 
@@ -444,9 +447,12 @@ final class MailSync {
             Db::update('requests', ['category' => 'not_our_profile', 'category_source' => 'manager'],
                        'id=?', [(int)$row['request_id']]);
         }
-        // Карточка доски, построенная вокруг этого письма, уходит с ним; карточка
-        // компании остаётся — заархивировано письмо, а не контрагент.
+        // Карточка доски, построенная вокруг этого письма, уходит с ним. Карточка
+        // компании остаётся, пока у компании есть хоть одно живое письмо; когда
+        // в архив ушло последнее — уходит и она, иначе на доске стоит карточка,
+        // внутри которой пусто (модуль 026).
         Db::q("DELETE FROM board_cards WHERE mail_message_id=? AND counterparty_id IS NULL", [$mailMessageId]);
+        if ($prune) self::pruneBoard($row['counterparty_id'] ?? null);
 
         [$moved, $folder, $moveError] = self::moveToArchiveFolder($row);
 
@@ -467,7 +473,7 @@ final class MailSync {
         $errors = [];
         foreach ($ids as $id) {
             try {
-                $res = self::archiveMessage((int)$id, $managerId, $reason);
+                $res = self::archiveMessage((int)$id, $managerId, $reason, false);
                 $archived++;
                 if (!empty($res['move_error'])) $errors[] = (string)$res['move_error'];
             } catch (Throwable $e) {
@@ -476,8 +482,25 @@ final class MailSync {
             }
         }
         Db::q("DELETE FROM board_cards WHERE thread_key=? AND counterparty_id IS NULL", [$threadKey]);
+        self::pruneBoard(Db::val("SELECT counterparty_id FROM mail_messages
+                                  WHERE thread_key=? AND counterparty_id IS NOT NULL LIMIT 1", [$threadKey]));
 
         return ['archived' => $archived, 'move_error' => $errors ? implode('; ', array_unique($errors)) : null];
+    }
+
+    /**
+     * Снять с доски карточки, внутри которых не осталось живых писем.
+     *
+     * Никогда не фатально: убрать письмо с экрана важнее, чем прибраться на
+     * доске, и упавшая уборка не должна отменять архивацию.
+     */
+    private static function pruneBoard($counterpartyId): void {
+        try {
+            require_once __DIR__ . '/boards.php';
+            Boards::pruneEmptyCards($counterpartyId ? (int)$counterpartyId : null);
+        } catch (Throwable $e) {
+            Logger::warning('mail', 'Доска не прибралась после архива: ' . $e->getMessage());
+        }
     }
 
     /** Вернуть письмо на экран. Папку на сервере не трогаем — письмо там и лежит. */
@@ -512,7 +535,12 @@ final class MailSync {
             Db::q("UPDATE mail_messages SET archived_at=NULL, archived_reason=NULL
                    WHERE mailbox_id=? AND archived_reason='mailbox_off'", [$mailboxId]);
         }
-        return (int)Db::pdo()->query("SELECT changes()")->fetchColumn();
+        $changed = (int)Db::pdo()->query("SELECT changes()")->fetchColumn();
+        // Выключенный ящик уносит письма с экрана — и карточки, в которых после
+        // этого пусто (модуль 026). Включённый ящик вернёт их сам: `Boards::sync()`
+        // видит, что компания снова пишет.
+        if ($hidden) self::pruneBoard(null);
+        return $changed;
     }
 
     /**

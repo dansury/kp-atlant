@@ -21,10 +21,10 @@
     table.items td.sum { text-align: right; white-space: nowrap; font-weight: bold; }
     .total-row { text-align: right; font-size: 12pt; font-weight: bold; margin: 10px 0; }
     .vat-row { text-align: right; font-size: 10pt; color: #555; }
+    /* Условия поставки — один блок (модуль 026); .terms/.validity/.warranty
+       были стилями четырёх зашитых абзацев и больше не печатаются */
     .conditions { margin-top: 20px; font-size: 10pt; color: #333; }
     .conditions p { margin: 5px 0; }
-    .terms { margin-top: 15px; font-size: 10pt; }
-    .validity { margin-top: 10px; font-size: 10pt; font-style: italic; }
     .signature { margin-top: 40px; display: table; width: 100%; }
     .signature .date { display: table-cell; width: 50%; vertical-align: bottom; font-size: 10pt; }
     .signature .sign { display: table-cell; width: 50%; text-align: right; vertical-align: bottom; }
@@ -50,7 +50,6 @@
     .gallery { margin: 10px 0; text-align: center; }
     .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; }
     .disclaimer { font-size: 8.5pt; color: #666; font-style: italic; margin-top: 8px; }
-    .warranty { margin-top: 15px; font-size: 10pt; }
 
     /* Correspondence table: what was asked for vs what we answer with */
     .match { margin: 15px 0 20px; }
@@ -245,6 +244,18 @@
     <td class="sum"><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?> руб.</td>
 </tr>
 <?php endforeach; ?>
+<?php if (!empty($delivery)): ?>
+<!-- Доставка отдельной строкой (модуль 026): она не входит в стоимость товара,
+     и клиент должен видеть её ценой, а не оговоркой в условиях -->
+<tr>
+    <td class="num"><?= count($items) + 1 ?></td>
+    <td><?= htmlspecialchars($delivery['name']) ?></td>
+    <td class="qty">усл.</td>
+    <td class="qty">1</td>
+    <td class="price"><?= number_format($delivery['price'], 2, ',', ' ') ?> руб.</td>
+    <td class="sum"><?= number_format($delivery['price'], 2, ',', ' ') ?> руб.</td>
+</tr>
+<?php endif; ?>
 </tbody>
 </table>
 
@@ -368,25 +379,12 @@
 <div class="block"><?= nl2br(htmlspecialchars($postTableText)) ?></div>
 <?php endif; ?>
 
-<!-- Conditions -->
-<div class="conditions">
-    <?= nl2br(htmlspecialchars($conditionsText)) ?>
-</div>
-
-<!-- Warranty and service -->
-<?php if (!empty($warrantyText)): ?>
-<div class="warranty"><?= nl2br(htmlspecialchars($warrantyText)) ?></div>
+<!-- Условия поставки — один блок, который правит менеджер (модуль 026).
+     Раньше здесь стояли четыре абзаца, написанные прямо в шаблоне: гарантия на
+     год и «стоимость включает» были неправдой, а поправить их было негде. -->
+<?php if (trim((string)$termsText) !== ''): ?>
+<div class="conditions"><?= nl2br(htmlspecialchars($termsText)) ?></div>
 <?php endif; ?>
-
-<!-- Execution terms -->
-<div class="terms">
-    Сроки выполнения условий договора <?= $executionDays ?> календарных дней с момента получения предоплаты.
-</div>
-
-<!-- Price validity -->
-<div class="validity">
-    Предлагаемая цена продукции является твёрдой и не подлежит изменению в течение <?= $validityDays ?> дней с даты настоящего предложения.
-</div>
 
 <!-- Дата и подпись.
      Пустой строки под подпись здесь больше нет: место, оставленное «под

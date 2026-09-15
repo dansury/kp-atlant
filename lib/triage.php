@@ -181,7 +181,11 @@ final class Triage {
      */
     public static function classify(string $text, string $attachmentText = '', string $subject = ''): array {
         if (!self::enabled()) {
-            $parsed = RequestParser::parse(($subject !== '' ? "Тема письма: $subject\n\n" : '') . $text, $attachmentText);
+            $body = ($subject !== '' ? "Тема письма: $subject\n\n" : '') . $text;
+            $parsed = RequestParser::parse($body, $attachmentText);
+            $parsed['items'] = self::fillItemsFromText(
+                is_array($parsed['items'] ?? null) ? $parsed['items'] : [],
+                'kp_request', $body . "\n" . $attachmentText);
             $parsed['category'] = ($parsed['request_type'] ?? '') === 'order' ? 'order' : 'kp_request';
             $parsed['category_confidence'] = 0.0;
             $parsed['category_reason'] = 'Классификация выключена';
@@ -215,7 +219,31 @@ final class Triage {
         // The КП pipeline still asks for request_type — derive it, don't ask twice
         $parsed['request_type'] = self::requestType($category) ?? 'kp_request';
         $parsed['items'] = is_array($parsed['items'] ?? null) ? $parsed['items'] : [];
+        $parsed['items'] = self::fillItemsFromText($parsed['items'], $category, $user);
         return $parsed;
+    }
+
+    /**
+     * Позиции, которых модель не увидела, — из самого текста (модуль 026).
+     *
+     * «Тактические наушники AMP в количестве 5 шт. Или аналог» — модель читала
+     * это как оборот речи, и запрос приходил менеджеру пустым. Запасной разбор
+     * правилами включается ТОЛЬКО когда модель не нашла ничего: там, где она
+     * ответила, её ответ и остаётся.
+     *
+     * Спам и служебные рассылки позиций не получают: «в количестве 3 шт» в
+     * рекламном письме — это не заказ.
+     */
+    private static function fillItemsFromText(array $items, string $category, string $text): array {
+        if ($items || in_array($category, ['spam', 'service'], true)) return $items;
+
+        require_once __DIR__ . '/item_lines.php';
+        $found = ItemLines::extract($text);
+        if (!$found) return $items;
+
+        Logger::info('request', 'Позиции вытащены из текста письма без модели: ' . count($found),
+                     ['category' => $category, 'names' => array_column($found, 'name')]);
+        return $found;
     }
 
     /**

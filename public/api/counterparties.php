@@ -72,10 +72,17 @@ switch ($action) {
             [$id]
         );
         $cp['orders'] = Db::all(
-            "SELECT id, moysklad_id, name, sum, state_name, moment, synced_at FROM orders
-             WHERE counterparty_id=? ORDER BY id DESC LIMIT 20",
+            "SELECT id, moysklad_id, name, sum, state_name, moment, synced_at,
+                    COALESCE(applicable, 1) AS applicable,
+                    reserve_until, reserve_reminded_at, reserve_released_at
+             FROM orders WHERE counterparty_id=? ORDER BY id DESC LIMIT 20",
             [$id]
         );
+        // Резерв, который пора снимать: счёт не оплачен, срок вышел, заказ
+        // всё ещё проведён. Кнопка стоит прямо на заказе (модуль 026).
+        require_once ROOT . '/lib/reserves.php';
+        foreach ($cp['orders'] as &$o) $o['reserve'] = Reserves::state($o);
+        unset($o);
         $cp['invoices'] = Db::all(
             "SELECT id, moysklad_id, name, sum, payed_sum, state_name, moment, pdf_path, sent_at, sent_to
              FROM invoices WHERE counterparty_id=? ORDER BY moment DESC, id DESC LIMIT 20",
@@ -105,7 +112,9 @@ switch ($action) {
         foreach ($ids as $cpId) {
             foreach (MailThreads::query([
                 'counterparty_id' => $cpId,
-                'archived'        => !empty($_GET['archived']),
+                // `all` — и в работе, и в архиве одним списком: карточка больше
+                // не переключается кнопкой между двумя видами (модуль 026)
+                'archived'        => ($_GET['archived'] ?? '') === 'all' ? 'all' : !empty($_GET['archived']),
                 'limit'           => 100,
             ])['items'] as $t) {
                 $items[$t['thread_key']] = $t;

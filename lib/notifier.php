@@ -15,6 +15,8 @@ class Notifier {
         // An answer that never arrived has to reach the manager as loudly as a
         // new letter does — it is a client who thinks he was ignored (module 015)
         'mail_bounced' => 'new_request',
+        // Резерв, который держится под неоплаченный счёт (модуль 026)
+        'reserve_hold' => 'order',
     ];
 
     /**

@@ -34,6 +34,7 @@ require_once __DIR__ . '/learning.php';
 require_once __DIR__ . '/content_log.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/auto_pull.php';
+require_once __DIR__ . '/kp_terms.php';
 
 // Init DB before the settings layer — the overrides live in it
 Db::init($fileCfg['DB_PATH'] ?? ROOT . '/data/kp.db');
@@ -1401,6 +1402,42 @@ SQL);
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '26')");
         $current = 26;
+    }
+
+    // v27 — модуль 026: доска не держит пустых карточек, условия КП правятся
+    // и запоминаются, счёт создаётся вместе с заказом в резерве.
+    if ($current < 27) {
+        // «Прочитано» на карточке доски: письма прочитаны и карточка разобрана.
+        // Без этой отметки карточка оставалась жирной — жирность даёт «ждёт
+        // ответа», а его групповое «Прочитано» не снимало.
+        Db::ensureColumn('board_cards', 'seen_at', 'TEXT');
+
+        // Условия КП — одним правимым блоком вместо четырёх зашитых фраз.
+        Db::ensureColumn('proposals', 'terms_text', 'TEXT');
+
+        // Доставка отдельной строкой: её цена не спрятана в цене товара
+        Db::ensureColumn('proposals', 'delivery_on', 'INTEGER', '0');
+        Db::ensureColumn('proposals', 'delivery_name', 'TEXT');
+        Db::ensureColumn('proposals', 'delivery_price', 'REAL', '0');
+
+        // Резерв под неоплаченный счёт: до какого числа держим и напомнили ли
+        Db::ensureColumn('orders', 'reserve_until', 'TEXT');
+        Db::ensureColumn('orders', 'reserve_reminded_at', 'TEXT');
+        Db::ensureColumn('orders', 'reserve_released_at', 'TEXT');
+        Db::ensureColumn('orders', 'applicable', 'INTEGER', '1');
+
+        // Оговорка под фотографиями убрана по просьбе. Чужой текст не трогаем:
+        // чистится только фраза, которую поставили мы сами.
+        $oldNote = 'Изображения продукции приведены для примера и могут отличаться от финального изделия, т.к. производитель постоянно дорабатывает продукцию, а финальные требования согласовываются с заказчиком.';
+        Db::q("UPDATE settings SET value='' WHERE key='kp_images_note' AND value=?", [$oldNote]);
+        Db::q("INSERT OR IGNORE INTO settings (key, value) VALUES ('kp_images_note', '')");
+
+        // Условия по умолчанию: без годовой гарантии и без доставки в стоимости
+        Db::q("INSERT OR IGNORE INTO settings (key, value) VALUES ('default_terms_text', ?)",
+              [KpTerms::FACTORY_TEXT]);
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '27')");
+        $current = 27;
     }
 }
 

@@ -38,6 +38,11 @@ switch ($action) {
         );
         $counterpartyId = (int)($_GET['counterparty_id'] ?? 0) ?: null;
         require_once ROOT . '/lib/catalog.php';
+        require_once ROOT . '/lib/variants.php';
+        // У товара с модификациями собственного остатка в МойСклад нет — он
+        // лежит на размерах и цветах. Подсказка показывает их, а не ноль
+        // абстрактного товара (модуль 026).
+        $items = Variants::decorateStock($items);
         foreach ($items as &$it) {
             $it['prices'] = Catalog::decodePrices($it['prices_json'] ?? null);
             $it['price'] = Catalog::priceFor($it, $counterpartyId);
