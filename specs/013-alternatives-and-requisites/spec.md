@@ -135,7 +135,7 @@ touches them.
   rate comes from the `vat` МойСклад keeps on the very products of this КП, and
   the настройка «НДС по умолчанию» is only reached for when the catalog is silent.
   The snapshot records which of the three it was, in words.
-- **The amount is always printed** (module 029), and in one of two shapes chosen by
+- **The amount is always printed** (module 030), and in one of two shapes chosen by
   `KP_VAT_MODE`: `included` — the catalog price already carries the tax and the
   document takes it out of the total; `added` — the price is net and the tax is
   added to it, so the client pays more than the table sums to. The shape is

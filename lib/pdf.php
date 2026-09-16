@@ -145,7 +145,7 @@ class PdfGenerator {
         // The rate is МойСклад's answer, not a house default: the организация
         // says whether we charge VAT at all, and the catalog says at what rate.
         // Печатается он ВСЕГДА и в одном из двух видов — «в т.ч. НДС» или «НДС
-        // сверху» (модуль 029); считается в одном месте на весь сервис.
+        // сверху» (модуль 030); считается в одном месте на весь сервис.
         $vat = $requisites['vat'] ?? [];
         if (!array_key_exists('rate', $vat)) $vat['rate'] = (int)($proposal['vat_rate'] ?? 5);
         $vatTotals = Requisites::vatTotals($total, $vat, Requisites::vatMode($proposal));

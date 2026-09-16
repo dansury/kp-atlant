@@ -242,7 +242,7 @@ switch ($action) {
             $fields['cover_letter_final'] = $input['cover_letter_final'];
         }
         // Как печатать цену в этом КП: «в т.ч. НДС» или «+ НДС сверху»
-        // (модуль 029). Пусто — как в настройках; чужое слово не принимаем.
+        // (модуль 030). Пусто — как в настройках; чужое слово не принимаем.
         if (array_key_exists('vat_mode', $fields)) {
             $mode = trim((string)$fields['vat_mode']);
             $fields['vat_mode'] = in_array($mode, Requisites::VAT_MODES, true) ? $mode : null;

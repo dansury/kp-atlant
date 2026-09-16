@@ -14,6 +14,13 @@ class LLM {
         // added when the request is built (gpt://<folder>/<slug>/latest), the way
         // careerhack does it. A slug that carries its own version still works —
         // «yandexgpt/rc» keeps the rc.
+        // Открытые модели (Llama, DeepSeek, Qwen, Gemma) в каталоге есть, но
+        // включены они не в каждом облаке и не в каждом регионе: слаг,
+        // которого у провайдера нет, отвечает 404 «unknown model». Поэтому
+        // список здесь — это КАНДИДАТЫ, а не факт. Что из них реально
+        // отвечает, выясняет «Проверить каталог Yandex» (verifyYandexModels)
+        // и запоминает в `yandex_models`; непроверенный слаг наружу уходит
+        // только после того, как его проверили.
         'yandex' => [
             ['id' => 'yandexgpt',             'label' => 'YandexGPT Pro',             'group' => 'YandexGPT'],
             ['id' => 'yandexgpt-32k',         'label' => 'YandexGPT Pro 32k',         'group' => 'YandexGPT'],
@@ -54,6 +61,12 @@ class LLM {
 
     /** Live OpenRouter catalog, refreshed by a button and cached here. */
     private const OR_CACHE_KEY = 'openrouter_models';
+
+    /** What the folder really serves, filled by verifyYandexModels(). */
+    private const YX_CACHE_KEY = 'yandex_models';
+
+    /** Слаг, на который откатываемся, когда выбранного у провайдера нет. */
+    private const YX_FALLBACK = 'yandexgpt';
 
     private static array $cfg = [];
     private static array $providers = [];
@@ -130,6 +143,16 @@ class LLM {
      */
     public static function catalog(string $provider): array {
         $rows = self::CATALOG[$provider] ?? [];
+        if ($provider === 'yandex') {
+            $checked = self::yandexCache()['checked'] ?? [];
+            foreach ($rows as &$row) {
+                $state = (string)($checked[$row['id']] ?? '');
+                $row['state'] = $state !== '' ? $state : 'unknown';
+                if ($state === 'missing') $row['label'] .= ' — нет в этом облаке';
+            }
+            unset($row);
+            return $rows;
+        }
         if ($provider !== 'openrouter') return $rows;
 
         $seen = array_column($rows, 'id');
@@ -199,6 +222,100 @@ class LLM {
         Db::q("DELETE FROM settings WHERE key=?", [self::OR_CACHE_KEY]);
     }
 
+    // ---- Каталог Yandex: слаг проверяется у провайдера, а не берётся на веру ----
+    //
+    // Так же это решено в CGM-diet (`spec/models.md`): каталог там приходит от
+    // провайдера в `free_catalog`, а `model_selection.is_known()` не отдаёт
+    // модель слоту, который её не перечисляет, — выбор, которого у провайдера
+    // нет, до запроса не доходит. Здесь роль каталога играет проба: у Yandex
+    // нет открытого списка моделей, зато есть ответ на короткий запрос.
+
+    /** Что проба уже выяснила: {models, checked: {slug: ok|missing}, synced_at}. */
+    public static function yandexCache(): array {
+        $raw  = Db::val("SELECT value FROM settings WHERE key=?", [self::YX_CACHE_KEY]);
+        $data = $raw ? json_decode((string)$raw, true) : null;
+        if (!is_array($data)) return ['checked' => [], 'synced_at' => null];
+        return $data + ['checked' => [], 'synced_at' => null];
+    }
+
+    private static function saveYandexCache(array $data): void {
+        Db::q("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+              [self::YX_CACHE_KEY, json_encode($data, JSON_UNESCAPED_UNICODE)]);
+    }
+
+    public static function forgetYandexModels(): void {
+        Db::q("DELETE FROM settings WHERE key=?", [self::YX_CACHE_KEY]);
+    }
+
+    /**
+     * Прогнать каталог Yandex по одному короткому запросу на слаг.
+     *
+     * Кнопка в «Нейросетях». Отвечает — `ok`, 404 «unknown model» — `missing`,
+     * всё остальное (нет ключа, прокси, лимит) слаг не судит: это не про
+     * модель, и в кэш такой ответ не пишется, иначе одна сетевая неудача
+     * вычеркнула бы весь каталог.
+     */
+    public static function verifyYandexModels(): array {
+        if (!self::ready('yandex')) throw new LLMException('Yandex: не задан ключ или Folder ID');
+
+        $checked = self::yandexCache()['checked'] ?? [];
+        $ok = $missing = $unclear = [];
+        foreach (self::CATALOG['yandex'] as $row) {
+            $slug = (string)$row['id'];
+            try {
+                self::callYandex('Отвечай одним словом.', 'Скажи «готово».', 0, false, $slug, false);
+                $checked[$slug] = 'ok';
+                $ok[] = $slug;
+            } catch (LLMException $e) {
+                if (self::isUnknownModel($e->getMessage())) {
+                    $checked[$slug] = 'missing';
+                    $missing[] = $slug;
+                } else {
+                    $unclear[] = $slug . ': ' . mb_substr($e->getMessage(), 0, 120);
+                }
+            }
+        }
+        $payload = ['checked' => $checked, 'synced_at' => date('Y-m-d H:i:s')];
+        self::saveYandexCache($payload);
+        Logger::info('llm', 'Каталог Yandex проверен: доступно ' . count($ok) . ', нет ' . count($missing),
+                     ['ok' => $ok, 'missing' => $missing, 'unclear' => $unclear]);
+        return $payload + ['ok' => $ok, 'missing' => $missing, 'unclear' => $unclear];
+    }
+
+    /** «404 unknown model» — единственная ошибка, которая судит именно слаг. */
+    private static function isUnknownModel(string $message): bool {
+        return str_contains($message, 'HTTP 404')
+            && (str_contains($message, 'unknown model') || str_contains($message, 'model not found'));
+    }
+
+    /**
+     * Знаем ли мы, что этот слаг у провайдера есть. Непроверенный — не «нет»:
+     * проба могла ни разу не запускаться, и запрещать из-за этого работу
+     * значило бы сломать то, что работало.
+     */
+    public static function isKnown(string $provider, string $model): bool {
+        if ($provider !== 'yandex') return true;
+        $checked = self::yandexCache()['checked'] ?? [];
+        return ($checked[trim($model, " /")] ?? '') !== 'missing';
+    }
+
+    /** Слаг, который уходит в запрос: вычеркнутый пробой заменяется на рабочий. */
+    private static function yandexSlug(): string {
+        $model = trim((string)self::modelOf('yandex'), " /") ?: self::YX_FALLBACK;
+        if (self::isKnown('yandex', $model)) return $model;
+        Logger::warning('llm', "Модель Yandex «{$model}» помечена как отсутствующая — берём «"
+                              . self::YX_FALLBACK . '»', ['model' => $model]);
+        return self::YX_FALLBACK;
+    }
+
+    /** Запомнить, что слага у провайдера нет: в списке он станет зачёркнутым. */
+    private static function markYandexMissing(string $slug): void {
+        $cache = self::yandexCache();
+        $cache['checked'][trim($slug, " /")] = 'missing';
+        $cache['synced_at'] = date('Y-m-d H:i:s');
+        self::saveYandexCache($cache);
+    }
+
     public static function ready(string $provider): bool {
         return match ($provider) {
             'yandex'     => (string)(self::$cfg['YANDEX_API_KEY'] ?? '') !== '' && (string)(self::$cfg['YANDEX_FOLDER_ID'] ?? '') !== '',
@@ -217,7 +334,7 @@ class LLM {
         };
         return [
             'provider' => $provider,
-            'model'    => self::modelOf($provider),
+            'model'    => $provider === 'yandex' ? self::yandexSlug() : self::modelOf($provider),
             'answer'   => mb_substr(trim($answer), 0, 200),
             'ms'       => (int)round((microtime(true) - $started) * 1000),
             'route'    => self::routeLabel($provider),
@@ -389,12 +506,21 @@ class LLM {
         return "gpt://$folder/$model";
     }
 
-    // Yandex Foundation Models API call
-    private static function callYandex(string $system, string $user, float $temp, bool $jsonMode): string {
+    /**
+     * Yandex Foundation Models API call.
+     *
+     * $slug — проба каталога спрашивает конкретную модель; обычный вызов берёт
+     * настроенную. $retry — один откат на рабочий слаг, когда провайдер
+     * ответил «unknown model»: выбор менеджера при этом не теряется молча —
+     * слаг вычёркивается из каталога, и в журнале остаётся запись.
+     */
+    private static function callYandex(string $system, string $user, float $temp, bool $jsonMode,
+                                       ?string $slug = null, bool $retry = true): string {
         $key = self::$cfg['YANDEX_API_KEY'] ?? '';
         $folder = self::$cfg['YANDEX_FOLDER_ID'] ?? '';
         if (!$key || !$folder) throw new LLMException('YANDEX_API_KEY or YANDEX_FOLDER_ID not set');
-        $uri = self::yandexModelUri($folder, self::modelOf('yandex'));
+        $model = $slug !== null ? $slug : self::yandexSlug();
+        $uri = self::yandexModelUri($folder, $model);
 
         $body = [
             'modelUri' => $uri,
@@ -412,12 +538,22 @@ class LLM {
             $body['completionOptions']['responseFormat'] = ['type' => 'json_object'];
         }
 
-        return self::httpPost(
-            'https://llm.api.cloud.yandex.net/foundationModels/v1/completion',
-            $body,
-            ['Authorization: Api-Key ' . $key, 'x-folder-id: ' . $folder],
-            'yandex'
-        );
+        try {
+            return self::httpPost(
+                'https://llm.api.cloud.yandex.net/foundationModels/v1/completion',
+                $body,
+                ['Authorization: Api-Key ' . $key, 'x-folder-id: ' . $folder],
+                'yandex'
+            );
+        } catch (LLMException $e) {
+            if (!self::isUnknownModel($e->getMessage())) throw $e;
+            self::markYandexMissing($model);
+            $fallback = trim(self::YX_FALLBACK, " /");
+            if (!$retry || $model === $fallback) throw $e;
+            Logger::warning('llm', "Yandex не знает модель «{$model}» — отвечаем моделью «{$fallback}»",
+                            ['model' => $model, 'uri' => $uri]);
+            return self::callYandex($system, $user, $temp, $jsonMode, $fallback, false);
+        }
     }
 
     /**
@@ -535,7 +671,13 @@ class LLM {
         }
         if ($code === 401) return $head . '. Ключ неверный, отозван или скопирован не целиком.';
         if ($code === 402) return $head . '. На счёте провайдера нет средств.';
-        if ($code === 404) return $head . '. Такой модели у провайдера нет — проверьте слаг в каталоге.';
+        if ($code === 404) {
+            $where = $provider === 'yandex'
+                ? ' Кнопка «Проверить каталог Yandex» в «Настройках → Нейросети» прогоняет слаги по одному '
+                  . 'и вычёркивает те, которых в этом облаке нет.'
+                : ' Проверьте слаг в каталоге.';
+            return $head . '. Такой модели у провайдера нет.' . $where;
+        }
         if ($code === 429) return $head . '. Провайдер ограничил частоту запросов — попробуйте позже или смените модель.';
         return $head;
     }

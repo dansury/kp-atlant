@@ -47,6 +47,49 @@ switch ($action) {
         jsonData(['items' => $rows, 'suggested_email' => Crm::primaryEmail($cpId)]);
     }
 
+    /**
+     * Счета, которые можно приложить к открытому письму (модуль 029).
+     *
+     * Раньше они стояли карточкой в самом низу правой колонки с кнопкой
+     * «Отправить счёт» — вторым, параллельным способом послать клиенту файл.
+     * Теперь список приходит сюда, под поле ответа: каждый счёт с уже готовым
+     * именем файла, которое менеджер правит прямо в письме.
+     */
+    case 'for_request': {
+        requireAuth();
+        require_once ROOT . '/lib/invoice_name.php';
+        $requestId = (int)($_GET['request_id'] ?? 0);
+        $cpId      = (int)($_GET['counterparty_id'] ?? 0);
+        if (!$requestId && !$cpId) jsonError('Не указан ни запрос, ни компания');
+
+        $rows = $requestId
+            ? Db::all(
+                "SELECT i.* FROM invoices i
+                 LEFT JOIN orders o ON o.id = i.order_id
+                 LEFT JOIN proposals p ON p.id = i.proposal_id
+                 WHERE o.request_id = ? OR p.request_id = ?
+                 ORDER BY i.id DESC LIMIT 20", [$requestId, $requestId])
+            : Db::all(
+                "SELECT * FROM invoices WHERE counterparty_id=? ORDER BY id DESC LIMIT 20", [$cpId]);
+
+        $items = [];
+        foreach ($rows as $r) {
+            $items[] = [
+                'id'          => (int)$r['id'],
+                'name'        => (string)$r['name'],
+                'sum'         => (float)$r['sum'],
+                'payed_sum'   => (float)$r['payed_sum'],
+                'moment'      => $r['moment'],
+                'sent_at'     => $r['sent_at'],
+                'proposal_id' => $r['proposal_id'] !== null ? (int)$r['proposal_id'] : null,
+                'url'         => MoySklad::invoiceUrl($r['moysklad_id']),
+                'pdf_url'     => '/api/invoices.php?action=pdf&id=' . (int)$r['id'],
+                'filename'    => InvoiceName::forInvoice((int)$r['id']),
+            ];
+        }
+        jsonData(['items' => $items]);
+    }
+
     // Pull fresh orders and invoices for a company (FR-030)
     case 'sync': {
         requireAuth();
@@ -97,8 +140,20 @@ switch ($action) {
 
         $cpId = (int)($p['counterparty_id'] ?? 0);
         $cp = $cpId ? Db::one("SELECT * FROM counterparties WHERE id=?", [$cpId]) : null;
-        if (!$cp || empty($cp['moysklad_id'])) {
-            jsonError('Компания не связана с МойСклад — свяжите её в карточке, иначе счёт выставлять не на кого', 400);
+        if (!$cp) jsonError('У КП нет компании — счёт выставлять не на кого', 400);
+
+        // На какую организацию счёт (модуль 029). В одном письме просят счёт на
+        // две фирмы сразу — карточка держит обе, и здесь выбирается нужная.
+        // 0 (или ничего) — сама карточка, как было.
+        $buyerOrgId = (int)($_GET['org_id'] ?? 0);
+        $buyerOrg   = Crm::org($cpId, $buyerOrgId);
+        if ($buyerOrgId && !$buyerOrg) jsonError('Такой организации в карточке нет', 404);
+        $buyerMsId  = $buyerOrg ? (string)$buyerOrg['moysklad_id'] : (string)($cp['moysklad_id'] ?? '');
+        $buyerName  = $buyerOrg ? (string)$buyerOrg['name'] : (string)$cp['name'];
+        if ($buyerMsId === '') {
+            jsonError($buyerOrgId
+                ? "Организация «{$buyerName}» не связана с МойСклад — привяжите её в карточке, иначе счёт выставлять не на кого"
+                : 'Компания не связана с МойСклад — свяжите её в карточке, иначе счёт выставлять не на кого', 400);
         }
 
         MoySklad::init($GLOBALS['cfg']['MOYSKLAD_TOKEN'] ?? '');
@@ -129,7 +184,7 @@ switch ($action) {
             jsonError('Ни одной позиции с ценой и карточкой МойСклад — счёт выставлять не из чего', 400);
         }
 
-        // Счёт повторяет за КП не только цены, но и НДС (модуль 029): КП,
+        // Счёт повторяет за КП не только цены, но и НДС (модуль 030): КП,
         // напечатанное «цена + НДС», выставляется счётом, в котором налог
         // тоже сверху, — иначе клиент согласовал одну сумму, а платит другую.
         $vatFlags = Requisites::msVatFlags($p);
@@ -151,7 +206,7 @@ switch ($action) {
         if (!empty($perms['orders_write'])) {
             try {
                 $order = MoySklad::createOrder($vatFlags + [
-                    'counterparty_id' => $cp['moysklad_id'],
+                    'counterparty_id' => $buyerMsId,
                     'organization_id' => $orgId,
                     'positions'       => $positions,
                     'description'     => $note,
@@ -173,7 +228,7 @@ switch ($action) {
 
         try {
             $inv = MoySklad::createInvoice($vatFlags + [
-                'counterparty_id' => $cp['moysklad_id'],
+                'counterparty_id' => $buyerMsId,
                 'organization_id' => $orgId,
                 'positions'       => $positions,
                 'description'     => $note,
@@ -191,6 +246,7 @@ switch ($action) {
                 'request_id'      => $p['request_id'] ? (int)$p['request_id'] : null,
                 'counterparty_id' => $cpId,
                 'manager_id'      => (int)$manager['id'],
+                'org_id'          => $buyerOrgId ?: null,
             ]);
             // До какого числа держим резерв. Дальше — напоминание его снять
             // (cron/check_reserves.php), с кнопкой, снимающей проведение.
@@ -206,10 +262,11 @@ switch ($action) {
         $localId = MsSync::upsertInvoice($inv, $orderLocalId, $cpId);
         // Счёт помнит, по какому КП он выставлен: счетов у одного КП может быть
         // несколько, и на карточке они стоят под своим КП (модуль 027)
-        Db::update('invoices', ['proposal_id' => $proposalId], 'id=?', [$localId]);
+        Db::update('invoices', ['proposal_id' => $proposalId, 'org_id' => $buyerOrgId ?: null],
+                   'id=?', [$localId]);
         $pdf = MsSync::ensureInvoicePdf($localId);
 
-        Logger::info('moysklad', "Счёт {$inv['name']} выставлен по КП #$proposalId"
+        Logger::info('moysklad', "Счёт {$inv['name']} выставлен по КП #$proposalId на «{$buyerName}»"
                      . ($order ? " вместе с заказом {$order['name']}" : ' без заказа'),
                      ['proposal_id' => $proposalId, 'invoice_id' => $localId,
                       'order_id' => $orderLocalId, 'manager_id' => (int)$manager['id'],

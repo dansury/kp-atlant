@@ -240,7 +240,7 @@ final class KpSet {
             if ((int)($p['delivery_on'] ?? 0) === 1) $total += (float)($p['delivery_price'] ?? 0);
 
             // На доске стоит тот же итог, что и в документе: при «цене + НДС»
-            // сумма строк — это ещё не то, что заплатит клиент (модуль 029)
+            // сумма строк — это ещё не то, что заплатит клиент (модуль 030)
             $vat = Requisites::forProposal((int)$p['id'])['vat'] ?? [];
             if (!array_key_exists('rate', $vat)) $vat['rate'] = (int)($p['vat_rate'] ?? 5);
             $vatTotals = Requisites::vatTotals($total, $vat, Requisites::vatMode($p));

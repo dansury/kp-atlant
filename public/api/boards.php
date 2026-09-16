@@ -108,7 +108,7 @@ try {
             if (!$ids) jsonError('Не отмечено ни одной карточки');
             if ($op === '') jsonError('Не указана операция');
             $res = Boards::bulk($ids, $op, $input, (int)$manager['id']);
-            Logger::info('boards', "Групповая операция «$op»: {$res['done']} карточек",
+            Logger::info('boards', "Групповая операция «{$op}»: {$res['done']} карточек",
                          ['manager_id' => (int)$manager['id'], 'failed' => $res['failed']]);
             jsonOk($res);
         }

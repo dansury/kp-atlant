@@ -87,7 +87,7 @@ switch ($action) {
 
         $appUrl = rtrim($cfg['APP_URL'] ?? '', '/');
         try {
-            // Налог в заказе — тот же, что напечатан в КП (модуль 029)
+            // Налог в заказе — тот же, что напечатан в КП (модуль 030)
             $order = MoySklad::createOrder(Requisites::msVatFlags($proposal) + [
                 'counterparty_id' => $cp['moysklad_id'],
                 'organization_id' => orgId(),

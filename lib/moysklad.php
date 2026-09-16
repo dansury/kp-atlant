@@ -683,7 +683,7 @@ class MoySklad {
         if (!empty($data['description'])) $body['description'] = $data['description'];
 
         // Включён ли налог в цену позиции — то же, что КП сказало клиенту
-        // (модуль 029). Счёт «ценой + НДС» по КП «в т.ч. НДС» — это другая
+        // (модуль 030). Счёт «ценой + НДС» по КП «в т.ч. НДС» — это другая
         // сумма в руках у клиента, чем та, которую он согласовал.
         if (array_key_exists('vat_enabled', $data))  $body['vatEnabled']  = (bool)$data['vat_enabled'];
         if (array_key_exists('vat_included', $data)) $body['vatIncluded'] = (bool)$data['vat_included'];
@@ -786,7 +786,7 @@ class MoySklad {
         if (!empty($data['description'])) $body['description'] = $data['description'];
 
         // Тот же ответ, что и у заказа: налог в цене или сверху — как напечатано
-        // в КП (модуль 029)
+        // в КП (модуль 030)
         if (array_key_exists('vat_enabled', $data))  $body['vatEnabled']  = (bool)$data['vat_enabled'];
         if (array_key_exists('vat_included', $data)) $body['vatIncluded'] = (bool)$data['vat_included'];
 

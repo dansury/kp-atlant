@@ -544,7 +544,7 @@ final class MailSync {
 
         [$moved, $folder, $moveError] = self::moveToArchiveFolder($row);
 
-        Logger::info('mail', "Письмо #$mailMessageId убрано в архив" . ($moved ? " и перемещено в «$folder» на сервере" : ''),
+        Logger::info('mail', "Письмо #$mailMessageId убрано в архив" . ($moved ? " и перемещено в «{$folder}» на сервере" : ''),
             ['mail_message_id' => $mailMessageId, 'manager_id' => $managerId,
              'reason' => $reason, 'moved' => $moved, 'move_error' => $moveError]);
 
