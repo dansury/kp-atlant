@@ -17,74 +17,23 @@ require_once __DIR__ . '/pdf.php';
 
 final class DocxGenerator {
 
-    /**
-     * Build (or rebuild) the .docx of a proposal. Returns the file path.
-     *
-     * `$onlyItemIds` собирает файл на ОДНУ позицию (модуль 026). Такой файл не
-     * подменяет собой документ КП — `proposals.docx_path` он не трогает.
-     *
-     * @param int[]|null $onlyItemIds позиции, которые печатаются; null — все
-     */
-    public static function generate(int $proposalId, ?array $onlyItemIds = null, string $suffix = ''): string {
-        $html = PdfGenerator::html($proposalId, $onlyItemIds);
+    /** Build (or rebuild) the .docx of a proposal. Returns the file path. */
+    public static function generate(int $proposalId): string {
+        $html = PdfGenerator::html($proposalId);
 
         $proposal = Db::one("SELECT number FROM proposals WHERE id=?", [$proposalId]);
         $number = (string)($proposal['number'] ?? '') !== '' ? $proposal['number'] : (string)$proposalId;
         $dir = ROOT . '/data/kp';
         if (!is_dir($dir)) mkdir($dir, 0755, true);
-        $path = $dir . '/' . PdfGenerator::fileName($proposalId, 'docx', $suffix);
+        $path = $dir . '/' . PdfGenerator::fileName($proposalId, 'docx');
 
         (new Html2Docx())->write($html, $path, [
             'title'  => 'Коммерческое предложение ' . $number,
             'author' => (string)(Db::val("SELECT short_name FROM legal_entities WHERE is_active=1 LIMIT 1") ?: 'Atlant Armour'),
         ]);
 
-        if ($onlyItemIds === null) {
-            Db::update('proposals', ['docx_path' => $path, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$proposalId]);
-        }
+        Db::update('proposals', ['docx_path' => $path, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$proposalId]);
         return $path;
-    }
-
-    /**
-     * КП отдельными файлами — по одному на позицию (модуль 026).
-     *
-     * Закупщик редко кладёт всё письмо в одну заявку: у каждой позиции своя
-     * строка сметы, и КП на шесть позиций он режет руками. Здесь он получает
-     * шесть документов, и каждый — полноценное КП со своей шапкой, реквизитами
-     * и подписью.
-     *
-     * @return array<int,array{path:string,name:string,item:string}>
-     */
-    public static function perItem(int $proposalId, string $format = 'docx'): array {
-        require_once __DIR__ . '/kp_content.php';
-        $items = KpContent::printedItems($proposalId);
-        if (!$items) throw new RuntimeException('В КП нет ни одной печатаемой позиции');
-
-        $out = [];
-        foreach (array_values($items) as $n => $item) {
-            $suffix = 'поз_' . ($n + 1);
-            $path = $format === 'pdf'
-                ? PdfGenerator::generate($proposalId, [(int)$item['id']], $suffix)
-                : self::generate($proposalId, [(int)$item['id']], $suffix);
-            $out[] = [
-                'path' => $path,
-                'name' => basename($path),
-                'item' => (string)$item['product_name'],
-            ];
-        }
-        return $out;
-    }
-
-    /**
-     * Имя файла, который получит клиент:
-     * «КП_Атлант_Армор_для_ООО_Воевода_от_14.09.2026.docx».
-     *
-     * Одно имя на оба формата — его собирает `PdfGenerator::fileName()`
-     * (модуль 022): Word и PDF одного КП должны называться одинаково, иначе в
-     * папке у клиента это два разных документа.
-     */
-    public static function filename(int $proposalId): string {
-        return PdfGenerator::fileName($proposalId, 'docx');
     }
 }
 

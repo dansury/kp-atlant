@@ -13,7 +13,6 @@
  *   — оговорки под фотографиями в документе больше нет;
  *   — доставка печатается отдельной строкой и входит в «Итого»;
  *   — при подборе видно количества модификаций, а не ноль товара;
- *   — КП собирается отдельными файлами по позициям;
  *   — резерв под неоплаченный счёт просится сняться в срок.
  *
  * Запуск:  php tests/module_026.php
@@ -49,7 +48,6 @@ require_once ROOT . '/lib/kp_terms.php';
 require_once ROOT . '/lib/kp_content.php';
 require_once ROOT . '/lib/requisites.php';
 require_once ROOT . '/lib/pdf.php';
-require_once ROOT . '/lib/docx.php';
 require_once ROOT . '/lib/reserves.php';
 
 $fail = 0;
@@ -280,26 +278,7 @@ ok('и вошла в «Итого»', str_contains($html, 'Итого: 73 500,00
 
 // =====================================================================  9
 
-echo "\n== 9. КП отдельными файлами по позициям ==\n";
-
-$files = DocxGenerator::perItem($proposalId, 'docx');
-ok('файлов столько, сколько позиций', count($files) === 2, (string)count($files));
-ok('оба файла на диске', count(array_filter(array_column($files, 'path'), 'is_file')) === 2);
-ok('и называются по-разному', $files[0]['name'] !== $files[1]['name']);
-
-$one = PdfGenerator::html($proposalId, [(int)Db::val(
-    "SELECT id FROM proposal_items WHERE proposal_id=? ORDER BY position LIMIT 1", [$proposalId])]);
-ok('в файле одной позиции — только она', str_contains($one, 'Тактические штаны'));
-ok('и нет второй', !str_contains($one, 'Наушники AMP'));
-ok('доставка в отдельный файл не попала', !str_contains($one, 'Доставка до склада'));
-ok('и итог считается по одной позиции', str_contains($one, 'Итого: 10 000,00 руб.'),
-   (string)(preg_match('/Итого: [^<]+/u', $one, $m) ? $m[0] : ''));
-ok('документ КП отдельным файлом не подменён',
-   (string)Db::val("SELECT docx_path FROM proposals WHERE id=?", [$proposalId]) === '');
-
-// ===================================================================== 10
-
-echo "\n== 10. Резерв под неоплаченный счёт ==\n";
+echo "\n== 9. Резерв под неоплаченный счёт ==\n";
 
 Settings::set('MS_RESERVE_DAYS', '14');
 $orderId = Db::insert('orders', ['counterparty_id' => $cpId, 'proposal_id' => $proposalId,
