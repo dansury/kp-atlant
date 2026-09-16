@@ -43,9 +43,15 @@ switch ($action) {
         // лежит на размерах и цветах. Подсказка показывает их, а не ноль
         // абстрактного товара (модуль 026).
         $items = Variants::decorateStock($items);
+        // Описание товара — тем же текстом, каким карточка подбора заполняет
+        // комментарий: выбрали другую позицию — описание поехало за ней, и
+        // второго запроса за ним не нужно (модуль 032)
+        require_once ROOT . '/lib/request_items.php';
+        $descriptions = RequestItems::catalogDescriptions(array_column($items, 'moysklad_id'));
         foreach ($items as &$it) {
             $it['prices'] = Catalog::decodePrices($it['prices_json'] ?? null);
             $it['price'] = Catalog::priceFor($it, $counterpartyId);
+            $it['description'] = $descriptions[(string)$it['moysklad_id']] ?? '';
             unset($it['prices_json']);
         }
         unset($it);

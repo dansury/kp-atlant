@@ -1478,9 +1478,11 @@ const App = {
      * Вторая строка позиции: скидка, условия ожидания и развёрнутый комментарий
      * (модуль 023).
      *
-     * Комментарий заполняется описанием товара из МойСклад, правится здесь — и
-     * ровно в этом виде уходит и в файл КП, и в письмо клиенту. Разметка из
-     * МойСклад в поле приходит уже текстом, а не тегами.
+     * Комментарий приходит заполненным: в нём стоит описание товара из
+     * МойСклад — то самое, синхронизированное в каталог, а не запрошенное
+     * заново. Менеджер правит его здесь, и ровно в этом виде оно печатается
+     * карточкой КП. В письмо клиенту описание не уходит: ответ называет
+     * позиции, цены и сроки, а читается товар в КП (модуль 032).
      */
     matchRowExtra(i = {}) {
         const backorder = Number(i.is_backorder) === 1 || (i.stock !== null && i.stock !== undefined && Number(i.stock) <= 0);
@@ -1513,8 +1515,9 @@ const App = {
                     </label>
                     ${i.wait_note ? `<span class="muted">${this.esc(i.wait_note)}</span>` : ''}
                 </div>
-                <textarea data-field="comment_text" rows="2" class="match-extra__comment"
-                          placeholder="Комментарий по товару — уйдёт в КП и в письмо. Подставляется описание из МойСклад"
+                <textarea data-field="comment_text" rows="4" class="match-extra__comment"
+                          data-from-catalog="${i.comment_from_catalog ? 1 : 0}" oninput="this.dataset.fromCatalog = 0"
+                          placeholder="Описание товара — печатается в карточке КП. Подставлено из МойСклад, правьте как нужно"
                           >${this.esc(i.comment_text || '')}</textarea>
             </div>`;
     },
@@ -1706,7 +1709,11 @@ const App = {
         const box = input.parentElement.querySelector('.suggest');
         const q = input.value.trim();
         // A hand-typed name is no longer the catalog row that was there before
-        input.closest('[data-match-row]').querySelector('[data-field="moysklad_product_id"]').value = '';
+        const row = input.closest('[data-match-row]');
+        row.querySelector('[data-field="moysklad_product_id"]').value = '';
+        // Позиции больше нет — нет и её описания, пока не выбрана другая
+        const auto = row.querySelector('[data-field="comment_text"][data-from-catalog="1"]');
+        if (auto) auto.value = '';
         clearTimeout(this._suggestTimer);
         if (q.length < 2) { box.hidden = true; return; }
 
@@ -1746,6 +1753,10 @@ const App = {
         set('unit', p.unit);
         set('price', p.price);
         set('stock', p.stock);
+        // Описание принадлежит товару, а не строке: выбрали другую позицию —
+        // в поле её описание. Написанное менеджером не трогаем (модуль 032).
+        const comment = row.querySelector('[data-field="comment_text"]');
+        if (comment && comment.dataset.fromCatalog === '1') comment.value = p.description || '';
         row.querySelector('[data-field="is_confirmed"]').checked = true;
         const slot = row.querySelector('.price-opts-slot');
         if (slot) slot.innerHTML = this.priceOptsSelect(p.prices || {});
@@ -1759,6 +1770,7 @@ const App = {
         this.pickSuggest(el, JSON.stringify({
             moysklad_id: v.moysklad_id, name: v.name, article: v.article || '',
             unit: v.unit || 'шт.', price: v.price || 0, stock: v.stock ?? '', prices: v.prices || {},
+            description: v.description || '',
         }));
     },
 

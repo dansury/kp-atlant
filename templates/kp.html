@@ -272,7 +272,12 @@
 <?php $printedCards = 0; ?>
 <?php foreach ($items as $i => $item): ?>
 <?php
-    $hasCard = !empty($item['description_text']) || !empty($item['specs_text'])
+    // Описание карточки: комментарий менеджера, если он его написал, иначе
+    // описание из МойСклад (модуль 032). Печатается ОДИН блок: оба поля растут
+    // из одного текста, и напечатанные подряд они читались бы как повтор.
+    $cardDesc = trim((string)($item['comment_text'] ?? '')) !== ''
+        ? (string)$item['comment_text'] : (string)($item['description_text'] ?? '');
+    $hasCard = trim($cardDesc) !== '' || !empty($item['specs_text'])
             || !empty($item['included_text']) || !empty($item['gallery'])
             || !empty($item['is_alternative'])
             || (!empty($showSiteLink) && !empty($item['site_url']));
@@ -307,14 +312,8 @@
     </div>
     <?php endif; ?>
 
-    <?php if (!empty($item['description_text'])): ?>
-    <div class="card__desc"><?= Markup::markdownToHtml((string)$item['description_text']) ?></div>
-    <?php endif; ?>
-
-    <?php if (trim((string)($item['comment_text'] ?? '')) !== ''): ?>
-    <!-- Развёрнутый комментарий менеджера по этой позиции (модуль 023).
-         Пишется в карточке письма и печатается тем же, чем описание. -->
-    <div class="card__desc card__comment"><?= Markup::markdownToHtml((string)$item['comment_text']) ?></div>
+    <?php if (trim($cardDesc) !== ''): ?>
+    <div class="card__desc"><?= Markup::markdownToHtml($cardDesc) ?></div>
     <?php endif; ?>
 
     <?php if ($showImages && !empty($item['gallery'])): ?>
