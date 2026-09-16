@@ -1473,6 +1473,16 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '28')");
         $current = 28;
     }
+
+    // v29 — модуль 029: НДС печатается в КП всегда, а цены — в выбранном виде.
+    if ($current < 29) {
+        // Как печатать цену в ЭТОМ КП: included — уже с НДС, added — налог
+        // сверху. Пусто — как в настройке KP_VAT_MODE.
+        Db::ensureColumn('proposals', 'vat_mode', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '29')");
+        $current = 29;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

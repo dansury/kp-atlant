@@ -6,6 +6,7 @@
 require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/sync.php';
 require_once ROOT . '/lib/mail.php';
+require_once ROOT . '/lib/requisites.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -128,6 +129,11 @@ switch ($action) {
             jsonError('Ни одной позиции с ценой и карточкой МойСклад — счёт выставлять не из чего', 400);
         }
 
+        // Счёт повторяет за КП не только цены, но и НДС (модуль 029): КП,
+        // напечатанное «цена + НДС», выставляется счётом, в котором налог
+        // тоже сверху, — иначе клиент согласовал одну сумму, а платит другую.
+        $vatFlags = Requisites::msVatFlags($p);
+
         $appUrl = rtrim($GLOBALS['cfg']['APP_URL'] ?? '', '/');
         $note = 'Счёт по КП ' . ((string)$p['number'] !== '' ? $p['number'] : '#' . $proposalId)
               . ($appUrl ? ", CRM: $appUrl/#mail/proposal/$proposalId" : '');
@@ -144,7 +150,7 @@ switch ($action) {
         $orderMissing = [];
         if (!empty($perms['orders_write'])) {
             try {
-                $order = MoySklad::createOrder([
+                $order = MoySklad::createOrder($vatFlags + [
                     'counterparty_id' => $cp['moysklad_id'],
                     'organization_id' => $orgId,
                     'positions'       => $positions,
@@ -166,7 +172,7 @@ switch ($action) {
         }
 
         try {
-            $inv = MoySklad::createInvoice([
+            $inv = MoySklad::createInvoice($vatFlags + [
                 'counterparty_id' => $cp['moysklad_id'],
                 'organization_id' => $orgId,
                 'positions'       => $positions,

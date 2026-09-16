@@ -239,6 +239,12 @@ final class KpSet {
 
             if ((int)($p['delivery_on'] ?? 0) === 1) $total += (float)($p['delivery_price'] ?? 0);
 
+            // На доске стоит тот же итог, что и в документе: при «цене + НДС»
+            // сумма строк — это ещё не то, что заплатит клиент (модуль 029)
+            $vat = Requisites::forProposal((int)$p['id'])['vat'] ?? [];
+            if (!array_key_exists('rate', $vat)) $vat['rate'] = (int)($p['vat_rate'] ?? 5);
+            $vatTotals = Requisites::vatTotals($total, $vat, Requisites::vatMode($p));
+
             $out[] = [
                 'id'        => (int)$p['id'],
                 'title'     => self::title($p, $n + 1),
@@ -247,7 +253,11 @@ final class KpSet {
                 'status'    => $p['status'],
                 'sent_at'   => $p['sent_at'],
                 'items'     => $items,
-                'total'     => round($total, 2),
+                'total'     => $vatTotals['total'],
+                // Что за налог сидит в этом итоге — теми же словами, что в документе
+                'vat'       => ['note'   => $vatTotals['note'],
+                                'amount' => $vatTotals['amount'],
+                                'mode'   => $vatTotals['mode']],
                 'delivery'  => (int)($p['delivery_on'] ?? 0) === 1 ? [
                     'name'  => trim((string)($p['delivery_name'] ?? '')) ?: 'Доставка',
                     'price' => (float)($p['delivery_price'] ?? 0),

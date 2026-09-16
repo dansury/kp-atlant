@@ -257,7 +257,7 @@ ok('и адресат', str_contains($name, 'Воевода'), $name);
 ok('и дата', str_contains($name, date('d.m.Y')), $name);
 ok('расширение на месте', str_ends_with($name, '.pdf'), $name);
 ok('Word называется так же', PdfGenerator::fileName($proposalId, 'docx')
-   === substr($name, 0, -3) . 'docx', DocxGenerator::filename($proposalId));
+   === substr($name, 0, -3) . 'docx', PdfGenerator::fileName($proposalId, 'docx'));
 ok('в имени нет символов, ломающих файловую систему',
    !preg_match('#[\\\\/:*?"<>|]#', $name), $name);
 

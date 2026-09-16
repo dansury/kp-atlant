@@ -74,7 +74,8 @@ CREATE TABLE proposals (
     execution_days INTEGER DEFAULT 30,    -- 10 or 30
     validity_days INTEGER DEFAULT 14,     -- price validity
     vat_rate INTEGER DEFAULT 5,           -- default VAT % (5, 0, 20)
-    show_vat_total INTEGER DEFAULT 0,     -- show "в т.ч. НДС" line
+    show_vat_total INTEGER DEFAULT 0,     -- legacy, module 029: НДС печатается всегда
+    vat_mode TEXT,                        -- included | added; пусто — настройка KP_VAT_MODE
     cover_letter TEXT,                     -- LLM-generated cover letter draft
     cover_letter_final TEXT,              -- manager-edited version
     pdf_path TEXT,                         -- path to generated PDF

@@ -143,12 +143,12 @@ class PdfGenerator {
         }
 
         // The rate is МойСклад's answer, not a house default: the организация
-        // says whether we charge VAT at all, and the catalog says at what rate
+        // says whether we charge VAT at all, and the catalog says at what rate.
+        // Печатается он ВСЕГДА и в одном из двух видов — «в т.ч. НДС» или «НДС
+        // сверху» (модуль 029); считается в одном месте на весь сервис.
         $vat = $requisites['vat'] ?? [];
-        $paysVat = !array_key_exists('pays_vat', $vat) || (bool)$vat['pays_vat'];
-        $vatRate = $paysVat ? (int)($vat['rate'] ?? ($proposal['vat_rate'] ?? 5)) : 0;
-        $vatStatement = (string)($vat['statement'] ?? ('в т.ч. НДС ' . $vatRate . '%'));
-        $vatAmount = ($paysVat && $vatRate > 0) ? $total - ($total / (1 + $vatRate / 100)) : 0.0;
+        if (!array_key_exists('rate', $vat)) $vat['rate'] = (int)($proposal['vat_rate'] ?? 5);
+        $vatTotals = Requisites::vatTotals($total, $vat, Requisites::vatMode($proposal));
 
         // Default intro
         $introText = $proposal['intro_text'] ?: sprintf(
@@ -211,10 +211,10 @@ class PdfGenerator {
             'postTableText' => $proposal['post_table_text'] ?? '',
             'items' => $items,
             'total' => $total,
-            'vatRate' => $vatRate,
-            'vatAmount' => $vatAmount,
-            'paysVat' => $paysVat,
-            'vatStatement' => $vatStatement,
+            // Подпись колонки цены и строки под таблицей — одним куском оттуда,
+            // где налог посчитан: документ не складывает его во второй раз
+            'vatStatement' => $vatTotals['column'],
+            'vatLines' => $vatTotals['lines'],
             'requisites' => $requisites,
             'showRequisites' => (int)Settings::get('KP_REQUISITES_BLOCK', 1) === 1,
             'qrSize' => max(50, (int)Settings::get('KP_QR_SIZE', 90)),
@@ -227,7 +227,6 @@ class PdfGenerator {
             'showSiteLink' => (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1,
             'qrHint' => trim((string)Settings::get('KP_QR_HINT', '')),
             'pageBreakPerItem' => (int)Settings::get('KP_PAGE_BREAK', 1) === 1,
-            'showVatTotal' => (bool)($proposal['show_vat_total'] ?? false),
             'termsText' => $termsText,
             'delivery' => $delivery,
             'date' => date('d.m.Y') . 'г.',

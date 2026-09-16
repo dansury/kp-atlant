@@ -8,6 +8,7 @@ require_once ROOT . '/lib/moysklad.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/sync.php';
+require_once ROOT . '/lib/requisites.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -86,7 +87,8 @@ switch ($action) {
 
         $appUrl = rtrim($cfg['APP_URL'] ?? '', '/');
         try {
-            $order = MoySklad::createOrder([
+            // Налог в заказе — тот же, что напечатан в КП (модуль 029)
+            $order = MoySklad::createOrder(Requisites::msVatFlags($proposal) + [
                 'counterparty_id' => $cp['moysklad_id'],
                 'organization_id' => orgId(),
                 'positions'       => $positions,
@@ -159,7 +161,8 @@ switch ($action) {
         if ($unmatched) $note .= "\nНе найдено в каталоге: " . implode('; ', $unmatched);
 
         try {
-            $order = MoySklad::createOrder([
+            // КП здесь нет — про налог отвечают организация и настройка
+            $order = MoySklad::createOrder(Requisites::msVatFlags() + [
                 'counterparty_id' => $cp['moysklad_id'],
                 'organization_id' => orgId(),
                 'positions'       => $positions,

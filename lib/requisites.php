@@ -24,6 +24,13 @@ final class Requisites {
     public const VAT_SOURCES = ['позиция каталога', 'настройка НДС по умолчанию'];
 
     /**
+     * Как КП печатает цену и налог (модуль 029):
+     *   included — цена в каталоге уже с НДС, документ выделяет его из итога;
+     *   added    — цена в каталоге без НДС, документ прибавляет его к итогу.
+     */
+    public const VAT_MODES = ['included', 'added'];
+
+    /**
      * Осталось ради старых КП: снимок, замороженный до модуля 023, всё ещё
      * держит эту строку в `requisites_json`, и печатать её как имя покупателя
      * нельзя — `forProposal()` вычищает её на чтении.
@@ -251,6 +258,126 @@ final class Requisites {
     }
 
     /**
+     * Способ печати цены: «в т.ч. НДС» или «цена + НДС».
+     *
+     * В отличие от ставки и от того, плательщики ли мы, это НЕ факт из МойСклад,
+     * а оформление документа — поэтому он и не заморожен в снимке: переключили
+     * настройку, и так печатаются все КП, в том числе собранные вчера. У
+     * отдельного КП может стоять своё значение (`proposals.vat_mode`), пустое —
+     * «как в настройках».
+     */
+    public static function vatMode(array $proposal = []): string {
+        $own = trim((string)($proposal['vat_mode'] ?? ''));
+        if (in_array($own, self::VAT_MODES, true)) return $own;
+        $mode = trim((string)Settings::get('KP_VAT_MODE', 'included'));
+        return in_array($mode, self::VAT_MODES, true) ? $mode : 'included';
+    }
+
+    /**
+     * Налог под итогом КП — ОДНО место, где он считается и называется словами.
+     *
+     * Документ, письмо и Word печатают одни и те же строки: сумма налога,
+     * посчитанная дважды разными формулами, — это две разные суммы в одном
+     * предложении. НДС печатается ВСЕГДА: «в т.ч. НДС», «НДС сверху» или
+     * «НДС не облагается» — молчания среди этих трёх ответов нет.
+     *
+     * @param float  $sum сумма строк таблицы, как они напечатаны
+     * @param array  $vat блок `vat` из снимка реквизитов
+     * @param string $mode included | added
+     * @return array{mode:string,rate:int,net:float,amount:float,gross:float,total:float,column:string,note:string,lines:array}
+     */
+    public static function vatTotals(float $sum, array $vat, string $mode = 'included'): array {
+        $paysVat = !array_key_exists('pays_vat', $vat) || (bool)$vat['pays_vat'];
+        $rate    = (int)($vat['rate'] ?? 0);
+        $sum     = round($sum, 2);
+
+        // Не плательщик — ставки нет вовсе, и это печатается словами организации
+        if (!$paysVat || $rate <= 0) {
+            $note = $paysVat
+                ? 'без НДС'
+                : (string)($vat['statement'] ?? Settings::get('KP_VAT_EXEMPT_NOTE', 'НДС не облагается'));
+            return [
+                'mode'   => 'none',
+                'rate'   => 0,
+                'net'    => $sum,
+                'amount' => 0.0,
+                'gross'  => $sum,
+                'total'  => $sum,
+                'column' => $note,
+                'note'   => $note,
+                'lines'  => [
+                    ['label' => 'Итого', 'amount' => $sum,  'total' => true],
+                    ['label' => $note,   'amount' => null,  'total' => false],
+                ],
+            ];
+        }
+
+        if ($mode === 'added') {
+            // Цена без налога, налог сверху: клиент платит больше суммы таблицы
+            $amount = round($sum * $rate / 100, 2);
+            $gross  = round($sum + $amount, 2);
+            return [
+                'mode'   => 'added',
+                'rate'   => $rate,
+                'net'    => $sum,
+                'amount' => $amount,
+                'gross'  => $gross,
+                'total'  => $gross,
+                'column' => 'без НДС',
+                // Про НАПЕЧАТАННЫЙ итог: налог в него уже вошёл, хоть цены и без него
+                'note'   => 'в т.ч. НДС ' . $rate . '%',
+                'lines'  => [
+                    ['label' => 'Итого без НДС',  'amount' => $sum,    'total' => false],
+                    ['label' => 'НДС ' . $rate . '%', 'amount' => $amount, 'total' => false],
+                    ['label' => 'Итого с НДС',    'amount' => $gross,  'total' => true],
+                ],
+            ];
+        }
+
+        // Цена уже с налогом: итог тот же, налог выделяется из него
+        $net    = round($sum / (1 + $rate / 100), 2);
+        $amount = round($sum - $net, 2);
+        return [
+            'mode'   => 'included',
+            'rate'   => $rate,
+            'net'    => $net,
+            'amount' => $amount,
+            'gross'  => $sum,
+            'total'  => $sum,
+            'column' => 'в т.ч. НДС ' . $rate . '%',
+            'note'   => 'в т.ч. НДС ' . $rate . '%',
+            'lines'  => [
+                ['label' => 'Итого', 'amount' => $sum, 'total' => true],
+                ['label' => 'в т.ч. НДС ' . $rate . '%', 'amount' => $amount, 'total' => false],
+            ],
+        ];
+    }
+
+    /**
+     * Что сказать МойСклад про налог в заказе и счёте, созданных по КП.
+     *
+     * Документ в МойСклад считает НДС по своим полям: `vatEnabled` — облагается
+     * ли он вообще, `vatIncluded` — сидит ли налог в цене позиции. Оба ответа
+     * уже даны в КП, и счёт обязан повторить их, а не решать заново: КП «цена +
+     * НДС», выставленное счётом «в т.ч. НДС», — это скидка размером в налог.
+     *
+     * @param array $proposal строка `proposals`; пустая — берём организацию и настройку
+     * @return array{vat_enabled:bool,vat_included:bool}
+     */
+    public static function msVatFlags(array $proposal = []): array {
+        $vat = !empty($proposal['id']) ? (self::forProposal((int)$proposal['id'])['vat'] ?? []) : [];
+        if (!$vat) {
+            $legal = Db::one("SELECT pays_vat FROM legal_entities WHERE is_active=1 LIMIT 1") ?: [];
+            $vat = ['pays_vat' => !array_key_exists('pays_vat', $legal) || (int)$legal['pays_vat'] === 1];
+        }
+        $enabled = !array_key_exists('pays_vat', $vat) || (bool)$vat['pays_vat'];
+        return [
+            'vat_enabled'  => $enabled,
+            'vat_included' => $enabled && self::vatMode($proposal) !== 'added',
+        ];
+    }
+
+    /**
      * Everything «Оформление КП» prints, and where each value came from.
      *
      * The tab used to hold typed-in numbers only, so НДС, ИНН and the addresses
@@ -295,6 +422,7 @@ final class Requisites {
             ],
             'catalog_vat'   => self::catalogVat(),
             'vat_sources'   => self::VAT_SOURCES,
+            'vat_mode'      => self::vatMode(),
         ];
     }
 
