@@ -1542,6 +1542,18 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '30')");
         $current = 30;
     }
+
+    // v31 — модуль 031: «убрать с доски» перестало отменяться следующим же
+    // заходом на доску.
+    if ($current < 31) {
+        // Снятая с доски карточка НЕ удаляется: строка остаётся с отметкой и
+        // помнит свою колонку. Без этого `Boards::sync()` заводил карточку
+        // заново — во «Входящих», — и разобранная доска сваливалась обратно.
+        Db::ensureColumn('board_cards', 'dismissed_at', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '31')");
+        $current = 31;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

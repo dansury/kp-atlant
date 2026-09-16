@@ -57,6 +57,11 @@ final class MailText {
             '/\n\s*From:\s.*\n\s*Sent:\s/iu',
             '/\n\s*(?:пн|вт|ср|чт|пт|сб|вс),\s*\d{1,2}\s+\S+\.?\s+\d{4}\s*г?\.?\s*в\s*\d{1,2}:\d{2}/u',
             '/\n\s*(?:понедельник|вторник|среда|четверг|пятница|суббота|воскресенье),\s*\d{1,2}\s+\S+\s+\d{4}/iu',
+            // «14 сентября 2026, 19:23 +03:00 от …» — так шапку цитаты пишет
+            // Mail.ru и так её пишем мы сами (`MailText::quoteHeader`): без
+            // этого правила каждый круг переписки оставлял в письме её строку
+            '/\n\s*\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)'
+            . '\s+\d{4}\s*(?:г\.?)?,?\s*(?:в\s*)?\d{1,2}:\d{2}/iu',
             '/\n\s*\d{1,2}\.\d{2}\.\d{4},?\s+\d{1,2}:\d{2},?\s+.{0,80}(?:писал|wrote|<)/u',
             '/\n\s*On\s.{0,80}\swrote:/iu',
             '/\n\s*Кому:\s.*\n\s*Тема:/u',
@@ -143,6 +148,94 @@ final class MailText {
         $name = trim($name, " \t\"'<>");
         if ($email === '' && $name === '') return null;
         return ['name' => $name, 'email' => $email];
+    }
+
+    // ==== Цитата письма, на которое отвечаем (модуль 031) ====
+    //
+    // Наши ответы уходили голыми: клиент видел «Укажите контактное лицо» и
+    // спрашивал в ответ, о каком заказе речь, — переписку приходилось
+    // восстанавливать вручную с обеих сторон. Теперь ответ несёт письмо, на
+    // которое отвечает, как это делает любая почтовая программа: шапка с
+    // датой и автором, ниже — текст под знаком цитаты.
+
+    /** Сколько символов исходного письма уходит в цитату. */
+    private const QUOTE_LIMIT = 20000;
+
+    /** Месяцы для шапки цитаты — так их пишет Mail.ru и Яндекс. */
+    private const MONTHS = ['', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+                            'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+    /**
+     * Шапка цитаты: «15 сентября 2026, 09:37 +03:00 от Иван <i@z.ru>:».
+     *
+     * @param array $src письмо из архива (date_at, from_name, from_email, to_emails, direction)
+     */
+    public static function quoteHeader(array $src): string {
+        $ts = strtotime((string)($src['date_at'] ?? '')) ?: time();
+        $when = date('j', $ts) . ' ' . (self::MONTHS[(int)date('n', $ts)] ?? '')
+              . ' ' . date('Y', $ts) . ', ' . date('H:i', $ts) . ' ' . date('P', $ts);
+
+        $name  = trim((string)($src['from_name'] ?? ''));
+        $email = trim((string)($src['from_email'] ?? ''));
+        $who = $name !== '' && $email !== '' ? "$name <$email>" : ($name !== '' ? $name : $email);
+
+        return $who !== '' ? "$when от $who:" : "$when:";
+    }
+
+    /** Текст исходного письма — без цитат предыдущих кругов и без баннеров. */
+    public static function quoteBody(array $src): string {
+        $body = trim((string)($src['body_text'] ?? ''));
+        if ($body === '') $body = self::fromHtml((string)($src['body_html'] ?? ''));
+        $body = trim(self::stripBanners($body));
+        // Цитируем ТО ПИСЬМО, а не всю историю под ним: иначе каждый круг
+        // переписки удваивает письмо, и на пятом ответе читать его нечем
+        $own = self::stripQuoted($body);
+        if ($own !== '') $body = $own;
+        $body = (string)preg_replace('/\n{3,}/u', "\n\n", $body);
+        return mb_strlen($body) > self::QUOTE_LIMIT
+            ? rtrim(mb_substr($body, 0, self::QUOTE_LIMIT)) . "\n[…]"
+            : $body;
+    }
+
+    /** Цитата для текстовой части письма: каждая строка под знаком «>». */
+    public static function quoteText(array $src): string {
+        $body = self::quoteBody($src);
+        if ($body === '') return '';
+        $lines = preg_split('/\R/u', $body) ?: [];
+        $quoted = implode("\n", array_map(fn($l) => rtrim('> ' . $l), $lines));
+        return self::quoteHeader($src) . "\n" . $quoted;
+    }
+
+    /** Та же цитата для HTML-части: `blockquote` с полоской слева. */
+    public static function quoteHtml(array $src): string {
+        $body = self::quoteBody($src);
+        if ($body === '') return '';
+        $text = nl2br(htmlspecialchars($body, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+        return '<div class="atlant-quote">'
+             . '<p style="color:#666;margin:16px 0 4px">'
+             . htmlspecialchars(self::quoteHeader($src), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</p>'
+             . '<blockquote style="margin:0;padding-left:12px;border-left:2px solid #ccc;color:#444">'
+             . $text . '</blockquote></div>';
+    }
+
+    /**
+     * Приписать цитату к ответу. Пусто на входе или уже процитировано —
+     * возвращаем как есть: двух цитат одного письма в ответе быть не должно.
+     *
+     * @return array{text:string,html:string}
+     */
+    public static function withQuote(string $text, string $html, ?array $src): array {
+        if (!$src) return ['text' => $text, 'html' => $html];
+        $qText = self::quoteText($src);
+        if ($qText === '') return ['text' => $text, 'html' => $html];
+        $header = self::quoteHeader($src);
+        if (str_contains($text, $header) || str_contains($html, $header)) {
+            return ['text' => $text, 'html' => $html];
+        }
+        return [
+            'text' => rtrim($text) . "\n\n" . $qText,
+            'html' => rtrim($html) . self::quoteHtml($src),
+        ];
     }
 
     /**
