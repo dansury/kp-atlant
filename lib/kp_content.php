@@ -106,11 +106,14 @@ class KpContent {
                 if ($included) $upd['included_text'] = $included;
             }
 
-            // Развёрнутый комментарий по позиции (модуль 023). Заполняется
-            // описанием из МойСклад — размеченным, а не тегами наружу, — потом
-            // правится менеджером и уходит в КП и в письмо. Правленое не трогаем.
-            if (trim((string)($item['comment_text'] ?? '')) === '' && !empty($product['description'])) {
-                $upd['comment_text'] = Markup::toMarkdown((string)$product['description']);
+            // Комментарий по позиции — слова МЕНЕДЖЕРА, а не копия описания
+            // (модуль 031). Описанием заполнено поле на карточке запроса, где
+            // его правят; вернувшееся нетронутым до строки КП не доходит, и
+            // карточка печатает `description_text`. Заполненное старым кодом
+            // описание снимается здесь же — иначе оно печаталось бы вторым
+            // экземпляром того же текста.
+            if (self::isCatalogText((string)($item['comment_text'] ?? ''), (string)($product['description'] ?? ''))) {
+                $upd['comment_text'] = null;
             }
 
             // Photos — cached on disk, refreshed at most monthly
@@ -129,6 +132,21 @@ class KpContent {
 
             if ($upd) Db::update('proposal_items', $upd, 'id=?', [$item['id']]);
         }
+    }
+
+    /**
+     * Комментарий ли это менеджера — или описание из каталога, доехавшее сюда
+     * нетронутым (модуль 031).
+     *
+     * Сравнивается с обеими формами описания: целиком — так его заполнял код
+     * до модуля 031 — и одной только описательной частью, которой заполнено
+     * поле на карточке запроса.
+     */
+    private static function isCatalogText(string $comment, string $description): bool {
+        $comment = trim(Markup::toMarkdown($comment));
+        if ($comment === '' || trim($description) === '') return false;
+        $full = trim(Markup::toMarkdown($description));
+        return $comment === $full || $comment === trim(self::splitDescription($description)['description']);
     }
 
     // MoySklad descriptions are free text. Managers write them with the same

@@ -53,7 +53,9 @@ final class KpText {
                 $note = trim((string)$note);
                 if ($note !== '') $lines[] = '   ' . $note;
             }
-            // Развёрнутый комментарий по товару — то же, что печатается в файле
+            // Описание позиции — то же и тем же выбором, что в файле: слова
+            // менеджера, если он их написал, иначе описание из МойСклад. Один
+            // блок, а не два подряд (модуль 031).
             $comment = trim(Markup::toPlainText((string)($item['comment_text'] ?? '')));
             if ($comment === '') $comment = trim(Markup::toPlainText((string)($item['description_text'] ?? '')));
             if ($comment !== '') $lines[] = '   ' . mb_substr($comment, 0, 600);

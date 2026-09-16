@@ -91,6 +91,16 @@ document and never `htmlspecialchars()` a card field into it: the first ships a 
 signed offer, the second ships the tags themselves. `toMarkdown()` is idempotent, so calling it
 on a field a manager has already edited is safe.
 
+Описание товара у позиции ОДНО (модуль 031). В поле под строкой подбора стоит описание из
+`products_cache` — уже синхронизированное, за ним не ходят в МойСклад на каждый показ, — и
+менеджер правит его там, где видит. Нетронутое на строке не хранится (`RequestItems::ownComment()`):
+подбор поставит другой товар — поменяется и описание, а копия прежнего осталась бы врать.
+Карточка КП печатает `comment_text`, если менеджер его написал, иначе `description_text`: два
+поля растут из одного текста МойСклад, и напечатанные подряд читаются как повтор. «Характеристики»
+и «Комплектация» — свои блоки, поэтому в поле попадает только описательная часть
+(`KpContent::splitDescription()`). В промпт ответа клиенту описание не идёт вовсе: письмо называет
+позиции, цены и сроки, а товар читается в КП.
+
 A position the manager folds as «нет в наличии» (`proposal_items.is_excluded`) leaves the
 priced table, the cards and «Итого» — `KpContent::printedItems()` is the ONE place that
 decides what the document prints — but it never leaves the document: `unmatchedRows()` picks
