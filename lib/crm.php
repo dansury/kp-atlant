@@ -400,6 +400,121 @@ class Crm {
         return array_reverse($rows); // oldest first, chat style
     }
 
+    /**
+     * Организации карточки (модуль 029): сама компания плюс дописанные руками.
+     *
+     * Карточка всегда первая и удалению не подлежит — это она и есть. Счёт
+     * выставляется на ту, что выбрана; ничего не выбрано — на карточку.
+     */
+    public static function orgs(int $counterpartyId): array {
+        $cp = Db::one("SELECT id, name, inn, moysklad_id FROM counterparties WHERE id=?", [$counterpartyId]);
+        if (!$cp) return [];
+        $out = [[
+            'id'          => 0,
+            'name'        => (string)$cp['name'],
+            'inn'         => (string)($cp['inn'] ?? ''),
+            'kpp'         => '',
+            'moysklad_id' => (string)($cp['moysklad_id'] ?? ''),
+            'edo_id'      => '',
+            'note'        => '',
+            'primary'     => true,
+        ]];
+        foreach (Db::all("SELECT * FROM counterparty_orgs WHERE counterparty_id=? ORDER BY id",
+                         [$counterpartyId]) as $row) {
+            $out[] = [
+                'id'          => (int)$row['id'],
+                'name'        => (string)$row['name'],
+                'inn'         => (string)($row['inn'] ?? ''),
+                'kpp'         => (string)($row['kpp'] ?? ''),
+                'moysklad_id' => (string)($row['moysklad_id'] ?? ''),
+                'edo_id'      => (string)($row['edo_id'] ?? ''),
+                'note'        => (string)($row['note'] ?? ''),
+                'primary'     => false,
+            ];
+        }
+        return $out;
+    }
+
+    public static function addOrg(int $counterpartyId, array $data): int {
+        return Db::insert('counterparty_orgs', [
+            'counterparty_id' => $counterpartyId,
+            'name'            => (string)$data['name'],
+            'inn'             => ($data['inn'] ?? '') !== '' ? (string)$data['inn'] : null,
+            'kpp'             => ($data['kpp'] ?? '') !== '' ? (string)$data['kpp'] : null,
+            'moysklad_id'     => ($data['moysklad_id'] ?? '') !== '' ? (string)$data['moysklad_id'] : null,
+            'edo_id'          => ($data['edo_id'] ?? '') !== '' ? (string)$data['edo_id'] : null,
+            'note'            => ($data['note'] ?? '') !== '' ? (string)$data['note'] : null,
+        ]);
+    }
+
+    /** Организация по её id внутри карточки; 0 — сама карточка. */
+    public static function org(int $counterpartyId, int $orgId): ?array {
+        foreach (self::orgs($counterpartyId) as $o) {
+            if ((int)$o['id'] === $orgId) return $o;
+        }
+        return null;
+    }
+
+    /**
+     * Заказы и счета компании — строками для той же ленты (модуль 029).
+     *
+     * Раньше они стояли двумя отдельными карточками в правой колонке, а ссылки
+     * на МойСклад — в третьем месте, под КП. Одна и та же сделка читалась из
+     * трёх углов экрана. Теперь всё, что случилось с компанией, — один список
+     * сверху вниз, и у каждой строки есть ссылка туда, где документ живёт.
+     *
+     * `request_id` у строки — чтобы экран мог приглушить то, что к открытому
+     * запросу отношения не имеет: у компании их за год десятки.
+     */
+    public static function documents(int $counterpartyId): array {
+        require_once __DIR__ . '/reserves.php';
+        $out = [];
+        foreach (Db::all(
+            "SELECT id, moysklad_id, name, sum, state_name, moment, created_at, request_id, proposal_id,
+                    COALESCE(applicable, 1) AS applicable,
+                    reserve_until, reserve_reminded_at, reserve_released_at
+             FROM orders WHERE counterparty_id=? ORDER BY id DESC LIMIT 50", [$counterpartyId]) as $o) {
+            $out[] = [
+                'kind'        => 'doc',
+                'doc'         => 'order',
+                'id'          => (int)$o['id'],
+                'title'       => 'Заказ ' . (string)$o['name'],
+                'sum'         => (float)$o['sum'],
+                'state_name'  => $o['state_name'],
+                'url'         => 'https://online.moysklad.ru/app/#customerorder/edit?id=' . (string)$o['moysklad_id'],
+                'request_id'  => $o['request_id'] !== null ? (int)$o['request_id'] : null,
+                'proposal_id' => $o['proposal_id'] !== null ? (int)$o['proposal_id'] : null,
+                // Резерв под неоплаченный счёт (модуль 026) переехал сюда вместе
+                // с заказом: кнопка «Снять резерв» стоит там же, где заказ
+                'reserve'     => Reserves::state($o),
+                'created_at'  => (string)($o['moment'] ?: $o['created_at']),
+            ];
+        }
+        foreach (Db::all(
+            "SELECT i.id, i.moysklad_id, i.name, i.sum, i.payed_sum, i.state_name, i.moment,
+                    i.created_at, i.sent_at, i.proposal_id, o.request_id
+             FROM invoices i LEFT JOIN orders o ON o.id = i.order_id
+             WHERE i.counterparty_id=? ORDER BY i.id DESC LIMIT 50", [$counterpartyId]) as $i) {
+            $out[] = [
+                'kind'        => 'doc',
+                'doc'         => 'invoice',
+                'id'          => (int)$i['id'],
+                'title'       => 'Счёт ' . (string)$i['name'],
+                'sum'         => (float)$i['sum'],
+                'payed_sum'   => (float)$i['payed_sum'],
+                'state_name'  => $i['state_name'],
+                'sent_at'     => $i['sent_at'],
+                'url'         => 'https://online.moysklad.ru/app/#invoiceout/edit?id=' . (string)$i['moysklad_id'],
+                'pdf_url'     => '/api/invoices.php?action=pdf&id=' . (int)$i['id'],
+                'request_id'  => $i['request_id'] !== null ? (int)$i['request_id'] : null,
+                'proposal_id' => $i['proposal_id'] !== null ? (int)$i['proposal_id'] : null,
+                'created_at'  => (string)($i['moment'] ?: $i['created_at']),
+            ];
+        }
+        usort($out, fn($a, $b) => strcmp($a['created_at'], $b['created_at']));
+        return $out;
+    }
+
     public static function chatCount(int $counterpartyId, bool $withLetters = false): int {
         $letter = "(direction IN ('in','out') AND event_type IS NULL)";
         $where = $withLetters ? '1=1' : "NOT $letter";

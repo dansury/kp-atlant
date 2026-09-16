@@ -203,7 +203,9 @@ function initSchema(): void {
     CREATE TABLE IF NOT EXISTS notifications (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         manager_id INTEGER REFERENCES managers(id),
-        type TEXT NOT NULL CHECK(type IN ('new_request','followup_ready','system')),
+        -- Список типов живёт в `Notifier::PUSH_KINDS`, а не в схеме: он растёт
+        -- с каждым модулем, и проверка здесь молча отбивала всё новое (модуль 029)
+        type TEXT NOT NULL,
         title TEXT NOT NULL,
         body TEXT,
         ref_type TEXT,
@@ -1472,6 +1474,63 @@ SQL);
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '28')");
         $current = 28;
+    }
+
+    // v29 — модуль 029: в одном письме просят счёт на две организации, и обе
+    // должны жить в карточке, как живут несколько счетов.
+    if ($current < 29) {
+        Db::pdo()->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS counterparty_orgs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+                name TEXT NOT NULL,
+                inn TEXT,
+                kpp TEXT,
+                moysklad_id TEXT,
+                edo_id TEXT,
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_cp_orgs_cp ON counterparty_orgs(counterparty_id);
+SQL);
+
+        // На какую организацию выставлен счёт: пусто — на саму карточку
+        Db::ensureColumn('invoices', 'org_id', 'INTEGER');
+        Db::ensureColumn('orders', 'org_id', 'INTEGER');
+
+        // `notifications.type` был перечислением из трёх значений первого
+        // модуля — `new_request`, `followup_ready`, `system`. С тех пор типов
+        // стало вдвое больше (заказ, счёт, недоставленный ответ, резерв, а
+        // теперь и ошибка сервиса), и КАЖДЫЙ из них база молча отбивала
+        // проверкой: уведомление не создавалось вовсе. Ограничение снимаем —
+        // список типов живёт в `Notifier::PUSH_KINDS`, а не в схеме, и
+        // расширять его не должно значить «переписать таблицу».
+        if (str_contains((string)Db::val(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='notifications'"),
+            "CHECK(type IN ('new_request','followup_ready','system'))")) {
+            Db::pdo()->exec(<<<'SQL'
+                CREATE TABLE notifications_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    manager_id INTEGER REFERENCES managers(id),
+                    type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    body TEXT,
+                    ref_type TEXT,
+                    ref_id INTEGER,
+                    url TEXT,
+                    is_read INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO notifications_new (id, manager_id, type, title, body, ref_type, ref_id, url, is_read, created_at)
+                    SELECT id, manager_id, type, title, body, ref_type, ref_id, url, is_read, created_at FROM notifications;
+                DROP TABLE notifications;
+                ALTER TABLE notifications_new RENAME TO notifications;
+                CREATE INDEX IF NOT EXISTS idx_notif_manager ON notifications(manager_id, is_read);
+SQL);
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '29')");
+        $current = 29;
     }
 }
 

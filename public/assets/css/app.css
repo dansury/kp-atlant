@@ -162,10 +162,18 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 /* Toast */
 .toast-container { position: fixed; top: 60px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
 .toast { padding: 11px 16px; border-radius: var(--radius); color: #fff; font-size: 13px;
-         animation: slideIn .3s; max-width: 350px; box-shadow: var(--shadow-lg); }
+         animation: slideIn .3s; max-width: 350px; box-shadow: var(--shadow-lg);
+         cursor: pointer; pointer-events: auto; }
 .toast--success { background: var(--success); }
 .toast--error { background: var(--danger); }
 .toast--info { background: #14161a; }
+/* Ошибку читают и копируют, а не провожают взглядом (модуль 029): текст
+   переносится целиком, подсказка про копирование стоит под ним */
+.toast__text { display: block; white-space: pre-wrap; word-break: break-word; }
+.toast__hint { display: block; margin-top: 4px; font-size: 11px; opacity: .75; }
+.toast:hover { filter: brightness(1.08); }
+.toast--copied { outline: 2px solid #fff; outline-offset: -2px; }
+.toast--error { max-width: 460px; max-height: 50vh; overflow: auto; }
 @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
 
 /* Login */
@@ -232,6 +240,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Веха сделки: «КП отправлено», «счёт выставлен». Текст письма за ней свёрнут
    в две строки — лента остаётся лентой, а не вторым почтовым ящиком (модуль 020) */
 .msg--event { background: var(--surface); border-left: 3px solid var(--primary); }
+/* Заказ и счёт — та же лента (модуль 029) */
+.msg--doc { background: var(--success-bg); border-left: 3px solid var(--success); }
+/* Подзаголовок внутри карточки: «Организации», «Контакты» (модуль 029) */
+.card__sub { font-weight: 600; font-size: 13px; margin: 14px 0 6px; padding-top: 10px;
+             border-top: 1px solid var(--border); }
+/* Не про открытый запрос: видно, но не спорит за внимание */
+.msg--offtopic { opacity: .45; filter: grayscale(1); }
+.msg--offtopic:hover { opacity: 1; filter: none; }
 .msg--event .msg__head span:first-child { font-weight: 600; }
 .msg__body--fold { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
                    overflow: hidden; cursor: pointer; }
@@ -327,7 +343,25 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 #kpWide:empty { display: none; }
 
 /* Предпросмотр КП прямо в карточке письма — «Открыть КП» больше никуда не уводит */
-.kp-preview { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: var(--radius); margin-top: 10px; }
+/* Окно КП тянется за угол и помнит высоту (модуль 029): документ читают то
+   бегло, то построчно, и 70vh не угадывает ни того, ни другого */
+.kp-preview { width: 100%; height: 60vh; min-height: 200px; border: 1px solid var(--border);
+              border-radius: var(--radius); margin-top: 10px; resize: vertical; overflow: auto; display: block; }
+.kp-open { resize: vertical; overflow: auto; min-height: 160px; }
+.kp-size { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.kp-size input[type="range"] { width: 120px; }
+
+/* Счета под полем ответа: посмотреть, переименовать, приложить (модуль 029) */
+.invdock { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.invdock__title { font-weight: 650; font-size: 13px; margin-bottom: 6px; }
+.invdock__row { border: 1px solid var(--border); border-radius: var(--radius);
+                padding: 8px 10px; margin-bottom: 8px; background: var(--surface-2);
+                display: flex; flex-direction: column; gap: 6px; }
+.invdock__head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 13px; }
+.invdock__name { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.invdock__name input { margin: 0; font-size: 12px; }
+.invdock__frame { width: 100%; height: 55vh; min-height: 180px; margin-top: 8px; resize: vertical;
+                  overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); display: block; }
 
 /* Оформление текста письма: панель кнопок и поле, которое ведёт себя как поле */
 .composer__tools { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
@@ -545,6 +579,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .chip--work { background: var(--warning-bg); border-color: #f0dcbb; color: var(--warning); }
 .chip--new { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--accent-ink); }
 .chip--kp { background: var(--success-bg); border-color: #cfe4d4; color: var(--success); }
+/* Чьё последнее письмо — цветом и словом (модуль 029) */
+.chip--mine { background: var(--surface-2); border-color: var(--border-strong); color: var(--text-muted); }
+.chip--theirs { background: var(--warning-bg); border-color: #f0dcbb; color: var(--warning); }
 
 /* The company card: conversations open in place, so the row and its letters
    are one block — a thread never takes the manager off the company. */
@@ -672,8 +709,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     .preview-body { max-height: 65vh; }
     .preview-frame { height: 60vh; }
     /* На телефоне колонки КП сужаются, но доска остаётся доской */
-    .kpcol { flex-basis: 200px; }
-    .kpcol--add { flex-basis: 140px; }
+    .kpcol { flex-basis: auto; }
+    .kpcol--add { flex-basis: auto; }
 }
 
 /* ==== Модуль 022: подсказки там, где возникает вопрос ====
@@ -797,8 +834,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* ==== Доска КП запроса (модуль 027) ====
    Запрос — это набор предложений: слева позиции, которые никуда не положили,
    дальше по колонке на КП. Позиции перетаскиваются между колонками. */
-.kpboard { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 10px; align-items: flex-start; }
-.kpcol { flex: 0 0 240px; background: var(--surface-2); border: 1px solid var(--border);
+/* КП идут СПИСКОМ, сверху вниз (модуль 029). Горизонтальная лента прятала
+   всё, кроме первых двух колонок: чтобы увидеть третье КП, надо было догадаться
+   прокрутить блок вбок — и на телефоне, и на широком экране. */
+.kpboard { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 10px; align-items: stretch; }
+.kpcol { flex: 0 0 auto; width: 100%; background: var(--surface-2); border: 1px solid var(--border);
          border-radius: var(--radius); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 .kpcol--pool { background: var(--surface); border-style: dashed; }
 .kpcol--over { outline: 2px dashed var(--primary); outline-offset: -2px; }
@@ -810,7 +850,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .kpcol__line { font-size: 11px; }
 .kpcol__total { font-size: 13px; font-weight: 700; text-align: right; }
 .kpcol__actions { display: flex; flex-wrap: wrap; gap: 4px; }
-.kpcol--add { flex: 0 0 160px; align-self: stretch; min-height: 90px; cursor: pointer;
+.kpcol--add { flex: 0 0 auto; width: 100%; align-self: stretch; min-height: 44px; cursor: pointer;
               border: 1px dashed var(--border); border-radius: var(--radius); background: none;
               color: var(--text-muted); font-size: 13px; }
 .kpcol--add:hover { color: var(--accent-ink); border-color: var(--primary); }
