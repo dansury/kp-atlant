@@ -132,7 +132,11 @@ ok('интейк завёл карточку каждой компании', $ca
 
 // Разложим по колонкам — это и есть «разобранная доска»
 $work = (int)Db::val("SELECT id FROM board_columns WHERE board_id=? AND kind IS NULL ORDER BY position LIMIT 1", [$board]);
-$ids = array_map('intval', array_column(Db::all("SELECT id FROM board_cards"), 'id'));
+// Карточки берём по компании, а не порядком строк: `SELECT id FROM board_cards`
+// без ORDER BY отдаёт их в порядке того индекса, который выбрал SQLite, и
+// проверки ниже про «ту самую» компанию молча меняли смысл местами
+$cardOf = fn(int $cpId) => (int)Db::val("SELECT id FROM board_cards WHERE counterparty_id=?", [$cpId]);
+$ids = [$cardOf($cpA), $cardOf($cpB)];
 foreach ($ids as $id) Boards::moveCard($id, $work, PHP_INT_MAX);
 
 $columnOf = fn(int $id) => (int)Db::val("SELECT column_id FROM board_cards WHERE id=?", [$id]);

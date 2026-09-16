@@ -3050,19 +3050,28 @@ const App = {
      */
     threadComposer(key, reply, mailboxes) {
         const id = this.threadDomId(key);
+        // Письмо, которое ещё никому не отвечает: ни цепочки, ни письма-исходника
+        const fresh = !key && !reply.reply_to_id;
         return `
             <div class="composer" data-composer="${this.esc(id)}">
                 <div class="composer__head">
-                    <span class="composer__title">Ответ${this.hint('composer')}</span>
-                    <span class="muted" data-cmp-target>кому: ${this.esc(reply.to || '')}</span>
+                    <span class="composer__title">${fresh ? 'Новое письмо' : 'Ответ'}${this.hint('composer')}</span>
+                    ${fresh ? '' : `<span class="muted" data-cmp-target>кому: ${this.esc(reply.to || '')}</span>`}
                     <select data-cmp-box title="Из какого ящика отправить">
                         ${(mailboxes || []).map(b => `<option value="${b.id}" ${reply.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
                     </select>
                 </div>
-                <input type="hidden" data-cmp-to value="${this.esc(reply.to || '')}">
+                <!-- У первого письма адресата ещё нет — его пишут здесь же, и
+                     он попадает и в черновик, и в карточку (модуль 033) -->
+                ${fresh
+                    ? `<input type="email" data-cmp-to value="${this.esc(reply.to || '')}" placeholder="Кому — адрес получателя"
+                              oninput="App.composerChanged('${this.jsStr(key)}')">`
+                    : `<input type="hidden" data-cmp-to value="${this.esc(reply.to || '')}">`}
                 <input type="hidden" data-cmp-reply value="${reply.reply_to_id || ''}">
                 <input type="hidden" data-cmp-cp value="${reply.counterparty_id || ''}">
-                <input type="text" data-cmp-subject value="${this.esc(reply.subject || '')}" placeholder="Тема">
+                <input type="hidden" data-cmp-draft-id value="${reply.draft_id || ''}">
+                <input type="text" data-cmp-subject value="${this.esc(reply.subject || '')}" placeholder="Тема"
+                       oninput="App.composerChanged('${this.jsStr(key)}')">
                 <!-- Текст письма оформляется как текст, а не как разметка (модуль 023):
                      жирный, курсив, списки и ссылки — кнопками, без единого тега на экране -->
                 <div class="composer__tools">
@@ -3252,19 +3261,36 @@ const App = {
         this._draftTimer = setTimeout(() => this.saveComposerDraft(key), 1500);
     },
 
+    /**
+     * Черновик уходит на сервер и заводит карточку в «В работе» (модуль 033).
+     *
+     * Сохраняется ЛЮБОЕ письмо, в том числе первое письмо компании: раньше у
+     * такого не было ни id письма, ни ключа цепочки, и сервер отказывал — текст
+     * жил только в этой вкладке и пропадал вместе с ней.
+     */
     async saveComposerDraft(key) {
         const c = this.composerOf(key);
         if (!c) return;
         const {html} = this.composerBody(c);
         const saved = c.querySelector('[data-cmp-saved]');
+        const idBox = c.querySelector('[data-cmp-draft-id]');
         try {
-            await this.api('mail.php?action=draft_save', {method: 'POST', body: {
+            const r = await this.api('mail.php?action=draft_save', {method: 'POST', body: {
+                draft_id: Number(idBox && idBox.value) || 0,
                 id: Number(c.querySelector('[data-cmp-reply]').value) || 0,
                 thread_key: key || '',
+                counterparty_id: Number((c.querySelector('[data-cmp-cp]') || {}).value) || 0,
+                to: ((c.querySelector('[data-cmp-to]') || {}).value || '').trim(),
                 subject: (c.querySelector('[data-cmp-subject]') || {}).value || '',
                 body: html,
             }});
-            if (saved) saved.textContent = 'черновик сохранён';
+            if (idBox) idBox.value = r.draft_id || '';
+            // Компанию мог опознать сервер — по ИНН и подписи в теле письма
+            const cpBox = c.querySelector('[data-cmp-cp]');
+            if (cpBox && !cpBox.value && r.counterparty_id) cpBox.value = r.counterparty_id;
+            if (saved) saved.textContent = r.saved
+                ? 'черновик сохранён' + (r.column ? ` · карточка в «${r.column}»` : '')
+                : 'черновик пуст';
         } catch { if (saved) saved.textContent = 'черновик не сохранился'; }
     },
 
@@ -3276,10 +3302,18 @@ const App = {
         if (!box || box.innerHTML.trim() !== '') return;
         try {
             const id = Number(c.querySelector('[data-cmp-reply]').value) || 0;
+            const cp = Number((c.querySelector('[data-cmp-cp]') || {}).value) || 0;
             const d = await this.api('mail.php?action=draft_get&id=' + id
+                                     + '&counterparty_id=' + cp
                                      + '&thread_key=' + encodeURIComponent(key || ''));
             if (!d.draft || !d.draft.body) return;
             box.innerHTML = d.draft.body;
+            const idBox = c.querySelector('[data-cmp-draft-id]');
+            if (idBox) idBox.value = d.draft.id || '';
+            const subj = c.querySelector('[data-cmp-subject]');
+            if (subj && !subj.value.trim() && d.draft.subject) subj.value = d.draft.subject;
+            const to = c.querySelector('[data-cmp-to]');
+            if (to && !to.value.trim() && d.draft.to_email) to.value = d.draft.to_email;
             const note = c.querySelector('[data-cmp-saved]');
             if (note) note.textContent = 'восстановлен черновик от ' + this.fmtDate(d.draft.updated_at);
         } catch { /* черновика нет — поле и так пустое */ }
@@ -3428,6 +3462,7 @@ const App = {
                 reply_to_id: Number(c.querySelector('[data-cmp-reply]').value) || null,
                 counterparty_id: Number(c.querySelector('[data-cmp-cp]').value) || null,
                 thread_key:  key || null,
+                draft_id:    Number((c.querySelector('[data-cmp-draft-id]') || {}).value) || null,
                 files:       this.composerFiles(c),
             }});
             // «Отправлено» is only half the news when the copy never reached the
@@ -3538,7 +3573,11 @@ const App = {
                 <div class="card__title">Информация</div>
                 <p><strong>ИНН:</strong> ${this.esc(cp.inn) || '—'}</p>
                 <p><strong>Домен:</strong> ${this.esc(cp.email_domain) || '—'}</p>
-                <p><strong>МойСклад:</strong> ${cp.moysklad_id ? 'привязан' : '<span class="muted">не привязан</span>'}</p>
+                <p><strong>МойСклад:</strong> ${cp.moysklad_id
+                    ? `<a href="${this.esc(this.msUrl(cp.moysklad_id))}" target="_blank" rel="noopener">привязан ↗</a>`
+                    : '<span class="muted">не привязан</span>'}</p>
+                ${cp.moysklad_id ? '' : this.msCreateLink(cp.moysklad_hint || {
+                    counterparty_id: cp.id, name: cp.name, inn: cp.inn || '', email: cp.contact_email || ''})}
                 ${cp.merged_cards && cp.merged_cards.length
                     ? `<p class="muted">Объединено с: ${cp.merged_cards.map(m => this.esc(m.name)).join(', ')}</p>` : ''}
 
@@ -5424,7 +5463,7 @@ const App = {
         this.mountBodies(document.getElementById('app'));
         this.loadThreadPlacement(key);
         this.restoreComposerDraft(key);
-        this.loadThreadFacts(t, lastIn);
+        this.loadThreadFacts(t, lastIn, d.moysklad);
         // Панель подбора есть у КАЖДОГО письма: у письма без запроса она честно
         // говорит, почему пуста, а не исчезает вовсе
         const host = document.getElementById('app');
@@ -5442,7 +5481,7 @@ const App = {
      * открывалось голым экраном, и непонятно было, от кого оно и куда пришло.
      * Панель одна на все письма; пустых полей в ней просто нет.
      */
-    loadThreadFacts(t, lastIn) {
+    loadThreadFacts(t, lastIn, ms) {
         const box = document.getElementById('threadFacts');
         if (!box) return;
         const rows = [];
@@ -5453,12 +5492,85 @@ const App = {
         add('Ящик', this.esc(lastIn.mailbox_name || ''));
         add('Получено', this.fmtDate(lastIn.date_at));
         add('Компания', t.counterparty_id
-            ? `<a href="#mail/company/${t.counterparty_id}">${this.esc(t.counterparty_name || '')}</a>` : '');
+            ? `<a href="#mail/company/${t.counterparty_id}">${this.esc(t.counterparty_name || '')}</a>`
+            : '<span class="muted">не опознана</span>');
+        if (ms && ms.inn) add('ИНН', this.esc(ms.inn) + (ms.inn_from_letter ? ' <span class="muted">— из письма</span>' : ''));
+        if (ms && ms.linked) add('МойСклад', `<a href="${this.esc(this.msUrl(ms.moysklad_id))}" target="_blank" rel="noopener">контрагент ↗</a>`);
         add('Категория', this.esc(this.categoryLabels[lastIn.category] || lastIn.category || ''));
         add('Вложений', (lastIn.attachments || []).length || '');
         box.className = 'card';
         box.innerHTML = `<div class="card__title">О письме</div>
-            <div class="facts">${rows.join('') || '<p class="muted">Ничего, кроме самого письма.</p>'}</div>`;
+            <div class="facts">${rows.join('') || '<p class="muted">Ничего, кроме самого письма.</p>'}</div>
+            ${ms && !ms.linked ? this.msCreateLink(ms, t.thread_key) : ''}`;
+    },
+
+    // ---- Контрагент, которого нет в МойСклад (модуль 033) ----
+
+    msUrl(id) {
+        return 'https://online.moysklad.ru/app/#counterparty/edit?id=' + encodeURIComponent(id || '');
+    },
+
+    /**
+     * Ссылка «завести контрагента» прямо из письма.
+     *
+     * Письмо от компании, которой нет в МойСклад, упиралось в тупик: ни счёта,
+     * ни заказа, а завести контрагента можно было только руками, перепечатав
+     * ИНН из подписи. Здесь ИНН уже подставлен — тот, что нашёлся в письме или
+     * во вложенной карточке предприятия.
+     */
+    msCreateLink(hint, threadKey) {
+        // Подсказка живёт на странице, а не в атрибуте onclick: в названии
+        // компании бывают кавычки, и склейка их в разметку кончается ничем
+        this._ms = {hint: hint || {}, threadKey: threadKey || ''};
+        const inn = hint.inn || '';
+        return `<div class="ms-offer">
+            <p class="muted">Контрагента нет в МойСклад${inn ? ` · ИНН ${this.esc(inn)}` : ' · ИНН в письме не нашёлся'}</p>
+            <button class="btn btn--outline btn--sm" onclick="App.msCreateForm()">
+                ➕ Создать контрагента в МойСклад</button>
+        </div>`;
+    },
+
+    /** ИНН и название перед отправкой видно и можно поправить. */
+    msCreateForm() {
+        const hint = (this._ms || {}).hint || {};
+        this.modal('Контрагент в МойСклад', `
+            <p class="muted">Заведём контрагента с этим ИНН. Если контрагент с таким ИНН
+               в МойСклад уже есть, компания просто привяжется к нему — двойника не будет.</p>
+            <div class="form-group">
+                <label>Название</label>
+                <input type="text" id="msName" value="${this.esc(hint.name || '')}" placeholder="ООО «Ромашка»">
+            </div>
+            <div class="form-group">
+                <label>ИНН</label>
+                <input type="text" id="msInn" value="${this.esc(hint.inn || '')}" inputmode="numeric"
+                       placeholder="10 или 12 цифр">
+            </div>
+            <button class="btn btn--primary btn--block" id="msGo" onclick="App.msCreate()">
+                Создать в МойСклад</button>`);
+    },
+
+    async msCreate() {
+        const {hint = {}, threadKey = ''} = this._ms || {};
+        const btn = document.getElementById('msGo');
+        if (btn) { btn.disabled = true; btn.textContent = 'Создаём...'; }
+        try {
+            const r = await this.api('counterparties.php?action=moysklad_create', {method: 'POST', body: {
+                counterparty_id: hint.counterparty_id || 0,
+                thread_key: threadKey,
+                name: (document.getElementById('msName') || {}).value || '',
+                inn: (document.getElementById('msInn') || {}).value || '',
+                email: hint.email || '',
+                phone: hint.phone || '',
+            }});
+            this.closeModal();
+            this.toast(r.created ? 'Контрагент заведён в МойСклад'
+                                 : 'Контрагент с таким ИНН уже был в МойСклад — привязали', 'success');
+            if (r.url) window.open(r.url, '_blank', 'noopener');
+            this.route();
+        } catch (err) {
+            this.toast(err.message, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = 'Создать в МойСклад'; }
+        }
     },
 
     /**
@@ -6016,6 +6128,7 @@ const App = {
                 <div class="bcol__head">
                     <span class="bcol__title" onclick="App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')">${this.esc(c.title)}</span>
                     ${c.kind === 'inbox' ? '<span class="bcol__kind" title="Сюда сами падают новые письма">авто</span>' : ''}
+                    ${c.kind === 'work' ? '<span class="bcol__kind" title="Сюда сама встаёт карточка письма, которое пишут">черновики</span>' : ''}
                     <span class="bcol__count">${c.cards.length}</span>
                     <button class="bcol__x" title="Удалить колонку" onclick="App.boardDeleteColumn(${c.id})">×</button>
                 </div>
@@ -6041,8 +6154,12 @@ const App = {
         const href = card.counterparty_id
             ? `#mail/company/${card.counterparty_id}`
             : (card.thread_key ? `#mail/t/${encodeURIComponent(card.thread_key)}` : '');
+
+        const d = card.draft || null;
         const letters = c.letters || t.count || 0;
-        const subject = c.subject || t.subject || '';
+        // Тема и начало текста — из черновика, если письмо ещё пишут: карточка
+        // говорит, кому и о чём, ещё до отправки (модуль 033)
+        const subject = (d && (d.subject || d.preview)) || c.subject || t.subject || '';
         const kp = c.proposal_status ? this.proposalBadge(c.proposal_status) : '';
         return `
             <div class="${cls.join(' ')}" draggable="true" data-card="${card.id}">
@@ -6052,14 +6169,16 @@ const App = {
                     ${href ? `<a href="${href}">${this.esc(card.title)}</a>` : this.esc(card.title)}
                     ${card.unread ? `<span class="pill pill--danger" title="непрочитанных писем">${card.unread}</span>` : ''}
                 </div>
-                ${subject ? `<div class="bcard__subject">${this.esc(subject)}</div>` : ''}
+                ${subject ? `<div class="bcard__subject">${d ? '✎ ' : ''}${this.esc(subject)}</div>` : ''}
                 ${card.note ? `<div class="bcard__note">${this.esc(card.note)}</div>` : ''}
                 <div class="bcard__meta">
+                    ${d ? `<span class="chip chip--work" title="Письмо пишут: ${this.esc(d.to || '')}">черновик</span>` : ''}
                     ${letters ? `<span class="chip">писем ${letters}</span>` : ''}
                     ${c.requests_open ? `<span class="chip chip--work">запросов ${c.requests_open}</span>` : ''}
                     ${kp}
                     ${card.kind === 'thread' ? '<span class="chip chip--new" title="Отправитель ещё не привязан к компании">новый адрес</span>' : ''}
-                    ${card.last_at ? `<span class="muted">${this.fmtDate(card.last_at, false)}</span>` : ''}
+                    ${card.last_at || (d && d.updated_at)
+                        ? `<span class="muted">${this.fmtDate(card.last_at || d.updated_at, false)}</span>` : ''}
                 </div>
                 <div class="bcard__actions">
                     ${href ? `<a href="${href}">открыть</a>` : ''}

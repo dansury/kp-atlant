@@ -13,6 +13,7 @@
  * as a conversation card until a company card is resolved for it.
  */
 require_once __DIR__ . '/mail_threads.php';
+require_once __DIR__ . '/mail_text.php';
 require_once __DIR__ . '/crm.php';
 
 final class Boards {
@@ -20,7 +21,7 @@ final class Boards {
     /** A first board that already makes sense for a КП pipeline. */
     private const DEFAULT_COLUMNS = [
         ['Входящие',      '#6b7fd7', 'inbox'],
-        ['В работе',      '#e0a53c', null],
+        ['В работе',      '#e0a53c', 'work'],
         ['КП отправлено', '#4f9e57', null],
         ['Ждём оплату',   '#b45cc0', null],
         ['Закрыто',       '#8a8f98', null],
@@ -60,6 +61,17 @@ final class Boards {
     public static function inboxColumn(int $boardId): ?array {
         return Db::one("SELECT * FROM board_columns WHERE board_id=? AND kind='inbox' ORDER BY position, id LIMIT 1", [$boardId])
             ?: Db::one("SELECT * FROM board_columns WHERE board_id=? ORDER BY position, id LIMIT 1", [$boardId]);
+    }
+
+    /**
+     * The column a letter being written falls into. Named like the intake one,
+     * so renaming «В работе» does not send the drafts back to «Входящие».
+     */
+    public static function workColumn(int $boardId): ?array {
+        return Db::one("SELECT * FROM board_columns WHERE board_id=? AND kind='work' ORDER BY position, id LIMIT 1", [$boardId])
+            ?: Db::one("SELECT * FROM board_columns WHERE board_id=? AND title='В работе' ORDER BY position, id LIMIT 1", [$boardId])
+            ?: Db::one("SELECT * FROM board_columns WHERE board_id=? AND (kind IS NULL OR kind<>'inbox') ORDER BY position, id LIMIT 1", [$boardId])
+            ?: self::inboxColumn($boardId);
     }
 
     /** The board with its columns and cards — one request paints the whole page. */
@@ -125,6 +137,7 @@ final class Boards {
         $cpIds = array_values(array_unique($cpIds));
 
         $stats = $cpIds ? self::companyStats($cpIds) : [];
+        $drafts = self::draftsOf($cards);
 
         foreach ($cards as &$card) {
             $card['id'] = (int)$card['id'];
@@ -164,6 +177,12 @@ final class Boards {
                     if (trim((string)$card['title']) === '') $card['title'] = $t['subject'];
                 }
             }
+            // Письмо, которое пишут прямо сейчас: карточка говорит, кому и о чём,
+            // ещё до отправки (модуль 033)
+            $card['draft'] = $drafts[(int)($card['draft_id'] ?? 0)] ?? null;
+            if (!$card['draft']) $card['draft_id'] = null;
+            elseif ($card['kind'] === 'note') $card['kind'] = 'draft';
+
             // «Прочитано», нажатое на карточке, гасит и жирный шрифт (модуль 026).
             // Жирность даёт «ждёт ответа», а оно считается по датам писем —
             // отметить карточку разобранной было нечем, и групповое «Прочитано»
@@ -176,6 +195,32 @@ final class Boards {
             $card['hot'] = $card['unread'] > 0 || $card['unanswered'];
         }
         unset($card);
+    }
+
+    /**
+     * Черновики всех карточек доски одним запросом — тема, адресат и начало
+     * текста того, что пишут.
+     *
+     * @param array<int,array> $cards
+     * @return array<int,array>
+     */
+    private static function draftsOf(array $cards): array {
+        $ids = [];
+        foreach ($cards as $c) if (!empty($c['draft_id'])) $ids[] = (int)$c['draft_id'];
+        $ids = array_values(array_unique($ids));
+        if (!$ids) return [];
+
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $out = [];
+        foreach (Db::all("SELECT id, subject, to_email, body, updated_at FROM mail_drafts WHERE id IN ($in)", $ids) as $d) {
+            $out[(int)$d['id']] = [
+                'subject'    => (string)($d['subject'] ?? ''),
+                'to'         => (string)($d['to_email'] ?? ''),
+                'preview'    => MailText::preview(MailText::fromHtml((string)$d['body']), 140),
+                'updated_at' => $d['updated_at'],
+            ];
+        }
+        return $out;
     }
 
     /**
@@ -507,21 +552,24 @@ final class Boards {
     public static function saveColumn(int $boardId, ?int $columnId, string $title, ?string $color, ?string $kind = null): int {
         if ($columnId) {
             $data = array_filter(['title' => trim($title) ?: 'Колонка', 'color' => $color], fn($v) => $v !== null);
-            // Exactly one intake column per board, or new mail would double up
-            if ($kind === 'inbox') {
-                Db::q("UPDATE board_columns SET kind=NULL WHERE board_id=? AND id<>?", [$boardId, $columnId]);
-                $data['kind'] = 'inbox';
+            // Exactly one intake column per board, or new mail would double up;
+            // the same for «В работе», where the drafts land
+            if (in_array($kind, ['inbox', 'work'], true)) {
+                Db::q("UPDATE board_columns SET kind=NULL WHERE board_id=? AND id<>? AND kind=?", [$boardId, $columnId, $kind]);
+                $data['kind'] = $kind;
             }
             Db::update('board_columns', $data, 'id=? AND board_id=?', [$columnId, $boardId]);
             return $columnId;
         }
         $pos = (int)Db::val("SELECT COALESCE(MAX(position), -1) + 1 FROM board_columns WHERE board_id=?", [$boardId]);
-        if ($kind === 'inbox') Db::q("UPDATE board_columns SET kind=NULL WHERE board_id=?", [$boardId]);
+        if (in_array($kind, ['inbox', 'work'], true)) {
+            Db::q("UPDATE board_columns SET kind=NULL WHERE board_id=? AND kind=?", [$boardId, $kind]);
+        }
         return Db::insert('board_columns', [
             'board_id' => $boardId,
             'title'    => trim($title) ?: 'Колонка',
             'color'    => $color ?: '#8a8f98',
-            'kind'     => $kind === 'inbox' ? 'inbox' : null,
+            'kind'     => in_array($kind, ['inbox', 'work'], true) ? $kind : null,
             'position' => $pos,
         ]);
     }
@@ -658,6 +706,145 @@ final class Boards {
         Db::q("DELETE FROM board_cards WHERE id=?", [$cardId]);
     }
 
+    // ---- Письмо, которое пишут прямо сейчас (модуль 033) ----
+
+    /**
+     * Карточка черновика — в «В работе».
+     *
+     * Письмо, которое менеджер СЕЙЧАС пишет, — это работа, и на доске её до сих
+     * пор не было видно вовсе: карточки заводила только входящая почта. Черновик
+     * заводит свою карточку сам, с компанией, темой и началом текста, вытянутыми
+     * из тела письма.
+     *
+     * Карточка компании, уже стоящая в колонке, второй раз не заводится: она
+     * переезжает из «Входящие» в работу (письмо ей уже пишут) и остаётся там,
+     * куда её поставил менеджер, если это не «Входящие».
+     *
+     * @return array{id:int,column:string,created:bool}|array{}
+     */
+    public static function draftCard(int $draftId, array $o): array {
+        $boardId = (int)self::singleton()['id'];
+        $work    = self::workColumn($boardId);
+        if (!$work) return [];
+
+        $cpId = !empty($o['counterparty_id']) ? (int)$o['counterparty_id'] : null;
+        $key  = trim((string)($o['thread_key'] ?? ''));
+        $card = self::findCard($boardId, $draftId, $cpId, $key);
+        $title = trim((string)($o['title'] ?? ''));
+
+        if (!$card) {
+            Db::q("UPDATE board_cards SET position = position + 1 WHERE column_id=?", [(int)$work['id']]);
+            $id = Db::insert('board_cards', [
+                'column_id'       => (int)$work['id'],
+                'position'        => 0,
+                'draft_id'        => $draftId,
+                'counterparty_id' => $cpId,
+                'thread_key'      => $cpId ? null : ($key ?: null),
+                'title'           => $title ?: 'Новое письмо',
+                'manager_id'      => !empty($o['manager_id']) ? (int)$o['manager_id'] : null,
+                'moved_at'        => date('Y-m-d H:i:s'),
+            ]);
+            return ['id' => $id, 'column' => (string)$work['title'], 'created' => true];
+        }
+
+        $upd = ['draft_id' => $draftId];
+        if ($cpId && empty($card['counterparty_id'])) {
+            $upd['counterparty_id'] = $cpId;
+            $upd['thread_key'] = null;
+        }
+        if ($title !== '' && in_array(trim((string)$card['title']), ['', 'Карточка', 'Новое письмо'], true)) {
+            $upd['title'] = $title;
+        }
+        // Снятая с доски карточка возвращается: «разобрано» кончилось на том,
+        // что этой компании снова пишут (модуль 031 + 033)
+        $wasDismissed = !empty($card['dismissed_at']);
+        if ($wasDismissed) $upd['dismissed_at'] = null;
+        Db::update('board_cards', $upd, 'id=?', [(int)$card['id']]);
+
+        $column = (string)Db::val("SELECT title FROM board_columns WHERE id=?", [(int)$card['column_id']]);
+        if ($wasDismissed || self::isInbox((int)$card['column_id'])) {
+            self::moveCard((int)$card['id'], (int)$work['id'], 0);
+            $column = (string)$work['title'];
+        }
+        return ['id' => (int)$card['id'], 'column' => $column, 'created' => false];
+    }
+
+    /**
+     * Письмо ушло. Карточка остаётся на доске и в своей колонке — она больше
+     * не черновик, а компания со своей перепиской.
+     */
+    public static function adoptDraftCard(int $draftId, array $letter): void {
+        $boardId = (int)self::singleton()['id'];
+        $cpId = !empty($letter['counterparty_id']) ? (int)$letter['counterparty_id'] : null;
+        $key  = trim((string)($letter['thread_key'] ?? ''));
+        if (!$cpId && $key === '') return;
+
+        $card = self::findCard($boardId, $draftId, $cpId, $key);
+        if (!$card) {
+            // Отправили, ничего не сохранив черновиком, — карточка всё равно нужна
+            $work = self::workColumn($boardId);
+            if (!$work) return;
+            self::addCard((int)$work['id'], [
+                'counterparty_id' => $cpId,
+                'thread_key'      => $key,
+                'title'           => (string)($letter['title'] ?? ''),
+                'manager_id'      => $letter['manager_id'] ?? null,
+            ]);
+            return;
+        }
+
+        $upd = ['draft_id' => null];
+        if ($cpId) { $upd['counterparty_id'] = $cpId; $upd['thread_key'] = null; }
+        elseif ($key !== '' && empty($card['thread_key'])) { $upd['thread_key'] = $key; }
+        if (!empty($letter['mail_message_id']) && empty($card['mail_message_id'])) {
+            $upd['mail_message_id'] = (int)$letter['mail_message_id'];
+        }
+        $wasDismissed = !empty($card['dismissed_at']);
+        if ($wasDismissed) $upd['dismissed_at'] = null;
+        Db::update('board_cards', $upd, 'id=?', [(int)$card['id']]);
+
+        if ($wasDismissed || self::isInbox((int)$card['column_id'])) {
+            $work = self::workColumn($boardId);
+            if ($work) self::moveCard((int)$card['id'], (int)$work['id'], 0);
+        }
+    }
+
+    /**
+     * Черновик стёрли. Карточка, которая жила только им, уходит с доски —
+     * доска не держит пустых карточек (модуль 026); карточка с перепиской,
+     * запросом или заметкой остаётся и просто перестаёт быть черновиком.
+     */
+    public static function dropDraftCard(int $draftId): void {
+        $card = Db::one("SELECT * FROM board_cards WHERE draft_id=?", [$draftId]);
+        if (!$card) return;
+
+        $cpId = !empty($card['counterparty_id']) ? (int)$card['counterparty_id'] : 0;
+        $hasMail = $cpId
+            ? (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE counterparty_id=? AND archived_at IS NULL", [$cpId]) > 0
+            : !empty($card['thread_key']);
+        if (!$hasMail && empty($card['request_id']) && trim((string)($card['note'] ?? '')) === '') {
+            self::deleteCard((int)$card['id']);
+            return;
+        }
+        Db::update('board_cards', ['draft_id' => null], 'id=?', [(int)$card['id']]);
+    }
+
+    /** Карточка этой доски: по черновику, по компании или по переписке. */
+    private static function findCard(int $boardId, int $draftId, ?int $cpId, string $threadKey): ?array {
+        $find = fn(string $where, array $params) => Db::one(
+            "SELECT d.* FROM board_cards d JOIN board_columns c ON c.id = d.column_id
+             WHERE c.board_id=? AND $where ORDER BY d.id LIMIT 1", [$boardId, ...$params]);
+
+        if ($draftId && ($row = $find('d.draft_id=?', [$draftId]))) return $row;
+        if ($cpId && ($row = $find('d.counterparty_id=?', [$cpId]))) return $row;
+        if ($threadKey !== '' && ($row = $find('d.thread_key=?', [$threadKey]))) return $row;
+        return null;
+    }
+
+    private static function isInbox(int $columnId): bool {
+        return (string)Db::val("SELECT kind FROM board_columns WHERE id=?", [$columnId]) === 'inbox';
+    }
+
     /**
      * Групповая операция над отмеченными карточками.
      *
@@ -753,11 +940,14 @@ final class Boards {
         // слитой в неё — иначе слитая карточка никогда бы не убиралась
         $rootId = $counterpartyId ? Crm::rootId($counterpartyId) : null;
         $cards = $rootId
-            ? Db::all("SELECT id, counterparty_id FROM board_cards WHERE counterparty_id=?", [$rootId])
-            : Db::all("SELECT id, counterparty_id FROM board_cards WHERE counterparty_id IS NOT NULL");
+            ? Db::all("SELECT id, counterparty_id, draft_id FROM board_cards WHERE counterparty_id=?", [$rootId])
+            : Db::all("SELECT id, counterparty_id, draft_id FROM board_cards WHERE counterparty_id IS NOT NULL");
 
         $removed = 0;
         foreach ($cards as $card) {
+            // Письмо, которое ей пишут прямо сейчас, — это живая работа, даже
+            // когда писем в архиве ещё ноль (модуль 033)
+            if (!empty($card['draft_id'])) continue;
             $cpId = (int)$card['counterparty_id'];
             // Слитая карточка держит письма под своим прежним id — считаем семью
             $live = (int)Db::val(

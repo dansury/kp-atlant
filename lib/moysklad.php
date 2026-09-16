@@ -822,6 +822,10 @@ class MoySklad {
         return "https://online.moysklad.ru/app/#invoiceout/edit?id=$id";
     }
 
+    public static function counterpartyUrl(string $id): string {
+        return "https://online.moysklad.ru/app/#counterparty/edit?id=$id";
+    }
+
     // First organization of the account — used as the seller in orders
     public static function getOrganizations(): array {
         $data = self::get('/entity/organization?limit=10');

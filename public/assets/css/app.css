@@ -346,6 +346,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .thread-head__subject { font-weight: 600; }
 
 .facts { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+/* Предложение завести контрагента в МойСклад прямо из письма (модуль 033) */
+.ms-offer { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.ms-offer p { margin: 0 0 6px; font-size: 12px; }
 .facts__row { display: flex; justify-content: space-between; gap: 10px; }
 .facts__row span { color: var(--text-muted); }
 .facts__row b { text-align: right; min-width: 0; overflow-wrap: anywhere; }
@@ -705,7 +708,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .composer__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .composer__title { font-weight: 650; font-size: 13px; }
 .composer__head select { width: auto; margin-left: auto; font-size: 12px; padding: 5px 8px; }
-.composer input[type="text"] { margin-bottom: 6px; }
+.composer input[type="text"], .composer input[type="email"] { margin-bottom: 6px; }
 .composer textarea { min-height: 104px; }
 .composer__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 /* Классификатор стоит ПЕРЕД кнопкой генерации: видно, чем сервис собирается

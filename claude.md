@@ -393,6 +393,18 @@ do not hide the draft button when there is nothing to answer: disable it and say
 conversation with no request says so in the positions block — a silently missing table reads
 as a feature that disappeared.
 
+A letter being WRITTEN is work too, and it is on the board (module 033). The draft saves
+itself from the first keystroke — for every letter, the first letter to a company included:
+a draft has no message id and no thread key of its own, so it is keyed by the company it is
+addressed to (`MailDrafts`). Saving it puts a card into «В работе» — the column is named
+(`board_columns.kind='work'`), like the intake one, so renaming or reordering columns cannot
+redirect the drafts. The card is filled in FROM THE LETTER: the company from the signature,
+the ИНН and the phone out of the body, the subject and the first line — never a second form
+asking the manager for what he has just typed. A company card already on the board is never
+duplicated: it moves out of «Входящие» (somebody is writing to it), and a column the manager
+dragged it into is left alone. Sending the letter keeps the card and clears the draft; an
+erased draft takes its own card with it but never one that carries correspondence.
+
 «Письма» is ONE board and a card on it is a COMPANY (module 011) — its letters, its requests
 and its КП are things you open the card to see, never a second list beside it. New mail puts
 itself there: `Boards::sync()` runs on every open of the board, so nothing waits for a manager
@@ -450,6 +462,17 @@ stock»: the unfiltered report is tried, then `/entity/assortment`, which carrie
 readable by a token with no rights to reports. The result carries `error` and `fallback`, and
 zero updated positions is reported RED in the panel — a refresh that matched nothing is a
 breakage, not an empty warehouse, and silence about it costs a month of wrong КП.
+
+## Контрагент, которого нет в МойСклад
+A letter from a company МойСклад does not know is a dead end — no invoice, no order — and the
+only way out used to be retyping the ИНН from the signature by hand. The ИНН is found instead:
+`Crm::moyskladHint()` takes it off the company card, and when there is none, out of the letter
+itself, attachments included (`Crm::letterText()`), and says so (`inn_from_letter`). It never
+calls МойСклад — it is what the letter card shows; the network is touched only when somebody
+presses «Создать контрагента в МойСклад». That button SEARCHES BY ИНН FIRST and links what it
+finds: two companies with one ИНН in the reference book is a worse outcome than a missing one.
+A card created here takes the conversation with it (`Crm::attachThread`) — letters, requests
+and contacts — so the company is not an empty rectangle.
 
 ## Prompts and the model's discipline
 Every system prompt gets the discipline block appended by `Prompts::render()` — do the whole
