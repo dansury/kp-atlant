@@ -306,9 +306,15 @@ class Crm {
     /**
      * Append an event to the company feed and keep answer tracking current.
      * $direction: in | out | note. $opts: request_id, subject, email_from, email_to,
-     * manager_id, event_type (system events), meta (array).
+     * manager_id, event_type (system events), meta (array), at (letter's own date).
+     *
+     * `at` is for a letter that reaches us late: an answer written from the phone
+     * and picked out of «Отправленные» on the next sync happened WHEN IT WAS
+     * WRITTEN, not when the sync ran, and an old letter must never push the
+     * answer clock forward — hence the timestamps only ever move ahead.
      */
     public static function logEvent(?int $counterpartyId, string $direction, string $body, array $opts = []): int {
+        $at = trim((string)($opts['at'] ?? ''));
         $id = Db::insert('correspondence', [
             'request_id'      => $opts['request_id'] ?? null,
             'counterparty_id' => $counterpartyId,
@@ -320,15 +326,21 @@ class Crm {
             'manager_id'      => $opts['manager_id'] ?? null,
             'event_type'      => $opts['event_type'] ?? null,
             'meta_json'       => isset($opts['meta']) ? json_encode($opts['meta'], JSON_UNESCAPED_UNICODE) : null,
-        ]);
+        ] + ($at !== '' ? ['created_at' => $at] : []));
 
         if ($counterpartyId) {
             // Notes are not answers (FR-038); system events are not either
-            $now = date('Y-m-d H:i:s');
-            if ($direction === 'in') {
-                Db::update('counterparties', ['last_inbound_at' => $now], 'id=?', [$counterpartyId]);
-            } elseif ($direction === 'out') {
-                Db::update('counterparties', ['last_outbound_at' => $now], 'id=?', [$counterpartyId]);
+            $when = $at !== '' ? $at : date('Y-m-d H:i:s');
+            $column = match ($direction) {
+                'in'  => 'last_inbound_at',
+                'out' => 'last_outbound_at',
+                default => null,
+            };
+            if ($column) {
+                $known = (string)Db::val("SELECT $column FROM counterparties WHERE id=?", [$counterpartyId]);
+                if ($known === '' || strtotime($when) > strtotime($known)) {
+                    Db::update('counterparties', [$column => $when], 'id=?', [$counterpartyId]);
+                }
             }
         }
         return $id;

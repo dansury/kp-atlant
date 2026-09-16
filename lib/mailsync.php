@@ -24,7 +24,8 @@ final class MailSync {
     }
 
     public static function syncMailbox(array $box): array {
-        $res = ['mailbox_id' => (int)$box['id'], 'name' => $box['name'], 'in' => 0, 'out' => 0, 'requests' => 0, 'error' => null];
+        $res = ['mailbox_id' => (int)$box['id'], 'name' => $box['name'], 'in' => 0, 'out' => 0,
+                'requests' => 0, 'error' => null, 'sent_error' => null];
         if (!EmailReader::available()) {
             $res['error'] = 'Расширение PHP imap не установлено на сервере';
             Db::update('mailboxes', ['last_error' => $res['error'], 'last_check_at' => date('Y-m-d H:i:s')], 'id=?', [$box['id']]);
@@ -35,13 +36,6 @@ final class MailSync {
         $limit = max(1, (int)Settings::get('MAIL_FETCH_LIMIT', 50));
         try {
             $res['in'] = self::syncFolder($box, (string)($box['imap_folder_in'] ?: 'INBOX'), 'in', 'last_uid_in', $limit);
-            if (!empty($box['sync_sent']) && Settings::get('MAIL_SYNC_SENT', 1)) {
-                $sent = (string)($box['imap_folder_sent'] ?: '');
-                if ($sent !== '') {
-                    $res['out'] = self::syncFolder($box, $sent, 'out', 'last_uid_sent', $limit);
-                }
-            }
-            Db::update('mailboxes', ['last_error' => null, 'last_check_at' => date('Y-m-d H:i:s')], 'id=?', [$box['id']]);
         } catch (Throwable $e) {
             $res['error'] = $e->getMessage();
             Db::update('mailboxes', ['last_error' => $e->getMessage(), 'last_check_at' => date('Y-m-d H:i:s')], 'id=?', [$box['id']]);
@@ -49,10 +43,66 @@ final class MailSync {
             return $res;
         }
 
+        // «Отправленные» — отдельная попытка: недоступная папка отправленных
+        // роняла синхронизацию целиком, и входящие письма после неё не
+        // становились запросами. Ошибка видна в «Настройки → Почта», но разбор
+        // входящих она больше не отменяет.
+        try {
+            $res['out'] = self::syncSent($box, $limit);
+        } catch (Throwable $e) {
+            $res['sent_error'] = $e->getMessage();
+            Logger::exception('mail', $e, ['mailbox_id' => $box['id'], 'mailbox' => $box['name'], 'folder' => 'sent']);
+        }
+        Db::update('mailboxes', [
+            'last_error'    => $res['sent_error'] ? 'Отправленные: ' . $res['sent_error'] : null,
+            'last_check_at' => date('Y-m-d H:i:s'),
+        ], 'id=?', [$box['id']]);
+
         if (!empty($box['create_requests'])) {
             $res['requests'] = self::processInbound((int)$box['id']);
         }
         return $res;
+    }
+
+    /**
+     * Письма, отправленные мимо сервиса, — с телефона, из Outlook, из веб-почты.
+     *
+     * Имя папки в настройках — догадка («INBOX.Sent» по умолчанию), а у Яндекса
+     * и Mail.ru папка называется «Отправленные». Поэтому имя, которое не
+     * открылось, не приговор: спрашиваем у сервера его собственный список и
+     * запоминаем то, что действительно есть, — ровно как при отправке письма.
+     */
+    private static function syncSent(array $box, int $limit): int {
+        if (empty($box['sync_sent']) || !Settings::get('MAIL_SYNC_SENT', 1)) return 0;
+
+        $configured = trim((string)($box['imap_folder_sent'] ?? ''));
+        if ($configured !== '') {
+            try {
+                return self::syncFolder($box, $configured, 'out', 'last_uid_sent', $limit);
+            } catch (Throwable $e) {
+                $folder = self::resolveSentFolder($box, $configured);
+                // Сервер не знает другого имени — папка молчит по своей причине
+                if ($folder === '' || $folder === $configured) throw $e;
+            }
+        } else {
+            $folder = self::resolveSentFolder($box, '');
+            if ($folder === '') throw new RuntimeException('на сервере не нашлась папка «Отправленные»');
+        }
+
+        Mailboxes::rememberSentFolder((int)$box['id'], $folder, $configured);
+        $box = Mailboxes::get((int)$box['id']) ?: ($box + ['imap_folder_sent' => $folder]);
+        return self::syncFolder($box, $folder, 'out', 'last_uid_sent', $limit);
+    }
+
+    /** Имя папки отправленных по списку самого сервера; '' — не нашлось. */
+    private static function resolveSentFolder(array $box, string $configured): string {
+        $reader = new EmailReader(Mailboxes::cfg($box));
+        $reader->connect((string)($box['imap_folder_in'] ?: 'INBOX'));
+        try {
+            return (string)($reader->findSentFolder($configured) ?? '');
+        } finally {
+            $reader->close();
+        }
     }
 
     /** Archive everything newer than the stored UID watermark. */
@@ -60,7 +110,7 @@ final class MailSync {
         $reader = new EmailReader(Mailboxes::cfg($box));
         $reader->connect($folder);
         $since = (int)($box[$uidColumn] ?? 0);
-        $messages = $reader->fetchSince($since, $limit);
+        $messages = self::fetchBatch($reader, $since, $limit);
 
         $stored = 0;
         $maxUid = $since;
@@ -73,13 +123,51 @@ final class MailSync {
             // An answer pulled out of «Отправленные» never goes through the
             // request pipeline, so nothing else would ever put it on the card of
             // the company it was written to (module 021).
-            if ($direction === 'out') MailArchive::linkCounterparty($id);
+            if ($direction === 'out') self::registerOutbound($id);
         }
         $reader->close();
 
         if ($maxUid > $since) Db::update('mailboxes', [$uidColumn => $maxUid], 'id=?', [$box['id']]);
         if ($stored) Logger::info('mail', "Ящик «{$box['name']}»: $folder — новых писем $stored", ['mailbox_id' => $box['id']]);
         return $stored;
+    }
+
+    /**
+     * Что забрать из папки за один заход.
+     *
+     * Папку, которую ещё ни разу не забирали, начинаем с ПОСЛЕДНИХ писем, а не
+     * с самых старых: в «Отправленных» за четыре года лежат тысячи писем, и
+     * сегодняшний ответ с телефона пришёл бы через сотню синхронизаций. История
+     * — это «Скачать весь архив», она идёт своим курсором.
+     *
+     * Отделено от соединения, чтобы проверять без IMAP-сервера: $reader нужен
+     * только с fetchSince / fetchLatest.
+     */
+    public static function fetchBatch($reader, int $since, int $limit): array {
+        return $since > 0 ? $reader->fetchSince($since, $limit) : $reader->fetchLatest($limit);
+    }
+
+    /**
+     * Ответ, написанный мимо сервиса, — это ответ.
+     *
+     * Письмо из «Отправленных» кладётся на карточку компании и отмечается в
+     * ленте её датой: иначе менеджер отвечает клиенту с телефона, а карточка
+     * весь день горит «клиент ждёт ответа». Сюда доходит только то, чего в
+     * архиве ещё нет, — копию письма, отправленного из сервиса, отсекает
+     * дедупликация, и второй отметки об ответе не будет.
+     */
+    public static function registerOutbound(int $mailMessageId): void {
+        $cpId = MailArchive::linkCounterparty($mailMessageId);
+        if (!$cpId) return;
+        $row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$mailMessageId]);
+        if (!$row || !empty($row['correspondence_id'])) return;
+
+        $corrId = Crm::logEvent((int)$cpId, 'out', (string)$row['body_text'], [
+            'subject'  => $row['subject'],
+            'email_to' => $row['to_emails'],
+            'at'       => (string)$row['date_at'],
+        ]);
+        Db::update('mail_messages', ['correspondence_id' => $corrId], 'id=?', [$mailMessageId]);
     }
 
     /**

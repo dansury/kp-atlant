@@ -190,7 +190,7 @@ try {
             }
             $configured = (string)($box['imap_folder_sent'] ?? '');
             if ($resolved && $resolved !== $configured && !empty($box['id'])) {
-                Db::update('mailboxes', ['imap_folder_sent' => $resolved], 'id=?', [$box['id']]);
+                Mailboxes::rememberSentFolder((int)$box['id'], $resolved, $configured);
             }
             jsonOk(['result' => [
                 'folders'    => $folders,

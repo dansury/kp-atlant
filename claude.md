@@ -270,6 +270,21 @@ of the letter it answers, whichever mailbox it leaves from. A copy in the IMAP
 records the outcome in `mail_messages.sent_state` — a failure is `Logger::error()` and a
 visible warning, never a swallowed warning.
 
+«Отправленные» is pulled by every sync — the button, the page opening, the cron — and not by
+the cron alone: a manager answers from the phone and the board must know it. The folder NAME is
+a guess (Yandex says «Отправленные», cPanel «INBOX.Sent»), so `MailSync::syncSent()` asks the
+server for its own list when the configured name does not open, remembers what works
+(`Mailboxes::rememberSentFolder()`, which also zeroes the UID counter — it belonged to the other
+folder) and never lets that folder take the INBOX down with it: a sent-folder failure is
+`sent_error` in the report, and the inbound letters still become requests. A folder nobody has
+pulled yet starts from its LAST letters, not its oldest — four years of «Отправленные» would
+otherwise reach today's answer in a hundred syncs; history is «Скачать весь архив», which walks
+its own cursor. A letter that comes back out of «Отправленные» and is not already in the archive
+was written past the service, so `MailSync::registerOutbound()` puts it on the company card and
+logs it as an answer WITH THE LETTER'S OWN DATE (`Crm::logEvent($opts['at'])`, which only ever
+moves `last_inbound_at`/`last_outbound_at` forward) — otherwise the card keeps burning «клиент
+ждёт ответа» after it was answered, and an old letter pulled late would look like today's.
+
 ## Interface
 The interface is light: a white page, blocks drawn with a hairline border and a soft shadow,
 and the shop's red as the only accent — a tint means something (waiting, warning, a stage of
