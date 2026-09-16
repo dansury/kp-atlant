@@ -203,7 +203,9 @@ function initSchema(): void {
     CREATE TABLE IF NOT EXISTS notifications (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         manager_id INTEGER REFERENCES managers(id),
-        type TEXT NOT NULL CHECK(type IN ('new_request','followup_ready','system')),
+        -- Список типов живёт в `Notifier::PUSH_KINDS`, а не в схеме: он растёт
+        -- с каждым модулем, и проверка здесь молча отбивала всё новое (модуль 029)
+        type TEXT NOT NULL,
         title TEXT NOT NULL,
         body TEXT,
         ref_type TEXT,
@@ -1327,8 +1329,9 @@ SQL);
             // пересборка КП и повторный подбор такую цену не перетирают
             Db::ensureColumn($table, 'discount_percent', 'REAL', '0');
             Db::ensureColumn($table, 'price_is_manual', 'INTEGER', '0');
-            // Развёрнутый комментарий под позицией. Заполняется описанием из
-            // МойСклад, правится менеджером и уходит в файл и в письмо.
+            // Развёрнутый комментарий под позицией. Поле показывается
+            // описанием из МойСклад, хранит слова менеджера и печатается
+            // описанием карточки КП; в письмо клиенту не уходит (модуль 032).
             Db::ensureColumn($table, 'comment_text', 'TEXT');
         }
 
@@ -1472,6 +1475,85 @@ SQL);
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '28')");
         $current = 28;
+    }
+
+    // v29 — модуль 029: в одном письме просят счёт на две организации, и обе
+    // должны жить в карточке, как живут несколько счетов.
+    if ($current < 29) {
+        Db::pdo()->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS counterparty_orgs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+                name TEXT NOT NULL,
+                inn TEXT,
+                kpp TEXT,
+                moysklad_id TEXT,
+                edo_id TEXT,
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_cp_orgs_cp ON counterparty_orgs(counterparty_id);
+SQL);
+
+        // На какую организацию выставлен счёт: пусто — на саму карточку
+        Db::ensureColumn('invoices', 'org_id', 'INTEGER');
+        Db::ensureColumn('orders', 'org_id', 'INTEGER');
+
+        // `notifications.type` был перечислением из трёх значений первого
+        // модуля — `new_request`, `followup_ready`, `system`. С тех пор типов
+        // стало вдвое больше (заказ, счёт, недоставленный ответ, резерв, а
+        // теперь и ошибка сервиса), и КАЖДЫЙ из них база молча отбивала
+        // проверкой: уведомление не создавалось вовсе. Ограничение снимаем —
+        // список типов живёт в `Notifier::PUSH_KINDS`, а не в схеме, и
+        // расширять его не должно значить «переписать таблицу».
+        if (str_contains((string)Db::val(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='notifications'"),
+            "CHECK(type IN ('new_request','followup_ready','system'))")) {
+            Db::pdo()->exec(<<<'SQL'
+                CREATE TABLE notifications_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    manager_id INTEGER REFERENCES managers(id),
+                    type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    body TEXT,
+                    ref_type TEXT,
+                    ref_id INTEGER,
+                    url TEXT,
+                    is_read INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO notifications_new (id, manager_id, type, title, body, ref_type, ref_id, url, is_read, created_at)
+                    SELECT id, manager_id, type, title, body, ref_type, ref_id, url, is_read, created_at FROM notifications;
+                DROP TABLE notifications;
+                ALTER TABLE notifications_new RENAME TO notifications;
+                CREATE INDEX IF NOT EXISTS idx_notif_manager ON notifications(manager_id, is_read);
+SQL);
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '29')");
+        $current = 29;
+    }
+
+    // v30 — модуль 030: НДС печатается в КП всегда, а цены — в выбранном виде.
+    if ($current < 30) {
+        // Как печатать цену в ЭТОМ КП: included — уже с НДС, added — налог
+        // сверху. Пусто — как в настройке KP_VAT_MODE.
+        Db::ensureColumn('proposals', 'vat_mode', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '30')");
+        $current = 30;
+    }
+
+    // v31 — модуль 031: «убрать с доски» перестало отменяться следующим же
+    // заходом на доску.
+    if ($current < 31) {
+        // Снятая с доски карточка НЕ удаляется: строка остаётся с отметкой и
+        // помнит свою колонку. Без этого `Boards::sync()` заводил карточку
+        // заново — во «Входящих», — и разобранная доска сваливалась обратно.
+        Db::ensureColumn('board_cards', 'dismissed_at', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '31')");
+        $current = 31;
     }
 
     // v32 — модуль 033: письмо, которое пишут, живёт на доске карточкой в

@@ -36,7 +36,7 @@ final class Boards {
     public static function all(): array {
         $rows = Db::all("SELECT b.*, (SELECT COUNT(*) FROM board_columns c
                                       JOIN board_cards d ON d.column_id = c.id
-                                      WHERE c.board_id = b.id) AS cards
+                                      WHERE c.board_id = b.id AND d.dismissed_at IS NULL) AS cards
                          FROM boards b ORDER BY b.position, b.id");
         // «Письма» (item 2) treats the board as always there — one letter
         // program, not a list you might find empty. An account with none yet
@@ -81,12 +81,15 @@ final class Boards {
 
         $columns = Db::all("SELECT * FROM board_columns WHERE board_id=? ORDER BY position, id", [$id]);
         // Every card of the board is decorated in one batch — the counters of a
-        // company are two queries for the whole board, not two per card
+        // company are two queries for the whole board, not two per card.
+        // Снятая с доски карточка на экране не появляется, но строка её живёт
+        // дальше: `sync()` не заводит её заново, а колонка, в которой она
+        // стояла, не теряется (модуль 031).
         $cards = Db::all(
             "SELECT d.*, g.name AS manager_name FROM board_cards d
              JOIN board_columns c ON c.id = d.column_id
              LEFT JOIN managers g ON g.id = d.manager_id
-             WHERE c.board_id=? ORDER BY d.position, d.id", [$id]
+             WHERE c.board_id=? AND d.dismissed_at IS NULL ORDER BY d.position, d.id", [$id]
         );
         self::decorateAll($cards);
 
@@ -360,7 +363,7 @@ final class Boards {
             // вместе с ними, не возвращалась (модуль 026)
             (string)Db::val("SELECT COUNT(*) FROM mail_messages WHERE archived_at IS NULL"),
             (string)Db::val("SELECT COALESCE(MAX(id), 0) FROM counterparties"),
-            (string)Db::val("SELECT COUNT(*) FROM board_cards"),
+            (string)Db::val("SELECT COUNT(*) FROM board_cards WHERE dismissed_at IS NULL"),
         ]);
         $before = $sig();
         if (!$force && (string)Db::val("SELECT value FROM settings WHERE key='board_sync_sig'") === $before) {
@@ -370,16 +373,42 @@ final class Boards {
         $days  = max(1, (int)Settings::get('BOARD_INBOX_DAYS', 180));
         $since = date('Y-m-d H:i:s', time() - $days * 86400);
         $ignored = "'" . implode("','", self::IGNORED_CATEGORIES) . "'";
+        $created = $upgraded = 0;
 
-        $onBoard = Db::all("SELECT d.counterparty_id, d.thread_key FROM board_cards d
-                            JOIN board_columns c ON c.id = d.column_id WHERE c.board_id=?", [$boardId]);
+        // Снятые карточки считаются стоящими на доске: иначе интейк заводил бы
+        // их заново каждым открытием доски, и «убрать с доски» не значило бы
+        // ничего (модуль 031). Возвращает такую карточку новое письмо — ниже.
+        //
+        // Карточка числится за той компанией, в которую её компанию слили:
+        // интейк группирует письма по КОРНЮ семьи, и карточка, оставшаяся на
+        // слитом id, выглядела для него отсутствующей — рядом с разложенной
+        // заводилась вторая, во «Входящих» (модуль 031).
+        $onBoard = Db::all("SELECT d.id, COALESCE(cp.merged_into_id, d.counterparty_id) AS root_id,
+                                   d.counterparty_id, d.thread_key
+                            FROM board_cards d
+                            JOIN board_columns c ON c.id = d.column_id
+                            LEFT JOIN counterparties cp ON cp.id = d.counterparty_id
+                            WHERE c.board_id=?", [$boardId]);
         $haveCp = $haveThread = [];
         foreach ($onBoard as $r) {
-            if ($r['counterparty_id']) $haveCp[(int)$r['counterparty_id']] = true;
+            if ($r['root_id']) {
+                $root = (int)$r['root_id'];
+                $haveCp[$root] = true;
+                // Строку двигаем на корень: дальше она живёт как карточка той
+                // компании, под которой её теперь ищут и письма, и поиск
+                if ((int)$r['counterparty_id'] !== $root) {
+                    $name = (string)(Db::val("SELECT name FROM counterparties WHERE id=?", [$root]) ?: '');
+                    Db::update('board_cards',
+                               ['counterparty_id' => $root] + ($name !== '' ? ['title' => $name] : []),
+                               'id=?', [(int)$r['id']]);
+                    $upgraded++;
+                }
+            }
             if ($r['thread_key']) $haveThread[(string)$r['thread_key']] = true;
         }
 
-        $created = $upgraded = 0;
+        $revived = self::reviveDismissed($boardId);
+
         $pos = (int)Db::val("SELECT COALESCE(MAX(position), -1) + 1 FROM board_cards WHERE column_id=?", [$inbox['id']]);
 
         // 1. Companies that wrote (or were written to) inside the window
@@ -448,7 +477,51 @@ final class Boards {
         }
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('board_sync_sig', ?)", [$sig()]);
-        return ['created' => $created, 'upgraded' => $upgraded];
+        return ['created' => $created + $revived, 'upgraded' => $upgraded];
+    }
+
+    /**
+     * Снятая карточка возвращается на доску, когда компания написала снова.
+     *
+     * «Убрать с доски» — это «здесь разобрано», а не «не показывать никогда»:
+     * новое письмо после снятия снова требует человека. Возвращается карточка
+     * во «Входящие» — её прежняя колонка была этапом разобранной работы, а
+     * пришедшее письмо начинает работу заново.
+     *
+     * @return int сколько карточек вернулось
+     */
+    private static function reviveDismissed(int $boardId): int {
+        $rows = Db::all(
+            "SELECT d.id, d.counterparty_id, d.thread_key, d.dismissed_at FROM board_cards d
+             JOIN board_columns c ON c.id = d.column_id
+             WHERE c.board_id=? AND d.dismissed_at IS NOT NULL", [$boardId]
+        );
+        if (!$rows) return 0;
+
+        $inbox = self::inboxColumn($boardId);
+        $n = 0;
+        foreach ($rows as $row) {
+            // Считаем по дате самого письма, а не по времени его попадания в
+            // базу: импорт старой переписки из mbox — это не «компания написала
+            // снова», и поднимать разобранные карточки он не должен
+            $since = (string)$row['dismissed_at'];
+            $fresh = !empty($row['counterparty_id'])
+                ? (int)Db::val(
+                    "SELECT COUNT(*) FROM mail_messages
+                     WHERE archived_at IS NULL AND date_at > ?
+                       AND counterparty_id IN (SELECT id FROM counterparties WHERE id=? OR merged_into_id=?)",
+                    [$since, (int)$row['counterparty_id'], (int)$row['counterparty_id']])
+                : (int)Db::val(
+                    "SELECT COUNT(*) FROM mail_messages
+                     WHERE archived_at IS NULL AND date_at > ? AND thread_key=?",
+                    [$since, (string)$row['thread_key']]);
+            if ($fresh <= 0) continue;
+            Db::update('board_cards', ['dismissed_at' => null, 'moved_at' => date('Y-m-d H:i:s')],
+                       'id=?', [(int)$row['id']]);
+            if ($inbox) self::moveCard((int)$row['id'], (int)$inbox['id'], 0);
+            $n++;
+        }
+        return $n;
     }
 
     /** Create a board; a brand new one comes with the usual columns filled in. */
@@ -551,6 +624,8 @@ final class Boards {
                                  WHERE c.board_id=? AND d.thread_key=?", [(int)$col['board_id'], $threadKey]);
         }
         if ($existing) {
+            // Карточку могли снять с доски — «положить в колонку» её возвращает
+            Db::update('board_cards', ['dismissed_at' => null], 'id=?', [(int)$existing['id']]);
             self::moveCard((int)$existing['id'], $columnId, 0);
             return (int)$existing['id'];
         }
@@ -611,6 +686,22 @@ final class Boards {
         if ($data) Db::update('board_cards', $data, 'id=?', [$cardId]);
     }
 
+    /**
+     * Карточка уходит С ДОСКИ, а не из базы (модуль 031).
+     *
+     * Удалённую строку `sync()` заводил заново при следующем же открытии доски —
+     * во «Входящих», — так что «убрать с доски» не убирало ничего, а разложенная
+     * по колонкам доска сваливалась обратно. Отметка `dismissed_at` держит и
+     * снятие, и колонку, в которой карточка стояла.
+     */
+    public static function dismissCard(int $cardId): void {
+        Db::update('board_cards', ['dismissed_at' => date('Y-m-d H:i:s')], 'id=?', [$cardId]);
+    }
+
+    /**
+     * Строку карточки убираем насовсем — только когда за ней не осталось писем
+     * в работе (архив, спам, `pruneEmptyCards`). Снятие руками — `dismissCard()`.
+     */
     public static function deleteCard(int $cardId): void {
         Db::q("DELETE FROM board_cards WHERE id=?", [$cardId]);
     }
@@ -664,10 +755,14 @@ final class Boards {
         if ($title !== '' && in_array(trim((string)$card['title']), ['', 'Карточка', 'Новое письмо'], true)) {
             $upd['title'] = $title;
         }
+        // Снятая с доски карточка возвращается: «разобрано» кончилось на том,
+        // что этой компании снова пишут (модуль 031 + 033)
+        $wasDismissed = !empty($card['dismissed_at']);
+        if ($wasDismissed) $upd['dismissed_at'] = null;
         Db::update('board_cards', $upd, 'id=?', [(int)$card['id']]);
 
         $column = (string)Db::val("SELECT title FROM board_columns WHERE id=?", [(int)$card['column_id']]);
-        if (self::isInbox((int)$card['column_id'])) {
+        if ($wasDismissed || self::isInbox((int)$card['column_id'])) {
             self::moveCard((int)$card['id'], (int)$work['id'], 0);
             $column = (string)$work['title'];
         }
@@ -704,9 +799,11 @@ final class Boards {
         if (!empty($letter['mail_message_id']) && empty($card['mail_message_id'])) {
             $upd['mail_message_id'] = (int)$letter['mail_message_id'];
         }
+        $wasDismissed = !empty($card['dismissed_at']);
+        if ($wasDismissed) $upd['dismissed_at'] = null;
         Db::update('board_cards', $upd, 'id=?', [(int)$card['id']]);
 
-        if (self::isInbox((int)$card['column_id'])) {
+        if ($wasDismissed || self::isInbox((int)$card['column_id'])) {
             $work = self::workColumn($boardId);
             if ($work) self::moveCard((int)$card['id'], (int)$work['id'], 0);
         }
@@ -726,7 +823,7 @@ final class Boards {
             ? (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE counterparty_id=? AND archived_at IS NULL", [$cpId]) > 0
             : !empty($card['thread_key']);
         if (!$hasMail && empty($card['request_id']) && trim((string)($card['note'] ?? '')) === '') {
-            Db::q("DELETE FROM board_cards WHERE id=?", [(int)$card['id']]);
+            self::deleteCard((int)$card['id']);
             return;
         }
         Db::update('board_cards', ['draft_id' => null], 'id=?', [(int)$card['id']]);
@@ -785,7 +882,7 @@ final class Boards {
                         break;
 
                     case 'remove':
-                        self::deleteCard((int)$card['id']);
+                        self::dismissCard((int)$card['id']);
                         break;
 
                     case 'read':
@@ -843,11 +940,14 @@ final class Boards {
         // слитой в неё — иначе слитая карточка никогда бы не убиралась
         $rootId = $counterpartyId ? Crm::rootId($counterpartyId) : null;
         $cards = $rootId
-            ? Db::all("SELECT id, counterparty_id FROM board_cards WHERE counterparty_id=?", [$rootId])
-            : Db::all("SELECT id, counterparty_id FROM board_cards WHERE counterparty_id IS NOT NULL");
+            ? Db::all("SELECT id, counterparty_id, draft_id FROM board_cards WHERE counterparty_id=?", [$rootId])
+            : Db::all("SELECT id, counterparty_id, draft_id FROM board_cards WHERE counterparty_id IS NOT NULL");
 
         $removed = 0;
         foreach ($cards as $card) {
+            // Письмо, которое ей пишут прямо сейчас, — это живая работа, даже
+            // когда писем в архиве ещё ноль (модуль 033)
+            if (!empty($card['draft_id'])) continue;
             $cpId = (int)$card['counterparty_id'];
             // Слитая карточка держит письма под своим прежним id — считаем семью
             $live = (int)Db::val(
@@ -866,10 +966,14 @@ final class Boards {
     /** Все цепочки, которые несёт карточка: у компании — её переписка целиком. */
     private static function cardThreadKeys(array $card): array {
         if (!empty($card['counterparty_id'])) {
+            // Слитая карточка держит письма под своим прежним id — считаем семью,
+            // иначе групповая операция молча проходила мимо половины переписки
+            $cpId = (int)$card['counterparty_id'];
             return array_column(Db::all(
                 "SELECT DISTINCT thread_key FROM mail_messages
-                 WHERE counterparty_id=? AND thread_key IS NOT NULL AND archived_at IS NULL",
-                [(int)$card['counterparty_id']]), 'thread_key');
+                 WHERE thread_key IS NOT NULL AND archived_at IS NULL
+                   AND counterparty_id IN (SELECT id FROM counterparties WHERE id=? OR merged_into_id=?)",
+                [$cpId, $cpId]), 'thread_key');
         }
         return !empty($card['thread_key']) ? [(string)$card['thread_key']] : [];
     }
@@ -899,7 +1003,7 @@ final class Boards {
         $terms = MailArchive::searchTerms($q);
         if (!$terms) return [];
 
-        $where = [];
+        $where = ['d.dismissed_at IS NULL'];
         $params = [];
         foreach ($terms as $term) {
             $like = '%' . $term . '%';
@@ -944,7 +1048,7 @@ final class Boards {
              FROM board_cards d
              JOIN board_columns c ON c.id = d.column_id
              JOIN boards b ON b.id = c.board_id
-             WHERE d.thread_key=? OR (? IS NOT NULL AND d.counterparty_id=?)",
+             WHERE d.dismissed_at IS NULL AND (d.thread_key=? OR (? IS NOT NULL AND d.counterparty_id=?))",
             [$threadKey, $cpId, $cpId]
         );
     }
@@ -952,12 +1056,14 @@ final class Boards {
     /** Where a company card sits — shown on the company card itself (module 011). */
     public static function companyPlacement(int $counterpartyId): array {
         return Db::all(
-            "SELECT d.id AS card_id, c.id AS column_id, c.title AS column_title, c.color,
+            "SELECT d.id AS card_id, d.note, c.id AS column_id, c.title AS column_title, c.color,
                     b.id AS board_id, b.name AS board_name
              FROM board_cards d
              JOIN board_columns c ON c.id = d.column_id
              JOIN boards b ON b.id = c.board_id
-             WHERE d.counterparty_id=?", [$counterpartyId]
+             WHERE d.dismissed_at IS NULL
+               AND d.counterparty_id IN (SELECT id FROM counterparties WHERE id=? OR merged_into_id=?)",
+            [$counterpartyId, $counterpartyId]
         );
     }
 }

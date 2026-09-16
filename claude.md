@@ -91,6 +91,16 @@ document and never `htmlspecialchars()` a card field into it: the first ships a 
 signed offer, the second ships the tags themselves. `toMarkdown()` is idempotent, so calling it
 on a field a manager has already edited is safe.
 
+Описание товара у позиции ОДНО (модуль 032). В поле под строкой подбора стоит описание из
+`products_cache` — уже синхронизированное, за ним не ходят в МойСклад на каждый показ, — и
+менеджер правит его там, где видит. Нетронутое на строке не хранится (`RequestItems::ownComment()`):
+подбор поставит другой товар — поменяется и описание, а копия прежнего осталась бы врать.
+Карточка КП печатает `comment_text`, если менеджер его написал, иначе `description_text`: два
+поля растут из одного текста МойСклад, и напечатанные подряд читаются как повтор. «Характеристики»
+и «Комплектация» — свои блоки, поэтому в поле попадает только описательная часть
+(`KpContent::splitDescription()`). В промпт ответа клиенту описание не идёт вовсе: письмо называет
+позиции, цены и сроки, а товар читается в КП.
+
 A position the manager folds as «нет в наличии» (`proposal_items.is_excluded`) leaves the
 priced table, the cards and «Итого» — `KpContent::printedItems()` is the ONE place that
 decides what the document prints — but it never leaves the document: `unmatchedRows()` picks
@@ -204,6 +214,31 @@ it — it may refine the name, the article and the stock, never the number.
 A variant with no price of its own inherits the product's — BY PRICE TYPE, not «whichever is
 there»: size L has its own «Розница» while only the product has «Опт безнал», and a КП billed
 at wholesale must take the product's wholesale price.
+
+НДС стоит под итогом КП ВСЕГДА — выделенным из цены, прибавленным к ней или формулировкой
+неплательщика (модуль 030). До него сумма налога печаталась только по галочке
+`show_vat_total`, выключенной по умолчанию, и клиент получал итог, про который непонятно,
+что в нём есть. Галочки нет; колонка осталась в старых строках и ничего не решает.
+
+Каким налог печатается, решает `KP_VAT_MODE`: `included` — цена каталога уже с налогом, и
+документ выделяет его из итога («Цена за ед., в т.ч. НДС 5%» · «Итого» · «в т.ч. НДС»);
+`added` — цена без налога, и он прибавляется к итогу («Цена за ед., без НДС» · «Итого без
+НДС» · «НДС 5%» · «Итого с НДС»). Это ОФОРМЛЕНИЕ, а не факт из МойСклад, поэтому в снимок
+реквизитов оно не замораживается: ставка и `payerVat` печатаются те, с которыми КП
+подписывали, а вид цены — сегодняшний, и переключатель действует на все КП разом. У
+отдельного КП может стоять своё (`proposals.vat_mode`); пусто — «как в настройках».
+
+Считается налог в ОДНОМ месте — `Requisites::vatTotals()` — и оттуда же приходят СЛОВА под
+итогом: PDF, Word и текст письма (`KpText`) печатают одни и те же строки, а доска КП
+(`KpSet::board()`) показывает тот же итог и ту же оговорку про налог — при «цене + НДС»
+сумма строк ещё не то, что заплатит клиент. Сумма налога, посчитанная второй раз другой
+формулой, — это вторая сумма в одном предложении.
+
+`added` меняет то, что клиент платит, поэтому счёт и заказ обязаны сказать то же самое:
+`Requisites::msVatFlags()` отдаёт `vatEnabled`/`vatIncluded`, а `invoices.php` и `orders.php`
+кладут их в документ МойСклад. Счёт «в т.ч. НДС» по КП «цена + НДС» — это скидка размером в
+налог. В самом МойСклад «Цены включают НДС» должно стоять так же: за аккаунт сервис этого не
+решает, и настройка об этом прямо предупреждает.
 
 ## Mail
 Letters live in threads, not rows: `MailThreads::keyFor()` groups them by the subject with

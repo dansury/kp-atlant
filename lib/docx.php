@@ -18,9 +18,11 @@ require_once __DIR__ . '/pdf.php';
 final class DocxGenerator {
 
     /**
-     * Имя файла .docx — то же, что у PDF того же КП, только расширение другое.
-     * Метод звали из письма («приложить КП в Word») и из скачивания, а его тут
-     * не было: обе кнопки падали с фатальной ошибкой.
+     * Имя файла .docx — то же, что у PDF, только расширение другое.
+     *
+     * Метод звали три места (`mail.php`, `proposals.php`, тест модуля 022), а
+     * его не было вовсе: приложить Word к письму или скачать его с карточки
+     * заканчивалось «Call to undefined method».
      */
     public static function filename(int $proposalId): string {
         return PdfGenerator::fileName($proposalId, 'docx');

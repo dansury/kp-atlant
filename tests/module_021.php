@@ -283,7 +283,7 @@ $png = $sandbox . '/logo.png';
 $im = imagecreatetruecolor(120, 40);
 imagefill($im, 0, 0, imagecolorallocate($im, 200, 20, 20));
 imagepng($im, $png);
-imagedestroy($im);
+unset($im);
 
 Branding::store('kp', ['tmp_name' => $png, 'name' => 'logo.png'], ['move' => false]);
 ok('загруженное лого стало лого КП', Branding::uploaded('kp') !== null, (string)Branding::uploaded('kp'));

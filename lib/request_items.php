@@ -17,6 +17,7 @@ require_once __DIR__ . '/scope.php';
 require_once __DIR__ . '/variants.php';
 require_once __DIR__ . '/terms.php';
 require_once __DIR__ . '/markup.php';
+require_once __DIR__ . '/kp_content.php';
 
 final class RequestItems {
 
@@ -232,6 +233,57 @@ final class RequestItems {
         return $name;
     }
 
+    /**
+     * Описания товаров из каталога — то, чем заполняется пустой комментарий
+     * строки подбора.
+     *
+     * Описание уже синхронизировано в `products_cache` (`MoySklad::refreshProductCache()`
+     * или импорт из Excel), поэтому читается оттуда и НИ РАЗУ не тянется из
+     * МойСклад на показ карточки. У модификации своего описания обычно нет —
+     * берётся родительское, как и в карточке КП.
+     *
+     * Берётся ровно та часть, что печатается описанием карточки: разделы
+     * «Характеристики» и «Комплектация» у КП свои, и в комментарии они были бы
+     * вторым экземпляром того же текста.
+     *
+     * @param string[] $ids `products_cache.moysklad_id`
+     * @return array<string,string> id → описание разметкой (Markdown)
+     */
+    public static function catalogDescriptions(array $ids): array {
+        $ids = array_values(array_unique(array_filter(array_map('strval', $ids))));
+        if (!$ids) return [];
+
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $rows = Db::all("SELECT moysklad_id, description, parent_id FROM products_cache WHERE moysklad_id IN ($ph)", $ids);
+
+        $out = [];
+        $orphans = [];   // модификация без своего описания → id родителя
+        foreach ($rows as $r) {
+            $id = (string)$r['moysklad_id'];
+            $text = trim((string)($r['description'] ?? ''));
+            if ($text !== '') { $out[$id] = $text; continue; }
+            if (trim((string)($r['parent_id'] ?? '')) !== '') $orphans[$id] = (string)$r['parent_id'];
+        }
+
+        if ($orphans) {
+            $parentIds = array_values(array_unique($orphans));
+            $ph = implode(',', array_fill(0, count($parentIds), '?'));
+            $byParent = [];
+            foreach (Db::all("SELECT moysklad_id, description FROM products_cache WHERE moysklad_id IN ($ph)", $parentIds) as $r) {
+                $byParent[(string)$r['moysklad_id']] = trim((string)($r['description'] ?? ''));
+            }
+            foreach ($orphans as $id => $parentId) {
+                if (trim((string)($byParent[$parentId] ?? '')) !== '') $out[$id] = $byParent[$parentId];
+            }
+        }
+
+        foreach ($out as $id => $text) {
+            $text = trim(KpContent::splitDescription($text)['description']);
+            if ($text === '') unset($out[$id]); else $out[$id] = $text;
+        }
+        return $out;
+    }
+
     public static function all(int $requestId): array {
         $rows = Db::all("SELECT * FROM request_items WHERE request_id=? ORDER BY position, id", [$requestId]);
 
@@ -245,18 +297,25 @@ final class RequestItems {
                 $prices[$p['moysklad_id']] = Catalog::decodePrices($p['prices_json']);
             }
         }
-
-        // Остатки по модификациям — одним запросом на всю карточку (модуль 026)
-        $variantStock = Variants::stockFor(array_merge($ids, array_reduce($rows, function ($acc, $r) {
+        $candidateIds = array_reduce($rows, function ($acc, $r) {
             $list = $r['match_variants'] ? (json_decode((string)$r['match_variants'], true) ?: []) : [];
             return array_merge($acc, array_column($list, 'moysklad_id'));
-        }, [])));
+        }, []);
+
+        // Описание товара для пустого комментария — из каталога, одним
+        // запросом. Кандидаты берутся вместе с позицией: выбрали «ещё похожий»
+        // — в поле сразу его описание, без похода на сервер (модуль 032)
+        $descriptions = self::catalogDescriptions(array_merge($ids, $candidateIds));
+
+        // Остатки по модификациям — одним запросом на всю карточку (модуль 026)
+        $variantStock = Variants::stockFor(array_merge($ids, $candidateIds));
 
         foreach ($rows as &$row) {
             $row['variants'] = $row['match_variants'] ? (json_decode($row['match_variants'], true) ?: []) : [];
             unset($row['match_variants']);
             // Кандидат с модификациями отвечает их количествами, а не нулём
             foreach ($row['variants'] as &$cand) {
+                $cand['description'] = $descriptions[(string)($cand['moysklad_id'] ?? '')] ?? '';
                 $vs = $variantStock[(string)($cand['moysklad_id'] ?? '')] ?? null;
                 if (!$vs) continue;
                 $cand['variant_stock'] = $vs['items'];
@@ -272,6 +331,16 @@ final class RequestItems {
             // То же, что напечатает КП: цена после скидок и одна строка условий
             $row['effective_price'] = Terms::price($row);
             $row['wait_note']       = Terms::note($row);
+            // Пустой комментарий показывается описанием товара из МойСклад —
+            // тем самым, что напечатает карточка КП. Копией на строке оно не
+            // лежит: подбор поменяет позицию — поменяется и описание. Карточке
+            // важно знать, чьи это слова: подставленные она заменит, когда
+            // менеджер выберет другой товар, написанные — не тронет.
+            $row['comment_from_catalog'] = 0;
+            if (trim((string)($row['comment_text'] ?? '')) === '') {
+                $row['comment_text'] = $descriptions[(string)($row['moysklad_product_id'] ?? '')] ?? null;
+                $row['comment_from_catalog'] = trim((string)($row['comment_text'] ?? '')) !== '' ? 1 : 0;
+            }
             $row['is_backorder']    = ($row['stock'] !== null && (int)$row['stock'] <= 0
                                        && trim((string)($row['moysklad_product_id'] ?? '')) !== '') ? 1 : 0;
         }
@@ -392,6 +461,15 @@ final class RequestItems {
 
     /** Replace the table with what the editor sent. */
     public static function save(int $requestId, array $rows): array {
+        // Комментарий, который менеджер не тронул, — это описание из каталога,
+        // подставленное `all()`. На строке оно не хранится: иначе повторный
+        // подбор поставил бы другой товар, а описание осталось бы от прежнего.
+        // Сравнивается и с описанием товара, который на строке БЫЛ: строку
+        // переставили на другую позицию, а поле ещё держит прежний текст.
+        $was = Db::all("SELECT id, moysklad_product_id FROM request_items WHERE request_id=?", [$requestId]);
+        $wasProduct = array_column($was, 'moysklad_product_id', 'id');
+        $catalog = self::catalogDescriptions(array_merge(array_column($rows, 'moysklad_product_id'),
+                                                         array_values($wasProduct)));
         $keep = [];
         foreach (array_values($rows) as $i => $row) {
             $rawName  = trim((string)($row['raw_name'] ?? ''));
@@ -414,8 +492,8 @@ final class RequestItems {
                 'discount_percent'    => max(0.0, min(100.0, (float)($row['discount_percent'] ?? 0))),
                 // Развёрнутый комментарий по товару: хранится разметкой,
                 // печатается ею же — теги из МойСклад не уезжают в документ
-                'comment_text'        => trim((string)($row['comment_text'] ?? '')) !== ''
-                                            ? Markup::toMarkdown((string)$row['comment_text']) : null,
+                'comment_text'        => self::ownComment($row, $catalog,
+                                            $wasProduct[(int)($row['id'] ?? 0)] ?? null),
                 // «Под заказ»: срок, скидка за ожидание и предоплата
                 'wait_on'             => !empty($row['wait_on']) ? 1 : 0,
                 'wait_months'         => isset($row['wait_months']) && $row['wait_months'] !== '' ? max(0, (int)$row['wait_months']) : null,
@@ -477,7 +555,10 @@ final class RequestItems {
                 'is_confirmed' => (int)($row['is_confirmed'] ?? 0) === 1,
                 'needs_choice' => (int)($row['needs_choice'] ?? 0) === 1,
                 'notes'        => $row['notes'] ?? null,
-                'comment_text' => $row['comment_text'] ?? null,
+                // Описание из каталога в строку КП не копируется: карточка
+                // возьмёт его сама и напечатает одним блоком (модуль 032).
+                // Сюда едут только слова менеджера.
+                'comment_text' => empty($row['comment_from_catalog']) ? ($row['comment_text'] ?? null) : null,
                 'discount_percent' => (float)($row['discount_percent'] ?? 0),
                 'price_is_manual'  => (int)($row['price_is_manual'] ?? 0),
                 'wait_on'      => (int)($row['wait_on'] ?? 0),
@@ -595,10 +676,14 @@ final class RequestItems {
      * Подобранные позиции — блок для промпта ответа (модуль 023).
      *
      * «Создать ответ» писал письмо по одному тексту запроса, как будто подбора
-     * не было вовсе: менеджер уже выбрал позиции, проставил цены, дописал
-     * комментарии — а ответ шёл мимо всего этого и обещал «уточнить». Теперь то
-     * же, что попадёт в КП, попадает и в письмо: название, количество, цена,
-     * наличие, условия ожидания и комментарий менеджера.
+     * не было вовсе: менеджер уже выбрал позиции, проставил цены — а ответ шёл
+     * мимо всего этого и обещал «уточнить». Теперь то же, что попадёт в КП,
+     * попадает и в письмо: название, количество, цена, наличие и условия
+     * ожидания.
+     *
+     * Комментарий по позиции сюда НЕ идёт (модуль 032): это описание товара, и
+     * место ему в карточке КП. Пересказанное моделью в теле письма, оно
+     * превращает ответ на «сколько стоит» в страницу каталога.
      *
      * @param array $rows строки `request_items` — то, что вернул `all()`
      */
@@ -622,11 +707,6 @@ final class RequestItems {
             $wait = trim((string)($row['wait_note'] ?? ''));
             if ($wait !== '') $line .= ' (' . $wait . ')';
 
-            // Комментарий менеджера — это то, что он сам решил сказать клиенту
-            // про эту позицию. Пересказывать его своими словами нельзя.
-            $comment = trim(Markup::toPlainText((string)($row['comment_text'] ?? '')));
-            if ($comment !== '') $line .= "\n  комментарий менеджера (передай его смысл целиком): " . mb_substr($comment, 0, 800);
-
             $lines[] = $line;
         }
         if (!$lines) return '';
@@ -634,7 +714,7 @@ final class RequestItems {
         return "\n===== ЧТО МЫ ПРЕДЛАГАЕМ ПО ЭТОМУ ЗАПРОСУ =====\n"
              . "Это уже подобрано и проверено менеджером. Назови в ответе ИМЕННО эти позиции, "
              . "эти количества и эти цены — не придумывай других и не меняй цифры. "
-             . "Если у позиции есть комментарий менеджера, он важнее твоих формулировок.\n"
+             . "Описания товаров в письмо не переписывай: они напечатаны в КП.\n"
              . implode("\n", $lines) . "\n";
     }
 
@@ -762,6 +842,26 @@ final class RequestItems {
             }
         }
         return $out;
+    }
+
+    /**
+     * Что из комментария принадлежит строке, а что — каталогу (модуль 032).
+     *
+     * В поле стоит описание товара из МойСклад, пока менеджер не написал
+     * своего. Вернувшееся нетронутым описание — не текст строки, и хранить его
+     * копией незачем: КП всё равно подставит сегодняшнее.
+     *
+     * @param array<string,string> $catalog  id товара → описание из каталога
+     * @param string|null            $wasProduct товар, стоявший на строке до этого сохранения
+     */
+    private static function ownComment(array $row, array $catalog, ?string $wasProduct = null): ?string {
+        $text = trim((string)($row['comment_text'] ?? ''));
+        if ($text === '') return null;
+        $text = Markup::toMarkdown($text);   // идемпотентен: правленое не портит
+        foreach ([trim((string)($row['moysklad_product_id'] ?? '')), trim((string)$wasProduct)] as $id) {
+            if ($id !== '' && $text === ($catalog[$id] ?? null)) return null;
+        }
+        return $text;
     }
 
     /**

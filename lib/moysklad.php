@@ -660,11 +660,12 @@ class MoySklad {
             throw new MoySkladPermissionException('No write access to customerorder');
         }
 
-        $positions = array_map(fn($p) => [
+        $positions = array_map(fn($p) => array_filter([
             'quantity' => $p['quantity'],
             'price' => $p['price'] * 100, // MoySklad uses kopeks
+            'vat' => $p['vat'] ?? null,
             'assortment' => self::assortmentMeta((string)$p['product_id']),
-        ], $data['positions']);
+        ], fn($v) => $v !== null), $data['positions']);
 
         $body = [
             'organization' => ['meta' => [
@@ -680,6 +681,12 @@ class MoySklad {
             'positions' => $positions,
         ];
         if (!empty($data['description'])) $body['description'] = $data['description'];
+
+        // Включён ли налог в цену позиции — то же, что КП сказало клиенту
+        // (модуль 030). Счёт «ценой + НДС» по КП «в т.ч. НДС» — это другая
+        // сумма в руках у клиента, чем та, которую он согласовал.
+        if (array_key_exists('vat_enabled', $data))  $body['vatEnabled']  = (bool)$data['vat_enabled'];
+        if (array_key_exists('vat_included', $data)) $body['vatIncluded'] = (bool)$data['vat_included'];
 
         // Статус («Резерв») и доп. поле («СОТРУДНИК») — по ИМЕНИ, как их видит
         // человек в МойСклад. Имени нет в аккаунте — заказ всё равно создаётся:
@@ -777,6 +784,11 @@ class MoySklad {
             ]];
         }
         if (!empty($data['description'])) $body['description'] = $data['description'];
+
+        // Тот же ответ, что и у заказа: налог в цене или сверху — как напечатано
+        // в КП (модуль 030)
+        if (array_key_exists('vat_enabled', $data))  $body['vatEnabled']  = (bool)$data['vat_enabled'];
+        if (array_key_exists('vat_included', $data)) $body['vatIncluded'] = (bool)$data['vat_included'];
 
         $resp = self::post('/entity/invoiceout', $body);
         return self::mapInvoice($resp);
