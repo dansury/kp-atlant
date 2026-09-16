@@ -91,7 +91,7 @@ document and never `htmlspecialchars()` a card field into it: the first ships a 
 signed offer, the second ships the tags themselves. `toMarkdown()` is idempotent, so calling it
 on a field a manager has already edited is safe.
 
-Описание товара у позиции ОДНО (модуль 031). В поле под строкой подбора стоит описание из
+Описание товара у позиции ОДНО (модуль 032). В поле под строкой подбора стоит описание из
 `products_cache` — уже синхронизированное, за ним не ходят в МойСклад на каждый показ, — и
 менеджер правит его там, где видит. Нетронутое на строке не хранится (`RequestItems::ownComment()`):
 подбор поставит другой товар — поменяется и описание, а копия прежнего осталась бы врать.

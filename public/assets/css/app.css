@@ -225,8 +225,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Chat feed (FR-033) */
 .chat { max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
 .msg { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; font-size: 13px; }
-.msg__head { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+/* Автор слева, дата и кнопка — справа; `space-between` при трёх ячейках
+   раскидывал дату на середину строки */
+.msg__head { display: flex; align-items: baseline; gap: 10px; font-size: 12px;
+             font-weight: 600; margin-bottom: 4px; }
+.msg__head > .muted { margin-left: auto; }
 .msg__subject { font-weight: 600; margin-bottom: 4px; }
+/* Заметку можно стереть там, где она написана (модуль 031) */
+.msg__del { border: 0; background: none; cursor: pointer; padding: 0 2px; font-size: 12px;
+            line-height: 1; color: var(--text-muted); opacity: 0; }
+.msg:hover .msg__del, .msg__del:focus { opacity: 1; }
+.msg__del:hover { color: var(--danger); }
+@media (hover: none) { .msg__del { opacity: .55; } }
 /* Текст письма читают целиком, а не через щель в 260 пикселей: своя полоса
    прокрутки внутри страницы, которая и так прокручивается, — это два
    независимых движения на одном экране (модуль 022). Длинные ленты (.chat)
@@ -274,9 +284,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Item 4/5: an email body or a converted DOCX/XLSX rendered inside a sandboxed
    iframe — width fills the card, height is set by App.sizeFrame() once the
    frame has actually loaded its content */
-/* Стартовая высота рамки письма — экран, а не 80 пикселей: если JS не успел
-   померить содержимое (письмо было свёрнуто), читать всё равно можно */
-.html-frame { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); display: block; height: 320px; }
+/* Рамка строится только у раскрытого письма и сразу меряется по своему
+   документу (`App.sizeFrame`), поэтому стартовая высота — заглушка на один
+   кадр, а не «экран на всякий случай»: именно она оставляла свёрнутые письма
+   ростом в 320 пикселей и накладывала их друг на друга (модуль 031). */
+.html-frame { width: 100%; max-width: 100%; border: 1px solid var(--border);
+              border-radius: var(--radius); display: block; height: 120px; }
 .preview-body { max-height: 75vh; overflow-y: auto; }
 .preview-frame { height: 75vh; }
 
@@ -336,6 +349,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .facts__row { display: flex; justify-content: space-between; gap: 10px; }
 .facts__row span { color: var(--text-muted); }
 .facts__row b { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+
+/* Заметка карточки доски, показанная в карточке компании (модуль 031):
+   написанное на доске видно там, где компанию читают, и стирается оттуда же */
+.cardnote { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            margin-left: auto; font-size: 12px; min-width: 0; }
+.cardnote__label { color: var(--text-muted); }
+.cardnote__text { overflow-wrap: anywhere; }
 
 /* Место, где раскрывается КП: во всю ширину под карточкой, и так, чтобы
    липкая шапка не накрывала его верх при прокрутке к нему */
@@ -439,17 +459,28 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* ==== Mail client: threads (module 010) ====
    A mail program's list is small type: the subject leads, everything else —
    who wrote, from which mailbox, the first line — is grey and half a size down. */
-.card--flush { padding: 0; overflow: hidden; }
+/* Карточка-список ничего не обрезает: внутри неё раскрывается переписка, и
+   `overflow: hidden` резал её нижний край (модуль 031). Скругление держат
+   крайние строки списка, а не обрезка родителя. */
+.card--flush { padding: 0; }
+.card--flush > .mlist:first-child > *:first-child { border-radius: var(--radius) var(--radius) 0 0; }
+.card--flush > .mlist:last-child > *:last-child { border-bottom: 0; border-radius: 0 0 var(--radius) var(--radius); }
 .mlist { display: flex; flex-direction: column; }
 .mlist__empty { padding: 30px; text-align: center; color: var(--text-muted); }
-.mrow { display: grid; grid-template-columns: 38px minmax(0,1fr) auto auto; gap: 8px;
+/* Строка списка — flex, а не сетка с четырьмя жёсткими колонками: список
+   рисуют четыре разных экрана, и у каждого своё число ячеек. В сетке строка с
+   двумя ячейками клала текст в колонку шириной 38 пикселей, и он налезал на
+   соседей. Во flex порядок и число ячеек значения не имеют (модуль 031). */
+.mrow { display: flex; align-items: flex-start; gap: 8px;
         padding: 8px 16px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12px; }
+.mrow > * { flex: 0 0 auto; }
+.mrow > input[type="checkbox"] { margin-top: 3px; }
 .mrow:hover { background: var(--surface-2); }
 .mrow--unread { background: #fffaf8; }
 .mrow--unread .mrow__subject { font-weight: 700; }
 .mrow__dir { font-size: 14px; white-space: nowrap; }
 .mrow__clip { margin-left: 2px; }
-.mrow__main { min-width: 0; overflow: hidden; }
+.mrow__main { flex: 1 1 auto; min-width: 0; }
 .mrow__subject { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px;
                  flex-wrap: wrap; overflow-wrap: anywhere; }
 /* «Тема · 4» — how many letters the conversation already holds */
@@ -458,7 +489,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .mrow__meta { color: var(--text-muted); margin-top: 1px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .mrow__meta a { color: var(--accent-ink); }
 .mrow__preview { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
-.mrow__date { color: var(--text-muted); white-space: nowrap; }
+.mrow__date { color: var(--text-muted); white-space: nowrap; margin-left: auto; }
 /* Delete stays out of the way until the row is hovered — one stray tap must not
    throw a conversation away, so it only appears where it is being aimed at */
 .mrow__del { border: 0; background: none; cursor: pointer; padding: 0 2px; font-size: 13px;
@@ -468,25 +499,64 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 @media (hover: none) { .mrow__del { opacity: .55; } }
 .chip--box { padding: 0 6px; font-size: 11px; background: var(--primary-bg); border-color: var(--primary-bg); color: var(--accent-ink); }
 
-/* One conversation, every mailbox, oldest first */
-.thread { display: flex; flex-direction: column; gap: 8px; }
-.tmsg { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
-.tmsg--in { border-left: 3px solid var(--primary); }
-.tmsg--out { border-left: 3px solid var(--border-strong); }
-.tmsg__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-              padding: 8px 14px; cursor: pointer; font-size: 12px; }
-.tmsg__head:hover { background: var(--surface-2); }
-.tmsg__who { font-weight: 600; font-size: 13px; }
-.tmsg__folder { font-size: 11px; }
-.tmsg__date { margin-left: auto; }
+/* ==== Одно письмо переписки (модуль 031) ====
+
+   Правила, из-за нарушения которых письма налезали друг на друга:
+
+   1. У переписки НЕТ своей полосы прокрутки. Страница прокручивается одна;
+      вложенная область высотой в 60vh внутри прокручиваемой страницы — это два
+      независимых движения на одном экране, и именно она рвала ленту.
+   2. Ничего не обрезается. `overflow: hidden` на письме прятал рамку, которая
+      оказалась выше, чем её посчитали.
+   3. Ни одного `position: absolute` внутри ленты: всё стоит в потоке, и высота
+      письма — это высота его содержимого.
+   4. Каждая ячейка шапки — `min-width: 0`: длинный адрес расширял строку и
+      выдавливал соседей вместо переноса.
+
+   Рамка письма строится при раскрытии и меряется по своему документу —
+   `App.mountBodies()` и `App.sizeFrame()`. */
+.thread { display: flex; flex-direction: column; gap: 10px; }
+
+.lmsg { background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-sm); padding: 0 0 2px; }
+.lmsg--in  { border-left: 3px solid var(--primary); }
+.lmsg--out { border-left: 3px solid var(--border-strong); background: var(--surface-2); }
+
+.lmsg__head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+              padding: 9px 14px 4px; cursor: pointer; font-size: 12px; }
+.lmsg__head:hover { background: var(--surface-2); }
+.lmsg__who { font-weight: 600; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.lmsg__to { min-width: 0; overflow-wrap: anywhere; }
+.lmsg__date { margin-left: auto; white-space: nowrap; }
+/* Удаление одного письма не должно быть промахом: кнопка проявляется там, куда
+   уже навели, и на телефоне стоит вполсилы, а не невидимой */
+.lmsg__del { border: 0; background: none; cursor: pointer; padding: 0 2px; font-size: 13px;
+             line-height: 1; color: var(--text-muted); opacity: 0; }
+.lmsg:hover .lmsg__del, .lmsg__del:focus { opacity: 1; }
+.lmsg__del:hover { color: var(--danger); }
+@media (hover: none) { .lmsg__del { opacity: .55; } }
+
+.lmsg__tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+              padding: 0 14px 6px; font-size: 11px; }
+.lmsg__tags:empty { display: none; }
+.lmsg__folder { font-size: 11px; }
+
 /* Свёрнутое письмо читается по началу текста прямо в строке; развёрнутое
    показывает тело, и повторять его в шапке незачем (модуль 020) */
-.tmsg__preview { font-size: 12px; white-space: nowrap; overflow: hidden;
-                 text-overflow: ellipsis; max-width: 38%; }
-.tmsg--open .tmsg__preview { display: none; }
-.tmsg__body { display: none; padding: 0 14px 14px; font-size: 13px; overflow-wrap: anywhere; }
-.tmsg__body pre, .tmsg__body .mail-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.tmsg--open .tmsg__body { display: block; }
+.lmsg__preview { padding: 0 14px 10px; font-size: 12px; overflow: hidden;
+                 display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.lmsg--open .lmsg__preview { display: none; }
+
+.lmsg__body { display: none; padding: 0 14px 12px; font-size: 13px; overflow-wrap: anywhere; }
+.lmsg--open .lmsg__body { display: block; }
+.lmsg__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+                 padding-top: 10px; border-top: 1px solid var(--border); }
+
+/* Тело письма: текстовое — как текст, размеченное — в своей песочнице */
+.mail-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Место под рамку письма: пустое до раскрытия, но НЕ `display: none` —
+   скрытый блок не меряется, и рамка в нём никогда бы не построилась */
+.mail-frame { min-height: 0; }
 
 /* ==== Matched positions: the «равнозначные» question (module 009) ==== */
 /* Поясняющая строка под заголовком блока: всё, что подписано `note`, —
@@ -588,14 +658,40 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .mrow--answered .mrow__subject { color: var(--text-muted); font-weight: 400; }
 .mrow--unanswered .mrow__subject { font-weight: 700; }
 .mrow--answered .mrow__preview, .mrow--answered .mrow__meta { opacity: .8; }
-.mrow--thread { display: block; padding: 10px 16px; }
-/* Only the header of a conversation reacts to the pointer — once the letters
-   are open under it, highlighting the whole block just hides the letters */
-.mrow--thread:hover { background: transparent; }
-.mrow--thread .mrow__main { cursor: pointer; padding: 2px 4px; border-radius: 6px; }
-.mrow--thread .mrow__main:hover { background: var(--surface-2); }
-.thread-inline { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
-.thread-inline .thread { max-height: 60vh; overflow-y: auto; }
+
+/* ==== Переписка в карточке компании (модуль 031) ====
+   Три этажа в обычном потоке: шапка, лента писем, ответ. Ни вложенной
+   прокрутки, ни обрезки — раскрытая переписка просто делает карточку выше. */
+.conv { border-bottom: 1px solid var(--border); }
+.conv:last-child { border-bottom: 0; }
+.conv--open { background: var(--surface); box-shadow: inset 3px 0 0 var(--primary); }
+
+.conv__head { display: flex; align-items: flex-start; gap: 10px;
+              padding: 10px 16px; cursor: pointer; }
+.conv__head:hover { background: var(--surface-2); }
+.conv__dir { flex: 0 0 auto; font-size: 14px; line-height: 1.4; }
+.conv__main { flex: 1 1 auto; min-width: 0; }
+.conv__date { flex: 0 0 auto; font-size: 12px; white-space: nowrap; }
+
+.conv__subject { font-size: 13px; display: flex; align-items: center; gap: 6px;
+                 flex-wrap: wrap; overflow-wrap: anywhere; }
+.conv--wait .conv__subject { font-weight: 700; }
+.conv--done .conv__subject { color: var(--text-muted); font-weight: 400; }
+.conv__count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 2px;
+               background: var(--border); color: var(--text-muted); font-size: 11px;
+               text-align: center; font-weight: 600; }
+.conv__meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+              margin-top: 3px; font-size: 12px; color: var(--text-muted); }
+.conv__preview { margin-top: 2px; font-size: 12px; color: var(--text-muted);
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv--done .conv__preview, .conv--done .conv__meta { opacity: .8; }
+.conv--unread { background: #fffaf8; }
+
+.conv__tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+               padding: 0 16px 10px; font-size: 12px; }
+/* Лента и поле ответа: под шапкой, во всю ширину строки, без своей прокрутки */
+.conv__open { padding: 4px 16px 16px; border-top: 1px solid var(--border); }
+.conv__open[hidden] { display: none; }
 
 /* ==== Module 012: the letter holds everything the answer needs ====
    The catalog positions of the request and the reply box live under the
@@ -690,11 +786,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
        the card's edge instead of running off it. Everything that a desktop lets
        stand on one line — the composer's mailbox picker, the chips of a
        conversation — wraps too, so the card stops being wider than the screen. */
-    .card, .mrow, .tmsg, .msg, .composer { max-width: 100%; }
-    .tmsg__body, .msg__body, .mrow__subject, .mrow__meta, .mrow__preview,
+    .card, .mrow, .lmsg, .conv, .msg, .composer { max-width: 100%; }
+    .lmsg__body, .msg__body, .mail-plain, .conv__subject, .conv__meta, .conv__preview,
+    .mrow__subject, .mrow__meta, .mrow__preview,
     .bcard__title, .bcard__subject { overflow-wrap: anywhere; }
-    .tmsg__head { gap: 6px; }
-    .tmsg__date { margin-left: 0; }
+    .lmsg__head { gap: 6px; }
+    .lmsg__date { margin-left: 0; }
+    /* На телефоне у строки переписки нет места на дату справа: она уходит
+       под тему, а шапка перестаёт быть тремя колонками */
+    .conv__head { flex-wrap: wrap; padding: 10px 12px; }
+    .conv__date { margin-left: 28px; }
+    .conv__open, .conv__tools { padding-left: 12px; padding-right: 12px; }
+    .conv__preview { white-space: normal; }
     .composer__head select { margin-left: 0; max-width: 100%; }
     .composer__cat { width: 100%; }
     .chat__composer { flex-direction: column; align-items: stretch; }
@@ -870,7 +973,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .mlist-archive { border-top: 1px solid var(--border); margin-top: 6px; }
 .mlist-archive > summary { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--text-muted); }
 .mlist-archive[open] > summary { font-weight: 600; }
-.mlist-archive .mrow { opacity: .8; }
+.mlist-archive .mrow, .mlist-archive .conv { opacity: .8; }
 .bfilter input[type="checkbox"] { width: auto; }
 
 /* Панель групповых действий: она про то, что отмечено, и потому липнет к

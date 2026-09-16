@@ -81,7 +81,7 @@ final class Png {
         $w = imagesx($src);
         $h = imagesy($src);
         $canvas = imagecreatetruecolor($w, $h);
-        if (!$canvas) { imagedestroy($src); return null; }
+        if (!$canvas) return null;
 
         imagealphablending($canvas, false);
         imagefilledrectangle($canvas, 0, 0, $w, $h,
@@ -94,8 +94,9 @@ final class Png {
         ob_start();
         $ok = imagepng($canvas, null, 6);
         $out = (string)ob_get_clean();
-        imagedestroy($canvas);
-        imagedestroy($src);
+        // imagedestroy() с PHP 8.0 ничего не делает, а с 8.5 ещё и ругается
+        // в лог: GdImage освобождает сборщик мусора, когда ссылка уходит.
+        unset($canvas, $src);
         return ($ok && $out !== '') ? $out : null;
     }
 

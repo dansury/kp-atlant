@@ -92,8 +92,10 @@ try {
             Boards::updateCard((int)($input['id'] ?? 0), $input);
             jsonOk();
 
+        // «Убрать с доски» — снятие, а не удаление: письма остаются в почте, а
+        // карточка не возвращается сама следующим открытием доски (модуль 031)
         case 'card_delete':
-            Boards::deleteCard((int)($input['id'] ?? 0));
+            Boards::dismissCard((int)($input['id'] ?? 0));
             jsonOk();
 
         /**

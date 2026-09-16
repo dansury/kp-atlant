@@ -45,7 +45,7 @@ switch ($action) {
         $items = Variants::decorateStock($items);
         // Описание товара — тем же текстом, каким карточка подбора заполняет
         // комментарий: выбрали другую позицию — описание поехало за ней, и
-        // второго запроса за ним не нужно (модуль 031)
+        // второго запроса за ним не нужно (модуль 032)
         require_once ROOT . '/lib/request_items.php';
         $descriptions = RequestItems::catalogDescriptions(array_column($items, 'moysklad_id'));
         foreach ($items as &$it) {

@@ -55,7 +55,7 @@ final class KpText {
             }
             // Описание позиции — то же и тем же выбором, что в файле: слова
             // менеджера, если он их написал, иначе описание из МойСклад. Один
-            // блок, а не два подряд (модуль 031).
+            // блок, а не два подряд (модуль 032).
             $comment = trim(Markup::toPlainText((string)($item['comment_text'] ?? '')));
             if ($comment === '') $comment = trim(Markup::toPlainText((string)($item['description_text'] ?? '')));
             if ($comment !== '') $lines[] = '   ' . mb_substr($comment, 0, 600);
