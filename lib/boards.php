@@ -175,7 +175,7 @@ final class Boards {
                 }
             }
             // Письмо, которое пишут прямо сейчас: карточка говорит, кому и о чём,
-            // ещё до отправки (модуль 029)
+            // ещё до отправки (модуль 033)
             $card['draft'] = $drafts[(int)($card['draft_id'] ?? 0)] ?? null;
             if (!$card['draft']) $card['draft_id'] = null;
             elseif ($card['kind'] === 'note') $card['kind'] = 'draft';
@@ -615,7 +615,7 @@ final class Boards {
         Db::q("DELETE FROM board_cards WHERE id=?", [$cardId]);
     }
 
-    // ---- Письмо, которое пишут прямо сейчас (модуль 029) ----
+    // ---- Письмо, которое пишут прямо сейчас (модуль 033) ----
 
     /**
      * Карточка черновика — в «В работе».

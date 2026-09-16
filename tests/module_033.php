@@ -17,11 +17,11 @@
  *     «контрагента нет в МойСклад», а переписка неизвестного отправителя
  *     переезжает на заведённую карточку вместе с запросом и контактом.
  *
- * Запуск:  php tests/module_029.php
+ * Запуск:  php tests/module_033.php
  *
  * База своя, в системной временной папке: `data/kp.db` не открывается вовсе.
  */
-$tmpDb = sys_get_temp_dir() . '/kp-test-029-' . getmypid() . '.db';
+$tmpDb = sys_get_temp_dir() . '/kp-test-033-' . getmypid() . '.db';
 $configPath = dirname(__DIR__) . '/config.php';
 $hadConfig = file_exists($configPath);
 

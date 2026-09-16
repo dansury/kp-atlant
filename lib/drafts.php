@@ -1,6 +1,6 @@
 <?php
 /**
- * Черновик письма и карточка, которая из него вырастает (модуль 029).
+ * Черновик письма и карточка, которая из него вырастает (модуль 033).
  *
  * A letter being written is work in progress, and until now it was invisible:
  * the draft of a NEW letter could not even be saved (the API wanted a message

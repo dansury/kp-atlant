@@ -317,7 +317,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .thread-head__subject { font-weight: 600; }
 
 .facts { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-/* Предложение завести контрагента в МойСклад прямо из письма (модуль 029) */
+/* Предложение завести контрагента в МойСклад прямо из письма (модуль 033) */
 .ms-offer { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .ms-offer p { margin: 0 0 6px; font-size: 12px; }
 .facts__row { display: flex; justify-content: space-between; gap: 10px; }

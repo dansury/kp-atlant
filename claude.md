@@ -358,7 +358,7 @@ do not hide the draft button when there is nothing to answer: disable it and say
 conversation with no request says so in the positions block — a silently missing table reads
 as a feature that disappeared.
 
-A letter being WRITTEN is work too, and it is on the board (module 029). The draft saves
+A letter being WRITTEN is work too, and it is on the board (module 033). The draft saves
 itself from the first keystroke — for every letter, the first letter to a company included:
 a draft has no message id and no thread key of its own, so it is keyed by the company it is
 addressed to (`MailDrafts`). Saving it puts a card into «В работе» — the column is named

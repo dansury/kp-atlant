@@ -2869,7 +2869,7 @@ const App = {
                     </select>
                 </div>
                 <!-- У первого письма адресата ещё нет — его пишут здесь же, и
-                     он попадает и в черновик, и в карточку (модуль 029) -->
+                     он попадает и в черновик, и в карточку (модуль 033) -->
                 ${fresh
                     ? `<input type="email" data-cmp-to value="${this.esc(reply.to || '')}" placeholder="Кому — адрес получателя"
                               oninput="App.composerChanged('${this.jsStr(key)}')">`
@@ -2962,7 +2962,7 @@ const App = {
     },
 
     /**
-     * Черновик уходит на сервер и заводит карточку в «В работе» (модуль 029).
+     * Черновик уходит на сервер и заводит карточку в «В работе» (модуль 033).
      *
      * Сохраняется ЛЮБОЕ письмо, в том числе первое письмо компании: раньше у
      * такого не было ни id письма, ни ключа цепочки, и сервер отказывал — текст
@@ -5016,7 +5016,7 @@ const App = {
             ${ms && !ms.linked ? this.msCreateLink(ms, t.thread_key) : ''}`;
     },
 
-    // ---- Контрагент, которого нет в МойСклад (модуль 029) ----
+    // ---- Контрагент, которого нет в МойСклад (модуль 033) ----
 
     msUrl(id) {
         return 'https://online.moysklad.ru/app/#counterparty/edit?id=' + encodeURIComponent(id || '');
@@ -5647,7 +5647,7 @@ const App = {
         const d = card.draft || null;
         const letters = c.letters || t.count || 0;
         // Тема и начало текста — из черновика, если письмо ещё пишут: карточка
-        // говорит, кому и о чём, ещё до отправки (модуль 029)
+        // говорит, кому и о чём, ещё до отправки (модуль 033)
         const subject = (d && (d.subject || d.preview)) || c.subject || t.subject || '';
         const kp = c.proposal_status ? this.proposalBadge(c.proposal_status) : '';
         return `
