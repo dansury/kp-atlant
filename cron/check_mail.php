@@ -57,6 +57,8 @@ foreach ($report as $r) {
         continue;
     }
     echo "[{$r['name']}] входящих: {$r['in']}, исходящих: {$r['out']}, новых запросов: {$r['requests']}\n";
+    // Папка отправленных не роняет разбор входящих, но о ней надо сказать вслух
+    if (!empty($r['sent_error'])) echo "[{$r['name']}] Отправленные: {$r['sent_error']}\n";
 }
 
 // Housekeeping: the log must not grow without bound on shared hosting

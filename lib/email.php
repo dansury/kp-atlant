@@ -148,6 +148,31 @@ class EmailReader {
         return $messages;
     }
 
+    /**
+     * Последние $limit писем папки — то, что должен показать ящик, подключённый
+     * сегодня. Считаем порядковыми номерами, а не UID: «последние пятьдесят» —
+     * это место в папке, а UID идут с дырами от удалённых писем.
+     */
+    public function fetchLatest(int $limit = 50): array {
+        $count = $this->messageCount();
+        if ($count < 1) return [];
+        $from = max(1, $count - max(1, $limit) + 1);
+        $overviews = @imap_fetch_overview($this->imap, "$from:$count") ?: [];
+        $uids = [];
+        foreach ($overviews as $ov) {
+            $uid = (int)($ov->uid ?? 0);
+            if ($uid > 0) $uids[] = $uid;
+        }
+        sort($uids);
+
+        $messages = [];
+        foreach ($uids as $uid) {
+            $msg = $this->fetchUid($uid);
+            if ($msg) $messages[] = $msg;
+        }
+        return $messages;
+    }
+
     /** One message by UID, with body and attachments. */
     public function fetchUid(int $uid): ?array {
         $no = @imap_msgno($this->imap, $uid);

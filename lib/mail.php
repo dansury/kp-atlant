@@ -193,6 +193,24 @@ final class Mailboxes {
         return Db::all("SELECT * FROM mailboxes WHERE is_active=1 AND (manager_id IS NULL OR manager_id=?) ORDER BY is_default DESC, id", [$manager['id']]);
     }
 
+    /**
+     * Запомнить имя папки «Отправленные», которое на сервере действительно есть.
+     *
+     * Имя из настроек — догадка: у Яндекса папка называется «Отправленные», у
+     * cPanel «INBOX.Sent», и ящик с чужим именем не открывался вовсе. Счётчик
+     * UID принадлежит ПАПКЕ: сменилось имя — прежний счётчик ничей, и его надо
+     * обнулить, иначе половина отправленных писем не будет забрана никогда.
+     */
+    public static function rememberSentFolder(int $id, string $folder, string $was): void {
+        $data = ['imap_folder_sent' => $folder];
+        if (trim($was) !== $folder) {
+            $data += ['last_uid_sent' => 0, 'backfill_uid_sent' => 0,
+                      'backfill_max_sent' => 0, 'backfill_done_sent' => 0];
+        }
+        Db::update('mailboxes', $data, 'id=?', [$id]);
+        Logger::info('mail', "Папка «Отправленные» уточнена: $folder", ['mailbox_id' => $id, 'was' => $was]);
+    }
+
     /** IMAP/SMTP config for EmailReader / EmailSender, secrets decrypted. */
     public static function cfg(array $box): array {
         $imapUser = (string)($box['imap_user'] ?? '');
@@ -1215,11 +1233,7 @@ final class Mailer {
             if (!$ok) throw new RuntimeException('сервер не принял копию в «' . $folder . '»');
 
             // The name that worked is worth keeping: the next send skips the search
-            if ($folder !== $configured) {
-                Db::update('mailboxes', ['imap_folder_sent' => $folder], 'id=?', [$box['id']]);
-                Logger::info('mail', "Папка «Отправленные» ящика «{$box['name']}» уточнена: $folder",
-                    ['mailbox_id' => $box['id'], 'was' => $configured]);
-            }
+            if ($folder !== $configured) Mailboxes::rememberSentFolder((int)$box['id'], $folder, $configured);
             return ['state' => 'appended', 'folder' => $folder, 'error' => null];
         } catch (Throwable $e) {
             Logger::error('mail', 'Копия письма не попала в «Отправленные»: ' . $e->getMessage(),

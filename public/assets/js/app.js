@@ -290,7 +290,7 @@ const App = {
         this.mailPulling = true;
         try {
             const before = this.unreadMail ?? null;
-            await this.api('mail.php?action=sync', {method: 'POST', body: {}});
+            const r = await this.api('mail.php?action=sync', {method: 'POST', body: {}});
             const list = await this.api('mail.php?action=list&limit=1');
             const now = Number(list.unread || 0);
             this.unreadMail = now;
@@ -299,9 +299,13 @@ const App = {
             if (!first && before !== null && now > before) {
                 this.playMailSound();
                 this.toast(`Новых писем: ${now - before}`, 'info');
-                // Открытая доска должна показать письмо, а не счётчик о нём
-                if ((location.hash.slice(1) || 'mail') === 'mail') this.route();
             }
+            // Доска нарисовалась ДО того, как синхронизация закончилась, и о
+            // забранном не знает — в том числе о письме, отправленном с телефона:
+            // непрочитанных оно не добавляет, а карточка после него уже другая.
+            // Открытую переписку не трогаем: там может быть начатый ответ.
+            const pulled = (r.report || []).some(x => Number(x.in || 0) + Number(x.out || 0) > 0);
+            if (pulled && (location.hash.slice(1) || 'mail') === 'mail') this.route();
         } catch { /* недоступный ящик виден в «Настройки → Почта», а не поверх работы */ }
         finally { this.mailPulling = false; }
     },
@@ -3233,7 +3237,7 @@ const App = {
 
     HINTS: {
         // Письма и ответ
-        'board':        ['Доска «Письма»', 'Каждая карточка — КОМПАНИЯ, а не письмо: внутри вся её переписка, запросы и КП. Новые письма попадают сюда сами при открытии доски. Колонку карточке вы назначаете сами — сервис её никогда не двигает.'],
+        'board':        ['Доска «Письма»', 'Каждая карточка — КОМПАНИЯ, а не письмо: внутри вся её переписка, запросы и КП. Новые письма попадают сюда сами при открытии доски и по кнопке «Забрать почту» — и входящие, и те, что отправлены мимо сервиса, с телефона или из другого почтового клиента. Колонку карточке вы назначаете сами — сервис её никогда не двигает.'],
         'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Переписки, убранные как «не наш профиль», стоят тут же, отдельным блоком «Архив компании» внизу.'],
         'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика.'],
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
@@ -3623,8 +3627,9 @@ const App = {
                 <ul>
                     <li>Яндекс, Mail.ru и Gmail не пускают по обычному паролю — нужен
                         <strong>пароль приложения</strong>. Подсказка со ссылкой появляется прямо в форме ящика.</li>
-                    <li><strong>«Забрать почту»</strong> — разовая синхронизация. Регулярно её делает
-                        <code>cron/check_mail.php</code>.</li>
+                    <li><strong>«Забрать почту»</strong> — разовая синхронизация: входящие и отправленные
+                        мимо сервиса (с телефона, из Outlook). То же самое делается при открытии страницы
+                        писем, а регулярно — <code>cron/check_mail.php</code>.</li>
                     <li><strong>«Скачать весь архив»</strong> — забирает всю переписку ящика шагами. Старые письма
                         ложатся в архив и на карточки компаний, но запросов КП из них не создаётся.</li>
                     <li><strong>«Отправленные»</strong> — кнопка находит настоящее имя папки на сервере. Если копия
@@ -5097,11 +5102,27 @@ const App = {
         this.toast('Синхронизация почты...', 'info');
         try {
             const r = await this.api('mail.php?action=sync', {method: 'POST', body: {}});
-            const errors = (r.report || []).filter(x => x.error);
-            if (errors.length) this.toast(errors.map(e => `${e.name}: ${e.error}`).join('; '), 'error');
+            const report = r.report || [];
+            // Ошибка папки отправленных не отменяет разбор входящих — но и
+            // молчать о ней нельзя: письма с телефона так и не подтянутся
+            const errors = report.filter(x => x.error || x.sent_error)
+                .map(e => `${e.name}: ${e.error || 'Отправленные — ' + e.sent_error}`);
+            if (errors.length) this.toast(errors.join('; '), 'error');
+            else this.toast(this.syncSummary(report), 'success');
         } catch (err) { this.toast(err.message, 'error'); }
         // Возвращаемся в тот вид, из которого нажали: доска или архив
         this.route();
+    },
+
+    /** Что забрала синхронизация — словами: входящие и отправленные мимо сервиса. */
+    syncSummary(report) {
+        const sum = (f) => (report || []).reduce((n, x) => n + Number(x[f] || 0), 0);
+        const inbound = sum('in'), outbound = sum('out');
+        if (!inbound && !outbound) return 'Новых писем нет';
+        const parts = [];
+        if (inbound) parts.push(`входящих: ${inbound}`);
+        if (outbound) parts.push(`отправленных: ${outbound}`);
+        return 'Забрано — ' + parts.join(', ');
     },
 
     // Client-side filter over the cards already on the page — every company on
@@ -6545,6 +6566,7 @@ const App = {
                                     <td><strong>${this.esc(b.name)}</strong> ${b.is_default ? '<span class="badge badge--sent">основной</span>' : ''}
                                         ${b.is_active ? '' : '<span class="badge badge--draft">выключен</span>'}
                                         ${b.hidden_messages ? `<span class="badge badge--warning">письма скрыты: ${b.hidden_messages}</span>` : ''}
+                                        ${b.sync_sent ? '' : '<span class="badge badge--draft" title="Письма, отправленные с телефона или из другого клиента, в сервис не попадают">«Отправленные» не забираются</span>'}
                                         <div class="muted">${this.esc(b.email)} · ${this.esc(this.providerTitle(b.provider))} · IMAP ${this.esc(b.imap_host)}</div></td>
                                     <td>${this.esc(b.manager_name) || '<em>общий</em>'}</td>
                                     <td class="num">${b.messages}${b.oldest_at ? `<div class="muted">с ${this.fmtDate(b.oldest_at)}</div>` : ''}</td>
@@ -7260,6 +7282,8 @@ const App = {
             const rep = (r.report || [])[0] || {};
             if (rep.error) this.toast(rep.error, 'error');
             else this.toast(`Входящих: ${rep.in}, исходящих: ${rep.out}, новых запросов: ${rep.requests}`, 'success');
+            // Папка отправленных упала одна — входящие разобраны, но сказать надо
+            if (!rep.error && rep.sent_error) this.toast('Отправленные: ' + rep.sent_error, 'error');
             this.adminMail();
         } catch (err) { this.toast(err.message, 'error'); }
     },
