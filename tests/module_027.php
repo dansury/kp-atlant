@@ -1,14 +1,14 @@
 <?php
 /**
- * Отправленные письма забираются из ящиков — на выбрасываемой базе и без сети:
+ * Модуль 027 — у запроса несколько КП, позиции между ними перетаскиваются:
  *
- *   — ящик, у которого папку отправленных ещё ни разу не открывали, начинает
- *     с ПОСЛЕДНИХ писем, а не с самых старых;
- *   — уточнённое имя папки обнуляет счётчик UID: он принадлежал другой папке;
- *   — письмо, отправленное мимо сервиса, ложится на карточку компании и
- *     снимает с неё «клиент ждёт ответа» — датой самого письма;
- *   — письмо старше уже известного ответа не двигает отметку назад;
- *   — второй разбор того же письма не заводит вторую отметку в ленте.
+ *   — «Сформировать КП» кладёт в него все позиции запроса, пул пустеет;
+ *   — «+ Ещё одно КП» заводит пустое КП того же запроса;
+ *   — позиция переезжает из КП в КП одним движением и НЕ задваивается;
+ *   — выброшенная из КП позиция возвращается в список позиций запроса;
+ *   — каждое КП печатает свои позиции и свой итог;
+ *   — КП можно назвать своими словами и убрать, пока оно не ушло клиенту;
+ *   — счёт помнит, по какому КП он выставлен, и счетов может быть несколько.
  *
  * Запуск:  php tests/module_027.php
  *
@@ -32,9 +32,8 @@ register_shutdown_function(function () use ($configPath, $savedConfig, $tmpDb) {
 });
 
 require dirname(__DIR__) . '/lib/bootstrap.php';
-require_once ROOT . '/lib/crm.php';
-require_once ROOT . '/lib/mail.php';
-require_once ROOT . '/lib/mailsync.php';
+require_once ROOT . '/lib/kp_set.php';
+require_once ROOT . '/lib/request_items.php';
 
 $fail = 0;
 function ok(string $what, bool $cond, string $extra = '') {
@@ -46,105 +45,188 @@ function ok(string $what, bool $cond, string $extra = '') {
 Settings::set('TRIAGE_ENABLED', '0');
 Settings::set('VECTOR_ENABLED', '0');
 Settings::set('BITRIX_ENABLED', '0');
+Settings::set('ALT_ENABLED', '0');
+Settings::set('KP_SHOW_SITE_LINK', '0');
 
-$boxId = Db::insert('mailboxes', ['name' => 'Основной', 'email' => 'info@atlant-armour.ru',
-                                  'is_active' => 1, 'is_default' => 1,
-                                  'sync_sent' => 1, 'imap_folder_sent' => 'INBOX.Sent']);
+$mgr = Db::insert('managers', ['login' => 'yana', 'name' => 'Яна',
+                               'password_hash' => 'x', 'is_admin' => 1]);
+$cpId = Db::insert('counterparties', ['name' => 'ООО «Завод»', 'email_domain' => 'zavod.ru']);
 
-/** Ящик в роли IMAP-сервера: отвечает ровно на то, что спрашивает синхронизация. */
-final class FakeReader {
-    public array $asked = [];
-    public function fetchSince(int $since, int $limit): array {
-        $this->asked[] = "since:$since";
-        return [];
+// Каталог: три позиции, все в наличии
+$catalog = [
+    ['p-helmet', 'Шлем Протон', 30000, 10],
+    ['p-vest',   'Бронежилет 6Б45', 45000, 4],
+    ['p-amp',    'Наушники AMP', 12000, 25],
+];
+foreach ($catalog as [$id, $name, $price, $stock]) {
+    Db::insert('products_cache', ['moysklad_id' => $id, 'name' => $name,
+                                  'name_normalized' => mb_strtolower($name), 'article' => $id,
+                                  'price' => $price, 'stock' => $stock, 'reserved' => 0,
+                                  'unit' => 'шт.', 'product_type' => 'product']);
+}
+
+$requestId = Db::insert('requests', ['source' => 'email', 'counterparty_id' => $cpId,
+                                     'raw_text' => 'Шлемы, бронежилеты, наушники',
+                                     'email_from' => 'client@zavod.ru', 'status' => 'new']);
+foreach ($catalog as $i => [$id, $name, $price, $stock]) {
+    Db::insert('request_items', ['request_id' => $requestId, 'position' => $i + 1,
+                                 'raw_name' => $name, 'product_name' => $name,
+                                 'moysklad_product_id' => $id, 'unit' => 'шт.',
+                                 'quantity' => $i + 1, 'price' => $price, 'stock' => $stock,
+                                 'is_confirmed' => 1]);
+}
+
+/** Как это делает «Сформировать КП»: шапка + все позиции запроса. */
+function buildKp(int $requestId, int $mgr, string $label = ''): int {
+    $id = KpSet::create($requestId, $mgr, $label);
+    foreach (RequestItems::toProposalItems(RequestItems::all($requestId)) as $i => $m) {
+        Db::insert('proposal_items', KpSet::itemRow($m, $i + 1) + ['proposal_id' => $id]);
     }
-    public function fetchLatest(int $limit): array {
-        $this->asked[] = "latest:$limit";
-        return [];
-    }
+    return $id;
 }
 
 // =====================================================================  1
 
-echo "\n== 1. Первый заход в папку берёт последние письма ==\n";
+echo "\n== 1. Первое КП забирает все позиции запроса ==\n";
 
-$reader = new FakeReader();
-MailSync::fetchBatch($reader, 0, 50);
-ok('папку не забирали ни разу — берём последние письма', $reader->asked === ['latest:50'],
-   implode(',', $reader->asked));
-
-$reader = new FakeReader();
-MailSync::fetchBatch($reader, 1204, 50);
-ok('счётчик есть — берём всё, что новее его', $reader->asked === ['since:1204'],
-   implode(',', $reader->asked));
+$kp1 = buildKp($requestId, $mgr, 'Основное');
+$board = KpSet::board($requestId);
+ok('КП одно', count($board['proposals']) === 1, (string)count($board['proposals']));
+ok('в нём все три позиции', count($board['proposals'][0]['items']) === 3);
+ok('пул позиций пуст', $board['pool'] === [], json_encode(array_column($board['pool'], 'raw_name'), JSON_UNESCAPED_UNICODE));
+ok('имя КП — то, которое дали', $board['proposals'][0]['title'] === 'Основное',
+   $board['proposals'][0]['title']);
+// 1×30000 + 2×45000 + 3×12000
+ok('итог посчитан', abs($board['proposals'][0]['total'] - 156000) < 0.01,
+   (string)$board['proposals'][0]['total']);
 
 // =====================================================================  2
 
-echo "\n== 2. Уточнённая папка отправленных ==\n";
+echo "\n== 2. «+ Ещё одно КП» ==\n";
 
-Db::update('mailboxes', ['last_uid_sent' => 900, 'backfill_done_sent' => 1], 'id=?', [$boxId]);
-Mailboxes::rememberSentFolder($boxId, 'Отправленные', 'INBOX.Sent');
-$box = Mailboxes::get($boxId);
-ok('имя папки с сервера запомнено', $box['imap_folder_sent'] === 'Отправленные');
-ok('счётчик прежней папки обнулён', (int)$box['last_uid_sent'] === 0);
-ok('и архив этой папки качается заново', (int)$box['backfill_done_sent'] === 0);
-
-Db::update('mailboxes', ['last_uid_sent' => 15], 'id=?', [$boxId]);
-Mailboxes::rememberSentFolder($boxId, 'Отправленные', 'Отправленные');
-ok('имя не изменилось — счётчик на месте', (int)Mailboxes::get($boxId)['last_uid_sent'] === 15);
+$kp2 = KpSet::create($requestId, $mgr, 'Бронежилеты');
+$board = KpSet::board($requestId);
+ok('КП стало два', count($board['proposals']) === 2);
+ok('второе пустое', $board['proposals'][1]['items'] === []);
+ok('и его можно убрать', $board['proposals'][1]['can_delete'] === true);
 
 // =====================================================================  3
 
-echo "\n== 3. Ответ, написанный мимо сервиса ==\n";
+echo "\n== 3. Позиция переезжает из КП в КП ==\n";
 
-$cpId = Db::insert('counterparties', ['name' => 'ООО «Завод»', 'email_domain' => 'zavod.ru',
-                                      'name_normalized' => normalizeCompanyName('ООО «Завод»'),
-                                      'contact_email' => 'client@zavod.ru']);
-Crm::logEvent($cpId, 'in', 'Пришлите КП на шлемы', ['at' => '2026-09-14 09:00:00']);
-$state = fn() => Crm::answerState(
-    (string)Db::val("SELECT last_inbound_at FROM counterparties WHERE id=?", [$cpId]) ?: null,
-    (string)Db::val("SELECT last_outbound_at FROM counterparties WHERE id=?", [$cpId]) ?: null);
-ok('клиент написал — карточка ждёт ответа', $state()['unanswered']);
+$vest = null;
+foreach ($board['proposals'][0]['items'] as $it) {
+    if ($it['product_name'] === 'Бронежилет 6Б45') $vest = $it;
+}
+ok('строка бронежилета нашлась', $vest !== null);
 
-$sentId = Db::insert('mail_messages', [
-    'mailbox_id' => $boxId, 'direction' => 'out', 'folder' => 'Отправленные', 'uid' => 17,
-    'subject' => 'Re: Шлемы', 'from_email' => 'info@atlant-armour.ru',
-    'to_emails' => 'client@zavod.ru', 'body_text' => 'Отправил с телефона, КП во вложении',
-    'date_at' => '2026-09-14 19:30:00', 'is_read' => 1,
-]);
-MailSync::registerOutbound($sentId);
-
-$row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$sentId]);
-ok('письмо легло на карточку компании', (int)$row['counterparty_id'] === $cpId);
-ok('и отмечено в ленте', !empty($row['correspondence_id']));
-ok('клиент больше не ждёт ответа', !$state()['unanswered']);
-ok('ответ датирован собой, а не синхронизацией',
-   (string)Db::val("SELECT last_outbound_at FROM counterparties WHERE id=?", [$cpId]) === '2026-09-14 19:30:00');
-
-$feed = Crm::chat($cpId);
-ok('письмо не засоряет ленту заметок и вех', $feed === []);
-ok('но в полной ленте оно есть', count(Crm::chat($cpId, 50, 0, true)) === 2);
-
-$corrBefore = (int)Db::val("SELECT COUNT(*) FROM correspondence WHERE counterparty_id=?", [$cpId]);
-MailSync::registerOutbound($sentId);
-ok('повторный разбор того же письма ничего не дублирует',
-   (int)Db::val("SELECT COUNT(*) FROM correspondence WHERE counterparty_id=?", [$cpId]) === $corrBefore);
+KpSet::moveItem((int)$vest['id'], $kp2);
+$board = KpSet::board($requestId);
+ok('в первом КП осталось две позиции', count($board['proposals'][0]['items']) === 2,
+   (string)count($board['proposals'][0]['items']));
+ok('во втором — одна', count($board['proposals'][1]['items']) === 1);
+ok('и это бронежилет', $board['proposals'][1]['items'][0]['product_name'] === 'Бронежилет 6Б45');
+ok('позиция не задвоилась',
+   (int)Db::val("SELECT COUNT(*) FROM proposal_items WHERE product_name='Бронежилет 6Б45'") === 1);
+ok('пул по-прежнему пуст', $board['pool'] === []);
+ok('итог первого КП пересчитан', abs($board['proposals'][0]['total'] - 66000) < 0.01,
+   (string)$board['proposals'][0]['total']);
+ok('итог второго — тоже', abs($board['proposals'][1]['total'] - 90000) < 0.01,
+   (string)$board['proposals'][1]['total']);
+ok('нумерация в первом КП без дыр',
+   array_column($board['proposals'][0]['items'], 'position') === [1, 2],
+   json_encode(array_column($board['proposals'][0]['items'], 'position')));
 
 // =====================================================================  4
 
-echo "\n== 4. Старое письмо не двигает отметку назад ==\n";
+echo "\n== 4. Выброшенная из КП позиция возвращается в запрос ==\n";
 
-$oldId = Db::insert('mail_messages', [
-    'mailbox_id' => $boxId, 'direction' => 'out', 'folder' => 'Отправленные', 'uid' => 3,
-    'subject' => 'Прайс', 'from_email' => 'info@atlant-armour.ru',
-    'to_emails' => 'client@zavod.ru', 'body_text' => 'Прайс за прошлый год',
-    'date_at' => '2025-02-01 12:00:00', 'is_read' => 1,
-]);
-MailSync::registerOutbound($oldId);
-ok('позапрошлогоднее письмо отметку не сдвинуло',
-   (string)Db::val("SELECT last_outbound_at FROM counterparties WHERE id=?", [$cpId]) === '2026-09-14 19:30:00');
-ok('но на карточке компании оно есть',
-   (int)Db::val("SELECT counterparty_id FROM mail_messages WHERE id=?", [$oldId]) === $cpId);
+$amp = null;
+foreach ($board['proposals'][0]['items'] as $it) {
+    if ($it['product_name'] === 'Наушники AMP') $amp = $it;
+}
+KpSet::removeItem((int)$amp['id']);
+$board = KpSet::board($requestId);
+ok('в первом КП одна позиция', count($board['proposals'][0]['items']) === 1);
+ok('наушники вернулись в пул', count($board['pool']) === 1 && $board['pool'][0]['raw_name'] === 'Наушники AMP',
+   json_encode(array_column($board['pool'], 'raw_name'), JSON_UNESCAPED_UNICODE));
+
+$poolId = (int)$board['pool'][0]['id'];
+KpSet::addFromRequest($kp2, $poolId);
+$board = KpSet::board($requestId);
+ok('и уехали во второе КП', count($board['proposals'][1]['items']) === 2);
+ok('пул снова пуст', $board['pool'] === []);
+
+KpSet::addFromRequest($kp2, $poolId);
+ok('повторное добавление не задваивает',
+   (int)Db::val("SELECT COUNT(*) FROM proposal_items WHERE proposal_id=? AND request_item_id=?",
+                [$kp2, $poolId]) === 1);
+
+// =====================================================================  5
+
+echo "\n== 5. Каждое КП печатает свои позиции ==\n";
+
+Requisites::freeze($kp1);
+Requisites::freeze($kp2);
+$html1 = PdfGenerator::html($kp1);
+$html2 = PdfGenerator::html($kp2);
+ok('в первом КП — шлем', str_contains($html1, 'Шлем Протон'));
+ok('и нет бронежилета', !str_contains($html1, '6Б45'));
+ok('во втором — бронежилет и наушники',
+   str_contains($html2, '6Б45') && str_contains($html2, 'Наушники AMP'));
+ok('и нет шлема', !str_contains($html2, 'Шлем Протон'));
+ok('итог первого КП в документе', str_contains($html1, 'Итого: 30 000,00 руб.'),
+   (string)(preg_match('/Итого: [^<]+/u', $html1, $m) ? $m[0] : ''));
+ok('итог второго — свой', str_contains($html2, 'Итого: 126 000,00 руб.'),
+   (string)(preg_match('/Итого: [^<]+/u', $html2, $m) ? $m[0] : ''));
+
+// =====================================================================  6
+
+echo "\n== 6. Имя и удаление КП ==\n";
+
+KpSet::rename($kp2, 'Вторая партия');
+$board = KpSet::board($requestId);
+ok('КП переименовано', $board['proposals'][1]['title'] === 'Вторая партия');
+
+KpSet::rename($kp2, '');
+$board = KpSet::board($requestId);
+ok('пустое имя — зовём по номеру или счёту',
+   str_starts_with($board['proposals'][1]['title'], 'КП '), $board['proposals'][1]['title']);
+
+$kp3 = KpSet::create($requestId, $mgr);
+KpSet::delete($kp3);
+ok('пустое КП убирается', (int)Db::val("SELECT COUNT(*) FROM proposals WHERE id=?", [$kp3]) === 0);
+
+Db::update('proposals', ['status' => 'sent'], 'id=?', [$kp1]);
+$err = '';
+try { KpSet::delete($kp1); } catch (Throwable $e) { $err = $e->getMessage(); }
+ok('отправленное КП не удаляется', $err !== '', $err);
+ok('и доска это показывает', KpSet::board($requestId)['proposals'][0]['can_delete'] === false);
+Db::update('proposals', ['status' => 'draft'], 'id=?', [$kp1]);
+
+// =====================================================================  7
+
+echo "\n== 7. Счёт помнит своё КП, и счетов может быть несколько ==\n";
+
+$inv1 = Db::insert('invoices', ['counterparty_id' => $cpId, 'proposal_id' => $kp2,
+                                'moysklad_id' => 'ms-1', 'name' => '00001', 'sum' => 90000]);
+$inv2 = Db::insert('invoices', ['counterparty_id' => $cpId, 'proposal_id' => $kp2,
+                                'moysklad_id' => 'ms-2', 'name' => '00002', 'sum' => 36000]);
+Db::insert('invoices', ['counterparty_id' => $cpId, 'proposal_id' => $kp1,
+                        'moysklad_id' => 'ms-3', 'name' => '00003', 'sum' => 30000]);
+
+$board = KpSet::board($requestId);
+ok('у второго КП два счёта', count($board['proposals'][1]['invoices']) === 2,
+   (string)count($board['proposals'][1]['invoices']));
+ok('у первого — один', count($board['proposals'][0]['invoices']) === 1);
+ok('счета не перемешались',
+   array_column($board['proposals'][1]['invoices'], 'name') === ['00001', '00002'],
+   json_encode(array_column($board['proposals'][1]['invoices'], 'name')));
+
+$err = '';
+try { KpSet::delete($kp2); } catch (Throwable $e) { $err = $e->getMessage(); }
+ok('КП со счётом не удаляется', $err !== '', $err);
+ok('и доска это показывает', $board['proposals'][1]['can_delete'] === false);
 
 // =====================================================================
 

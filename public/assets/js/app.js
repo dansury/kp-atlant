@@ -647,29 +647,321 @@ const App = {
                 <span data-kp-buttons class="flex flex--wrap">${this.matchKpButton(requestId, opts.kp || {})}</span>
             </div>
             <div data-match-total class="muted" style="margin-top:8px"></div>
+            <!-- Доска КП: запрос — это НАБОР предложений, и позиции между ними
+                 перетаскиваются (модуль 027) -->
+            <div data-kp-board></div>
             <div data-kp-slot></div>
         `;
         this.updateMatchTotal(host);
         this.bindMatchDnd(host);
+        this.loadKpBoard(requestId, host);
     },
 
-    /** «Сформировать КП» right under the positions — the next step, in place. */
+    /**
+     * «Сформировать КП» right under the positions — the next step, in place.
+     *
+     * Открыть, скачать, выставить счёт и завести второе КП можно ниже, на доске
+     * предложений (модуль 027): когда КП у запроса несколько, «Открыть КП» в
+     * единственном числе перестаёт что-либо значить.
+     */
     matchKpButton(requestId, kp) {
         // «Собрать КП в файл» — то, чего под таблицей подбора не хватало: КП
         // собирается и сразу скачивается, без захода в редактор (модуль 023)
-        const files = kp.proposal_id
-            ? `<button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'docx')"
-                       title="Собрать КП и скачать файлом">⬇ Собрать КП в файл</button>`
-            : `<button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'docx')"
-                       title="Сформировать КП и сразу скачать файлом">⬇ Собрать КП в файл</button>`;
+        const files = `<button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'docx')"
+                       title="Собрать КП и скачать файлом">⬇ Собрать КП в файл</button>`;
         if (kp.proposal_id) {
-            return `<button class="btn btn--primary btn--sm" onclick="App.openKp(${kp.proposal_id}, this)">Открыть КП</button>
-                    <button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId})"
-                            title="Собрать КП заново из этих позиций">Пересобрать КП</button>
+            return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId})"
+                            title="Собрать ещё одно КП из этих позиций">Собрать КП заново</button>
                     ${files}`;
         }
         return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId})">Сформировать КП</button>
                 ${files}`;
+    },
+
+
+    /**
+     * ==== Доска КП запроса (модуль 027) ====
+     *
+     * Клиент попросил восемь позиций, а платить собирается двумя заявками:
+     * шлемы по одной, бронежилеты по другой. Раньше у запроса было ровно одно
+     * КП со всеми восемью строками, и второй документ менеджер собирал руками в
+     * Word — теряя каталог, цены и счёт.
+     *
+     * Здесь запрос — это набор КП, разложенных колонками. Слева колонка самого
+     * запроса: позиции, которые ещё никуда не положили. Дальше — по колонке на
+     * КП. Позиции перетаскиваются мышью, а на телефоне переносятся выпадающим
+     * списком: тащить карточку пальцем в узкой колонке неудобно.
+     */
+    async loadKpBoard(requestId, host) {
+        const box = host && host.querySelector('[data-kp-board]');
+        if (!box) return;
+        try {
+            const board = await this.api(`proposals.php?action=board&request_id=${requestId}`);
+            this.drawKpBoard(requestId, host, board);
+        } catch (err) {
+            box.innerHTML = `<p class="no">Список КП не загрузился: ${this.esc(err.message)}</p>`;
+        }
+    },
+
+    drawKpBoard(requestId, host, board) {
+        host = host || this.kpHost(requestId);
+        const box = host && host.querySelector('[data-kp-board]');
+        if (!box) return;
+        const proposals = board.proposals || [];
+        const pool = board.pool || [];
+
+        // Ни одного КП — доска пуста по определению, и колонка «Позиции
+        // запроса» была бы копией таблицы прямо над ней. Первое КП заводит
+        // кнопка «Сформировать КП», а доска появляется вместе с ним.
+        if (!proposals.length) { box.innerHTML = ''; return; }
+
+        box.innerHTML = `
+            <div class="card__title" style="margin-top:14px">Коммерческие предложения${this.hint('kp-board')}</div>
+            <p class="muted">Одному запросу можно собрать несколько КП — по одному на заявку клиента.
+               Позиции перетаскиваются между колонками; счёт выставляется по конкретному КП.</p>
+            <div class="kpboard" data-kp-dnd>
+                <div class="kpcol kpcol--pool" data-kp-drop="0">
+                    <div class="kpcol__head">
+                        <span class="kpcol__title">Позиции запроса</span>
+                        <span class="kpcol__count">${pool.length}</span>
+                    </div>
+                    <div class="kpcol__items" data-kp-items="0">
+                        ${pool.length
+                            ? pool.map(r => this.kpPoolCard(r, proposals, requestId)).join('')
+                            : '<div class="kpcol__empty">Все позиции разложены по КП</div>'}
+                    </div>
+                </div>
+                ${proposals.map(p => this.kpColumn(p, proposals, requestId)).join('')}
+                <button class="kpcol kpcol--add" onclick="App.kpAddProposal(${requestId}, this)">
+                    + Ещё одно КП
+                </button>
+            </div>`;
+        this.bindKpBoardDnd(requestId, box);
+    },
+
+    /** Колонка одного КП: имя, позиции, итог и всё, что с ним можно сделать. */
+    kpColumn(p, proposals, requestId) {
+        const status = {draft: ['черновик', 'badge--draft'], confirmed: ['готово', 'badge--draft'],
+                        sent: ['отправлено', 'badge--sent'], order_created: ['заказ создан', 'badge--confirmed']};
+        const [label, cls] = status[p.status] || [p.status, 'badge--new'];
+        return `
+            <div class="kpcol" data-kp-drop="${p.id}">
+                <div class="kpcol__head">
+                    <span class="kpcol__title" title="Переименовать"
+                          onclick="App.kpRename(${requestId}, ${p.id}, '${this.jsStr(p.label || '')}')">${this.esc(p.title)}</span>
+                    <span class="badge ${cls}">${this.esc(label)}</span>
+                    <span class="kpcol__count">${(p.items || []).length}</span>
+                </div>
+                <div class="kpcol__items" data-kp-items="${p.id}">
+                    ${(p.items || []).length
+                        ? p.items.map(it => this.kpItemCard(it, p.id, proposals, requestId)).join('')
+                        : '<div class="kpcol__empty">Перетащите сюда позиции</div>'}
+                </div>
+                ${p.delivery ? `<div class="kpcol__line muted">${this.esc(p.delivery.name)} — ${this.fmtMoney(p.delivery.price)}</div>` : ''}
+                <div class="kpcol__total">Итого: ${this.fmtMoney(p.total)}</div>
+                ${(p.invoices || []).length ? `
+                    <div class="kpcol__line">
+                        ${p.invoices.map(i => `
+                            <div class="flex flex--wrap" style="gap:6px;align-items:center">
+                                <a href="${this.esc(i.url)}" target="_blank" rel="noopener">Счёт ${this.esc(i.name)} ↗</a>
+                                <span class="muted">${this.fmtMoney(i.sum)}${i.payed_sum > 0 ? ' · оплачено ' + this.fmtMoney(i.payed_sum) : ''}</span>
+                                <a onclick="App.download('${i.pdf_url}', 'Счёт ${this.jsStr(i.name)}.pdf')">PDF</a>
+                            </div>`).join('')}
+                    </div>` : ''}
+                <div class="kpcol__actions">
+                    <button class="btn btn--primary btn--sm" onclick="App.openKp(${p.id}, this)">Открыть</button>
+                    <button class="btn btn--outline btn--sm"
+                            onclick="App.download('/api/proposals.php?action=docx&id=${p.id}', 'KP-${p.id}.docx')">⬇ Word</button>
+                    <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${p.id}, this)"
+                            title="${(p.invoices || []).length ? 'Выставить ещё один счёт по этому КП' : 'Выставить счёт по этому КП'}"
+                            ${(p.items || []).length ? '' : 'disabled'}>🧾 ${(p.invoices || []).length ? 'Ещё счёт' : 'Счёт'}</button>
+                    ${p.can_delete ? `<button class="btn btn--outline btn--sm btn--danger"
+                            onclick="App.kpDeleteProposal(${requestId}, ${p.id}, '${this.jsStr(p.title)}')">Убрать</button>` : ''}
+                </div>
+            </div>`;
+    },
+
+    /** Позиция внутри КП — её и тащат. */
+    kpItemCard(it, proposalId, proposals, requestId) {
+        return `
+            <div class="kpitem" draggable="true" data-kp-item="${it.id}">
+                <div class="kpitem__name">${this.esc(it.product_name)}</div>
+                <div class="kpitem__meta">
+                    ${this.num(it.quantity)} ${this.esc(it.unit)} × ${this.fmtMoney(it.effective_price)}
+                    = <strong>${this.fmtMoney(it.sum)}</strong>
+                    ${it.notes ? `<span class="stock-warning">${this.esc(it.notes)}</span>` : ''}
+                </div>
+                ${this.kpMovePicker(proposals, proposalId,
+                    `App.kpMoveItem(${requestId}, ${it.id}, Number(this.value))`)}
+            </div>`;
+    },
+
+    /** Позиция запроса, ещё не попавшая ни в одно КП. */
+    kpPoolCard(row, proposals, requestId) {
+        return `
+            <div class="kpitem kpitem--pool" draggable="true" data-kp-pool="${row.id}">
+                <div class="kpitem__name">${this.esc(row.product_name || row.raw_name)}</div>
+                <div class="kpitem__meta">
+                    ${this.num(row.quantity)} ${this.esc(row.unit)}
+                    ${row.price ? ` × ${this.fmtMoney(row.price)}` : ' <span class="muted">без цены</span>'}
+                </div>
+                ${this.kpMovePicker(proposals, 0,
+                    `App.kpAddItem(${requestId}, Number(this.value), ${row.id})`)}
+            </div>`;
+    },
+
+    /**
+     * Перенос без мыши. На телефоне колонки узкие, и тащить карточку пальцем
+     * между ними — мучение; список делает то же самое одним нажатием.
+     */
+    kpMovePicker(proposals, currentId, handler) {
+        const others = proposals.filter(p => p.id !== currentId);
+        if (!others.length && !currentId) return '';
+        return `
+            <select class="kpitem__move" title="Перенести в другое КП"
+                    onchange="if(this.value!==''){${handler};}">
+                <option value="">перенести…</option>
+                ${currentId ? '<option value="0">← в позиции запроса</option>' : ''}
+                ${others.map(p => `<option value="${p.id}">${this.esc(p.title)}</option>`).join('')}
+            </select>`;
+    },
+
+    /** 3.0 → «3», 2.5 → «2,5»: количество читает человек. */
+    num(v) {
+        const n = Number(v) || 0;
+        return Number.isInteger(n) ? String(n) : String(n).replace('.', ',');
+    },
+
+    /**
+     * Перетаскивание мышью — той же браузерной механикой, что и доска писем.
+     * Обработчик один на всю доску: колонки перерисовываются, контейнер — нет.
+     */
+    bindKpBoardDnd(requestId, box) {
+        const board = box.querySelector('[data-kp-dnd]');
+        if (!board || board.dataset.dnd === '1') return;
+        board.dataset.dnd = '1';
+        let dragged = null;
+
+        board.addEventListener('dragstart', e => {
+            const card = e.target.closest('.kpitem');
+            if (!card) return;
+            dragged = card;
+            card.classList.add('kpitem--dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            // Safari не начинает перетаскивание без данных в буфере
+            e.dataTransfer.setData('text/plain', card.dataset.kpItem || card.dataset.kpPool || '');
+        });
+
+        board.addEventListener('dragend', () => {
+            if (dragged) dragged.classList.remove('kpitem--dragging');
+            board.querySelectorAll('.kpcol--over').forEach(el => el.classList.remove('kpcol--over'));
+            dragged = null;
+        });
+
+        board.addEventListener('dragover', e => {
+            const col = e.target.closest('[data-kp-drop]');
+            if (!col || !dragged) return;
+            e.preventDefault();
+            col.classList.add('kpcol--over');
+            const list = col.querySelector('.kpcol__items');
+            if (!list) return;
+            // Встаём перед первой карточкой, чья середина ниже курсора
+            const after = [...list.querySelectorAll('.kpitem:not(.kpitem--dragging)')]
+                .find(el => e.clientY < el.getBoundingClientRect().top + el.offsetHeight / 2);
+            if (after) list.insertBefore(dragged, after);
+            else list.appendChild(dragged);
+        });
+
+        board.addEventListener('dragleave', e => {
+            const col = e.target.closest('[data-kp-drop]');
+            if (col && !col.contains(e.relatedTarget)) col.classList.remove('kpcol--over');
+        });
+
+        board.addEventListener('drop', async e => {
+            const col = e.target.closest('[data-kp-drop]');
+            if (!col || !dragged) return;
+            e.preventDefault();
+            col.classList.remove('kpcol--over');
+
+            const target = Number(col.dataset.kpDrop);
+            const list = col.querySelector('.kpcol__items');
+            const position = list ? [...list.querySelectorAll('.kpitem')].indexOf(dragged) : 0;
+            const itemId = Number(dragged.dataset.kpItem || 0);
+            const poolId = Number(dragged.dataset.kpPool || 0);
+            dragged = null;
+
+            // Строку запроса уронили обратно в запрос — делать нечего
+            if (poolId && !target) { this.reloadKpBoard(requestId); return; }
+            try {
+                const board = poolId
+                    ? await this.api('proposals.php?action=add_item', {method: 'POST', body: {
+                        proposal_id: target, request_item_id: poolId, position, request_id: requestId}})
+                    : await this.api('proposals.php?action=move_item', {method: 'POST', body: {
+                        item_id: itemId, to_proposal_id: target, position, request_id: requestId}});
+                this.drawKpBoard(requestId, null, board);
+            } catch (err) {
+                this.toast(err.message, 'error');
+                this.reloadKpBoard(requestId);
+            }
+        });
+    },
+
+    kpHost(requestId) {
+        return document.querySelector(`[data-match-host][data-request-id="${requestId}"]`);
+    },
+
+    reloadKpBoard(requestId) {
+        const host = this.kpHost(requestId);
+        if (host) this.loadKpBoard(requestId, host);
+    },
+
+    /** Перенести позицию КП: в другое КП или обратно в позиции запроса. */
+    async kpMoveItem(requestId, itemId, toProposalId) {
+        try {
+            const board = await this.api('proposals.php?action=move_item', {method: 'POST', body: {
+                item_id: itemId, to_proposal_id: toProposalId, request_id: requestId}});
+            this.drawKpBoard(requestId, null, board);
+        } catch (err) { this.toast(err.message, 'error'); this.reloadKpBoard(requestId); }
+    },
+
+    /** Положить позицию запроса в выбранное КП. */
+    async kpAddItem(requestId, proposalId, requestItemId) {
+        try {
+            const board = await this.api('proposals.php?action=add_item', {method: 'POST', body: {
+                proposal_id: proposalId, request_item_id: requestItemId, request_id: requestId}});
+            this.drawKpBoard(requestId, null, board);
+        } catch (err) { this.toast(err.message, 'error'); this.reloadKpBoard(requestId); }
+    },
+
+    /** «+ Ещё одно КП» — пустая колонка, в которую перетаскивают позиции. */
+    async kpAddProposal(requestId, btn) {
+        btn.disabled = true;
+        try {
+            const board = await this.api(`proposals.php?action=add&request_id=${requestId}`,
+                                         {method: 'POST', body: {}});
+            this.drawKpBoard(requestId, null, board);
+            this.toast('КП заведено — перетащите в него позиции', 'success');
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+
+    async kpRename(requestId, proposalId, current) {
+        const label = prompt('Как назвать это КП? Пусто — по номеру.', current || '');
+        if (label === null) return;
+        try {
+            const board = await this.api(`proposals.php?action=rename&id=${proposalId}`,
+                                         {method: 'POST', body: {label}});
+            this.drawKpBoard(requestId, null, board);
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async kpDeleteProposal(requestId, proposalId, title) {
+        if (!confirm(`Убрать «${title}»? Позиции вернутся в список позиций запроса.`)) return;
+        try {
+            const board = await this.api(`proposals.php?action=delete&id=${proposalId}`,
+                                         {method: 'POST', body: {}});
+            this.drawKpBoard(requestId, null, board);
+            this.toast('КП убрано', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     /**
@@ -766,16 +1058,9 @@ const App = {
                                 onclick="App.download('/api/proposals.php?action=docx&id=${id}', 'KP-${id}.docx')">⬇ Word</button>
                         <button class="btn btn--outline btn--sm"
                                 onclick="App.download('/api/proposals.php?action=preview&id=${id}', 'KP-${id}.pdf')">⬇ PDF</button>
-                        <!-- Отдельными файлами: закупщик кладёт позиции в разные
-                             заявки, и один документ на шесть строк он режет руками -->
-                        <button class="btn btn--outline btn--sm"
-                                title="По документу на каждую позицию, архивом"
-                                onclick="App.download('/api/proposals.php?action=split_files&id=${id}&format=docx', 'KP-${id}-split.zip')">⬇ Отдельными файлами</button>
                         <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)">✎ Править текст</button>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
-                        <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this, true)"
-                                title="По счёту на каждую позицию — заказ при этом один">🧾 Отдельные счета</button>
                         <button class="btn btn--primary btn--sm" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
                         <a class="btn btn--outline btn--sm" href="#mail/proposal/${id}"
                            title="Полный редактор: карточки товаров, фото, блоки вокруг таблицы">Все настройки КП →</a>
@@ -837,49 +1122,64 @@ const App = {
      * печатная форма и появляется строкой в карточке: приложить к письму
      * одной кнопкой или забрать отдельным файлом — как и просили.
      */
-    async kpInvoice(id, btn, split = false) {
+    async kpInvoice(id, btn) {
+        // Кнопка живёт в двух местах: в развёрнутой карточке КП и в колонке
+        // доски предложений. Во втором случае раскладывать результат негде —
+        // счёт встаёт строкой под своим КП, когда доска перерисуется.
         const card = btn.closest('.kp-open');
         btn.disabled = true;
         const label = btn.textContent;
         btn.textContent = 'Выставляем...';
         try {
             const r = await this.api(`invoices.php?action=create_from_proposal&proposal_id=${id}`,
-                                     {method: 'POST', body: {split: split ? 1 : 0}});
-            const list = r.invoices && r.invoices.length ? r.invoices : [r];
-            this.toast(
-                (list.length > 1 ? `Счетов выставлено: ${list.length}` : `Счёт ${r.name} выставлен`)
-                + (r.order ? `, заказ ${r.order.name} в резерве` : ''), 'success');
-            const out = card.querySelector('[data-kp-invoice]')
-                || card.insertBefore(Object.assign(document.createElement('div'), {dataset: {kpInvoice: '1'}}),
-                                     card.querySelector('.kp-preview'));
-            out.innerHTML = `
-                <div class="note note--ok" style="margin:10px 0">
-                    <strong>${list.length > 1 ? `Счетов: ${list.length}` : `Счёт ${this.esc(r.name)}`}</strong>
-                    ${list.length > 1 ? '' : ' на ' + this.fmtMoney(r.sum)}
-                    ${r.order
-                        ? `<div>Заказ <a href="${this.esc(r.order.url)}" target="_blank" rel="noopener">${this.esc(r.order.name)} ↗</a>
-                             в резерве — ${list.length > 1 ? 'счета привязаны' : 'счёт привязан'} к нему.</div>`
-                        : `<div class="muted">Заказ не создан${r.order_error ? ': ' + this.esc(r.order_error) : ''} —
-                             ${list.length > 1 ? 'счета выставлены' : 'счёт выставлен'} сам по себе.</div>`}
-                    ${(r.order_missing || []).length
-                        ? `<div class="muted">В МойСклад не нашлось: ${this.esc(r.order_missing.join('; '))}</div>` : ''}
-                    ${(r.skipped || []).length
-                        ? `<div class="muted">В счёт не вошли (нет цены или карточки МойСклад):
-                           ${this.esc(r.skipped.join('; '))}</div>` : ''}
-                    ${r.pdf_error ? `<div class="muted">${this.esc(r.pdf_error)}</div>` : ''}
-                    ${list.map(i => `
-                        <div class="flex flex--wrap" style="margin-top:8px;align-items:center">
-                            <span>${this.esc(i.name)} — ${this.fmtMoney(i.sum)}</span>
-                            ${i.pdf_url ? `
-                                <button class="btn btn--primary btn--sm"
-                                        onclick="App.attachDoc('invoice', ${i.invoice_id}, this)">📎 Приложить к письму</button>
-                                <button class="btn btn--outline btn--sm"
-                                        onclick="App.download('${i.pdf_url}', 'Счёт ${this.jsStr(i.name)}.pdf')">⬇ Файлом</button>` : ''}
-                            <a class="btn btn--outline btn--sm" href="${this.esc(i.url)}" target="_blank" rel="noopener">МойСклад ↗</a>
-                        </div>`).join('')}
-                </div>`;
+                                     {method: 'POST', body: {}});
+            this.toast(`Счёт ${r.name} выставлен` + (r.order ? `, заказ ${r.order.name} в резерве` : ''),
+                       'success');
+            if (card) {
+                const out = card.querySelector('[data-kp-invoice]')
+                    || card.insertBefore(Object.assign(document.createElement('div'), {dataset: {kpInvoice: '1'}}),
+                                         card.querySelector('.kp-preview'));
+                out.innerHTML = this.kpInvoiceNote(r);
+            } else if (r.order_error || (r.order_missing || []).length || (r.skipped || []).length) {
+                // Кнопке в колонке некуда положить оговорки — говорим их вслух
+                this.toast([
+                    r.order_error ? 'Заказ не создан: ' + r.order_error : '',
+                    (r.order_missing || []).length ? 'В МойСклад не нашлось: ' + r.order_missing.join('; ') : '',
+                    (r.skipped || []).length ? 'В счёт не вошли: ' + r.skipped.join('; ') : '',
+                ].filter(Boolean).join('. '), 'error');
+            }
+            // Счёт встаёт под своим КП на доске предложений (модуль 027)
+            const host = document.querySelector('[data-match-host]');
+            if (host && host.dataset.requestId) this.reloadKpBoard(Number(host.dataset.requestId));
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = label; }
+    },
+
+    /** Что показать о только что выставленном счёте в развёрнутой карточке КП. */
+    kpInvoiceNote(r) {
+        return `
+            <div class="note note--ok" style="margin:10px 0">
+                <strong>Счёт ${this.esc(r.name)}</strong> на ${this.fmtMoney(r.sum)}
+                ${r.order
+                    ? `<div>Заказ <a href="${this.esc(r.order.url)}" target="_blank" rel="noopener">${this.esc(r.order.name)} ↗</a>
+                         в резерве — счёт привязан к нему.</div>`
+                    : `<div class="muted">Заказ не создан${r.order_error ? ': ' + this.esc(r.order_error) : ''} —
+                         счёт выставлен сам по себе.</div>`}
+                ${(r.order_missing || []).length
+                    ? `<div class="muted">В МойСклад не нашлось: ${this.esc(r.order_missing.join('; '))}</div>` : ''}
+                ${(r.skipped || []).length
+                    ? `<div class="muted">В счёт не вошли (нет цены или карточки МойСклад):
+                       ${this.esc(r.skipped.join('; '))}</div>` : ''}
+                ${r.pdf_error ? `<div class="muted">${this.esc(r.pdf_error)}</div>` : ''}
+                <div class="flex flex--wrap" style="margin-top:8px;align-items:center">
+                    ${r.pdf_url ? `
+                        <button class="btn btn--primary btn--sm"
+                                onclick="App.attachDoc('invoice', ${r.invoice_id}, this)">📎 Приложить к письму</button>
+                        <button class="btn btn--outline btn--sm"
+                                onclick="App.download('${r.pdf_url}', 'Счёт ${this.jsStr(r.name)}.pdf')">⬇ Файлом</button>` : ''}
+                    <a class="btn btn--outline btn--sm" href="${this.esc(r.url)}" target="_blank" rel="noopener">МойСклад ↗</a>
+                </div>
+            </div>`;
     },
 
     /**
@@ -1592,9 +1892,10 @@ const App = {
             this.toast('КП сформировано', 'success');
             if (host) {
                 host.dataset.kp = JSON.stringify({proposal_id: id});
-                // Кнопки под таблицей теперь «Открыть КП» / «Пересобрать»
                 const bar = host.querySelector('[data-kp-buttons]');
                 if (bar) bar.innerHTML = this.matchKpButton(requestId, {proposal_id: id});
+                // Новое КП встаёт колонкой на доске предложений (модуль 027)
+                this.loadKpBoard(requestId, host);
                 this.openKp(id, host);
             } else {
                 location.hash = `mail/proposal/${id}`;
@@ -1812,12 +2113,6 @@ const App = {
                     </select>
                     <div class="muted" style="margin-top:4px">В текстовом варианте то же самое:
                         позиции, цены, условия и комментарии. Нет только QR-кода.</div>
-                    <!-- Отдельные файлы: клиенту, который раскладывает позиции по
-                         разным заявкам, один документ на шесть строк приходится
-                         резать руками (модуль 026) -->
-                    <label style="margin-top:6px;display:block">
-                        <input type="checkbox" id="sendSplit"> Отдельный файл на каждую позицию
-                    </label>
                 </div>
                 <!-- Свои файлы к письму: менеджер мог переделать документ руками (модуль 023) -->
                 <div class="form-group" style="max-width:420px">
@@ -2163,7 +2458,6 @@ const App = {
                 to,
                 subject: document.getElementById('sendSubject').value,
                 format: document.getElementById('sendFormat')?.value || undefined,
-                split: document.getElementById('sendSplit')?.checked ? 1 : 0,
                 files: [...document.querySelectorAll('#kpFiles [data-cmp-file]')].map(el => el.dataset.cmpFile),
             });
             if (sent) this.toast('КП отправлено!', 'success');
@@ -3244,6 +3538,7 @@ const App = {
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки — модель на это не тратится. Равнозначные варианты сервис не выбирает молча: он спрашивает.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
         'match-variant':['Модификации', 'Если в письме один товар просят в нескольких размерах или цветах («р.S-5шт, р.M-13шт»), сервис делает из этого отдельные строки с их количествами и подставляет каждой свою карточку из МойСклад — со своим артикулом, ценой и остатком.'],
+        'kp-board':     ['Коммерческие предложения запроса', 'Одному запросу можно собрать несколько КП — по одному на заявку клиента. Слева стоят позиции запроса, которые ещё никуда не положили; дальше — по колонке на КП. Позицию перетаскивают мышью или переносят выпадающим списком на карточке. Счёт выставляется по конкретному КП, и счетов у одного КП может быть несколько.'],
         'kp-editor':    ['Редактор КП', 'Здесь правится всё, что попадёт в документ: цены, количества, тексты карточек товаров и блоки вокруг таблицы. Реквизиты и НДС правке не подлежат — они приходят из МойСклад и замораживаются на КП в момент создания.'],
         'kp-exclude':   ['Свернуть позицию', 'Позиции, которой нет в наличии, в таблице КП не будет — но в документе она останется: КП назовёт её словами клиента и скажет, что мы по ней уточняем. Молча выкинуть строку нельзя.'],
         // Настройки

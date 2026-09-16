@@ -1439,6 +1439,40 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '27')");
         $current = 27;
     }
+
+    // v28 — модуль 027: у запроса может быть несколько КП, позиции между ними
+    // перетаскиваются, счёт выставляется по конкретному КП.
+    if ($current < 28) {
+        // Имя КП, которое пишет менеджер: «Шлемы», «Вторая партия». Пусто —
+        // КП называется своим номером.
+        Db::ensureColumn('proposals', 'label', 'TEXT');
+
+        // Из какой строки запроса выросла позиция КП. Без этой связи нельзя
+        // сказать, какие позиции запроса ещё не разложены по КП.
+        Db::ensureColumn('proposal_items', 'request_item_id', 'INTEGER');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_items_request_item ON proposal_items(request_item_id)");
+
+        // Счёт знает, по какому КП он выставлен: счетов у одного КП может быть
+        // несколько, и на карточке они стоят под своим КП, а не общей кучей.
+        Db::ensureColumn('invoices', 'proposal_id', 'INTEGER');
+        Db::q("UPDATE invoices SET proposal_id = (SELECT o.proposal_id FROM orders o WHERE o.id = invoices.order_id)
+               WHERE proposal_id IS NULL AND order_id IS NOT NULL");
+
+        // Уже собранные КП связываем со строками запроса по названию, которое
+        // пришло из письма: это то же поле, по которому их и клали в КП.
+        Db::q(
+            "UPDATE proposal_items SET request_item_id = (
+                 SELECT ri.id FROM request_items ri
+                 JOIN proposals p ON p.id = proposal_items.proposal_id
+                 WHERE ri.request_id = p.request_id
+                   AND ri.raw_name = proposal_items.requested_name
+                 ORDER BY ri.position LIMIT 1)
+             WHERE request_item_id IS NULL AND requested_name IS NOT NULL AND requested_name <> ''"
+        );
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '28')");
+        $current = 28;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

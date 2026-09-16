@@ -469,6 +469,9 @@ final class RequestItems {
             if ((int)($row['is_out_of_scope'] ?? 0) === 1) continue;
             $hasProduct = trim((string)($row['product_name'] ?? '')) !== '';
             $out[] = [
+                // Строка запроса, из которой выросла позиция КП: по ней видно,
+                // какие позиции запроса ещё не разложены по КП (модуль 027)
+                'request_item_id' => isset($row['id']) ? (int)$row['id'] : null,
                 'raw_name'     => (string)($row['raw_name'] ?? ''),
                 'quantity'     => (float)($row['quantity'] ?? 1),
                 'is_confirmed' => (int)($row['is_confirmed'] ?? 0) === 1,
