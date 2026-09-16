@@ -671,6 +671,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     .modal { padding: 10px; }
     .preview-body { max-height: 65vh; }
     .preview-frame { height: 60vh; }
+    /* На телефоне колонки КП сужаются, но доска остаётся доской */
+    .kpcol { flex-basis: 200px; }
+    .kpcol--add { flex-basis: 140px; }
 }
 
 /* ==== Модуль 022: подсказки там, где возникает вопрос ====
@@ -791,6 +794,35 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bfilter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
 .bfilter select { width: auto; min-width: 110px; padding: 5px 8px; font-size: 12px; }
 .bfilter--check { gap: 4px; }
+/* ==== Доска КП запроса (модуль 027) ====
+   Запрос — это набор предложений: слева позиции, которые никуда не положили,
+   дальше по колонке на КП. Позиции перетаскиваются между колонками. */
+.kpboard { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 10px; align-items: flex-start; }
+.kpcol { flex: 0 0 240px; background: var(--surface-2); border: 1px solid var(--border);
+         border-radius: var(--radius); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.kpcol--pool { background: var(--surface); border-style: dashed; }
+.kpcol--over { outline: 2px dashed var(--primary); outline-offset: -2px; }
+.kpcol__head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.kpcol__title { font-weight: 600; font-size: 13px; cursor: pointer; flex: 1; word-break: break-word; }
+.kpcol__count { font-size: 11px; color: var(--text-muted); }
+.kpcol__items { display: flex; flex-direction: column; gap: 6px; min-height: 48px; }
+.kpcol__empty { font-size: 11px; color: var(--text-muted); padding: 10px 4px; text-align: center; }
+.kpcol__line { font-size: 11px; }
+.kpcol__total { font-size: 13px; font-weight: 700; text-align: right; }
+.kpcol__actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.kpcol--add { flex: 0 0 160px; align-self: stretch; min-height: 90px; cursor: pointer;
+              border: 1px dashed var(--border); border-radius: var(--radius); background: none;
+              color: var(--text-muted); font-size: 13px; }
+.kpcol--add:hover { color: var(--accent-ink); border-color: var(--primary); }
+.kpitem { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+          padding: 6px 8px; cursor: grab; font-size: 12px; }
+.kpitem--pool { border-style: dashed; }
+.kpitem--dragging { opacity: .45; }
+.kpitem__name { font-weight: 600; word-break: break-word; }
+.kpitem__meta { color: var(--text-muted); margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px; }
+.kpitem__move { width: 100%; margin-top: 4px; padding: 3px 6px; font-size: 11px; }
+
+
 /* «Архив» на доске — ссылка, а не галочка: это другой экран (модуль 026) */
 .bfilter--link { cursor: pointer; color: var(--accent-ink); text-decoration: underline; }
 .bfilter--link:hover { color: var(--primary); }

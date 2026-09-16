@@ -21,6 +21,7 @@ require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/request_shape.php';
 require_once ROOT . '/lib/requisites.php';
 require_once ROOT . '/lib/kp_terms.php';
+require_once ROOT . '/lib/kp_set.php';
 
 /**
  * SC-005 with teeth (module 018).
@@ -140,84 +141,13 @@ switch ($action) {
             $matched = ProductMatcher::matchItems($parsed['items'] ?? []);
         }
 
-        // Create proposal
-        $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1 LIMIT 1");
-        $proposalId = Db::insert('proposals', [
-            'request_id' => $requestId,
-            'counterparty_id' => $req['counterparty_id'],
-            'manager_id' => $manager['id'],
-            'vat_rate' => (int)(Db::val("SELECT value FROM settings WHERE key='default_vat_rate'") ?: 5),
-            'execution_days' => (int)(Db::val("SELECT value FROM settings WHERE key='default_execution_days'") ?: 30),
-            'validity_days' => (int)(Db::val("SELECT value FROM settings WHERE key='default_validity_days'") ?: 14),
-            'conditions_text' => Db::val("SELECT value FROM settings WHERE key='default_conditions_text'") ?: '',
-            // Условия — одним блоком, и ровно тем, который менеджер правил в
-            // прошлый раз: house rule пишется один раз (модуль 026)
-            'terms_text' => KpTerms::defaultText(),
-            // «Чтобы всё, что мы дописываем, система учитывала»: whatever the
-            // manager typed around the table last time is already here, so a
-            // house rule is written once instead of retyped on every КП
-            'pre_table_text'  => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='pre_table' ORDER BY id DESC LIMIT 1") ?: ''),
-            'post_table_text' => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='post_table' ORDER BY id DESC LIMIT 1") ?: ''),
-            // Запрос пришёл таблицей — КП открывается таблицей соответствия.
-            // Решается по самому письму (module 013), без вопроса менеджеру.
-            'show_match_table' => (RequestShape::of($requestId) === RequestShape::TABLE) ? 1 : 0,
-        ]);
+        // Шапка КП — одна на все пути: и «Сформировать КП», и «+ Ещё одно КП»
+        // заводят документ одинаково (модуль 027)
+        $proposalId = KpSet::create($requestId, (int)$manager['id'], (string)(getInput()['label'] ?? ''));
 
         // Insert items
         foreach ($matched as $i => $m) {
-            $match = $m['match'];
-            // «Сколько можем отгрузить» — свободный остаток. Из «Подходящих
-            // позиций» он уже свободный (`reserved` там учтён), из прямого
-            // подбора приходит сырой остаток и резерв отдельно; оба пути
-            // складываются в одну и ту же пару колонок КП.
-            $free = $match ? max(0, (int)($match['stock'] ?? 0) - (int)($match['reserved'] ?? 0)) : 0;
-            // Товар с модификациями отвечает их суммой: своего остатка у него нет,
-            // и КП уходило «под заказ» при полном складе размеров (модуль 026)
-            if ($match && !empty($match['moysklad_id'])) {
-                $byVariants = Variants::stockOf((string)$match['moysklad_id']);
-                if ($byVariants !== null) {
-                    $free = $byVariants['free'];
-                    $match['stock'] = $free;
-                    $match['reserved'] = 0;   // резерв модификаций уже вычтен
-                }
-            }
-            Db::insert('proposal_items', [
-                'proposal_id' => $proposalId,
-                'position' => $i + 1,
-                'product_name' => $match ? $match['name'] : $m['raw_name'],
-                // What the client actually wrote. An analogue offered instead of
-                // the asked-for brand is only visible against this line, and the
-                // КП has to say so out loud (module 011).
-                'requested_name' => $m['raw_name'] ?? null,
-                'moysklad_product_id' => $match['moysklad_id'] ?? null,
-                'unit' => $match['unit'] ?? 'шт.',
-                'quantity' => $m['quantity'],
-                'price' => $match['price'] ?? 0,
-                'stock_available' => $match['stock'] ?? null,
-                'stock_reserved' => $match['reserved'] ?? null,
-                'match_confidence' => $match['score'] ?? null,
-                'match_variants' => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
-                'is_confirmed' => $m['is_confirmed'] ? 1 : 0,
-                // Своё примечание менеджера сильнее автоматического «под заказ»,
-                // а автоматическое пересчитывается по сегодняшнему остатку, а не
-                // переезжает из строки подбора как есть (модуль 026)
-                'notes' => Terms::stockNote($m['notes'] ?? null, $free, (bool)$match),
-                // An analogue offered because we could not ship what was asked
-                // for, and the proof that it fits (module 013)
-                // Комментарий по товару и деньги, проставленные на карточке
-                // письма, переезжают в КП как есть (модуль 023)
-                'comment_text'     => $m['comment_text'] ?? null,
-                'discount_percent' => (float)($m['discount_percent'] ?? 0),
-                'price_is_manual'  => (int)($m['price_is_manual'] ?? 0),
-                'wait_on'          => (int)($m['wait_on'] ?? 0),
-                'wait_months'      => $m['wait_months'] ?? null,
-                'wait_discount'    => $m['wait_discount'] ?? null,
-                'wait_prepay'      => $m['wait_prepay'] ?? null,
-                'is_alternative' => !empty($m['is_alternative']) ? 1 : 0,
-                'alt_reason'     => $m['alt_specs']['reason'] ?? null,
-                'alt_specs_json' => !empty($m['alt_specs'])
-                    ? json_encode($m['alt_specs'], JSON_UNESCAPED_UNICODE) : null,
-            ]);
+            Db::insert('proposal_items', KpSet::itemRow($m, $i + 1) + ['proposal_id' => $proposalId]);
         }
 
         // Generate cover letter
@@ -540,52 +470,100 @@ switch ($action) {
         exit;
 
     /**
-     * КП отдельными файлами — по одному на позицию, одним архивом (модуль 026).
+     * ==== Несколько КП на один запрос (модуль 027) ====
      *
-     * Закупщик кладёт каждую позицию в свою строку сметы, и документ на шесть
-     * позиций он режет руками. Здесь он получает шесть документов, каждый —
-     * полноценное КП со своей шапкой, реквизитами и подписью.
+     * Клиент платит двумя заявками — значит и КП два, и счёт у каждого свой.
+     * Позиции между ними перетаскиваются, а не переписываются руками в Word.
      */
-    case 'split_files': {
+
+    /** Раскладка запроса по КП: колонки документов и позиции, не попавшие ни в одну. */
+    case 'board': {
+        requireAuth();
+        $requestId = (int)($_GET['request_id'] ?? 0);
+        if (!Db::val("SELECT 1 FROM requests WHERE id=?", [$requestId])) jsonError('Запрос не найден', 404);
+        jsonData(KpSet::board($requestId));
+    }
+
+    /** «+ Ещё одно КП» — пустое КП того же запроса. */
+    case 'add': {
+        $manager = requireAuth();
+        $requestId = (int)($_GET['request_id'] ?? 0);
+        if (!Db::val("SELECT 1 FROM requests WHERE id=?", [$requestId])) jsonError('Запрос не найден', 404);
+        $input = getInput();
+        try {
+            $id = KpSet::create($requestId, (int)$manager['id'], (string)($input['label'] ?? ''));
+        } catch (Throwable $e) {
+            jsonError($e->getMessage(), 400);
+        }
+        Logger::info('kp', "Заведено ещё одно КП #$id по запросу #$requestId",
+                     ['request_id' => $requestId, 'proposal_id' => $id, 'manager_id' => (int)$manager['id']]);
+        jsonOk(['id' => $id] + KpSet::board($requestId));
+    }
+
+    /** Перетащили позицию: в другое КП, на другое место или обратно в запрос. */
+    case 'move_item': {
+        requireAuth();
+        $input = getInput();
+        $itemId = (int)($input['item_id'] ?? 0);
+        $toProposal = (int)($input['to_proposal_id'] ?? 0);
+        $position = array_key_exists('position', $input) ? (int)$input['position'] : null;
+        $requestId = (int)($input['request_id'] ?? 0);
+
+        try {
+            if ($toProposal) {
+                KpSet::moveItem($itemId, $toProposal, $position);
+            } else {
+                // Уронили в колонку запроса — строка уходит из документа
+                KpSet::removeItem($itemId);
+            }
+        } catch (Throwable $e) {
+            jsonError($e->getMessage(), 400);
+        }
+        jsonOk($requestId ? KpSet::board($requestId) : []);
+    }
+
+    /** Перетащили строку запроса в КП. */
+    case 'add_item': {
+        requireAuth();
+        $input = getInput();
+        $proposalId = (int)($input['proposal_id'] ?? 0);
+        $requestItemId = (int)($input['request_item_id'] ?? 0);
+        $position = array_key_exists('position', $input) ? (int)$input['position'] : null;
+        $requestId = (int)($input['request_id'] ?? 0);
+
+        try {
+            KpSet::addFromRequest($proposalId, $requestItemId, $position);
+        } catch (Throwable $e) {
+            jsonError($e->getMessage(), 400);
+        }
+        jsonOk($requestId ? KpSet::board($requestId) : []);
+    }
+
+    /** Имя КП, которое пишет менеджер: «Шлемы», «Вторая партия». */
+    case 'rename': {
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::val("SELECT 1 FROM proposals WHERE id=?", [$id])) jsonError('КП не найдено', 404);
-        $format = ($_GET['format'] ?? 'docx') === 'pdf' ? 'pdf' : 'docx';
+        $input = getInput();
+        KpSet::rename($id, (string)($input['label'] ?? ''));
+        $requestId = (int)Db::val("SELECT request_id FROM proposals WHERE id=?", [$id]);
+        jsonOk(KpSet::board($requestId));
+    }
 
+    /** Убрать КП целиком — пока оно не ушло клиенту и по нему нет счёта. */
+    case 'delete': {
+        $manager = requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        $requestId = (int)(Db::val("SELECT request_id FROM proposals WHERE id=?", [$id]) ?: 0);
+        if (!$requestId) jsonError('КП не найдено', 404);
         try {
-            $files = DocxGenerator::perItem($id, $format);
+            KpSet::delete($id);
         } catch (Throwable $e) {
-            jsonError('Не удалось собрать отдельные файлы: ' . $e->getMessage(), 400);
+            jsonError($e->getMessage(), 400);
         }
-
-        // Один файл архивом не заворачиваем — отдаём как есть
-        if (count($files) === 1) {
-            $one = $files[0];
-            header('Content-Type: application/octet-stream');
-            header('Content-Disposition: attachment; filename="KP-' . $id . '.' . $format . '"; '
-                 . "filename*=UTF-8''" . rawurlencode($one['name']));
-            header('Content-Length: ' . (string)filesize($one['path']));
-            readfile($one['path']);
-            exit;
-        }
-
-        $zipPath = ROOT . '/data/tmp/kp-' . $id . '-' . bin2hex(random_bytes(4)) . '.zip';
-        if (!is_dir(dirname($zipPath))) mkdir(dirname($zipPath), 0755, true);
-        $zip = new ZipArchive();
-        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
-            jsonError('Архив не создался на сервере', 500);
-        }
-        foreach ($files as $f) $zip->addFile($f['path'], $f['name']);
-        $zip->close();
-
-        $zipName = 'КП_отдельными_файлами_' . $id . '.zip';
-        header('Content-Type: application/zip');
-        header('Content-Disposition: attachment; filename="KP-' . $id . '-split.zip"; '
-             . "filename*=UTF-8''" . rawurlencode($zipName));
-        header('Content-Length: ' . (string)filesize($zipPath));
-        readfile($zipPath);
-        @unlink($zipPath);
-        exit;
+        Logger::info('kp', "КП #$id убрано с карточки запроса #$requestId",
+                     ['proposal_id' => $id, 'manager_id' => (int)$manager['id']]);
+        jsonOk(KpSet::board($requestId));
     }
 
     case 'confirm':
@@ -667,28 +645,16 @@ switch ($action) {
         // стоит шлем», вложение мешает, а закупщику по-прежнему нужен Word.
         $format = (string)($input['format'] ?? Settings::get('KP_ATTACH_FORMAT', 'docx'));
         if (!in_array($format, ['docx', 'pdf', 'both', 'text'], true)) $format = 'docx';
-        // «Отдельными файлами» — по документу на позицию (модуль 026): клиенту,
-        // который раскладывает позиции по разным заявкам, один файл на шесть
-        // строк приходится резать руками
-        $split = !empty($input['split']) && $format !== 'text';
-
         $attachments = [];
         $docxPath = null;
-        if ($split) {
-            $each = $format === 'pdf' ? ['pdf'] : ($format === 'both' ? ['docx', 'pdf'] : ['docx']);
-            foreach ($each as $ext) {
-                foreach (DocxGenerator::perItem($id, $ext) as $f) $attachments[] = $f['path'];
-            }
-        } else {
-            if ($format === 'docx' || $format === 'both') {
-                $docxPath = DocxGenerator::generate($id);
-                $attachments[] = $docxPath;
-            }
-            if ($format === 'pdf' || $format === 'both') {
-                if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) PdfGenerator::generate($id);
-                $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]) + $proposal;
-                $attachments[] = $proposal['pdf_path'];
-            }
+        if ($format === 'docx' || $format === 'both') {
+            $docxPath = DocxGenerator::generate($id);
+            $attachments[] = $docxPath;
+        }
+        if ($format === 'pdf' || $format === 'both') {
+            if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) PdfGenerator::generate($id);
+            $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]) + $proposal;
+            $attachments[] = $proposal['pdf_path'];
         }
 
         // Файлы, которые менеджер приложил сам: он мог переделать документ
@@ -726,7 +692,7 @@ switch ($action) {
             'email_to'   => $to,
             'manager_id' => $manager['id'] ?? null,
             'event_type' => 'kp_sent',
-            'meta'       => ['proposal_id' => (int)$id, 'format' => $format, 'split' => $split ? 1 : 0,
+            'meta'       => ['proposal_id' => (int)$id, 'format' => $format,
                              'files' => array_map('basename', $attachments)],
         ]);
         Db::q("UPDATE correspondence SET has_attachment=1, attachment_path=? WHERE id=(SELECT MAX(id) FROM correspondence)",

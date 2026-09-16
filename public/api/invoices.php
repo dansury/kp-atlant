@@ -111,7 +111,6 @@ switch ($action) {
 
         $positions = [];
         $skipped   = [];
-        $names     = [];
         foreach ($rows as $r) {
             $price = (float)$r['price'];
             $qty   = (float)$r['quantity'];
@@ -124,17 +123,10 @@ switch ($action) {
                 'discount'   => (float)($r['discount_percent'] ?? 0),
                 'vat'        => (int)($r['vat_rate'] ?? $p['vat_rate'] ?? 0),
             ];
-            $names[] = (string)$r['product_name'];
         }
         if (!$positions) {
             jsonError('Ни одной позиции с ценой и карточкой МойСклад — счёт выставлять не из чего', 400);
         }
-
-        // «Отдельные счета» — по счёту на позицию (модуль 026). Заказ при этом
-        // один: резерв на товар один, а счетов у закупщика столько, сколько
-        // строк в его смете.
-        $body = getInput();
-        $split = !empty($_GET['split']) || !empty($body['split']);
 
         $appUrl = rtrim($GLOBALS['cfg']['APP_URL'] ?? '', '/');
         $note = 'Счёт по КП ' . ((string)$p['number'] !== '' ? $p['number'] : '#' . $proposalId)
@@ -173,35 +165,19 @@ switch ($action) {
             $orderError = 'нет прав на создание заказов';
         }
 
-        // Наборы позиций, каждый из которых станет счётом
-        $batches = $split
-            ? array_map(fn($pos, $name) => ['positions' => [$pos], 'note' => $note . ' — ' . $name],
-                        $positions, $names)
-            : [['positions' => $positions, 'note' => $note]];
-
-        $created = [];
         try {
-            foreach ($batches as $batch) {
-                $created[] = MoySklad::createInvoice([
-                    'counterparty_id' => $cp['moysklad_id'],
-                    'organization_id' => $orgId,
-                    'positions'       => $batch['positions'],
-                    'description'     => $batch['note'],
-                    'order_id'        => $order['id'] ?? null,
-                ]);
-            }
+            $inv = MoySklad::createInvoice([
+                'counterparty_id' => $cp['moysklad_id'],
+                'organization_id' => $orgId,
+                'positions'       => $positions,
+                'description'     => $note,
+                'order_id'        => $order['id'] ?? null,
+            ]);
         } catch (MoySkladPermissionException $e) {
             jsonError('МойСклад: нет прав на создание счетов', 403);
         } catch (Throwable $e) {
-            // Часть счетов могла уже создаться — не молчим об этом
-            if ($created) {
-                Logger::warning('moysklad', 'Отдельные счета созданы не все: ' . $e->getMessage(),
-                                ['proposal_id' => $proposalId, 'created' => count($created)]);
-            }
-            jsonError('МойСклад не принял счёт: ' . $e->getMessage()
-                . ($created ? ' (успели выставить: ' . count($created) . ')' : ''), 502);
+            jsonError('МойСклад не принял счёт: ' . $e->getMessage(), 502);
         }
-        $inv = $created[0];
 
         if ($order) {
             $orderLocalId = MsSync::upsertOrder($order['id'], [
@@ -221,20 +197,11 @@ switch ($action) {
                        'id=?', [$proposalId]);
         }
 
-        $invoices = [];
-        foreach ($created as $one) {
-            $oneId = MsSync::upsertInvoice($one, $orderLocalId, $cpId);
-            $onePdf = MsSync::ensureInvoicePdf($oneId);
-            $invoices[] = [
-                'invoice_id' => $oneId,
-                'name'       => $one['name'],
-                'sum'        => $one['sum'],
-                'url'        => MoySklad::invoiceUrl($one['id']),
-                'pdf_url'    => $onePdf ? "/api/invoices.php?action=pdf&id=$oneId" : null,
-            ];
-        }
-        $localId = $invoices[0]['invoice_id'];
-        $pdf = $invoices[0]['pdf_url'] !== null;
+        $localId = MsSync::upsertInvoice($inv, $orderLocalId, $cpId);
+        // Счёт помнит, по какому КП он выставлен: счетов у одного КП может быть
+        // несколько, и на карточке они стоят под своим КП (модуль 027)
+        Db::update('invoices', ['proposal_id' => $proposalId], 'id=?', [$localId]);
+        $pdf = MsSync::ensureInvoicePdf($localId);
 
         Logger::info('moysklad', "Счёт {$inv['name']} выставлен по КП #$proposalId"
                      . ($order ? " вместе с заказом {$order['name']}" : ' без заказа'),
@@ -247,13 +214,11 @@ switch ($action) {
             'name'       => $inv['name'],
             'sum'        => $inv['sum'],
             'url'        => MoySklad::invoiceUrl($inv['id']),
-            // Все выставленные счета: при «отдельных счетах» их столько, сколько позиций
-            'invoices'   => $invoices,
-            'split'      => $split ? 1 : 0,
             // Файл, который можно приложить к письму прямо из карточки
             'pdf_url'    => $pdf ? "/api/invoices.php?action=pdf&id=$localId" : null,
             'pdf_error'  => $pdf ? null : 'Печатная форма в МойСклад пока недоступна — счёт создан, файл появится позже',
             'skipped'    => $skipped,
+            'proposal_id' => $proposalId,
             // Заказ, к которому привязан счёт, — и то, чего для него не нашлось
             'order'      => $order ? [
                 'id'   => $orderLocalId,
