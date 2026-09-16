@@ -73,6 +73,8 @@ class MsSync {
                 'request_id'      => $links['request_id'] ?? null,
                 'proposal_id'     => $links['proposal_id'] ?? null,
                 'manager_id'      => $links['manager_id'] ?? null,
+                // На какую организацию карточки заказ, если их несколько (модуль 029)
+                'org_id'          => $links['org_id'] ?? null,
             ]));
 
             Crm::logEvent($cpId, 'note', "Заказ {$o['name']} создан в МойСклад на сумму " . number_format($o['sum'], 2, ',', ' ') . ' ₽', [

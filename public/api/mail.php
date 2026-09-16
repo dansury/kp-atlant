@@ -323,11 +323,15 @@ try {
 
             if ($kind === 'invoice') {
                 require_once ROOT . '/lib/sync.php';
+                require_once ROOT . '/lib/invoice_name.php';
                 $inv = Db::one("SELECT * FROM invoices WHERE id=?", [$id]);
                 if (!$inv) jsonError('Счёт не найден', 404);
                 $path = MsSync::ensureInvoicePdf($id);
                 if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад', 502);
-                $name = 'Счёт ' . $inv['name'] . '.pdf';
+                // Имя по шаблону из настроек, и менеджер мог поправить его в
+                // самом письме — присланное побеждает (модуль 029)
+                $name = safeAttachmentName((string)($input['filename'] ?? ''))
+                     ?: InvoiceName::forInvoice($id);
             } elseif ($kind === 'kp' || $kind === 'kp_docx') {
                 require_once ROOT . '/lib/pdf.php';
                 require_once ROOT . '/lib/docx.php';
@@ -483,7 +487,7 @@ try {
                     $errors[] = $e->getMessage();
                 }
             }
-            Logger::info('mail', "Групповая операция «$op» по $done перепискам",
+            Logger::info('mail', "Групповая операция «{$op}» по $done перепискам",
                          ['manager_id' => (int)$manager['id'], 'failed' => $failed]);
             jsonOk(['done' => $done, 'failed' => $failed, 'errors' => array_slice($errors, 0, 5)]);
         }
@@ -532,4 +536,19 @@ try {
 } catch (Throwable $e) {
     Logger::exception('mail', $e, ['action' => $action]);
     jsonError($e->getMessage(), 500);
+}
+
+/**
+ * Имя вложения, набранное руками (модуль 029). Пустое — пусть решает шаблон;
+ * всё, что ломает файловую систему и заголовок письма, вычищается, а `.pdf`
+ * дописывается: менеджер правит имя, а не расширение.
+ */
+function safeAttachmentName(string $name): string {
+    $name = trim(preg_replace('/\s+/u', ' ', $name) ?? '');
+    if ($name === '') return '';
+    $name = (string)preg_replace('#[\\\\/:*?"<>|\r\n]+#u', '_', $name);
+    $name = trim($name, '_ .');
+    if ($name === '') return '';
+    if (!preg_match('/\.pdf$/iu', $name)) $name .= '.pdf';
+    return mb_substr($name, 0, 180);
 }
