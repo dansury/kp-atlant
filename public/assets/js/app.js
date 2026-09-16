@@ -2683,42 +2683,53 @@ const App = {
         </div>`;
     },
 
+    /**
+     * Строка переписки в карточке компании.
+     *
+     * Ровно три этажа и ни одного вложенного слоя: шапка, под ней — лента
+     * писем, под ней — ответ. Раньше строка была ячейкой сетки списка, внутрь
+     * которой складывалась вторая прокручиваемая область с письмами, а в
+     * каждом письме стояла рамка фиксированной высоты: письма налезали друг на
+     * друга и обрезались (модуль 029).
+     */
     companyThreadRow(t) {
-        const cls = ['mrow', 'mrow--thread', t.unanswered ? 'mrow--unanswered' : 'mrow--answered'];
-        if (t.unread) cls.push('mrow--unread');
+        const cls = ['conv', t.unanswered ? 'conv--wait' : 'conv--done'];
+        if (t.unread) cls.push('conv--unread');
         const kp = t.proposal
             ? `<a class="chip chip--kp" href="#mail/proposal/${t.proposal.id}" onclick="event.stopPropagation()">КП ${this.esc(t.proposal.number || '#' + t.proposal.id)}</a>`
             : (t.request_id ? `<a class="chip" href="#mail/request/${t.request_id}" onclick="event.stopPropagation()">запрос #${t.request_id}</a>` : '');
         return `
-            <div class="${cls.join(' ')}" data-thread="${this.esc(t.thread_key)}">
-                <div class="mrow__main" onclick="App.toggleCompanyThread('${this.jsStr(t.thread_key)}')">
-                    <div class="mrow__subject">
-                        ${t.last_direction === 'in' ? '📥' : '📤'}
-                        ${this.esc(t.subject) || '<em>без темы</em>'}
-                        ${t.count > 1 ? `<span class="mrow__count" title="писем в переписке">${t.count}</span>` : ''}
-                        ${t.unread ? `<span class="pill pill--danger">${t.unread}</span>` : ''}
+            <article class="${cls.join(' ')}" data-thread="${this.esc(t.thread_key)}">
+                <div class="conv__head" onclick="App.toggleCompanyThread('${this.jsStr(t.thread_key)}')">
+                    <span class="conv__dir">${t.last_direction === 'in' ? '📥' : '📤'}</span>
+                    <div class="conv__main">
+                        <div class="conv__subject">
+                            ${this.esc(t.subject) || '<em>без темы</em>'}
+                            ${t.count > 1 ? `<span class="conv__count" title="писем в переписке">${t.count}</span>` : ''}
+                            ${t.unread ? `<span class="pill pill--danger">${t.unread}</span>` : ''}
+                        </div>
+                        <div class="conv__meta">
+                            <!-- В строке переписки видно, КТО пишет: по одной теме
+                                 понять, чьё это письмо, нельзя (issue #38) -->
+                            ${t.last_from_name ? `<strong>${this.esc(t.last_from_name)}</strong>` : ''}
+                            ${t.category ? this.categoryBadge(t.category, App.categoryLabels[t.category]) : ''}
+                            ${kp}
+                            ${t.unanswered ? '<span class="badge badge--unanswered">ждёт ответа</span>' : ''}
+                            ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
+                        </div>
+                        <div class="conv__preview">${this.esc(t.preview)}</div>
                     </div>
-                    <div class="mrow__meta">
-                        <!-- В строке переписки видно, КТО пишет: по одной теме
-                             понять, чьё это письмо, нельзя (issue #38) -->
-                        ${t.last_from_name ? `<strong>${this.esc(t.last_from_name)}</strong>` : ''}
-                        ${t.category ? this.categoryBadge(t.category, App.categoryLabels[t.category]) : ''}
-                        ${kp}
-                        ${t.unanswered ? '<span class="badge badge--unanswered">ждёт ответа</span>' : ''}
-                        ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
-                        <span class="muted">${this.fmtDate(t.last_at)}</span>
-                    </div>
-                    <div class="mrow__preview">${this.esc(t.preview)}</div>
+                    <span class="conv__date muted">${this.fmtDate(t.last_at)}</span>
                 </div>
-                <div class="mrow__meta" style="margin-top:4px">
+                <div class="conv__tools">
                     ${t.archived_at
                         ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(t.thread_key)}')">↩ Вернуть в работу</button>
                            <span class="muted">${t.archived_reason === 'mailbox_off' ? 'ящик отключён' : 'не наш профиль'}</span>`
                         : `<button class="btn btn--outline btn--sm" title="Убрать переписку с экрана: на сервере она уйдёт в «Архив»"
                                    onclick="App.archiveThread('${this.jsStr(t.thread_key)}', ${t.count})">🗄 В архив (не наш профиль)</button>`}
                 </div>
-                <div class="thread-inline" id="th_${this.esc(this.threadDomId(t.thread_key))}" hidden></div>
-            </div>`;
+                <div class="conv__open" id="th_${this.esc(this.threadDomId(t.thread_key))}" hidden></div>
+            </article>`;
     },
 
     // A thread key is base64-ish («s:9f8c…»), an element id may not be
@@ -2744,26 +2755,39 @@ const App = {
         // Любое нажатие по строке — явное действие, и свернуть раскрытую
         // карточкой переписку тоже можно только посмотрев на неё
         if (markRead && box.dataset.loaded) this.markThreadRead(key, box);
-        if (!box.hidden) { box.hidden = true; this.setCompanyItems(null); return; }
+        if (!box.hidden) {
+            box.hidden = true;
+            const conv = box.closest('.conv');
+            if (conv) conv.classList.remove('conv--open');
+            this.setCompanyItems(null);
+            return;
+        }
 
         // Раскрыта ровно одна переписка: панель подбора справа одна на карточку,
         // и «чьи это позиции» не должно быть вопросом
-        document.querySelectorAll('.thread-inline:not([hidden])').forEach(el => { el.hidden = true; });
+        document.querySelectorAll('.conv__open:not([hidden])').forEach(el => {
+            el.hidden = true;
+            const conv = el.closest('.conv');
+            if (conv) conv.classList.remove('conv--open');
+        });
 
         box.hidden = false;
+        const own = box.closest('.conv');
+        if (own) own.classList.add('conv--open');
         this.companyOpenThread = key;
-        if (box.dataset.loaded) { this.setCompanyItems(box.dataset.requestId || ''); return; }
+        if (box.dataset.loaded) {
+            this.mountBodies(box);
+            this.setCompanyItems(box.dataset.requestId || '');
+            return;
+        }
         box.innerHTML = '<div class="loading">Загрузка писем...</div>';
         try {
             const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key)
                                      + (markRead ? '&read=1' : ''));
             const reply = d.reply || {};
-            box.innerHTML = `
-                <div class="thread">
-                    ${d.messages.map((m, i) => this.threadMessage(m, i === d.messages.length - 1, key)).join('')}
-                </div>
-                ${this.threadComposer(key, reply, d.mailboxes || [])}
-            `;
+            box.innerHTML = this.threadHtml(d.messages, key)
+                          + this.threadComposer(key, reply, d.mailboxes || []);
+            this.mountBodies(box);
             box.dataset.loaded = '1';
             box.dataset.requestId = reply.request_id || '';
             this.restoreComposerDraft(key);
@@ -2803,9 +2827,9 @@ const App = {
     async markThreadRead(key, box, onServer = false) {
         if (box.dataset.read === '1') return;
         box.dataset.read = '1';
-        const row = box.closest('.mrow');
+        const row = box.closest('.conv');
         if (row) {
-            row.classList.remove('mrow--unread');
+            row.classList.remove('conv--unread');
             row.querySelectorAll('.pill--danger').forEach(p => p.remove());
         }
         if (!onServer) {
@@ -3114,7 +3138,7 @@ const App = {
     async threadSend(key, btn) {
         const c = this.composerOf(key);
         if (!c) return;
-        const {text} = this.composerBody(c);
+        const {text, html} = this.composerBody(c);
         if (!text.trim()) { this.toast('Письмо пустое', 'error'); return; }
         btn.disabled = true;
         try {
@@ -3122,6 +3146,8 @@ const App = {
                 to:          c.querySelector('[data-cmp-to]').value.trim(),
                 subject:     c.querySelector('[data-cmp-subject]').value.trim(),
                 text,
+                // Оформление уходит клиенту, а не остаётся в поле ввода
+                html,
                 mailbox_id:  (c.querySelector('[data-cmp-box]') || {}).value || null,
                 reply_to_id: Number(c.querySelector('[data-cmp-reply]').value) || null,
                 counterparty_id: Number(c.querySelector('[data-cmp-cp]').value) || null,
@@ -3135,12 +3161,30 @@ const App = {
             // The answer belongs in the conversation it answers — reopen it
             const box = key ? document.getElementById('th_' + this.threadDomId(key)) : null;
             if (box) { box.dataset.loaded = ''; box.hidden = true; this.toggleCompanyThread(key); }
-            if (this.company) { this.loadCompanyThreads(this.company.id); this.loadChat(this.company.id); }
+            const cp = this.openCompanyId();
+            if (cp) { this.loadCompanyThreads(cp); this.loadChat(cp); }
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
     },
 
-    /** Where this company sits on the board, and a one-click move to a column. */
+    /**
+     * Карточка компании, открытая ПРЯМО СЕЙЧАС.
+     *
+     * `this.company` помнит последнюю открытую карточку и никогда не
+     * очищается: со страницы письма «обновить карточку компании» попадало в
+     * никуда, потому что её разметки на экране уже нет. Спрашиваем экран, а не
+     * память (модуль 029).
+     */
+    openCompanyId() {
+        return document.getElementById('cpThreads') ? ((this.company || {}).id || null) : null;
+    },
+
+    /**
+     * Where this company sits on the board, and a one-click move to a column.
+     *
+     * Здесь же — заметка, написанная на карточке ДОСКИ: раньше она жила только
+     * там, в карточку компании не попадала и стереть её было нечем (модуль 029).
+     */
     async loadCardPlacement(id) {
         const box = document.getElementById('cardPlacement');
         if (!box) return;
@@ -3149,11 +3193,21 @@ const App = {
             const t = await this.api('boards.php?action=targets');
             const columns = (t.items[0] || {}).columns || [];
             const here = (d.items || [])[0];
+            const note = here && (here.note || '').trim();
             box.innerHTML = `<div class="card card--inline">
                 <span class="muted">Этап:</span>
                 ${columns.map(c => `<button class="btn btn--sm ${here && here.column_id == c.id ? 'btn--primary' : 'btn--outline'}"
                     style="border-color:${this.esc(c.color || '#ccc')}"
                     onclick="App.moveCompanyCard(${id}, ${c.id})">${this.esc(c.title)}</button>`).join('')}
+                ${here ? `<span class="cardnote">
+                    <span class="cardnote__label">Заметка на доске:</span>
+                    <span class="cardnote__text">${note ? this.esc(note) : '<em class="muted">нет</em>'}</span>
+                    <button class="btn btn--outline btn--sm"
+                            onclick="App.boardCardNote(${here.card_id}, '${this.jsStr(note || '')}')">
+                        ${note ? 'Править' : 'Добавить'}</button>
+                    ${note ? `<button class="btn btn--outline btn--sm btn--danger"
+                            onclick="App.boardCardNote(${here.card_id}, null, true)">Удалить</button>` : ''}
+                </span>` : ''}
             </div>`;
         } catch { box.innerHTML = ''; }
     },
@@ -3346,6 +3400,8 @@ const App = {
                         <div class="msg__head">
                             <span>${who}</span>
                             <span class="muted">${this.fmtDate(m.created_at)}</span>
+                            ${isEvent ? '' : `<button class="msg__del" title="Удалить заметку"
+                                onclick="App.deleteNote(${id}, ${m.id})">🗑</button>`}
                         </div>
                         ${m.subject ? `<div class="msg__subject">${this.esc(m.subject)}</div>` : ''}
                         ${m.email_to ? `<div class="muted">кому: ${this.esc(m.email_to)}</div>` : ''}
@@ -3370,6 +3426,19 @@ const App = {
         followup_sent: 'напоминание отправлено',
         order_created: 'заказ создан',
         invoice_created: 'счёт выставлен',
+    },
+
+    /**
+     * Удалить заметку (модуль 029). Заметку — и только её: веха сделки и письмо
+     * этой кнопки не имеют, стирать историю отправленного КП нечем.
+     */
+    async deleteNote(counterpartyId, noteId) {
+        if (!confirm('Удалить заметку?')) return;
+        try {
+            await this.api(`counterparties.php?action=note_delete&id=${counterpartyId}&note_id=${noteId}`,
+                           {method: 'POST', body: {note_id: noteId}});
+            this.loadChat(counterpartyId);
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // Internal note (FR-036)
@@ -3532,8 +3601,8 @@ const App = {
     HINTS: {
         // Письма и ответ
         'board':        ['Доска «Письма»', 'Каждая карточка — КОМПАНИЯ, а не письмо: внутри вся её переписка, запросы и КП. Новые письма попадают сюда сами при открытии доски и по кнопке «Забрать почту» — и входящие, и те, что отправлены мимо сервиса, с телефона или из другого почтового клиента. Колонку карточке вы назначаете сами — сервис её никогда не двигает.'],
-        'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Переписки, убранные как «не наш профиль», стоят тут же, отдельным блоком «Архив компании» внизу.'],
-        'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика.'],
+        'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Любое одно письмо убирается корзиной в его заголовке — остальная переписка остаётся на месте. Переписки, убранные как «не наш профиль», стоят тут же, отдельным блоком «Архив компании» внизу.'],
+        'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика. К ответу сам приписывается текст письма, на которое вы отвечаете, — клиенту не приходится вспоминать, о каком заказе речь.'],
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки — модель на это не тратится. Равнозначные варианты сервис не выбирает молча: он спрашивает.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
@@ -4925,9 +4994,7 @@ const App = {
                  открыли, и это читалось как два разных экрана (модуль 023). -->
             <div class="letter">
                 <div class="letter__main">
-                    <div class="thread">
-                        ${d.messages.map((m, i) => this.threadMessage(m, i === d.messages.length - 1, key)).join('')}
-                    </div>
+                    ${this.threadHtml(d.messages, key)}
                     ${this.threadComposer(key, reply, d.mailboxes || [])}
                 </div>
                 <aside class="letter__side">
@@ -4937,6 +5004,7 @@ const App = {
             </div>
             <div id="kpWide"></div>
         `;
+        this.mountBodies(document.getElementById('app'));
         this.loadThreadPlacement(key);
         this.restoreComposerDraft(key);
         this.loadThreadFacts(t, lastIn);
@@ -4989,29 +5057,38 @@ const App = {
             && ['failed', 'bounced', 'bounce_soft'].includes(m.sent_state);
         const open = m.direction === 'in' && (isLast || Number(m.is_read) === 0);
         const preview = (m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        const cls = ['lmsg', m.direction === 'in' ? 'lmsg--in' : 'lmsg--out'];
+        if (open) cls.push('lmsg--open');
         return `
-            <div class="tmsg ${m.direction === 'in' ? 'tmsg--in' : 'tmsg--out'}" data-tmsg>
-                <div class="tmsg__head" onclick="App.toggleTmsg(this)">
+            <article class="${cls.join(' ')}" data-tmsg data-mail="${m.id}">
+                <header class="lmsg__head" onclick="App.toggleTmsg(this)">
                     <!-- Кто написал: у пересланного письма это человек из шапки
                          пересылки, а не наш ящик, через который оно пришло -->
-                    <span class="tmsg__who">${this.esc(m.real_from_name || m.from_name || m.from_email || '—')}</span>
+                    <span class="lmsg__who">${this.esc(m.real_from_name || m.from_name || m.from_email || '—')}</span>
+                    <span class="lmsg__to muted">${m.direction === 'in' ? '→ нам' : '→ ' + this.esc(m.to_emails)}</span>
+                    <span class="lmsg__date muted">${this.fmtDate(m.date_at)}</span>
+                    <!-- Удалить одно письмо, не открывая его и не трогая переписку:
+                         кнопка проявляется на наведении, чтобы случайное касание
+                         не выбросило письмо (модуль 029) -->
+                    <button class="lmsg__del" title="Удалить это письмо"
+                            onclick="event.stopPropagation(); App.deleteMail(${m.id}, {thread: '${this.jsStr(key || '')}'})">🗑</button>
+                </header>
+                <div class="lmsg__tags">
                     ${m.is_forwarded && m.real_from_email && m.real_from_email !== m.from_email
                         ? '<span class="chip" title="Письмо переслано через наш ящик">переслано</span>' : ''}
-                    <span class="muted">${m.direction === 'in' ? '→ нам' : '→ ' + this.esc(m.to_emails)}</span>
-                    ${preview ? `<span class="tmsg__preview muted">${this.esc(preview)}</span>` : ''}
                     <span class="chip chip--box">${this.esc(m.mailbox_name || 'без ящика')}</span>
-                    ${m.folder ? `<span class="muted tmsg__folder">${this.esc(m.folder)}</span>` : ''}
-                    ${m.has_attachment ? '<span>📎</span>' : ''}
+                    ${m.folder ? `<span class="muted lmsg__folder">${this.esc(m.folder)}</span>` : ''}
+                    ${m.has_attachment ? '<span title="есть вложения">📎</span>' : ''}
                     ${sentBad ? '<span class="badge badge--warning" title="Копия не попала в «Отправленные» на сервере">нет в «Отправленных»</span>' : ''}
-                    <span class="tmsg__date muted">${this.fmtDate(m.date_at)}</span>
                 </div>
-                <div class="tmsg__body">
+                ${preview ? `<div class="lmsg__preview muted">${this.esc(preview)}</div>` : ''}
+                <div class="lmsg__body">
                     ${m.cc_emails ? `<div class="muted" style="margin-bottom:6px">Копия: ${this.esc(m.cc_emails)}</div>` : ''}
                     ${this.msgBodyHtml(m)}
                     ${(m.attachments || []).length ? `<div class="msg__files">
                         ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
                     </div>` : ''}
-                    <div class="flex flex--wrap" style="margin-top:8px">
+                    <div class="lmsg__actions">
                         <button class="btn btn--outline btn--sm"
                                 onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
                             Ответить на это письмо</button>
@@ -5019,10 +5096,23 @@ const App = {
                             onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
                         ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
                         ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
-                        <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id})">🗑 Удалить</button>
+                        <button class="btn btn--outline btn--sm btn--danger"
+                                onclick="App.deleteMail(${m.id}, {thread: '${this.jsStr(key || '')}'})">🗑 Удалить письмо</button>
                     </div>
                 </div>
-            </div>`.replace('class="tmsg ', open ? 'class="tmsg tmsg--open ' : 'class="tmsg ');
+            </article>`;
+    },
+
+    /**
+     * Вся лента писем переписки — одной разметкой на оба входа в письмо.
+     *
+     * Карточка компании и страница письма рисовали ленту по-разному, и правка
+     * в одной не доезжала до другой. Теперь обе зовут это.
+     */
+    threadHtml(messages, key) {
+        return `<div class="thread">
+            ${(messages || []).map((m, i) => this.threadMessage(m, i === messages.length - 1, key)).join('')}
+        </div>`;
     },
 
     // Which board this conversation already sits on
@@ -5083,13 +5173,14 @@ const App = {
                 ${m.source_channel === 'site_form'
                     ? '<p class="muted">Пришло с формы сайта — отправитель и тема восстановлены из полей формы.</p>' : ''}
                 <hr style="margin:12px 0">
-                ${this.msgBodyHtml(m, true)}
+                ${this.msgBodyHtml(m)}
                 ${(m.attachments || []).length ? `
                     <div class="msg__files">
                         ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
                     </div>` : ''}
             </div>
         `;
+        this.mountBodies(document.getElementById('app'));
     },
 
 
@@ -5552,7 +5643,7 @@ const App = {
                 </div>
                 <div class="bcard__actions">
                     ${href ? `<a href="${href}">открыть</a>` : ''}
-                    <a onclick="App.boardCardNote(${card.id})">заметка</a>
+                    <a onclick="App.boardCardNote(${card.id}, '${this.jsStr(card.note || '')}')">заметка</a>
                     <a onclick="App.boardCardDelete(${card.id})">убрать</a>
                 </div>
             </div>`;
@@ -5687,7 +5778,7 @@ const App = {
                     ? `<button class="btn btn--outline btn--sm" onclick="App.boardBulk('unarchive')"
                                title="Вернуть переписку в работу">↩ Из архива</button>` : ''}
                 <button class="btn btn--outline btn--sm" onclick="App.boardBulk('remove')"
-                        title="Убрать карточки с доски: письма останутся в почте">Убрать с доски</button>
+                        title="Убрать карточки с доски: письма останутся в почте, а карточка вернётся, когда компания напишет снова">Убрать с доски</button>
                 <button class="btn btn--outline btn--sm" onclick="App.boardPickAll(false)">Снять отметки</button>
             </div>`;
     },
@@ -5699,7 +5790,8 @@ const App = {
         const ask = {
             archive: `Убрать в архив как «не наш профиль» — карточек: ${ids.length}?`,
             spam:    `Отметить спамом входящие письма и убрать с доски — карточек: ${ids.length}?`,
-            remove:  `Убрать с доски карточек: ${ids.length}? Письма останутся в почте.`,
+            remove:  `Убрать с доски карточек: ${ids.length}? Письма останутся в почте, `
+                   + 'а карточка вернётся сама, когда компания напишет снова.',
         }[op];
         if (ask && !confirm(ask)) return;
 
@@ -5758,15 +5850,31 @@ const App = {
         this.pageMailBoard();
     },
 
-    async boardCardNote(id) {
-        const note = prompt('Заметка на карточке', '');
-        if (note === null) return;
-        await this.api('boards.php?action=card_save', {method: 'POST', body: {id, note}});
-        this.pageMailBoard();
+    /**
+     * Заметка карточки доски: правится и стирается там же, где написана, и в
+     * карточке компании — тоже (модуль 029). `$drop` — удалить, не спрашивая
+     * текст; пустой ответ на вопрос тоже удаляет.
+     */
+    async boardCardNote(id, current, drop) {
+        let note = '';
+        if (!drop) {
+            const typed = prompt('Заметка на карточке (пусто — убрать заметку)', current || '');
+            if (typed === null) return;
+            note = typed.trim();
+        } else if (!confirm('Удалить заметку с карточки?')) return;
+
+        try {
+            await this.api('boards.php?action=card_save', {method: 'POST', body: {id, note}});
+        } catch (err) { this.toast(err.message, 'error'); return; }
+        // Заметку правят с двух экранов — перерисовываем тот, на котором стоим
+        const cp = this.openCompanyId();
+        if (cp) this.loadCardPlacement(cp);
+        else this.pageMailBoard();
     },
 
     async boardCardDelete(id) {
-        if (!confirm('Убрать карточку с доски? Письма останутся в почте.')) return;
+        if (!confirm('Убрать карточку с доски? Письма останутся в почте, '
+                   + 'а карточка вернётся сама, когда компания напишет снова.')) return;
         await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
         this.pageMailBoard();
     },
@@ -5842,11 +5950,19 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    // «Удалить»: out of the archive here and into «Корзина» on the mail server,
-    // so the letter cannot come back with the next sync. $back is where to go
-    // when the page we are on is the letter that just disappeared.
-    async deleteMail(id, back) {
-        if (!confirm('Удалить письмо? Оно уйдёт в «Корзину» на почтовом сервере и исчезнет из панели.')) return;
+    /**
+     * Удалить ОДНО письмо: из панели и в «Корзину» на почтовом сервере, чтобы
+     * следующая синхронизация не вернула его обратно.
+     *
+     * Второй аргумент — либо адрес, куда уйти, если удалили ту самую страницу,
+     * на которой стоим, либо `{thread: ключ}`: тогда лента переписки
+     * перечитывается на месте, а карточка компании никуда не уезжает
+     * (модуль 029).
+     */
+    async deleteMail(id, opts) {
+        if (!confirm('Удалить это письмо? Оно уйдёт в «Корзину» на почтовом сервере '
+                   + 'и исчезнет из панели. Остальные письма переписки останутся.')) return;
+        const o = typeof opts === 'string' ? {back: opts} : (opts || {});
         try {
             const r = await this.api('mail.php?action=delete', {method: 'POST', body: {id}});
             // «Удалено» has to mean the same thing on both sides — say which one happened
@@ -5854,7 +5970,23 @@ const App = {
                      : r.server_state === 'expunged' ? 'Письмо удалено с почтового сервера'
                      : 'Письмо удалено из панели';
             this.toast(r.warning || ok, r.warning ? 'error' : 'success');
-            this.goAfterDelete(r.thread_empty ? 'mail/inbox' : back);
+
+            // Последнее письмо переписки — переписки больше нет, список надо
+            // перечитать целиком; иначе перерисовываем только её ленту
+            if (r.thread_empty) {
+                const cp = this.openCompanyId();
+                if (cp) this.loadCompanyThreads(cp);
+                else this.goAfterDelete('mail/inbox');
+                return;
+            }
+            const box = o.thread ? document.getElementById('th_' + this.threadDomId(o.thread)) : null;
+            if (box) {
+                box.dataset.loaded = '';
+                box.hidden = true;
+                this.toggleCompanyThread(o.thread, {markRead: false});
+                return;
+            }
+            this.goAfterDelete(o.back);
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -5891,7 +6023,8 @@ const App = {
         try {
             const r = await this.api('mail.php?action=archive_thread', {method: 'POST', body: {thread_key: key}});
             this.toast(r.warning || `В архив убрано писем: ${r.archived}`, r.warning ? 'error' : 'success');
-            if (this.company) this.loadCompanyThreads(this.company.id);
+            const cp = this.openCompanyId();
+            if (cp) this.loadCompanyThreads(cp);
             else this.goAfterDelete('mail/inbox');
         } catch (err) { this.toast(err.message, 'error'); }
     },
@@ -5900,7 +6033,8 @@ const App = {
         try {
             await this.api('mail.php?action=unarchive', {method: 'POST', body: {thread_key: key}});
             this.toast('Переписка вернулась в работу', 'success');
-            if (this.company) this.loadCompanyThreads(this.company.id);
+            const cp = this.openCompanyId();
+            if (cp) this.loadCompanyThreads(cp);
             else this.route();
         } catch (err) { this.toast(err.message, 'error'); }
     },
@@ -5921,11 +6055,45 @@ const App = {
     // ==== Rendering an email body: HTML sanitized server-side, shown inside a
     // sandboxed iframe with no allow-scripts so a sanitizer gap still can't run
     // anything; plain text keeps the old escaped/pre-wrapped rendering (item 4) ====
-    msgBodyHtml(m, tall) {
-        if (m.body_html && m.body_html.trim() !== '') {
-            return this.htmlPreviewFrame(m.body_html, {maxHeight: tall ? 2000 : 1200});
+    msgBodyHtml(m) {
+        if (!(m.body_html && m.body_html.trim() !== '')) {
+            return `<div class="mail-plain">${this.esc(m.body_text)}</div>`;
         }
-        return `<div class="msg__body"${tall ? ' style="max-height:none"' : ''}>${this.esc(m.body_text)}</div>`;
+        // Рамка письма СТРОИТСЯ ПРИ РАСКРЫТИИ, а не лежит в разметке свёрнутой.
+        // У скрытого документа высота равна нулю: рамка, посчитанная заранее,
+        // оставалась ростом с CSS-заглушку и налезала на соседние письма —
+        // ровно то, что было видно в карточке компании (модуль 029).
+        this.mailBodies = this.mailBodies || {};
+        const ref = 'mb' + (this._bodySeq = (this._bodySeq || 0) + 1);
+        this.mailBodies[ref] = m.body_html;
+        // Долгая смена открывает сотни писем — держим в памяти только те, чьё
+        // место в разметке ещё существует
+        const keys = Object.keys(this.mailBodies);
+        if (keys.length > 200) {
+            keys.forEach(k => {
+                if (k !== ref && !document.querySelector(`[data-body="${k}"]`)) delete this.mailBodies[k];
+            });
+        }
+        return `<div class="mail-frame" data-body="${ref}"></div>`;
+    },
+
+    /**
+     * Построить рамки писем, которые сейчас видны, и только их.
+     *
+     * Вызывается после отрисовки ленты и при раскрытии письма. Уже построенная
+     * рамка не строится второй раз: `data-mounted` — это отметка «здесь уже есть
+     * документ», а не «здесь когда-то был».
+     */
+    mountBodies(root) {
+        const host = root || document;
+        host.querySelectorAll('.mail-frame[data-body]:not([data-mounted])').forEach(box => {
+            // У свёрнутого письма тело скрыто, а у скрытого документа высота
+            // равна нулю: рамку строим при раскрытии, а не «на всякий случай»
+            const letter = box.closest('[data-tmsg]');
+            if (letter && !letter.classList.contains('lmsg--open')) return;
+            box.dataset.mounted = '1';
+            box.innerHTML = this.htmlPreviewFrame((this.mailBodies || {})[box.dataset.body] || '');
+        });
     },
 
     // Auto-sized iframe for HTML we do not fully trust: an email body (item 4)
@@ -5934,13 +6102,13 @@ const App = {
     // converter still cannot execute anything here. allow-same-origin is safe
     // to add precisely because scripts never run, and is only there so this
     // page may read the frame's scrollHeight to size it.
-    htmlPreviewFrame(innerHtml, {bg = '#fff', maxHeight = 2000} = {}) {
+    htmlPreviewFrame(innerHtml, {bg = '#fff', maxHeight = 0} = {}) {
         const doc = `<!doctype html><html><head><meta charset="utf-8"><style>
             html,body{margin:0;padding:10px;background:${bg};color:#1a1a1a;
                 font:14px/1.55 -apple-system,'Segoe UI',Roboto,sans-serif;
-                word-wrap:break-word;overflow-wrap:break-word;}
+                word-wrap:break-word;overflow-wrap:break-word;overflow-x:hidden;}
             img{max-width:100%;height:auto}
-            table{border-collapse:collapse;max-width:100%}
+            table{border-collapse:collapse;max-width:100%;table-layout:fixed}
             td,th{border:1px solid #ddd;padding:4px 6px;font-size:12px;text-align:left}
             a{color:#8a2a24}
             </style></head><body>${innerHtml}</body></html>`;
@@ -5959,9 +6127,11 @@ const App = {
      * (модуль 022).
      */
     toggleTmsg(head) {
-        const box = head.parentElement;
-        box.classList.toggle('tmsg--open');
-        if (box.classList.contains('tmsg--open')) {
+        const box = head.closest('[data-tmsg]');
+        if (!box) return;
+        box.classList.toggle('lmsg--open');
+        if (box.classList.contains('lmsg--open')) {
+            this.mountBodies(box);
             box.querySelectorAll('iframe.html-frame').forEach(f => this.sizeFrame(f));
         }
     },
@@ -5975,20 +6145,30 @@ const App = {
      * перемеряем при раскрытии.
      */
     sizeFrame(iframe) {
-        let h = 0;
-        try {
-            const doc = iframe.contentWindow.document;
-            h = Math.max(doc.documentElement.scrollHeight, doc.body ? doc.body.scrollHeight : 0);
-        } catch { iframe.style.height = '400px'; return; }
+        let doc;
+        try { doc = iframe.contentWindow.document; } catch { iframe.style.height = '480px'; return; }
 
-        if (!h) return;   // блок скрыт — мерить нечего, померим при раскрытии
-        const max = Number(iframe.dataset.maxh) || 2000;
-        iframe.style.height = Math.min(max, Math.max(160, h + 24)) + 'px';
+        const max = Number(iframe.dataset.maxh) || 0;
+        const apply = () => {
+            const h = Math.max(doc.documentElement.scrollHeight, doc.body ? doc.body.scrollHeight : 0);
+            if (!h) return;                       // документ ещё пуст — смерим позже
+            const want = Math.max(80, h + 8);
+            iframe.style.height = (max ? Math.min(max, want) : want) + 'px';
+        };
+        apply();
 
-        // Картинки догружаются после onload документа и делают письмо выше
-        if (!iframe.dataset.resized) {
-            iframe.dataset.resized = '1';
-            setTimeout(() => this.sizeFrame(iframe), 350);
+        // Дальше рамка следит за своим документом сама: картинки догружаются
+        // после `load`, шрифты — ещё позже, и высота, посчитанная один раз,
+        // обрезала письмо или оставляла под ним пустое поле.
+        if (!iframe.dataset.watched && window.ResizeObserver) {
+            iframe.dataset.watched = '1';
+            const ro = new ResizeObserver(apply);
+            ro.observe(doc.documentElement);
+            if (doc.body) ro.observe(doc.body);
+        } else if (!iframe.dataset.watched) {
+            iframe.dataset.watched = '1';
+            setTimeout(apply, 350);
+            setTimeout(apply, 1200);
         }
     },
 

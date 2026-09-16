@@ -180,6 +180,28 @@ switch ($action) {
         jsonOk(['id' => $noteId]);
     }
 
+    /**
+     * Удалить заметку. Только заметку: веха сделки и письмо — не заметки, и
+     * стирать их этой кнопкой нельзя, иначе «убрать лишнюю строку» однажды
+     * сотрёт отправленное КП из истории.
+     */
+    case 'note_delete': {
+        requireAuth();
+        $id = Crm::rootId((int)($_GET['id'] ?? 0));
+        $noteId = (int)($_GET['note_id'] ?? 0) ?: (int)(getInput()['note_id'] ?? 0);
+        if (!$noteId) jsonError('Не указана заметка');
+        // Заметка ищется В ЭТОЙ карточке: описка в номере не должна стереть
+        // чужую заметку из другой компании
+        $row = Db::one("SELECT id, direction, event_type FROM correspondence
+                        WHERE id=? AND counterparty_id=?", [$noteId, $id]);
+        if (!$row) jsonError('Заметка не найдена', 404);
+        if ((string)$row['direction'] !== 'note' || !empty($row['event_type'])) {
+            jsonError('Это не заметка — удалить можно только заметку');
+        }
+        Db::q("DELETE FROM correspondence WHERE id=?", [$noteId]);
+        jsonOk(['id' => $noteId]);
+    }
+
     case 'contacts': {
         requireAuth();
         $id = Crm::rootId((int)($_GET['id'] ?? 0));
