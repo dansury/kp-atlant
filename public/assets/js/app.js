@@ -813,6 +813,10 @@ const App = {
                 </div>
                 ${p.delivery ? `<div class="kpcol__line muted">${this.esc(p.delivery.name)} — ${this.fmtMoney(p.delivery.price)}</div>` : ''}
                 <div class="kpcol__total">Итого: ${this.fmtMoney(p.total)}</div>
+                <!-- Итог на доске — тот же, что в документе, и с той же оговоркой
+                     про налог: при «цене + НДС» сумма строк ещё не то, что платит клиент -->
+                ${p.vat ? `<div class="kpcol__line muted">${this.esc(p.vat.note)}${
+                    p.vat.amount > 0 ? ': ' + this.fmtMoney(p.vat.amount) : ''}</div>` : ''}
                 ${(p.invoices || []).length ? `
                     <div class="kpcol__line">
                         ${p.invoices.map(i => `
@@ -2212,8 +2216,14 @@ const App = {
                                 <select id="execDays">${[10,30,60,90].map(v => `<option value="${v}" ${proposal.execution_days == v ? 'selected' : ''}>${v} дней</option>`).join('')}</select>
                             </div>
                             <div class="form-group">
-                                <label>Показать НДС</label>
-                                <select id="showVat"><option value="0">Нет</option><option value="1" ${proposal.show_vat_total == 1 ? 'selected' : ''}>Да</option></select>
+                                <!-- НДС печатается в КП всегда (модуль 030); выбирается
+                                     только вид цены — с налогом внутри или с налогом сверху -->
+                                <label>НДС в ценах</label>
+                                <select id="vatMode">
+                                    <option value="">как в настройках</option>
+                                    <option value="included" ${proposal.vat_mode === 'included' ? 'selected' : ''}>цена в т.ч. НДС</option>
+                                    <option value="added" ${proposal.vat_mode === 'added' ? 'selected' : ''}>цена + НДС сверху</option>
+                                </select>
                             </div>
                         </div>
                         <button class="btn btn--outline btn--block" onclick="App.saveProposal(${id})">Сохранить изменения</button>
@@ -2527,7 +2537,7 @@ const App = {
             match_table_note: document.getElementById('matchTableNote').value,
             vat_rate: parseInt(document.getElementById('vatRate').value),
             execution_days: parseInt(document.getElementById('execDays').value),
-            show_vat_total: parseInt(document.getElementById('showVat').value),
+            vat_mode: document.getElementById('vatMode').value,
             // Пусто — работает общая настройка «Фото на позицию, максимум»
             photos_per_item: (document.getElementById('photosPerItem') || {}).value || null,
             items, addons,
@@ -4864,6 +4874,15 @@ const App = {
                             <input type="number" id="kpVat" value="${this.esc(g.default_vat_rate || 5)}"
                                    ${s.pays_vat ? '' : 'disabled'}>
                             ${vatHint}</div>
+                        <div class="form-group"><label>Цены в КП и НДС</label>
+                            <select id="kpVatMode" ${s.pays_vat ? '' : 'disabled'}>
+                                <option value="included" ${d.vat_mode === 'added' ? '' : 'selected'}>цена в т.ч. НДС</option>
+                                <option value="added" ${d.vat_mode === 'added' ? 'selected' : ''}>цена + НДС сверху</option>
+                            </select>
+                            <div class="muted">${d.vat_mode === 'added'
+                                ? 'В таблице КП — «Цена за ед., без НДС», под итогом — «Итого без НДС», «НДС», «Итого с НДС»: налог прибавляется к итогу. В МойСклад цены тоже должны быть без НДС — счёт по такому КП выставляется с «цены не включают НДС».'
+                                : 'В таблице КП — «Цена за ед., в т.ч. НДС», под итогом — «Итого» и «в т.ч. НДС»: налог уже внутри цены.'}
+                               Применяется ко всем КП, кроме тех, где выбрано своё значение.</div></div>
                         <div class="form-group"><label>Срок исполнения, дней</label>
                             <input type="number" id="kpExec" value="${this.esc(g.default_execution_days || 30)}"></div>
                         <div class="form-group"><label>Срок действия КП, дней</label>
@@ -4993,6 +5012,12 @@ const App = {
 
     async saveKpSettings() {
         try {
+            // Вид цены — параметр из общего списка настроек, а не «умолчание КП»
+            const vatMode = document.getElementById('kpVatMode');
+            if (vatMode) {
+                await this.api('admin.php?action=settings', {method: 'PUT',
+                    body: {values: {KP_VAT_MODE: vatMode.value}}});
+            }
             await this.api('settings.php?action=general', {method: 'PUT', body: {
                 default_vat_rate: document.getElementById('kpVat').value,
                 default_execution_days: document.getElementById('kpExec').value,
@@ -5003,6 +5028,9 @@ const App = {
                 kp_images_note: document.getElementById('kpImagesNote').value,
             }});
             this.toast('Сохранено', 'success');
+            // Перерисовываем: под выбором вида цены написано, что теперь
+            // печатается в документе, — эта подпись обязана совпасть с сохранённым
+            this.settingsKp();
         } catch (err) { this.toast(err.message, 'error'); }
     },
 

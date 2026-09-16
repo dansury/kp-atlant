@@ -229,7 +229,7 @@ switch ($action) {
 
         // Update proposal fields
         $fields = [];
-        foreach (['pre_table_text', 'post_table_text', 'intro_text', 'conditions_text', 'execution_days', 'validity_days', 'vat_rate', 'show_vat_total',
+        foreach (['pre_table_text', 'post_table_text', 'intro_text', 'conditions_text', 'execution_days', 'validity_days', 'vat_rate', 'vat_mode',
                   'warranty_text', 'images_note', 'show_images', 'show_upsell', 'upsell_intro', 'upsell_note',
                   'show_match_table', 'match_table_note',
                   // Условия одним блоком и доставка отдельной строкой (модуль 026)
@@ -240,6 +240,12 @@ switch ($action) {
         }
         if (array_key_exists('cover_letter_final', $input)) {
             $fields['cover_letter_final'] = $input['cover_letter_final'];
+        }
+        // Как печатать цену в этом КП: «в т.ч. НДС» или «+ НДС сверху»
+        // (модуль 030). Пусто — как в настройках; чужое слово не принимаем.
+        if (array_key_exists('vat_mode', $fields)) {
+            $mode = trim((string)$fields['vat_mode']);
+            $fields['vat_mode'] = in_array($mode, Requisites::VAT_MODES, true) ? $mode : null;
         }
         // Последняя правка условий — значение по умолчанию для следующих КП
         if (array_key_exists('terms_text', $fields)) KpTerms::remember((string)$fields['terms_text']);
