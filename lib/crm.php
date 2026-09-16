@@ -281,6 +281,98 @@ class Crm {
         return $out;
     }
 
+    /**
+     * Чего не хватает письму, чтобы у него был контрагент в МойСклад (модуль 029).
+     *
+     * Входящее письмо от компании, которой в МойСклад ещё нет, упиралось в
+     * тупик: счёт не выставить, заказ не создать, а завести контрагента можно
+     * было только руками, перепечатав ИНН из подписи. ИНН здесь и находится —
+     * на карточке или в самом письме, — и уходит в форму создания уже готовым.
+     *
+     * Ничего не создаёт и в сеть не ходит: это то, что показывает карточка письма.
+     *
+     * @param string $text письмо целиком: тело, подпись, текст вложений
+     * @param array  $from from_name / from_email письма
+     * @return array{counterparty_id:?int,name:string,inn:string,inn_from_letter:bool,
+     *               email:string,phone:string,linked:bool,moysklad_id:string}
+     */
+    public static function moyskladHint(?int $counterpartyId, string $text, array $from = []): array {
+        $cp = $counterpartyId
+            ? Db::one("SELECT id, name, inn, contact_email, contact_phone, moysklad_id FROM counterparties WHERE id=?",
+                      [self::rootId($counterpartyId)])
+            : null;
+
+        $found = self::requisitesFromText($text);
+        $inn = self::cleanInn((string)($cp['inn'] ?? ''));
+        $innFromLetter = false;
+        if (!$inn) {
+            $inn = self::cleanInn((string)($found['inn'] ?? ''));
+            $innFromLetter = $inn !== null;
+        }
+
+        // Имя компании: карточка → «Полное наименование» из реквизитов →
+        // подпись письма → имя отправителя. Адрес именем компании не считаем
+        $name = trim((string)($cp['name'] ?? ''));
+        if ($name === '' || filter_var($name, FILTER_VALIDATE_EMAIL) !== false) {
+            $name = trim((string)($found['legal_title'] ?? ''))
+                ?: (self::companyFromText($text) ?: trim((string)($from['name'] ?? '')));
+        }
+
+        $email = trim((string)($cp['contact_email'] ?? '')) ?: trim((string)($from['email'] ?? ''));
+        return [
+            'counterparty_id' => $cp ? (int)$cp['id'] : null,
+            'name'            => $name,
+            'inn'             => (string)($inn ?? ''),
+            'inn_from_letter' => $innFromLetter,
+            'email'           => $email,
+            'phone'           => trim((string)($cp['contact_phone'] ?? '')),
+            'moysklad_id'     => trim((string)($cp['moysklad_id'] ?? '')),
+            'linked'          => trim((string)($cp['moysklad_id'] ?? '')) !== '',
+        ];
+    }
+
+    /** Письмо целиком для поиска реквизитов: тело и текст вложений. */
+    public static function letterText(?array $msg): string {
+        if (!$msg) return '';
+        $text = (string)($msg['body_text'] ?? '');
+        $id = (int)($msg['id'] ?? 0);
+        if ($id) {
+            foreach (Db::all("SELECT extracted_text FROM attachments WHERE mail_message_id=?", [$id]) as $a) {
+                if (!empty($a['extracted_text'])) $text .= "\n" . $a['extracted_text'];
+            }
+        }
+        return $text;
+    }
+
+    /**
+     * Переписка неизвестного отправителя переезжает на карточку компании:
+     * письма, их запросы и контакты. Без этого заведённая из письма компания
+     * остаётся пустой карточкой, а переписка — висеть «новым адресом».
+     *
+     * @return int сколько писем переехало
+     */
+    public static function attachThread(string $threadKey, int $counterpartyId): int {
+        $threadKey = trim($threadKey);
+        if ($threadKey === '' || !$counterpartyId) return 0;
+        $counterpartyId = self::rootId($counterpartyId);
+
+        $moved = Db::update('mail_messages', ['counterparty_id' => $counterpartyId],
+                            'thread_key=? AND counterparty_id IS NULL', [$threadKey]);
+        Db::q("UPDATE requests SET counterparty_id=? WHERE counterparty_id IS NULL AND id IN
+               (SELECT request_id FROM mail_messages WHERE thread_key=? AND request_id IS NOT NULL)",
+              [$counterpartyId, $threadKey]);
+
+        foreach (Db::all("SELECT DISTINCT from_email, from_name FROM mail_messages
+                          WHERE thread_key=? AND direction='in'", [$threadKey]) as $m) {
+            $addr = (string)($m['from_email'] ?? '');
+            if ($addr !== '' && !self::isOurAddress($addr)) {
+                self::upsertContact($counterpartyId, $m['from_name'] ?: null, $addr);
+            }
+        }
+        self::recalcAnswerState($counterpartyId);
+        return $moved;
+    }
+
     public static function upsertContact(int $counterpartyId, ?string $name, ?string $email, ?string $phone = null): void {
         $email = $email ? mb_strtolower(trim($email)) : null;
         if (!$email) return;

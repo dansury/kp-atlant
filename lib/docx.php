@@ -17,6 +17,15 @@ require_once __DIR__ . '/pdf.php';
 
 final class DocxGenerator {
 
+    /**
+     * Имя файла .docx — то же, что у PDF того же КП, только расширение другое.
+     * Метод звали из письма («приложить КП в Word») и из скачивания, а его тут
+     * не было: обе кнопки падали с фатальной ошибкой.
+     */
+    public static function filename(int $proposalId): string {
+        return PdfGenerator::fileName($proposalId, 'docx');
+    }
+
     /** Build (or rebuild) the .docx of a proposal. Returns the file path. */
     public static function generate(int $proposalId): string {
         $html = PdfGenerator::html($proposalId);

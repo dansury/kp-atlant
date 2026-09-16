@@ -93,6 +93,11 @@ switch ($action) {
         // Сколько компаний на самом деле пишет из этой карточки: больше одной —
         // и на карточке появляется кнопка «Разделить по отправителям»
         $cp['senders_count'] = count(Crm::sendersOf($id));
+        // Контрагента нет в МойСклад — карточка сама предлагает завести его с
+        // ИНН, найденным в письмах компании (модуль 029)
+        $cp['moysklad_hint'] = Crm::moyskladHint($id, Crm::letterText(Db::one(
+            "SELECT id, body_text FROM mail_messages WHERE counterparty_id=? AND direction='in'
+             ORDER BY date_at DESC, id DESC LIMIT 1", [$id])));
         jsonData($cp);
     }
 
@@ -285,6 +290,90 @@ switch ($action) {
             Db::update('counterparties', $fields, 'id=?', [$id]);
         }
         jsonOk();
+    }
+
+    /**
+     * «Создать контрагента в МойСклад» прямо из письма (модуль 029).
+     *
+     * Письмо от компании, которой в МойСклад нет, дальше не едет: ни счёта,
+     * ни заказа. Одно нажатие на карточке письма — и контрагент заведён с тем
+     * ИНН, который нашёлся в подписи или во вложении.
+     *
+     * Двойника не заводим: ИНН сначала ищется в МойСклад, и найденный
+     * контрагент просто привязывается — в справочнике должна остаться одна
+     * компания, а не две с одинаковым ИНН.
+     */
+    case 'moysklad_create': {
+        $manager = requireAuth();
+        $input = getInput();
+
+        $inn   = Crm::cleanInn((string)($input['inn'] ?? ''));
+        $name  = trim((string)($input['name'] ?? ''));
+        $email = trim((string)($input['email'] ?? ''));
+        $phone = trim((string)($input['phone'] ?? ''));
+        $key   = trim((string)($input['thread_key'] ?? ''));
+        if ($inn === null && trim((string)($input['inn'] ?? '')) !== '') {
+            jsonError('ИНН — это 10 цифр у организации или 12 у предпринимателя');
+        }
+
+        // 1. Карточка компании у нас. Нет — заводим из того, что знает письмо
+        $cpId = !empty($input['counterparty_id']) ? Crm::rootId((int)$input['counterparty_id']) : 0;
+        if (!$cpId) {
+            if ($name === '' && $email === '') jsonError('Не из чего завести компанию: нет ни названия, ни адреса');
+            $cpId = (int)Crm::resolveCounterparty([
+                'inn' => $inn ?: '', 'name' => $name, 'email' => $email, 'phone' => $phone ?: null,
+            ]);
+            if (!$cpId) jsonError('Компания не завелась');
+            // Переписка уезжает на новую карточку вместе с запросами и контактами
+            if ($key !== '') Crm::attachThread($key, $cpId);
+        }
+        $cp = Db::one("SELECT * FROM counterparties WHERE id=?", [$cpId]);
+        if ($name === '') $name = (string)$cp['name'];
+        if ($inn === null) $inn = Crm::cleanInn((string)($cp['inn'] ?? ''));
+        if ($inn !== null && trim((string)($cp['inn'] ?? '')) === '') {
+            Db::update('counterparties', ['inn' => $inn, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+        }
+
+        require_once ROOT . '/lib/moysklad.php';
+
+        // Уже привязан — второй раз не заводим
+        if (trim((string)($cp['moysklad_id'] ?? '')) !== '') {
+            jsonOk(['counterparty_id' => $cpId, 'moysklad_id' => (string)$cp['moysklad_id'], 'created' => false,
+                    'found' => true, 'url' => MoySklad::counterpartyUrl((string)$cp['moysklad_id'])]);
+        }
+
+        $token = trim((string)($cfg['MOYSKLAD_TOKEN'] ?? ''));
+        if ($token === '') jsonError('В настройках не задан токен МойСклад', 400);
+        MoySklad::init($token);
+
+        // 2. Тот же ИНН уже в МойСклад — привязываем, а не плодим двойника
+        $msId = ''; $created = false; $found = false;
+        if ($inn) {
+            foreach (MoySklad::searchCounterparties($inn) as $c) {
+                if (Crm::cleanInn((string)($c['inn'] ?? '')) === $inn) { $msId = (string)$c['id']; $found = true; break; }
+            }
+        }
+        if ($msId === '') {
+            if ($name === '') jsonError('У компании нет названия — МойСклад его требует');
+            $made = MoySklad::createCounterparty([
+                'name'  => $name,
+                'inn'   => $inn ?: '',
+                'email' => $email ?: (string)($cp['contact_email'] ?? ''),
+                'phone' => $phone ?: (string)($cp['contact_phone'] ?? ''),
+            ]);
+            $msId = (string)($made['id'] ?? '');
+            if ($msId === '') jsonError('МойСклад не вернул контрагента: ' . MoySklad::lastErrorMessage(), 502);
+            $created = true;
+        }
+
+        Db::update('counterparties', ['moysklad_id' => $msId, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+        Logger::info('moysklad', ($created ? 'Контрагент заведён в МойСклад: ' : 'Контрагент найден в МойСклад по ИНН: ') . $name,
+                     ['counterparty_id' => $cpId, 'moysklad_id' => $msId, 'inn' => $inn,
+                      'manager_id' => (int)$manager['id']]);
+
+        jsonOk(['counterparty_id' => $cpId, 'moysklad_id' => $msId, 'created' => $created, 'found' => $found,
+                'inn' => (string)($inn ?? ''), 'name' => $name,
+                'url' => MoySklad::counterpartyUrl($msId)]);
     }
 
     case 'lookup_moysklad': {

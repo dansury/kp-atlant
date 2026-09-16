@@ -1473,6 +1473,34 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '28')");
         $current = 28;
     }
+
+    // v29 — модуль 029: письмо, которое пишут, живёт на доске карточкой в
+    // «В работе», а нераспознанный контрагент заводится в МойСклад по ИНН.
+    if ($current < 29) {
+        // Черновик знает, кому пишут и о какой компании речь: без этого первое
+        // письмо компании вообще не сохранялось — у него нет ни письма-ответа,
+        // ни цепочки, и API отказывал «Не указано письмо».
+        Db::ensureColumn('mail_drafts', 'counterparty_id', 'INTEGER REFERENCES counterparties(id)');
+        Db::ensureColumn('mail_drafts', 'to_email', 'TEXT');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_mail_drafts_cp ON mail_drafts(counterparty_id, manager_id)");
+
+        // Карточка черновика на доске
+        Db::ensureColumn('board_cards', 'draft_id', 'INTEGER REFERENCES mail_drafts(id) ON DELETE SET NULL');
+        Db::pdo()->exec("CREATE INDEX IF NOT EXISTS idx_bcards_draft ON board_cards(draft_id)");
+
+        // «В работе» — такая же названная колонка, как «Входящие»: черновик
+        // ложится в неё, а не в «вторую слева», которую могли переставить
+        Db::q("UPDATE board_columns SET kind='work' WHERE kind IS NULL AND title='В работе'");
+        foreach (Db::all("SELECT id FROM boards") as $b) {
+            if (Db::val("SELECT COUNT(*) FROM board_columns WHERE board_id=? AND kind='work'", [$b['id']])) continue;
+            $next = Db::one("SELECT id FROM board_columns WHERE board_id=? AND (kind IS NULL OR kind<>'inbox')
+                             ORDER BY position, id LIMIT 1", [$b['id']]);
+            if ($next) Db::update('board_columns', ['kind' => 'work'], 'id=?', [$next['id']]);
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '29')");
+        $current = 29;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
