@@ -56,7 +56,7 @@ final class Logger {
                 return;
             }
 
-            Db::insert('app_log', [
+            $logId = Db::insert('app_log', [
                 'level'      => $level,
                 'channel'    => $channel,
                 'message'    => $text,
@@ -70,10 +70,37 @@ final class Logger {
                 'last_at'    => $now,
                 'repeat_count' => 1,
             ]);
+
+            // Ошибка, которую видит только журнал, — ошибка, которой никто не
+            // видит: администратор заходит в «Логи» уже после того, как ему
+            // позвонили (модуль 029). Колокольчик и push получают ровно НОВЫЕ
+            // записи: повтор внутри окна дедупликации выше сюда не доходит.
+            if ($level === 'error') self::alertAdmins($channel, $text, (int)$logId);
         } catch (Throwable) {
             // Logging must never break the request it is describing
         } finally {
             self::$inLog = false;
+        }
+    }
+
+    /**
+     * Уведомление администраторам об ошибке. Никогда не фатально: сервис,
+     * который упал на рассказе о падении, не рассказывает уже ни о чём.
+     */
+    private static function alertAdmins(string $channel, string $message, int $logId): void {
+        try {
+            if ((string)Settings::get('NOTIFY_ERRORS', 1) !== '1') return;
+            require_once __DIR__ . '/notifier.php';
+            $admins = Db::all("SELECT id FROM managers WHERE is_admin=1");
+            if (!$admins) return;
+            $title = 'Ошибка: ' . $channel;
+            $body  = self::clip($message, 300);
+            $url   = '/#settings/logs/error';
+            foreach ($admins as $a) {
+                Notifier::notify('app_error', $title, $body, 'log', $logId, (int)$a['id'], $url);
+            }
+        } catch (Throwable) {
+            // Не получилось — запись в журнале уже есть, и это главное
         }
     }
 

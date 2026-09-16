@@ -17,6 +17,8 @@ class Notifier {
         'mail_bounced' => 'new_request',
         // Резерв, который держится под неоплаченный счёт (модуль 026)
         'reserve_hold' => 'order',
+        // Ошибка сервиса — администратору, и глушится она отдельно (модуль 029)
+        'app_error'    => 'system',
     ];
 
     /**
@@ -60,6 +62,7 @@ class Notifier {
             'mail'         => '/#mail/msg/' . $refId,
             'proposal'     => '/#mail/proposal/' . $refId,
             'counterparty' => '/#mail/company/' . $refId,
+            'log'          => '/#settings/logs/error',
             default        => '/',
         };
     }

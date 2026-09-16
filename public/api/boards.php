@@ -93,7 +93,7 @@ try {
             jsonOk();
 
         // «Убрать с доски» — снятие, а не удаление: письма остаются в почте, а
-        // карточка не возвращается сама следующим открытием доски (модуль 029)
+        // карточка не возвращается сама следующим открытием доски (модуль 031)
         case 'card_delete':
             Boards::dismissCard((int)($input['id'] ?? 0));
             jsonOk();
@@ -110,7 +110,7 @@ try {
             if (!$ids) jsonError('Не отмечено ни одной карточки');
             if ($op === '') jsonError('Не указана операция');
             $res = Boards::bulk($ids, $op, $input, (int)$manager['id']);
-            Logger::info('boards', "Групповая операция «$op»: {$res['done']} карточек",
+            Logger::info('boards', "Групповая операция «{$op}»: {$res['done']} карточек",
                          ['manager_id' => (int)$manager['id'], 'failed' => $res['failed']]);
             jsonOk($res);
         }

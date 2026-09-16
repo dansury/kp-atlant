@@ -259,13 +259,14 @@
 </tbody>
 </table>
 
-<!-- Total -->
-<div class="total-row">Итого: <?= $totalIsFrom ? 'от ' : '' ?><?= number_format($total, 2, ',', ' ') ?> руб.</div>
-<?php if (!$paysVat): ?>
-<div class="vat-row"><?= htmlspecialchars($vatStatement) ?></div>
-<?php elseif ($showVatTotal): ?>
-<div class="vat-row">в т.ч. НДС <?= $vatRate ?>%: <?= number_format($vatAmount, 2, ',', ' ') ?> руб.</div>
-<?php endif; ?>
+<!-- Total. Налог стоит под итогом ВСЕГДА (модуль 030): выделенным из цены,
+     прибавленным к ней или формулировкой неплательщика. Что именно — решают
+     настройка и реквизиты организации; строки приходят готовыми из Requisites,
+     чтобы документ и письмо не назвали клиенту разных сумм -->
+<?php foreach ($vatLines as $line): ?>
+<div class="<?= $line['total'] ? 'total-row' : 'vat-row' ?>"><?= htmlspecialchars($line['label']) ?><?php
+    if ($line['amount'] !== null): ?>: <?= $totalIsFrom ? 'от ' : '' ?><?= number_format($line['amount'], 2, ',', ' ') ?> руб.<?php endif; ?></div>
+<?php endforeach; ?>
 
 <!-- Product cards: description, photos, specs, kit contents -->
 <?php $printedCards = 0; ?>

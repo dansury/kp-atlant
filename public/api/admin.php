@@ -160,6 +160,26 @@ try {
             LLM::forgetOpenRouterModels();
             jsonOk();
 
+        // Каталог Yandex: слаги прогоняются по одному коротким запросом, и
+        // те, которых в этом облаке нет, вычёркиваются из списка (модуль 029)
+        case 'yandex_models_verify':
+            try {
+                $payload = LLM::verifyYandexModels();
+            } catch (Throwable $e) {
+                Logger::exception('llm', $e);
+                jsonError('Каталог Yandex не проверился: ' . $e->getMessage());
+            }
+            jsonOk([
+                'ok'        => $payload['ok'],
+                'missing'   => $payload['missing'],
+                'unclear'   => $payload['unclear'],
+                'synced_at' => $payload['synced_at'],
+            ]);
+
+        case 'yandex_models_forget':
+            LLM::forgetYandexModels();
+            jsonOk();
+
         // Re-read letters archived before the header decoder knew about charsets
         case 'mail_repair_encoding':
             jsonOk(['result' => MailArchive::repairEncoding()]);
@@ -665,6 +685,8 @@ try {
                 'llm_route'  => ['openrouter' => LLM::routeLabel('openrouter'), 'yandex' => LLM::routeLabel('yandex')],
                 'llm_catalog'=> ['count' => count(LLM::openRouterCache()['models'] ?? []),
                                  'synced_at' => LLM::openRouterCache()['synced_at'] ?? null],
+                // Что проба выяснила про слаги Yandex: сколько отвечает, сколько нет
+                'yandex_catalog' => yandexCatalogStats(),
                 'log'        => Logger::counts(),
                 'mailboxes'  => count($boxes),
                 'mail_errors'=> array_values(array_filter(array_map(
@@ -755,4 +777,16 @@ function mailboxFromInput(array $input): array {
         if (($input[$f] ?? '') !== '') $box[$f] = Crypt::encrypt((string)$input[$f]);
     }
     return $box;
+}
+
+/** Сколько слагов Yandex проба подтвердила, а сколько вычеркнула (модуль 029). */
+function yandexCatalogStats(): array {
+    $cache   = LLM::yandexCache();
+    $checked = (array)($cache['checked'] ?? []);
+    return [
+        'ok'        => count(array_filter($checked, fn($v) => $v === 'ok')),
+        'missing'   => count(array_filter($checked, fn($v) => $v === 'missing')),
+        'total'     => count(LLM::CATALOG['yandex'] ?? []),
+        'synced_at' => $cache['synced_at'] ?? null,
+    ];
 }
