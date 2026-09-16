@@ -925,7 +925,10 @@ const App = {
     // Where a candidate came from: the words of the letter, its meaning, or both
     matchSourceLabel(source) {
         return {words: 'по словам', meaning: 'по смыслу', both: 'по словам и смыслу',
-                site_url: 'по ссылке на товар'}[source] || '';
+                site_url: 'по ссылке на товар',
+                // Слова запроса нашлись только в описании — такая строка стоит
+                // ниже всего, что совпало названием, и «ок» ей не ставится
+                description: 'по описанию'}[source] || '';
     },
 
     /**
