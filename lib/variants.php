@@ -191,14 +191,52 @@ final class Variants {
 
     /** Модификации товара из каталога — то, что МойСклад зовёт «модификациями». */
     public static function forProduct(string $productId): array {
-        if ($productId === '') return [];
-        return Db::all(
+        return self::familiesOf([$productId])[$productId] ?? [];
+    }
+
+    /**
+     * Модификации сразу нескольких товаров — одним запросом.
+     *
+     * @param string[] $parentIds id товаров-родителей
+     * @return array<string,array<int,array>> id родителя → его модификации
+     */
+    public static function familiesOf(array $parentIds): array {
+        $ids = self::ids($parentIds);
+        if (!$ids) return [];
+
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $out = [];
+        foreach (Db::all(
             "SELECT moysklad_id, name, article, code, unit, price, prices_json, stock, reserved,
-                    characteristics, parent_id
+                    characteristics, parent_id, product_type
              FROM products_cache
-             WHERE parent_id=? AND COALESCE(is_archived, 0) = 0
-             ORDER BY name", [$productId]
-        );
+             WHERE parent_id IN ($ph) AND COALESCE(is_archived, 0) = 0
+             ORDER BY name", $ids) as $row) {
+            $out[(string)$row['parent_id']][] = $row;
+        }
+        return $out;
+    }
+
+    /** Строки каталога по id, ключом id. */
+    private static function rowsByIds(array $ids): array {
+        $ids = self::ids($ids);
+        if (!$ids) return [];
+
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $out = [];
+        foreach (Db::all(
+            "SELECT moysklad_id, name, article, code, unit, price, prices_json, stock, reserved,
+                    characteristics, parent_id, product_type
+             FROM products_cache
+             WHERE moysklad_id IN ($ph) AND COALESCE(is_archived, 0) = 0", $ids) as $row) {
+            $out[(string)$row['moysklad_id']] = $row;
+        }
+        return $out;
+    }
+
+    /** Непустые id списком, без повторов. */
+    private static function ids(array $values): array {
+        return array_values(array_unique(array_filter(array_map('strval', $values), fn($v) => $v !== '')));
     }
 
     /**
@@ -215,15 +253,19 @@ final class Variants {
      */
     public static function stockFor(array $productIds): array {
         require_once __DIR__ . '/alternatives.php';
-        $ids = array_values(array_unique(array_filter(array_map('strval', $productIds), fn($v) => $v !== '')));
+        $ids = self::ids($productIds);
         if (!$ids) return [];
 
         $ph = implode(',', array_fill(0, count($ids), '?'));
+        // Имя родителя нужно метке: без него модификация без характеристик
+        // подписывается названием товара целиком
         $rows = Db::all(
-            "SELECT moysklad_id, parent_id, name, characteristics, stock, reserved
-             FROM products_cache
-             WHERE parent_id IN ($ph) AND COALESCE(is_archived, 0) = 0
-             ORDER BY name", $ids
+            "SELECT v.moysklad_id, v.parent_id, v.name, v.characteristics, v.stock, v.reserved,
+                    par.name AS parent_name
+             FROM products_cache v
+             LEFT JOIN products_cache par ON par.moysklad_id = v.parent_id
+             WHERE v.parent_id IN ($ph) AND COALESCE(v.is_archived, 0) = 0
+             ORDER BY v.name", $ids
         );
 
         $out = [];
@@ -265,6 +307,94 @@ final class Variants {
         return $rows;
     }
 
+    /**
+     * Строки каталога → то, что можно ВЫБРАТЬ: конкретные модификации.
+     *
+     * «Остаток 25 (S 5, M 13, L 7)» одной строкой — это справка, а не выбор:
+     * в позицию всё равно должен встать размер, которого просят, со своим
+     * артикулом, своей ценой и своим количеством. Поэтому подсказка показывает
+     * САМИ модификации, каждую со своим остатком, а товар — только когда
+     * модификаций у него нет. Нашёлся сам товар — показываем всю его семью;
+     * нашлась одна модификация — её одну: менеджер спросил именно её.
+     *
+     * @param array $rows строки products_cache, как их вернул поиск
+     * @param int   $max  предел длины подсказки; семья модификаций не режется
+     * @return array строки подсказки + variant_label, group_name, group_article
+     */
+    public static function expandSuggest(array $rows, int $max = 40): array {
+        $groups = [];   // id товара → [все ли его модификации нужны, сам товар, найденные модификации]
+        foreach ($rows as $row) {
+            $id = (string)($row['moysklad_id'] ?? '');
+            if ($id === '') continue;
+            $parentId = trim((string)($row['parent_id'] ?? ''));
+            $key = $parentId !== '' ? $parentId : $id;
+            if (!isset($groups[$key])) $groups[$key] = ['full' => false, 'own' => null, 'picked' => []];
+            if ($parentId !== '') $groups[$key]['picked'][$id] = $row;
+            else { $groups[$key]['full'] = true; $groups[$key]['own'] = $row; }
+        }
+        if (!$groups) return [];
+
+        $keys = array_keys($groups);
+        $families = self::familiesOf($keys);
+        // Родителя, которого поиск не нашёл, дочитываем: его именем подписана группа
+        $parents = self::rowsByIds(array_values(array_filter($keys, fn($k) => $groups[$k]['own'] === null)));
+
+        $hot = $cold = [];
+        foreach ($groups as $key => $g) {
+            $parent = $g['own'] ?? ($parents[$key] ?? null);
+            $family = $families[$key] ?? [];
+            if (!$family) {
+                // Модификаций нет — в подсказке сам товар, со своим количеством
+                if (!$parent) continue;
+                $out = [self::suggestRow($parent, null)];
+            } else {
+                $byId = array_column($family, null, 'moysklad_id');
+                $picked = $g['full']
+                    ? $family
+                    : array_values(array_filter($family, fn($v) => isset($g['picked'][(string)$v['moysklad_id']])));
+                // Модификация, которой в семье не нашлось, показывается сама по себе
+                foreach ($g['picked'] as $id => $row) {
+                    if (!isset($byId[$id])) $picked[] = $row;
+                }
+                $out = array_map(fn($v) => self::suggestRow($v, $parent), $picked);
+            }
+            // Пустая полка — ниже: собственный остаток товара с модификациями
+            // всегда ноль, и сортировка запроса о его размерах ничего не знает
+            if (array_sum(array_column($out, 'stock')) > 0) $hot[] = $out; else $cold[] = $out;
+        }
+
+        $suggest = [];
+        foreach ([...$hot, ...$cold] as $group) {
+            foreach ($group as $row) $suggest[] = $row;
+            if (count($suggest) >= $max) break;
+        }
+        return $suggest;
+    }
+
+    /** Строка подсказки: что встанет в позицию и сколько этого на складе. */
+    private static function suggestRow(array $row, ?array $parent): array {
+        require_once __DIR__ . '/alternatives.php';
+        $isVariant = $parent !== null;
+        $row['parent_name'] = (string)($parent['name'] ?? '');
+        return [
+            'moysklad_id'     => (string)($row['moysklad_id'] ?? ''),
+            'name'            => (string)($row['name'] ?? ''),
+            'article'         => (string)($row['article'] ?? ''),
+            'code'            => (string)($row['code'] ?? ''),
+            'unit'            => (string)($row['unit'] ?? '') ?: 'шт.',
+            'price'           => (float)($row['price'] ?? 0),
+            'prices_json'     => $row['prices_json'] ?? null,
+            'parent_id'       => (string)($row['parent_id'] ?? ''),
+            'product_type'    => (string)($row['product_type'] ?? ''),
+            'characteristics' => (string)($row['characteristics'] ?? ''),
+            // Резерв вычтен: обещать зарезервированное второй раз нельзя
+            'stock'           => Alternatives::freeStock($row),
+            'variant_label'   => $isVariant ? self::label($row) : '',
+            'group_name'      => $isVariant ? (string)($parent['name'] ?? '') : '',
+            'group_article'   => $isVariant ? (string)($parent['article'] ?? '') : '',
+        ];
+    }
+
     /** Остатки по модификациям одного товара, или null — модификаций нет. */
     public static function stockOf(string $productId): ?array {
         return self::stockFor([$productId])[$productId] ?? null;
@@ -285,15 +415,47 @@ final class Variants {
         return Alternatives::freeStock($product);
     }
 
-    /** Чем модификация называется в списке: «S», «олива», иначе — имя целиком. */
+    /**
+     * Чем модификация называется в списке: «S», «олива», «Coyote Brown · arc».
+     *
+     * Характеристик у модификации бывает несколько — тогда метка это ВСЕ их
+     * значения, а не название товара целиком: список, где каждая строка
+     * начинается с одного и того же длинного имени, не читается, и разобрать
+     * в нём, какого цвета сколько, нельзя.
+     */
     public static function label(array $variant): string {
-        foreach (self::values($variant) as $value) {
-            $value = trim($value);
-            // «Размер: S» уже разложено values() на «S» и на строку целиком —
-            // берём короткое, оно и есть метка
-            if ($value !== '' && mb_strlen($value) <= 24 && mb_strpos($value, ':') === false) return $value;
+        $values = self::labelValues($variant);
+        if ($values) return implode(' · ', $values);
+
+        // Характеристик нет вовсе — остаётся имя; у модификации оно длиннее
+        // имени товара ровно на то, чем она от него отличается
+        $name = trim((string)($variant['name'] ?? ''));
+        $parent = trim((string)($variant['parent_name'] ?? ''));
+        if ($parent !== '' && mb_stripos($name, $parent) === 0) {
+            // trim() режет по байтам, а тире здесь многобайтные — только регуляркой
+            $tail = (string)preg_replace('/^[\s\-–—,;()]+|[\s\-–—,;()]+$/u', '',
+                                         mb_substr($name, mb_strlen($parent)));
+            if ($tail !== '') return $tail;
         }
-        return trim((string)($variant['name'] ?? ''));
+        return $name;
+    }
+
+    /** Значения характеристик: «Цвет: олива; Размер: L» → [«олива», «L»]. */
+    private static function labelValues(array $variant): array {
+        $source = trim((string)($variant['characteristics'] ?? ''));
+        // Импорт из Excel характеристик отдельно не знает — они в скобках имени
+        if ($source === '' && preg_match('/\(([^)]+)\)\s*$/u', (string)($variant['name'] ?? ''), $m)) {
+            $source = $m[1];
+        }
+        $out = [];
+        foreach (preg_split('/[;,\n]+/u', $source) ?: [] as $chunk) {
+            $chunk = trim($chunk);
+            if ($chunk === '') continue;
+            $colon = mb_strpos($chunk, ':');
+            $value = trim($colon === false ? $chunk : mb_substr($chunk, $colon + 1));
+            if ($value !== '') $out[] = $value;
+        }
+        return $out;
     }
 
     /** Есть ли у товара модификации — вопрос, который задаёт карточка запроса. */

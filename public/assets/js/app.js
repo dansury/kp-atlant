@@ -1476,6 +1476,14 @@ const App = {
         return `остаток ${free} (${parts.map(v => `${this.esc(v.label)} ${v.free}`).join(', ')})`;
     },
 
+    /** Остаток одной карточки — модификации или товара без модификаций. */
+    stockPlain(free) {
+        if (free === null || free === undefined || free === '') return '';
+        // Ноль тоже количество, и врать о нём нечем: строка честно говорит,
+        // что эта модификация поедет под заказ
+        return Number(free) > 0 ? `остаток ${free}` : 'остаток 0 · под заказ';
+    },
+
     /** Та же разбивка отдельной строкой — под выбранной позицией. */
     stockNote(i) {
         const parts = (i.variant_stock || []).filter(v => v && v.label);
@@ -1564,7 +1572,16 @@ const App = {
         box.insertAdjacentHTML('beforeend', this.matchRow({quantity: 1, unit: 'шт.', price: 0}));
     },
 
-    // Autocomplete against the local product base (МойСклад-синхронизация или импорт Excel)
+    /**
+     * Подсказка каталога: КОНКРЕТНЫЕ модификации с КОНКРЕТНЫМИ количествами.
+     *
+     * Строка «остаток 0 (Coyote Brown 0, Олива 0)» — это справка о товаре,
+     * которого на складе нет как такового: выбрать по ней нечего, а в позицию
+     * всё равно должен встать цвет или размер со своим артикулом и своей
+     * ценой. Поэтому сервер отдаёт сами модификации (`variant_label`,
+     * `group_name`), каждую со своим остатком, и только товар без модификаций
+     * стоит в списке сам — тоже с количеством (модуль 022).
+     */
     matchSuggest(input) {
         const box = input.parentElement.querySelector('.suggest');
         const q = input.value.trim();
@@ -1577,15 +1594,28 @@ const App = {
             try {
                 const d = await this.api('products.php?action=search&limit=8&q=' + encodeURIComponent(q));
                 if (!d.items.length) { box.hidden = true; return; }
-                box.innerHTML = d.items.map(p => `
-                    <div class="suggest__item" onmousedown="App.pickSuggest(this, '${this.jsStr(JSON.stringify({
+                let group = null;
+                box.innerHTML = d.items.map(p => {
+                    // Заголовок — один на семью: имя товара у каждого размера
+                    // читать невозможно, а без него непонятно, чей это цвет
+                    let head = '';
+                    if (p.group_name && p.group_name !== group) {
+                        head = `<div class="suggest__group">${this.esc(p.group_name)}${
+                            p.group_article ? ' · ' + this.esc(p.group_article) : ''}</div>`;
+                    }
+                    group = p.group_name || null;
+                    const meta = [p.article || p.code || '', this.fmtMoney(p.price),
+                                  this.stockPlain(p.stock)].filter(Boolean).join(' · ');
+                    return head + `
+                    <div class="suggest__item ${p.variant_label ? 'suggest__item--variant' : ''}"
+                         onmousedown="App.pickSuggest(this, '${this.jsStr(JSON.stringify({
                         moysklad_id: p.moysklad_id, name: p.name, article: p.article || p.code || '',
                         unit: p.unit || 'шт.', price: p.price || 0, stock: p.stock ?? '', prices: p.prices || {},
                     }))}')">
-                        <div>${this.esc(p.name)}</div>
-                        <div class="muted">${this.esc(p.characteristics || p.article || p.code || '')}
-                            · ${this.fmtMoney(p.price)}${this.stockLabel(p) ? ' · ' + this.stockLabel(p) : ''}</div>
-                    </div>`).join('');
+                        <div>${this.esc(p.variant_label || p.name)}</div>
+                        <div class="muted">${this.esc(meta)}</div>
+                    </div>`;
+                }).join('');
                 box.hidden = false;
             } catch { box.hidden = true; }
         }, 250);

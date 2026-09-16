@@ -134,6 +134,70 @@ $missing = Variants::resolveRow(['moysklad_product_id' => 'ms-helmet', 'variant_
 ok('которой нет — строка об этом говорит', str_contains((string)($missing['notes'] ?? ''), 'XXL'),
    (string)($missing['notes'] ?? ''));
 
+// ---------------------------------------------------------------------
+// Подсказка каталога: выбирают размер и цвет, а не «товар вообще»
+
+Db::insert('products_cache', ['moysklad_id' => 'ms-ptt', 'name' => 'Кнопка PTT под наушники',
+                              'name_normalized' => 'кнопка ptt под наушники', 'article' => 'PTT-1',
+                              'price' => 4500, 'stock' => 6, 'reserved' => 2, 'unit' => 'шт.',
+                              'product_type' => 'product']);
+Db::insert('products_cache', ['moysklad_id' => 'ms-old', 'name' => 'Подсумок под рацию',
+                              'name_normalized' => 'подсумок под рацию', 'article' => 'PU-9',
+                              'price' => 1200, 'stock' => 0, 'reserved' => 0, 'unit' => 'шт.',
+                              'product_type' => 'product']);
+Db::insert('products_cache', ['moysklad_id' => 'ms-ear', 'name' => 'Наушники Earmor M32',
+                              'name_normalized' => 'наушники earmor m32', 'article' => 'M32',
+                              'price' => 8500, 'stock' => 0, 'reserved' => 0, 'unit' => 'шт.',
+                              'product_type' => 'product']);
+foreach ([['coyote', 'Цвет: Coyote Brown; Вид рельсы: arc', 0],
+          ['oliva',  'Цвет: Олива; Вид рельсы: arc',        3]] as [$id, $ch, $stock]) {
+    Db::insert('products_cache', [
+        'moysklad_id' => 'ms-ear-' . $id, 'name' => 'Наушники Earmor M32 (' . $ch . ')',
+        'name_normalized' => 'наушники earmor m32 ' . $id, 'article' => 'M32-' . $id,
+        'price' => 8500, 'stock' => $stock, 'reserved' => 0, 'unit' => 'шт.',
+        'product_type' => 'variant', 'parent_id' => 'ms-ear', 'characteristics' => $ch,
+    ]);
+}
+
+$row = fn(string $id) => Db::one("SELECT * FROM products_cache WHERE moysklad_id=?", [$id]);
+$suggest = Variants::expandSuggest([$row('ms-old'), $row('ms-helmet'), $row('ms-ptt'), $row('ms-ear')]);
+$ids = array_column($suggest, 'moysklad_id');
+
+ok('сам товар с модификациями в подсказку не попадает', !in_array('ms-helmet', $ids, true),
+   implode(', ', $ids));
+$sizes = [];
+foreach ($suggest as $s) {
+    if ($s['group_name'] === 'Баллистический шлем Протон СВМПЭ') $sizes[$s['variant_label']] = $s['stock'];
+}
+ok('у каждого размера своё количество', $sizes === ['L' => 9, 'M' => 20, 'S' => 4],
+   json_encode($sizes, JSON_UNESCAPED_UNICODE));
+$articles = array_column(array_filter($suggest, fn($s) => $s['variant_label'] === 'M'), 'article');
+ok('и свой артикул', $articles === ['ProtonPE-M'], json_encode($articles));
+
+$ptt = array_values(array_filter($suggest, fn($s) => $s['moysklad_id'] === 'ms-ptt'))[0] ?? [];
+ok('товар без модификаций стоит сам', ($ptt['variant_label'] ?? 'x') === '' && ($ptt['group_name'] ?? 'x') === '');
+ok('и с количеством за вычетом резерва', ($ptt['stock'] ?? -1) === 4, (string)($ptt['stock'] ?? ''));
+
+$colors = [];
+foreach ($suggest as $s) {
+    if (($s['group_name'] ?? '') === 'Наушники Earmor M32') $colors[$s['variant_label']] = $s['stock'];
+}
+ok('метка модификации — её характеристики, а не имя товара целиком',
+   $colors === ['Coyote Brown · arc' => 0, 'Олива · arc' => 3],
+   json_encode($colors, JSON_UNESCAPED_UNICODE));
+
+ok('пустая полка уходит вниз списка', end($ids) === 'ms-old', implode(', ', $ids));
+
+$one = Variants::expandSuggest([$row('ms-helmet-L')]);
+ok('нашлась одна модификация — её одну и показываем',
+   array_column($one, 'moysklad_id') === ['ms-helmet-L'], json_encode(array_column($one, 'moysklad_id')));
+ok('и подписана она своим товаром',
+   ($one[0]['group_name'] ?? '') === 'Баллистический шлем Протон СВМПЭ', (string)($one[0]['group_name'] ?? ''));
+
+ok('характеристики из скобок имени тоже читаются меткой',
+   Variants::label(['name' => 'Наушники Earmor M32 (Цвет: Олива; Вид рельсы: arc)']) === 'Олива · arc',
+   Variants::label(['name' => 'Наушники Earmor M32 (Цвет: Олива; Вид рельсы: arc)']));
+
 // ===================================================================== 3
 
 echo "\n== 3. Запрос целиком: три размера и четыре чужие позиции ==\n";

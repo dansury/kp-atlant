@@ -35,6 +35,11 @@ final class DocxGenerator {
         Db::update('proposals', ['docx_path' => $path, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$proposalId]);
         return $path;
     }
+
+    /** The name the client sees on the attachment — the PDF's, with .docx on it. */
+    public static function filename(int $proposalId): string {
+        return PdfGenerator::fileName($proposalId, 'docx');
+    }
 }
 
 /**
