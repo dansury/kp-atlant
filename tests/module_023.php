@@ -175,6 +175,66 @@ ok('разметка описания приходит в подбор текс�
    Markup::toPlainText('<ul><li>Монокуляр <b>ночного</b> видения</li></ul>') === 'Монокуляр ночного видения',
    Markup::toPlainText('<ul><li>Монокуляр <b>ночного</b> видения</li></ul>'));
 
+// Описание вышло на первый план: на «монокуляр» первым выпадал составной товар,
+// который перечисляет монокуляр в составе, а сам товар и его модификация не
+// проходили порога — Жаккар топит короткий запрос в длинном имени каталога
+Db::insert('products_cache', [
+    'moysklad_id' => 'p-mono', 'name' => 'Монокуляр тепловизионный Пульсар Аксион XM30F',
+    'name_normalized' => '', 'article' => 'AX-30', 'price' => 190000, 'unit' => 'шт.',
+    'product_type' => 'product', 'stock' => 3, 'reserved' => 0,
+    'description' => 'Тепловизор с матрицей 320x240, дальность обнаружения 1300 м.',
+]);
+Db::insert('products_cache', [
+    'moysklad_id' => 'v-mono', 'name' => 'Монокуляр тепловизионный Пульсар Аксион XM30F (Цвет: чёрный)',
+    'name_normalized' => '', 'article' => 'AX-30-B', 'price' => 0, 'unit' => 'шт.',
+    'product_type' => 'variant', 'parent_id' => 'p-mono', 'stock' => 2, 'reserved' => 0,
+    'characteristics' => 'Цвет: чёрный',
+]);
+Db::insert('products_cache', [
+    'moysklad_id' => 'p-kit', 'name' => 'Комплект разведчика «Сумрак»',
+    'name_normalized' => '', 'article' => 'KIT-7', 'price' => 420000, 'unit' => 'компл.',
+    'product_type' => 'bundle', 'stock' => 1, 'reserved' => 0,
+    'description' => '<ul><li>Монокуляр тепловизионный Пульсар Аксион XM30F — 1 шт</li>'
+                   . '<li>Рюкзак тактический — 1 шт</li></ul>',
+]);
+ProductMatcher::forgetCatalog();
+
+$mono = ProductMatcher::findCandidates('монокуляр аксион', 5);
+$ids  = array_column($mono, 'moysklad_id');
+ok('на «монокуляр аксион» первым идёт сам товар', ($ids[0] ?? '') === 'p-mono',
+   json_encode($ids, JSON_UNESCAPED_UNICODE));
+ok('модификация — следом за ним', array_search('v-mono', $ids, true) === 1,
+   json_encode($ids, JSON_UNESCAPED_UNICODE));
+ok('комплект из описания — последним', array_search('p-kit', $ids, true) === count($ids) - 1,
+   json_encode($ids, JSON_UNESCAPED_UNICODE));
+ok('и он не потерялся вовсе — это подсказка, а не мусор', in_array('p-kit', $ids, true));
+
+// На одно слово: имя, потом описание товара, потом описание комплекта
+$byWord = ProductMatcher::findCandidates('монокуляр', 5);
+$ids    = array_column($byWord, 'moysklad_id');
+ok('порядок рядов тот же', array_search('p-mono', $ids, true) < array_search('p-nvg', $ids, true)
+   && array_search('p-nvg', $ids, true) < array_search('p-kit', $ids, true),
+   json_encode($ids, JSON_UNESCAPED_UNICODE));
+
+// Ряд важнее оценки: комплект набрал описанием БОЛЬШЕ и всё равно стоит ниже
+$kit = array_values(array_filter($byWord, fn($r) => $r['moysklad_id'] === 'p-kit'))[0] ?? [];
+ok('оценка комплекта выше, а место — ниже', ($kit['score'] ?? 0) > ($byWord[0]['score'] ?? 1),
+   ($byWord[0]['score'] ?? 0) . ' по названию против ' . ($kit['score'] ?? 0) . ' по описанию');
+
+// Одно слово из письма НЕ выбирает конкретную позицию за менеджера
+$picked = ProductMatcher::matchItems([['name' => 'монокуляр', 'qty' => 1]], false);
+ok('«монокуляр» подставился сам товар, а не комплект',
+   ($picked[0]['match']['moysklad_id'] ?? '') === 'p-mono', (string)($picked[0]['match']['name'] ?? ''));
+ok('но «ок» ему не поставлено', ($picked[0]['is_confirmed'] ?? true) === false);
+
+// Строка, найденная ТОЛЬКО описанием, не подтверждается сама
+$only = ProductMatcher::matchItems([['name' => 'рюкзак тактический', 'qty' => 1]], false);
+ok('найденное по описанию подставляется', ($only[0]['match']['moysklad_id'] ?? '') === 'p-kit',
+   (string)($only[0]['match']['name'] ?? ''));
+ok('и остаётся неподтверждённым', ($only[0]['is_confirmed'] ?? true) === false);
+ok('и помечено источником «по описанию»', ($only[0]['match_source'] ?? '') === 'description',
+   (string)($only[0]['match_source'] ?? ''));
+
 // =====================================================================  4
 
 echo "\n== 4. Строка подбора: комментарий, ручная цена, условия ==\n";

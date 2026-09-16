@@ -19,6 +19,8 @@ class ProductMatcher {
     private const VEC_CEIL  = 0.85;
     /** A purely semantic hit this strong is worth showing even with no shared words. */
     private const VEC_STRONG = 0.8;
+    /** Нижний край оценки за полное вхождение слов запроса в название. */
+    private const NAME_CONTAIN_BASE = 0.7;
 
     /**
      * Match parsed items against products_cache.
@@ -101,13 +103,20 @@ class ProductMatcher {
                 // that score 0.91 and 0.89 are not a match and a runner-up, they
                 // are a question: the same vest in two sizes, the same helmet in
                 // two colours. Picking the first one is a guess the manager pays for.
-                $equal = array_values(array_filter($candidates, fn($c) => $best['score'] - $c['score'] <= $delta));
+                // Найденное по описанию в этот счёт не идёт: комплект с
+                // товаром в составе — не «равнозначный вариант» самому товару.
+                $fromDesc = fn($c) => ($c['source'] ?? '') === 'description';
+                $equal = array_values(array_filter($candidates, fn($c) => $best['score'] - $c['score'] <= $delta
+                    && ($fromDesc($best) || !$fromDesc($c))));
 
                 $result['match'] = $best;
                 $result['match_source'] = $best['source'];
                 $result['variants'] = array_slice($candidates, 1, $maxShown - 1);
                 $result['needs_choice'] = count($equal) > 1;
-                $result['is_confirmed'] = !$result['needs_choice'] && $best['score'] >= $autoConfirm;
+                // Описание подставляется, но «ок» ему не ставится: слово из
+                // чужого списка комплектации — не повод решать за менеджера
+                $result['is_confirmed'] = !$result['needs_choice'] && $best['score'] >= $autoConfirm
+                    && !$fromDesc($best);
             }
 
             $results[] = $result;
@@ -208,10 +217,23 @@ class ProductMatcher {
         // (модуль 023).
         $descWeight = min(1.0, max(0.0, (float)Settings::get('MATCH_DESC_WEIGHT', 0.75)));
         $queryWords = self::contentWords($normQuery);
+        // Потолок оценки за вхождение: на волос ниже автоподтверждения
+        $nameCap = max(self::NAME_CONTAIN_BASE,
+                       (float)Settings::get('MATCH_AUTO_CONFIRM', 0.88) - 0.01);
 
         $scored = [];
         foreach ($products as $p) {
             $byName = self::similarity($normQuery, $p['match_text']);
+
+            // Все слова запроса стоят в названии — это тот самый товар, хотя
+            // Жаккар делит на объединение и топит «монокуляр аксион» в
+            // «Монокуляр тепловизионный Пульсар Аксион XM30F». Множитель на
+            // схожесть разводит товар, его модификацию и родителя.
+            if ($queryWords) {
+                $inName = self::containment($queryWords, $p['match_text']);
+                $byName = max($byName, $inName * (self::NAME_CONTAIN_BASE
+                    + ($nameCap - self::NAME_CONTAIN_BASE) * $byName));
+            }
             $lexical = $byName;
 
             // Article typed straight into the letter is an exact answer
@@ -234,6 +256,7 @@ class ProductMatcher {
             if (!$qualifies) continue;
 
             $prices = Catalog::decodePrices($p['prices_json'] ?? null);
+            $source = self::sourceOf($byName, $byDesc, $vec, $minScore);
             $scored[] = [
                 'moysklad_id' => $p['moysklad_id'],
                 'name'        => $p['name'],
@@ -247,12 +270,28 @@ class ProductMatcher {
                 'score'       => round($combined, 3),
                 'lexical'     => round($lexical, 3),
                 'vector'      => $vec === null ? null : round($vec, 3),
-                'source'      => self::sourceOf($byName, $byDesc, $vec, $minScore),
+                'source'      => $source,
+                'rank'        => self::rankOf($source, (string)($p['product_type'] ?? '')),
             ];
         }
 
-        usort($scored, fn($a, $b) => $b['score'] <=> $a['score']);
-        return array_slice($scored, 0, $maxResults);
+        // Ряд важнее оценки: 0.75, набранные описанием, не обгоняют 0.7,
+        // набранные названием
+        usort($scored, fn($a, $b) => [$a['rank'], -$a['score']] <=> [$b['rank'], -$b['score']]);
+        $scored = array_slice($scored, 0, $maxResults);
+        foreach ($scored as &$row) unset($row['rank']);   // служебный ключ наружу не уходит
+        unset($row);
+        return $scored;
+    }
+
+    /**
+     * Ряд выдачи: сперва найденное названием и смыслом, потом описанием, в
+     * самом конце комплекты. Описание комплекта — список ЧУЖИХ товаров:
+     * «монокуляр» в нём значит «лежит внутри», а не «это он и есть».
+     */
+    private static function rankOf(string $source, string $productType): int {
+        if ($source !== 'description') return 0;
+        return $productType === 'bundle' ? 2 : 1;
     }
 
     /**
