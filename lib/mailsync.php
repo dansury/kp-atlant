@@ -211,6 +211,117 @@ final class MailSync {
         return $count;
     }
 
+    /**
+     * ==== Подбор товара по любой переписке (модуль 038) ====
+     *
+     * Сервис существует ради КП, а подобрать товар можно было только там, где
+     * классификатор сам завёл запрос. Письмо, которое он отнёс к «предложению
+     * поставщика» или к «не определено», оставалось без таблицы подбора — и в
+     * панели справа стояло «подбирать по каталогу нечего». Живой запрос на
+     * бронеплиты «от бр2 до бр5» так и не доходил до каталога.
+     *
+     * Здесь запрос заводится РУКАМИ по уже пришедшей переписке: письмо
+     * перечитывается заново — один вызов модели, и его просят, а не тратят на
+     * каждое входящее, — компания подтягивается из письма, позиции разбираются
+     * и подбираются по каталогу. Модель промолчала — таблица открывается
+     * пустой, и позицию в неё вписывают руками: «подобрать нечего» не
+     * повторяется никогда.
+     *
+     * @return array{request_id:int,created:bool,items:int}
+     */
+    public static function requestFromThread(string $threadKey, int $managerId): array {
+        $threadKey = trim($threadKey);
+        if ($threadKey === '') throw new InvalidArgumentException('Не указана переписка');
+
+        // Запрос у переписки уже есть — второго не заводим: таблица подбора
+        // одна на разговор, и КП собирается из неё
+        $existing = (int)(Db::val(
+            "SELECT MAX(request_id) FROM mail_messages WHERE thread_key=? AND request_id IS NOT NULL", [$threadKey]
+        ) ?: 0);
+        if ($existing > 0) {
+            return ['request_id' => $existing, 'created' => false,
+                    'items' => count(RequestItems::ensure($existing))];
+        }
+
+        // Отвечаем на последнее ВХОДЯЩЕЕ письмо: запрос — это то, что просил
+        // клиент, а не то, что мы написали в ответ
+        $row = Db::one("SELECT * FROM mail_messages WHERE thread_key=? AND direction='in'
+                        ORDER BY date_at DESC, id DESC LIMIT 1", [$threadKey])
+            ?: Db::one("SELECT * FROM mail_messages WHERE thread_key=? ORDER BY date_at DESC, id DESC LIMIT 1", [$threadKey]);
+        if (!$row) throw new InvalidArgumentException('Переписка не найдена');
+
+        $attachmentText = '';
+        foreach (Db::all("SELECT filename, extracted_text FROM attachments WHERE mail_message_id=?", [$row['id']]) as $a) {
+            if (!empty($a['extracted_text'])) {
+                $attachmentText .= "--- Вложение: {$a['filename']} ---\n" . $a['extracted_text'] . "\n\n";
+            }
+        }
+
+        // Разбор — лучшее, что у нас есть, но не условие. Модель не ответила,
+        // ключи кончились, сеть легла — запрос всё равно заводится, а позиции
+        // менеджер впишет сам.
+        $parsed = [];
+        try {
+            $parsed = Triage::classify(
+                MailText::forAnalysis((string)$row['body_text']), $attachmentText, (string)$row['subject']);
+        } catch (Throwable $e) {
+            Logger::exception('mail', $e, ['mail_message_id' => (int)$row['id'], 'thread_key' => $threadKey]);
+        }
+
+        // Категорию письма руками не переписываем: менеджер просил ПОДБОР, а не
+        // переклассификацию. Но категория, при которой запрос не заводится,
+        // в самом запросе становится обычным «запросом КП» — иначе карточка
+        // сама себе противоречит.
+        $category = (string)($row['category'] ?? '') ?: (string)($parsed['category'] ?? 'other');
+        if (!Triage::createsRequest($category)) $category = 'kp_request';
+        $type = ($parsed['request_type'] ?? 'kp_request') === 'order' ? 'order' : 'kp_request';
+
+        $senderEmail = (string)($row['from_email'] ?? '');
+        if (Crm::isOurAddress($senderEmail)) $senderEmail = '';
+
+        $counterpartyId = !empty($row['counterparty_id']) ? (int)$row['counterparty_id'] : Crm::resolveCounterparty([
+            'inn'            => $parsed['inn'] ?? '',
+            'name'           => $parsed['org_name'] ?? '',
+            'email'          => $senderEmail,
+            'contact_person' => $parsed['contact_person'] ?? ($row['from_name'] ?: null),
+            'phone'          => $parsed['contact_phone'] ?? null,
+            'text'           => (string)$row['body_text'] . "\n" . $attachmentText,
+        ]);
+
+        $requestId = (int)Db::insert('requests', [
+            'source'              => 'email',
+            'raw_text'            => $row['body_text'],
+            'parsed_json'         => json_encode($parsed, JSON_UNESCAPED_UNICODE),
+            'counterparty_id'     => $counterpartyId ?: null,
+            'manager_id'          => $managerId ?: null,
+            'status'              => 'processing',
+            'type'                => $type,
+            'type_source'         => 'llm',
+            'category'            => $category,
+            'category_confidence' => (float)($parsed['category_confidence'] ?? 0),
+            'category_reason'     => (string)($parsed['category_reason'] ?? 'Подбор заведён менеджером вручную'),
+            'category_source'     => 'manager',
+            'email_from'          => $senderEmail,
+            'email_subject'       => $row['subject'],
+            'email_message_id'    => $row['message_id'],
+        ]);
+
+        // Запрос принадлежит ВСЕЙ переписке: письма цепочки показывают одну и ту
+        // же таблицу подбора, с какого бы из них её ни открыли
+        Db::q("UPDATE mail_messages SET request_id=? WHERE thread_key=? AND request_id IS NULL",
+              [$requestId, $threadKey]);
+        if ($counterpartyId) {
+            Db::q("UPDATE mail_messages SET counterparty_id=? WHERE thread_key=? AND counterparty_id IS NULL",
+                  [$counterpartyId, $threadKey]);
+        }
+
+        $items = RequestItems::ensure($requestId);
+        Logger::info('mail', "Подбор заведён по переписке вручную: запрос #$requestId",
+                     ['thread_key' => $threadKey, 'manager_id' => $managerId, 'items' => count($items)]);
+
+        return ['request_id' => $requestId, 'created' => true, 'items' => count($items)];
+    }
+
     /** Returns true when the letter actually became a request. */
     private static function toRequest(array $row): bool {
         // Free verdict first: a Yandex.Direct digest or a MoySklad ticket is not a

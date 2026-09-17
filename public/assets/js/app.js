@@ -3370,7 +3370,7 @@ const App = {
         this.companyOpenThread = key;
         if (box.dataset.loaded) {
             this.mountBodies(box);
-            this.setCompanyItems(box.dataset.requestId || '');
+            this.setCompanyItems(box.dataset.requestId || '', key);
             return;
         }
         box.innerHTML = '<div class="loading">Загрузка писем...</div>';
@@ -3384,7 +3384,8 @@ const App = {
             box.dataset.loaded = '1';
             box.dataset.requestId = reply.request_id || '';
             this.restoreComposerDraft(key);
-            this.setCompanyItems(reply.request_id || '');
+            this.fillSignatureNote(box);
+            this.setCompanyItems(reply.request_id || '', key);
             // Сервер уже снял отметку вместе с загрузкой — строке остаётся
             // только перестать кричать
             if (markRead) this.markThreadRead(key, box, true);
@@ -3399,7 +3400,7 @@ const App = {
      * `null` — переписку свернули: панель говорит, что выбрать нечего, а не
      * показывает позиции закрытого письма.
      */
-    setCompanyItems(requestId) {
+    setCompanyItems(requestId, threadKey = '') {
         const side = document.getElementById('cpItems');
         if (!side) return;
         if (requestId === null) {
@@ -3410,7 +3411,7 @@ const App = {
         }
         // Хост подбора ищется как `[data-thread-items]` внутри переданного узла
         if (requestId) this.loadThreadItems(side.parentElement, Number(requestId));
-        else this.noThreadItems(side.parentElement);
+        else this.noThreadItems(side.parentElement, threadKey);
         // Лента справа и счета под письмом смотрят на тот же запрос (модуль 029)
         this.companyRequestId = requestId ? String(requestId) : '';
         this.markChatScope();
@@ -3440,16 +3441,55 @@ const App = {
      * is the one the КП is built from.
      */
     /**
-     * Переписка, из которой не завели запрос: подбирать нечего, и блок говорит
-     * это вслух. Молча пропущенная таблица читается как «подбор товаров пропал».
+     * Переписка, из которой не завели запрос (модуль 038).
+     *
+     * Здесь стоял тупик: «запрос не заведён — подбирать по каталогу нечего».
+     * Сервис живёт составлением КП, и отказать в подборе он не вправе ни по
+     * какому письму: классификатор мог ошибиться, а запрос на бронеплиты
+     * «от бр2 до бр5» — самый настоящий. Теперь это кнопка: подбор заводится
+     * по этой переписке, письмо перечитывается и позиции ищутся в каталоге.
      */
-    noThreadItems(box) {
+    noThreadItems(box, threadKey = '') {
         const host = box.querySelector('[data-thread-items]');
         if (!host) return;
         host.className = 'card card--items';
         host.innerHTML = `<div class="card__title">Подходящие позиции${this.hint('match')}</div>
-            <p class="muted">По этой переписке запрос не заведён — подбирать по каталогу нечего.
-               Позиции появляются, когда письмо разобрано как запрос КП или заказ.</p>`;
+            <p class="muted">По этой переписке подбор ещё не заводили. Нажмите — письмо перечитается,
+               позиции найдутся в каталоге, и отсюда же соберётся КП.</p>
+            ${threadKey ? `<button class="btn btn--primary" data-make-request
+                    onclick="App.makeThreadRequest('${this.jsStr(threadKey)}', this)">Подобрать товар</button>`
+                : '<p class="muted">Раскройте переписку слева.</p>'}`;
+    },
+
+    /**
+     * «Подобрать товар» по переписке без запроса (модуль 038).
+     *
+     * Один вызов модели — его просят, а не тратят на каждое входящее письмо.
+     * Модель промолчала — таблица откроется пустой, и позицию в неё впишут
+     * руками: подобрать товар можно ВСЕГДА.
+     */
+    async makeThreadRequest(key, btn) {
+        btn.disabled = true;
+        btn.textContent = 'Читаем письмо...';
+        try {
+            const r = await this.api('mail.php?action=make_request', {method: 'POST', body: {key}});
+            // Панель рисуется там же, где стояла кнопка: у письма своей страницей
+            // и у переписки в карточке компании это разные узлы
+            const panel = btn.closest('[data-thread-items]');
+            const thread = document.getElementById('th_' + this.threadDomId(key));
+            if (thread) thread.dataset.requestId = r.request_id;
+            if (panel && panel.parentElement) this.loadThreadItems(panel.parentElement, r.request_id);
+            this.companyRequestId = String(r.request_id);
+            this.markChatScope();
+            this.loadInvoiceDock();
+            this.toast(r.items
+                ? `Подбор заведён · позиций: ${r.items}`
+                : 'Подбор заведён — позиций в письме не нашлось, впишите их сами', r.items ? 'success' : 'info');
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Подобрать товар';
+        }
     },
 
     async loadThreadItems(box, requestId) {
@@ -3489,6 +3529,13 @@ const App = {
                     <select data-cmp-box title="Из какого ящика отправить">
                         ${(mailboxes || []).map(b => `<option value="${b.id}" ${reply.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
                     </select>
+                    <!-- Подпись (модуль 038): видно, чем письмо закончится, ещё
+                         до отправки — и её можно снять одной галочкой -->
+                    <label class="muted composer__sign" title="Ваша подпись допишется в конец письма">
+                        <input type="checkbox" data-cmp-sign checked
+                               onchange="App.toggleSignatureNote(this)"> подпись
+                        <span data-cmp-sign-text></span>
+                    </label>
                 </div>
                 <!-- У первого письма адресата ещё нет — его пишут здесь же, и
                      он попадает и в черновик, и в карточку (модуль 033) -->
@@ -3675,6 +3722,34 @@ const App = {
             .replace(/<li[^>]*>/gi, '— ');
         const text = (tmp.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
         return {html, text};
+    },
+
+    /**
+     * ==== Подпись в письме (модуль 038) ====
+     *
+     * Подпись дописывает сервер — она одна и та же во всех письмах менеджера,
+     * и держать её в поле ввода значит однажды её оттуда стереть. Но увидеть
+     * её надо ДО отправки, поэтому она стоит строкой рядом с галочкой.
+     */
+    async mailSignature() {
+        if (this._mailSign === undefined) {
+            try { this._mailSign = (await this.api('settings.php?action=mail_signature')).effective || ''; }
+            catch { this._mailSign = ''; }
+        }
+        return this._mailSign;
+    },
+
+    async fillSignatureNote(c) {
+        const box = c && c.querySelector('[data-cmp-sign-text]');
+        if (!box) return;
+        const sign = await this.mailSignature();
+        box.textContent = sign ? '· ' + sign.split('\n').join(' · ') : '· не заведена';
+        box.title = sign || 'Подпись не заведена — «Настройки → Моя подпись»';
+    },
+
+    toggleSignatureNote(input) {
+        const box = input.closest('.composer__sign');
+        if (box) box.classList.toggle('composer__sign--off', !input.checked);
     },
 
     /**
@@ -3977,6 +4052,8 @@ const App = {
                 thread_key:  key || null,
                 draft_id:    Number((c.querySelector('[data-cmp-draft-id]') || {}).value) || null,
                 files:       this.composerFiles(c),
+                // Галочка «подпись» снята — письмо уходит ровно как набрано
+                signature:   (c.querySelector('[data-cmp-sign]') || {checked: true}).checked ? 1 : 0,
             }});
             // «Отправлено» is only half the news when the copy never reached the
             // server's «Отправленные» — the manager hears it now, not in a month
@@ -4567,6 +4644,7 @@ const App = {
         'kp-exclude':   ['Свернуть позицию', 'Позиции, которой нет в наличии, в таблице КП не будет — но в документе она останется: КП назовёт её словами клиента и скажет, что мы по ней уточняем. Молча выкинуть строку нельзя.'],
         // Настройки
         'kp-settings':  ['Оформление КП', 'Тексты и значения по умолчанию для каждого нового КП: условия поставки, сроки, подписи под фотографиями. В самом КП их можно переписать — здесь стоит то, с чего КП начинается, и сюда же приезжает последняя правка условий из любого КП.'],
+        'mail-signature': ['Подпись в письмах', 'Дописывается в конец каждого письма, которое вы отправляете из сервиса, и в конец черновика нейросети. Второй раз не приписывается — если подпись в письме уже стоит, она остаётся одна. Пусто — берётся общая подпись компании из настроек почты.'],
         'signature':    ['Моя подпись', 'КП подписывает тот, кто его отправляет. Загрузите картинку своей подписи и напишите расшифровку — они встанут под вашими КП. Пусто — печатается подписант организации.'],
         'knowledge':    ['База знаний', 'Вики компании из репозитория GitHub. В промпт она попадает не целиком, а теми разделами, которые относятся к тексту письма. Это ЗНАНИЯ О ТОВАРЕ — инструкции про кнопки сюда класть нельзя, они мешают модели отвечать.'],
         'knowledge-check': ['Проверка подбора', 'Вставьте текст письма — увидите, какие разделы вики попадут в промпт и что сервис на это ответит. Ответ можно тут же забраковать кнопкой 👎 и написать, как он должен был звучать: эта правка уйдёт в обучение.'],
@@ -5574,6 +5652,7 @@ const App = {
         if (!card) return;
         try {
             const d = await this.api('admin.php?action=signature');
+            const mail = await this.api('settings.php?action=mail_signature');
             card.innerHTML = `
                 <div class="card__title">Моя подпись${this.hint('signature')}</div>
                 <p class="muted">Ставится под теми КП, которые отправляете вы. Пусто — печатается подписант
@@ -5595,7 +5674,24 @@ const App = {
                     ${d.has_image ? '<button class="btn btn--outline btn--danger" onclick="App.resetSignature()">Убрать картинку</button>' : ''}
                 </div>
                 <p class="muted" style="margin-top:6px">PNG или JPG, лучше на прозрачном или белом фоне, высотой около 200 px.</p>
-                <div id="sigOut" style="margin-top:8px"></div>`;
+                <div id="sigOut" style="margin-top:8px"></div>
+
+                <!-- Подпись в письмах (модуль 038): письмо заканчивается именем
+                     того, кто его отправил, а не обрывается на полуслове -->
+                <div class="card__title" style="margin-top:18px">Подпись в письмах${this.hint('mail-signature')}</div>
+                <p class="muted">Дописывается к каждому вашему письму — и к черновику, который пишет нейросеть.
+                   ${mail.source === 'manager' ? 'Сейчас стоит ваша.'
+                     : mail.source === 'company' ? 'Своей нет — подписывается общей подписью компании.'
+                     : 'Своей нет и общей нет — подпись собирается из вашего имени и телефона.'}</p>
+                <div class="form-group">
+                    <textarea id="mailSig" rows="4"
+                        placeholder="${this.esc(mail.fallback || 'С уважением,\nЯна, менеджер по оптовым заказам\n+7 977 508-45-85')}">${this.esc(mail.signature || '')}</textarea>
+                </div>
+                <p class="muted">Уйдёт с письмом:</p>
+                <pre class="sig-preview">${this.esc(mail.effective || '')}</pre>
+                <div class="flex flex--wrap">
+                    <button class="btn btn--primary" onclick="App.saveMailSignature(this)">Сохранить подпись в письмах</button>
+                </div>`;
         } catch (err) {
             card.innerHTML = `<div class="card__title">Моя подпись</div><p class="no">${this.esc(err.message)}</p>`;
         }
@@ -5607,6 +5703,19 @@ const App = {
             await this.api('settings.php?action=signatory_name', {method: 'POST',
                 body: {signatory_name: document.getElementById('sigName').value}});
             this.toast('Расшифровка сохранена', 'success');
+            this.loadSignature();
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
+    },
+
+    /** Подпись в письмах — своя у каждого (модуль 038). */
+    async saveMailSignature(btn) {
+        btn.disabled = true;
+        try {
+            await this.api('settings.php?action=mail_signature', {method: 'POST',
+                body: {signature: document.getElementById('mailSig').value}});
+            this._mailSign = undefined;   // строка у поля ответа покажет новую
+            this.toast('Подпись в письмах сохранена', 'success');
             this.loadSignature();
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
@@ -5993,12 +6102,13 @@ const App = {
         this.mountBodies(document.getElementById('app'));
         this.loadThreadPlacement(key);
         this.restoreComposerDraft(key);
+        this.fillSignatureNote(document.getElementById('app'));
         this.loadThreadFacts(t, lastIn, d.moysklad);
         // Панель подбора есть у КАЖДОГО письма: у письма без запроса она честно
         // говорит, почему пуста, а не исчезает вовсе
         const host = document.getElementById('app');
         if (reply.request_id) this.loadThreadItems(host, reply.request_id);
-        else this.noThreadItems(host);
+        else this.noThreadItems(host, key);
         // Счета этого запроса — под полем ответа (модуль 029)
         this.companyRequestId = reply.request_id ? String(reply.request_id) : '';
         this.loadInvoiceDock();

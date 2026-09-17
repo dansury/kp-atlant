@@ -13,6 +13,7 @@ require_once ROOT . '/lib/attachments.php';
 require_once ROOT . '/lib/outbox.php';
 require_once ROOT . '/lib/drafts.php';
 require_once ROOT . '/lib/forwards.php';
+require_once ROOT . '/lib/mail_signature.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -193,6 +194,15 @@ try {
                 ? MailArchive::sanitizeHtml($html)
                 : '<p>' . nl2br(htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')) . '</p>';
 
+            // Подпись менеджера — до цитаты и до отправки (модуль 038): она
+            // заканчивает НАШЕ письмо, а не процитированное чужое. Второй раз
+            // не приписывается: черновик нейросети уже уходит с ней.
+            if (($input['signature'] ?? 1)) {
+                $sign = MailSignature::forManager((int)$manager['id']);
+                $text = MailSignature::appendText($text, $sign);
+                $html = MailSignature::appendHtml($html, $sign);
+            }
+
             // Ответ несёт письмо, на которое отвечает (модуль 031): клиенту не
             // приходится вспоминать, о каком заказе речь, а нам — пересказывать
             // его же вопрос своими словами.
@@ -271,6 +281,25 @@ try {
                 jsonError($e->getMessage(), 400);
             }
             jsonOk($res + ['addresses' => Forwards::all()]);
+
+        /**
+         * Подбор товара по переписке, из которой запрос не завели (модуль 038).
+         * Кнопка «Подобрать товар» в панели позиций — и таблица подбора
+         * открывается по любому письму, а не только по разобранному.
+         */
+        case 'make_request': {
+            $key = trim((string)($input['key'] ?? $_GET['key'] ?? ''));
+            if ($key === '' && !empty($input['mail_message_id'])) {
+                $key = (string)(Db::val("SELECT thread_key FROM mail_messages WHERE id=?",
+                                        [(int)$input['mail_message_id']]) ?: '');
+            }
+            try {
+                $res = MailSync::requestFromThread($key, (int)$manager['id']);
+            } catch (InvalidArgumentException $e) {
+                jsonError($e->getMessage(), 404);
+            }
+            jsonOk($res);
+        }
 
         case 'draft_reply':
             // «Создать ответ»: the draft is generated here and only here — the mail
@@ -365,6 +394,10 @@ try {
                                'id=?', [(int)$msg['request_id']]);
                 }
             }
+
+            // Промпты ответа заканчиваются словами «без подписи — её подставит
+            // система». Система подставляет её здесь (модуль 038).
+            $text = MailSignature::appendText($text, MailSignature::forManager((int)$manager['id']));
 
             $used = LLM::currentModel();
             Logger::info('mail', "Черновик ответа на письмо #$id создан (" . Triage::label($category) . ')', [

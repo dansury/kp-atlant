@@ -1656,6 +1656,17 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '35')");
         $current = 35;
     }
+
+    // v36 — модуль 038: подбор товара заводится по любой переписке, а письмо
+    // уходит с подписью того менеджера, который его отправляет.
+    if ($current < 36) {
+        // Подпись в письмах — своя у каждого. Пусто — общая подпись компании
+        // из настроек, а её нет — имя и телефон из карточки менеджера.
+        Db::ensureColumn('managers', 'email_signature', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '36')");
+        $current = 36;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
