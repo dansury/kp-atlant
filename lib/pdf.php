@@ -30,7 +30,7 @@ class PdfGenerator {
         ]);
         $mpdf->SetTitle('Коммерческое предложение');
         $mpdf->SetAuthor($legal['short_name'] ?? 'Atlant Armour');
-        $mpdf->WriteHTML($html);
+        self::writeHtml($mpdf, $html, $proposalId);
 
         // Save to file
         $dir = ROOT . '/data/kp';
@@ -56,6 +56,51 @@ class PdfGenerator {
         ], 'id=?', [$proposalId]);
 
         return $path;
+    }
+
+    /**
+     * Отдать документ mPDF так, чтобы он собрался (модуль 034).
+     *
+     * mPDF режет HTML регулярными выражениями, а КП несёт фотографии товаров
+     * прямо в разметке, в base64: пять карточек по 400 КБ — и разметка
+     * перестаёт помещаться в `pcre.backtrack_limit`, который по умолчанию
+     * равен одному мегабайту. Сборка падала с «The HTML code size is larger
+     * than pcre.backtrack_limit», а менеджер видел «ничего не происходит».
+     *
+     * Сначала поднимаем предел под размер этого документа. Если хостинг не даёт
+     * его поднять (`ini_set` закрыт) — собираем КП без фотографий: документ без
+     * картинок отправить можно, а отсутствующий нельзя.
+     */
+    private static function writeHtml(Mpdf $mpdf, string $html, int $proposalId): void {
+        self::raisePcreLimits(strlen($html));
+        try {
+            $mpdf->WriteHTML($html);
+            return;
+        } catch (\Throwable $e) {
+            if (!str_contains($e->getMessage(), 'pcre.backtrack_limit')) throw $e;
+        }
+
+        $light = self::withoutPhotos($html);
+        Logger::warning('kp', 'КП собрано без фотографий: разметка с ними не помещается в pcre.backtrack_limit',
+                        ['proposal_id' => $proposalId, 'bytes' => strlen($html)]);
+        $mpdf->WriteHTML($light);
+    }
+
+    /** Поднять пределы PCRE под размер разметки — молча, если хостинг не даёт. */
+    private static function raisePcreLimits(int $bytes): void {
+        $need = max(1_000_000, $bytes * 4);
+        foreach (['pcre.backtrack_limit', 'pcre.recursion_limit'] as $key) {
+            if ((int)ini_get($key) < $need) @ini_set($key, (string)$need);
+        }
+    }
+
+    /** Та же разметка без фотографий товаров: знак, QR и подпись остаются. */
+    private static function withoutPhotos(string $html): string {
+        return (string)preg_replace_callback(
+            '#<img\b[^>]*>#i',
+            fn(array $m) => preg_match('/class="[^"]*\b(logo|qr|sign-img)\b/i', $m[0]) ? $m[0] : '',
+            $html
+        );
     }
 
     /**
@@ -105,6 +150,10 @@ class PdfGenerator {
             [$proposalId]
         );
 
+        // Ссылку на сайт читает и таблица, и карточка товара, и «есть ли вообще
+        // приложение» — значение берётся один раз, до цикла (модуль 034)
+        $showSiteLink = (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1;
+
         // Calc totals. A single "от" price makes the whole total a floor,
         // the way the reference KP prints "Итого: от 40 000 руб".
         $total = 0;
@@ -114,6 +163,9 @@ class PdfGenerator {
             // скидка за ожидание — обе считаются друг на друга (модуль 023)
             $item['effective_price'] = Terms::price($item);
             $item['wait_note'] = Terms::note($item);
+            // Авто-«под заказ» не печатается второй раз перед условиями ожидания,
+            // которые начинаются теми же словами (модуль 034)
+            $item['notes'] = Terms::itemNote($item);
             $discount = Terms::totalDiscount($item);
             $item['discount_shown'] = $discount > 0 ? rtrim(rtrim(number_format($discount, 2, ',', ''), '0'), ',') : '';
             $item['sum'] = $item['effective_price'] * $item['quantity'];
@@ -129,8 +181,23 @@ class PdfGenerator {
             // An analogue carries its own evidence into the card
             $item['alt_matched'] = KpContent::matchedSpecs($item);
             $item['alt_differs'] = KpContent::unmatchedSpecs($item);
+
+            // Описание карточки: комментарий МЕНЕДЖЕРА, если он его написал,
+            // иначе описание из МойСклад (модуль 032). Печатается один блок.
+            $item['card_desc'] = trim((string)($item['comment_text'] ?? '')) !== ''
+                ? (string)$item['comment_text'] : (string)($item['description_text'] ?? '');
+            // Есть ли этой позиции что показать в приложении №1 (модуль 034)
+            $item['has_card'] = trim((string)$item['card_desc']) !== ''
+                || !empty($item['specs_text']) || !empty($item['included_text'])
+                || !empty($item['gallery']) || !empty($item['is_alternative'])
+                || ($showSiteLink && !empty($item['site_url']));
         }
         unset($item);
+
+        // Приложение печатается, только когда в нём есть хоть одна карточка:
+        // пустая страница «Приложение №1» в подписанном документе — брак
+        $hasAppendix = false;
+        foreach ($items as $row) { if (!empty($row['has_card'])) { $hasAppendix = true; break; } }
 
         // Доставка отдельной строкой: она не входит в цену товара
         $delivery = null;
@@ -151,9 +218,11 @@ class PdfGenerator {
         $vatTotals = Requisites::vatTotals($total, $vat, Requisites::vatMode($proposal));
 
         // Default intro
+        // Короткое имя, а не «ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ …»: так
+        // названа компания в шапке документа и в образце КП (модуль 034)
         $introText = $proposal['intro_text'] ?: sprintf(
             'По Вашему запросу %s имеет возможность поставить следующее вещевое имущество:',
-            $legal['full_name']
+            trim((string)($legal['short_name'] ?? '')) ?: (string)$legal['full_name']
         );
 
         // Условия поставки — один правимый блок (модуль 026). КП, собранное до
@@ -224,7 +293,8 @@ class PdfGenerator {
             'unmatched' => $unmatched,
             'unmatchedNote' => (string)Settings::get('KP_UNMATCHED_NOTE',
                 'По этим позициям запроса мы уточняем наличие, сроки и цену и вернёмся с ответом отдельно.'),
-            'showSiteLink' => (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1,
+            'showSiteLink' => $showSiteLink,
+            'hasAppendix' => $hasAppendix,
             'qrHint' => trim((string)Settings::get('KP_QR_HINT', '')),
             'pageBreakPerItem' => (int)Settings::get('KP_PAGE_BREAK', 1) === 1,
             'termsText' => $termsText,

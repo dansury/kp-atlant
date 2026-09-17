@@ -331,6 +331,40 @@ class Crm {
         ];
     }
 
+    /**
+     * Вся переписка компании или цепочки — для поиска реквизитов (модуль 034).
+     *
+     * ИНН искали в ОДНОМ, последнем входящем письме. Он же чаще всего стоит в
+     * первом — в подписи или в приложенной карточке предприятия, — и подсказка
+     * честно писала «ИНН в письме не нашёлся», хотя он лежал двумя письмами
+     * выше. Здесь просматривается вся переписка, от свежего к старому, вместе с
+     * текстом вложений.
+     *
+     * @param ?int   $counterpartyId карточка компании, если она уже есть
+     * @param string $threadKey      цепочка — когда компании ещё нет
+     * @param int    $limit          сколько писем смотреть
+     */
+    public static function correspondenceText(?int $counterpartyId, string $threadKey = '', int $limit = 20): string {
+        $rows = [];
+        if ($counterpartyId) {
+            $id = self::rootId($counterpartyId);
+            $rows = Db::all(
+                "SELECT id, body_text FROM mail_messages
+                 WHERE (counterparty_id=? OR counterparty_id IN (SELECT id FROM counterparties WHERE merged_into_id=?))
+                   AND direction='in'
+                 ORDER BY date_at DESC, id DESC LIMIT ?", [$id, $id, $limit]);
+        }
+        if (!$rows && trim($threadKey) !== '') {
+            $rows = Db::all(
+                "SELECT id, body_text FROM mail_messages WHERE thread_key=? AND direction='in'
+                 ORDER BY date_at DESC, id DESC LIMIT ?", [trim($threadKey), $limit]);
+        }
+
+        $parts = [];
+        foreach ($rows as $row) $parts[] = self::letterText($row);
+        return trim(implode("\n\n", array_filter($parts, fn($t) => trim($t) !== '')));
+    }
+
     /** Письмо целиком для поиска реквизитов: тело и текст вложений. */
     public static function letterText(?array $msg): string {
         if (!$msg) return '';
@@ -962,5 +996,66 @@ class Crm {
     public static function cleanInn(string $inn): ?string {
         $digits = preg_replace('/\D+/', '', $inn);
         return preg_match('/^\d{10}$|^\d{12}$/', (string)$digits) ? $digits : null;
+    }
+
+    /**
+     * Реквизиты, которых поиск по образцу не увидел, — нейросетью (модуль 034).
+     *
+     * ИНН приходит по-разному: словом «ИНН», строкой карточки предприятия,
+     * шапкой скана счёта, просто числом после названия. Регулярное выражение
+     * ловит первые два случая; остальные до сих пор менеджер перепечатывал
+     * руками. Модель читает ту же переписку, что и `requisitesFromText()`, и
+     * зовётся только тогда, когда обычный поиск уже ничего не дал.
+     *
+     * Ничего не сохраняет и ничего не решает: возвращает найденное, а записать
+     * его на карточку — дело вызвавшего. Выдуманные цифры отсеиваются проверкой
+     * длины, наш собственный ИНН — отдельно: он стоит в цитате нашего же ответа.
+     *
+     * @return array{inn:?string,kpp:?string,ogrn:?string,legal_title:?string,
+     *               legal_address:?string,source:string}
+     */
+    public static function requisitesByLlm(string $text): array {
+        $empty = ['inn' => null, 'kpp' => null, 'ogrn' => null,
+                  'legal_title' => null, 'legal_address' => null, 'source' => ''];
+        $text = trim($text);
+        if ($text === '') return $empty;
+
+        require_once __DIR__ . '/prompts.php';
+        require_once __DIR__ . '/llm.php';
+
+        // Столько текста хватает на подпись, карточку предприятия и шапку скана
+        $letter = mb_substr($text, 0, 20000);
+        try {
+            $data = LLM::chatJson(Prompts::render('find_requisites', ['letter' => $letter]), $letter, 0.1);
+        } catch (Throwable $e) {
+            Logger::warning('crm', 'Нейросеть не нашла реквизиты: ' . $e->getMessage());
+            return $empty;
+        }
+
+        $inn = self::cleanInn((string)($data['inn'] ?? ''));
+        // Наш собственный ИНН приезжает из цитаты нашего же письма
+        $ours = Db::val("SELECT inn FROM legal_entities WHERE is_active=1 LIMIT 1");
+        if ($inn !== null && $ours && self::cleanInn((string)$ours) === $inn) $inn = null;
+        // Модель обязана была списать ИНН из текста — проверяем, что он там есть
+        if ($inn !== null && !str_contains(preg_replace('/\D+/', '', $text) ?: '', $inn)) {
+            Logger::warning('crm', 'ИНН от нейросети не нашёлся в самом письме — отброшен', ['inn' => $inn]);
+            $inn = null;
+        }
+
+        $str = function ($v): ?string {
+            $v = trim((string)$v);
+            return ($v === '' || strtolower($v) === 'null') ? null : $v;
+        };
+        $kpp = preg_replace('/\D+/', '', (string)($data['kpp'] ?? ''));
+        $ogrn = preg_replace('/\D+/', '', (string)($data['ogrn'] ?? ''));
+
+        return [
+            'inn'           => $inn,
+            'kpp'           => preg_match('/^\d{9}$/', (string)$kpp) ? $kpp : null,
+            'ogrn'          => preg_match('/^\d{13}$|^\d{15}$/', (string)$ogrn) ? $ogrn : null,
+            'legal_title'   => $str($data['legal_title'] ?? ''),
+            'legal_address' => $str($data['legal_address'] ?? ''),
+            'source'        => (string)$str($data['source'] ?? ''),
+        ];
     }
 }

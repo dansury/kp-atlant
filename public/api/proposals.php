@@ -70,6 +70,28 @@ function requireNoPriceAck(int $proposalId, array $input, array $manager): void 
     ]);
 }
 
+/**
+ * Ошибка предпросмотра — страницей, а не JSON (модуль 034).
+ *
+ * Предпросмотр КП живёт в рамке под письмом. JSON, отданный в рамку, рисуется
+ * в ней как строка `{"error":"…"}` или как пустое окно — ровно то «ничего не
+ * происходит», на которое жаловались. Здесь ошибка написана словами и говорит,
+ * что делать дальше.
+ */
+function kpPreviewError(int $id, string $title, string $detail, int $code): never {
+    http_response_code($code);
+    header('Content-Type: text/html; charset=utf-8');
+    $e = fn(string $t): string => htmlspecialchars($t, ENT_QUOTES, 'UTF-8');
+    echo '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
+       . '<meta name="viewport" content="width=device-width,initial-scale=1">'
+       . '<title>КП №' . $id . '</title><style>'
+       . 'body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#222;margin:0;padding:24px}'
+       . 'h1{font-size:17px;margin:0 0 8px;color:#c00}p{margin:0 0 8px}code{font-size:13px;color:#555}'
+       . '</style></head><body><h1>' . $e($title) . '</h1><p>' . $e($detail) . '</p>'
+       . '<p><code>КП №' . $id . '</code></p></body></html>';
+    exit;
+}
+
 $action = $_GET['action'] ?? '';
 
 switch ($action) {
@@ -171,8 +193,18 @@ switch ($action) {
         // The letter names the same products the table does, and says out loud
         // what the catalog never answered (module 018)
         $unmatched = KpContent::unmatchedRows($proposalId);
-        $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections, $swaps,
-                                                          $pastSwaps, $unmatched);
+        // Сопроводительное письмо пишет модель — и это единственная часть сборки,
+        // которой нужна сеть. Молчащий провайдер не должен отменять ДОКУМЕНТ:
+        // раньше `generate` падал целиком, и «Сформировать КП» выглядело как
+        // «ничего не происходит» (модуль 034). Письмо менеджер допишет сам.
+        $coverLetter = '';
+        try {
+            $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections, $swaps,
+                                                              $pastSwaps, $unmatched);
+        } catch (Throwable $e) {
+            Logger::warning('kp', 'КП собрано без сопроводительного письма: ' . $e->getMessage(),
+                            ['proposal_id' => $proposalId, 'request_id' => $requestId]);
+        }
         Db::update('proposals', ['cover_letter' => $coverLetter], 'id=?', [$proposalId]);
 
         // Pull descriptions, specs and photos for the product cards (FR-040, FR-042)
@@ -351,7 +383,8 @@ switch ($action) {
         $add('post_table_text',  'Текст после таблицы',     $p['post_table_text'] ?? '');
         $add('match_table_note', 'Пояснение над таблицей соответствия', $p['match_table_note'] ?? '');
         $add('terms_text',       'Условия поставки',        KpTerms::rawForProposal($p),
-             '{execution_days} и {validity_days} подставляются из полей КП. '
+             '{execution_term} — срок исполнения словами: дни из поля КП, а если что-то под заказ, '
+             . 'то срок ожидания из таблицы подбора. {validity_days} — срок действия цены. '
              . 'Последняя правка станет заготовкой для следующих КП', 5);
         $add('images_note',      'Оговорка под фотографиями', $p['images_note'] ?? '', '', 2);
         $add('upsell_intro',     'Доукомплектование · вступление', $p['upsell_intro'] ?? '', '', 2);
@@ -434,7 +467,11 @@ switch ($action) {
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         $proposal = Db::one("SELECT pdf_path FROM proposals WHERE id=?", [$id]);
-        if (!$proposal) jsonError('КП не найдено', 404);
+        // Предпросмотр открывается в рамке под письмом: JSON с ошибкой рисуется
+        // там как пустое окно, и «ничего не происходит» — это оно (модуль 034).
+        // Поэтому здесь ошибка отвечает страницей, которую видно словами.
+        if (!$proposal) kpPreviewError($id, 'КП №' . $id . ' не найдено',
+            'Документ мог быть удалён. Соберите КП заново кнопкой «Сформировать КП» под таблицей позиций.', 404);
 
         // Файла нет на диске — это не «нет КП». Имя файла содержит дату, деплой
         // чистит `data/`, а строка в базе всё ещё указывает на вчерашний путь:
@@ -446,10 +483,11 @@ switch ($action) {
                 $proposal = Db::one("SELECT pdf_path FROM proposals WHERE id=?", [$id]);
             } catch (Throwable $e) {
                 Logger::exception('kp', $e, ['proposal_id' => $id, 'stage' => 'preview_rebuild']);
-                jsonError('КП не удалось собрать: ' . $e->getMessage(), 500);
+                kpPreviewError($id, 'КП не удалось собрать', $e->getMessage(), 500);
             }
             if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) {
-                jsonError('КП не удалось собрать', 500);
+                kpPreviewError($id, 'КП не удалось собрать',
+                    'Документ собрался, но файл не появился на диске — загляните в «Настройки → Журнал».', 500);
             }
         }
         header('Content-Type: application/pdf');
@@ -465,8 +503,15 @@ switch ($action) {
     case 'docx':
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
-        if (!Db::val("SELECT 1 FROM proposals WHERE id=?", [$id])) jsonError('Not found', 404);
-        $path = DocxGenerator::generate($id);
+        if (!Db::val("SELECT 1 FROM proposals WHERE id=?", [$id])) {
+            jsonError('КП №' . $id . ' не найдено — соберите его заново кнопкой «Сформировать КП»', 404);
+        }
+        try {
+            $path = DocxGenerator::generate($id);
+        } catch (Throwable $e) {
+            Logger::exception('kp', $e, ['proposal_id' => $id, 'stage' => 'docx']);
+            jsonError('КП не собралось в Word: ' . $e->getMessage(), 500);
+        }
         $name = DocxGenerator::filename($id);
         header('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
         header('Content-Disposition: attachment; filename="KP-' . $id . '.docx"; '

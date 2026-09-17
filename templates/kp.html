@@ -28,10 +28,14 @@
     .signature { margin-top: 40px; display: table; width: 100%; }
     .signature .date { display: table-cell; width: 50%; vertical-align: bottom; font-size: 10pt; }
     .signature .sign { display: table-cell; width: 50%; text-align: right; vertical-align: bottom; }
-    .signature .sign img { max-height: 50px; }
+    .signature .sign img { max-height: 50px; max-width: 160px; }
     .signature .sign-name { font-size: 10pt; margin-top: 5px; }
     .stock-warning { color: #c00; font-size: 9pt; }
     .note { font-size: 9pt; color: #666; }
+    /* Приложение: описания товаров за таблицей цен (модуль 034) */
+    .appendix { page-break-before: always; margin-bottom: 10px; }
+    .appendix__title { font-size: 13pt; font-weight: bold; text-align: right; }
+    .appendix__subtitle { font-size: 12pt; font-weight: bold; text-align: center; margin-top: 10px; }
 
     /* Product card: description, photo gallery, specs, kit contents */
     .card { margin: 18px 0 10px; }
@@ -133,6 +137,11 @@
     <?php if ($seller['email'] !== ''): ?>
     <div><?= htmlspecialchars($seller['email']) ?></div>
     <?php endif; ?>
+    <?php /* Банк стоит здесь, в шапке, а не блоком внизу: так собран образец,
+             по которому КП уходят клиенту (модуль 034) */ ?>
+    <?php if (!empty($showRequisites) && !empty($seller['bank']['line'])): ?>
+    <div>Банк: <?= htmlspecialchars($seller['bank']['line']) ?></div>
+    <?php endif; ?>
 </div>
 
 <div style="clear:both"></div>
@@ -228,6 +237,10 @@
     <td class="num"><?= $i + 1 ?></td>
     <td>
         <?= htmlspecialchars($item['product_name']) ?>
+        <?php /* Примечание менеджера. Автоматическое «под заказ» сюда не
+                 печатается, когда ниже идут условия ожидания: они начинаются
+                 теми же словами, и в документ уходило «под заказ  под заказ,
+                 срок ожидания 3 месяца» (модуль 034). */ ?>
         <?php if (!empty($item['notes'])): ?>
         <br><span class="stock-warning"><?= htmlspecialchars($item['notes']) ?></span>
         <?php endif; ?>
@@ -239,8 +252,8 @@
     </td>
     <td class="qty"><?= htmlspecialchars($item['unit']) ?></td>
     <td class="qty"><?= !empty($item['qty_from']) ? 'от ' . $item['quantity'] : $item['quantity'] ?></td>
-    <td class="price"><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?> руб.<?php
-        if (!empty($item['discount_shown'])): ?><br><span class="was"><?= number_format($item['price'], 2, ',', ' ') ?> руб. −<?= htmlspecialchars($item['discount_shown']) ?>%</span><?php endif; ?></td>
+    <td class="price"><?php if (!empty($item['discount_shown'])): ?><span class="was"><?= number_format($item['price'], 2, ',', ' ') ?> руб. −<?= htmlspecialchars($item['discount_shown']) ?>%</span><br><?php endif;
+        ?><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?> руб.</td>
     <td class="sum"><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?> руб.</td>
 </tr>
 <?php endforeach; ?>
@@ -268,21 +281,142 @@
     if ($line['amount'] !== null): ?>: <?= $totalIsFrom ? 'от ' : '' ?><?= number_format($line['amount'], 2, ',', ' ') ?> руб.<?php endif; ?></div>
 <?php endforeach; ?>
 
-<!-- Product cards: description, photos, specs, kit contents -->
+<!-- Positions we could not match to the catalog (module 018).
+     The КП names them in the client's own words. Before this block they were
+     priced at nothing and the client was left to spot the hole himself. -->
+<?php if (!empty($unmatched)): ?>
+<div class="unmatched">
+    <div class="unmatched__title">Позиции запроса, по которым нужно уточнение</div>
+    <div class="unmatched__note"><?= nl2br(htmlspecialchars($unmatchedNote)) ?></div>
+    <ul>
+        <?php foreach ($unmatched as $row): ?>
+        <li><?= htmlspecialchars($row['requested']) ?> — <?= htmlspecialchars((string)$row['quantity']) ?> <?= htmlspecialchars($row['unit']) ?></li>
+        <?php endforeach; ?>
+    </ul>
+</div>
+<?php endif; ?>
+
+<!-- Post-table block (optional) -->
+<?php if (!empty($postTableText)): ?>
+<div class="block"><?= nl2br(htmlspecialchars($postTableText)) ?></div>
+<?php endif; ?>
+
+<!-- Дата и подпись.
+     Пустой строки под подпись здесь больше нет: место, оставленное «под
+     роспись», в подписанном документе читается как незаполненный бланк
+     (модуль 022).
+     Картинка — подпись МЕНЕДЖЕРА этого КП, расшифровка — его же; ничего своего
+     он не завёл — печатается подписант организации. -->
+<div class="signature">
+    <div class="date"><?= $date ?></div>
+    <div class="sign">
+        <?php if ($signaturePath !== ''): ?>
+        <img class="sign-img" src="<?= $signaturePath ?>" alt="Подпись">
+        <?php endif; ?>
+        <div class="sign-name"><?= htmlspecialchars($signatoryName) ?></div>
+    </div>
+</div>
+
+<?php /* Ссылка на приложение: таблица на первой странице, описания — за ней */ ?>
+<?php if (!empty($hasAppendix)): ?>
+<div class="block">Более подробное описание товаров приведено в приложении №1.</div>
+<?php endif; ?>
+
+<!-- Условия поставки — один блок, который правит менеджер (модуль 026).
+     Раньше здесь стояли четыре абзаца, написанные прямо в шаблоне: гарантия на
+     год и «стоимость включает» были неправдой, а поправить их было негде. -->
+<?php if (trim((string)$termsText) !== ''): ?>
+<div class="conditions"><?= nl2br(htmlspecialchars($termsText)) ?></div>
+<?php endif; ?>
+
+<!-- Договор и покупатель: то, чего в шапке нет.
+     Реквизиты ПОСТАВЩИКА раньше печатались здесь второй раз — ИНН, КПП, ОГРН и
+     адрес те же, что уже стоят в шапке первой страницы. Дубль убран
+     (модуль 022): в шапке он и остаётся, а сюда попадает только то, чего там
+     не было, — банк, договор и адресат. Ничего в этом блоке никогда не пишет
+     модель: это снимок из МойСклад, замороженный на КП (модуль 013). -->
+<?php $hasBuyerLine = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? ''))) !== ''; ?>
+<?php if (!empty($showRequisites) && (!empty($requisites['contract']) || $hasBuyerLine)): ?>
+<div class="req">
+    <?php /* Банк печатается в шапке первой страницы (модуль 034) — здесь остаются
+             только договор и адресат */ ?>
+    <?php if (!empty($requisites['contract'])): ?>
+    <div class="req__row">Договор: <?= htmlspecialchars($requisites['contract']['name']) ?><?php
+        if ($requisites['contract']['date'] !== '') echo ' от ' . htmlspecialchars($requisites['contract']['date']); ?></div>
+    <?php endif; ?>
+
+    <?php $buyerName = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? ''))); ?>
+    <?php if (!empty($requisites['buyer']) && $buyerName !== ''): ?>
+    <div class="req__title" style="margin-top:8px">Покупатель</div>
+    <div class="req__row"><?= htmlspecialchars($buyerName) ?><?php
+        if (($requisites['buyer']['inn'] ?? '') !== '') echo ', ИНН ' . htmlspecialchars($requisites['buyer']['inn']);
+        if (($requisites['buyer']['kpp'] ?? '') !== '') echo ', КПП ' . htmlspecialchars($requisites['buyer']['kpp']); ?></div>
+    <?php if (($requisites['buyer']['legal_address'] ?? '') !== ''): ?>
+    <div class="req__row"><?= htmlspecialchars($requisites['buyer']['legal_address']) ?></div>
+    <?php endif; ?>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
+
+<!-- Upsell: modules the client can add now or later -->
+<?php if ($showUpsell && $addons): ?>
+<div class="upsell">
+    <div class="upsell__title">Дополнительные модули и доукомплектование</div>
+    <?php if (!empty($upsellIntro)): ?>
+    <div class="upsell__intro"><?= nl2br(htmlspecialchars($upsellIntro)) ?></div>
+    <?php endif; ?>
+
+    <table class="addons">
+    <thead>
+    <tr><th>№</th><th>Модуль</th><th>Ед.изм.</th><th>Цена за ед., <?= htmlspecialchars($vatStatement) ?></th></tr>
+    </thead>
+    <tbody>
+    <?php foreach ($addons as $j => $addon): ?>
+    <tr>
+        <td class="unit"><?= $j + 1 ?></td>
+        <td>
+            <?= htmlspecialchars($addon['product_name']) ?>
+            <?php if (!empty($addon['notes'])): ?>
+            <br><span class="stock-warning"><?= htmlspecialchars($addon['notes']) ?></span>
+            <?php endif; ?>
+        </td>
+        <td class="unit"><?= htmlspecialchars($addon['unit']) ?></td>
+        <td class="price"><?= $addon['price'] > 0 ? number_format($addon['price'], 2, ',', ' ') . ' руб.' : 'по запросу' ?></td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+    </table>
+
+    <?php if ($upsellGallery): ?>
+    <?php if (!empty($upsellNote)): ?>
+    <div class="upsell__intro"><?= htmlspecialchars($upsellNote) ?></div>
+    <?php endif; ?>
+    <div class="gallery">
+        <?php foreach ($upsellGallery as $img): ?>
+        <img src="<?= $img ?>" alt="Полная комплектация">
+        <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
+
+
+<?php /* ==== Приложение №1: описание товаров (модуль 034) ==== */ ?>
+<?php if (!empty($hasAppendix)): ?>
+<div class="appendix">
+    <div class="appendix__title">Приложение №1</div>
+    <div class="appendix__subtitle">Описание товаров</div>
+</div>
+<!-- Приложение №1: описание товаров (модуль 034).
+     В образце, по которому КП уходит клиенту, таблица с ценами живёт на
+     первой странице и читается целиком, а описания, фотографии и
+     характеристики вынесены за неё отдельным приложением. -->
 <?php $printedCards = 0; ?>
 <?php foreach ($items as $i => $item): ?>
-<?php
-    // Описание карточки: комментарий менеджера, если он его написал, иначе
-    // описание из МойСклад (модуль 032). Печатается ОДИН блок: оба поля растут
-    // из одного текста, и напечатанные подряд они читались бы как повтор.
-    $cardDesc = trim((string)($item['comment_text'] ?? '')) !== ''
-        ? (string)$item['comment_text'] : (string)($item['description_text'] ?? '');
-    $hasCard = trim($cardDesc) !== '' || !empty($item['specs_text'])
-            || !empty($item['included_text']) || !empty($item['gallery'])
-            || !empty($item['is_alternative'])
-            || (!empty($showSiteLink) && !empty($item['site_url']));
-?>
-<?php if ($hasCard): ?>
+<?php /* Описание, характеристики и фото посчитаны при сборке документа
+         (модуль 034): «есть ли приложение» надо знать раньше, чем оно печатается */ ?>
+<?php $cardDesc = (string)($item['card_desc'] ?? ''); ?>
+<?php if (!empty($item['has_card'])): ?>
 <?php /* Каждая карточка товара — со своей страницы: иначе описание, фото и
          характеристики рвутся ровно посередине (модуль 023). Первую не
          отрываем — она идёт сразу за «Итого». */ ?>
@@ -359,120 +493,6 @@
 <?php endif; ?>
 <?php endforeach; ?>
 
-<!-- Positions we could not match to the catalog (module 018).
-     The КП names them in the client's own words. Before this block they were
-     priced at nothing and the client was left to spot the hole himself. -->
-<?php if (!empty($unmatched)): ?>
-<div class="unmatched">
-    <div class="unmatched__title">Позиции запроса, по которым нужно уточнение</div>
-    <div class="unmatched__note"><?= nl2br(htmlspecialchars($unmatchedNote)) ?></div>
-    <ul>
-        <?php foreach ($unmatched as $row): ?>
-        <li><?= htmlspecialchars($row['requested']) ?> — <?= htmlspecialchars((string)$row['quantity']) ?> <?= htmlspecialchars($row['unit']) ?></li>
-        <?php endforeach; ?>
-    </ul>
-</div>
-<?php endif; ?>
-
-<!-- Post-table block (optional) -->
-<?php if (!empty($postTableText)): ?>
-<div class="block"><?= nl2br(htmlspecialchars($postTableText)) ?></div>
-<?php endif; ?>
-
-<!-- Условия поставки — один блок, который правит менеджер (модуль 026).
-     Раньше здесь стояли четыре абзаца, написанные прямо в шаблоне: гарантия на
-     год и «стоимость включает» были неправдой, а поправить их было негде. -->
-<?php if (trim((string)$termsText) !== ''): ?>
-<div class="conditions"><?= nl2br(htmlspecialchars($termsText)) ?></div>
-<?php endif; ?>
-
-<!-- Дата и подпись.
-     Пустой строки под подпись здесь больше нет: место, оставленное «под
-     роспись», в подписанном документе читается как незаполненный бланк
-     (модуль 022).
-     Картинка — подпись МЕНЕДЖЕРА этого КП, расшифровка — его же; ничего своего
-     он не завёл — печатается подписант организации. -->
-<div class="signature">
-    <div class="date"><?= $date ?></div>
-    <div class="sign">
-        <?php if ($signaturePath !== ''): ?>
-        <img src="<?= $signaturePath ?>" alt="Подпись">
-        <?php endif; ?>
-        <div class="sign-name"><?= htmlspecialchars($signatoryName) ?></div>
-    </div>
-</div>
-
-<!-- Договор и покупатель: то, чего в шапке нет.
-     Реквизиты ПОСТАВЩИКА раньше печатались здесь второй раз — ИНН, КПП, ОГРН и
-     адрес те же, что уже стоят в шапке первой страницы. Дубль убран
-     (модуль 022): в шапке он и остаётся, а сюда попадает только то, чего там
-     не было, — банк, договор и адресат. Ничего в этом блоке никогда не пишет
-     модель: это снимок из МойСклад, замороженный на КП (модуль 013). -->
-<?php $hasBuyerLine = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? ''))) !== ''; ?>
-<?php if (!empty($showRequisites) && (!empty($seller['bank']['line']) || !empty($requisites['contract']) || $hasBuyerLine)): ?>
-<div class="req">
-    <?php if (!empty($seller['bank']['line'])): ?>
-    <div class="req__row">Банк: <?= htmlspecialchars($seller['bank']['line']) ?></div>
-    <?php endif; ?>
-
-    <?php if (!empty($requisites['contract'])): ?>
-    <div class="req__row">Договор: <?= htmlspecialchars($requisites['contract']['name']) ?><?php
-        if ($requisites['contract']['date'] !== '') echo ' от ' . htmlspecialchars($requisites['contract']['date']); ?></div>
-    <?php endif; ?>
-
-    <?php $buyerName = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? ''))); ?>
-    <?php if (!empty($requisites['buyer']) && $buyerName !== ''): ?>
-    <div class="req__title" style="margin-top:8px">Покупатель</div>
-    <div class="req__row"><?= htmlspecialchars($buyerName) ?><?php
-        if (($requisites['buyer']['inn'] ?? '') !== '') echo ', ИНН ' . htmlspecialchars($requisites['buyer']['inn']);
-        if (($requisites['buyer']['kpp'] ?? '') !== '') echo ', КПП ' . htmlspecialchars($requisites['buyer']['kpp']); ?></div>
-    <?php if (($requisites['buyer']['legal_address'] ?? '') !== ''): ?>
-    <div class="req__row"><?= htmlspecialchars($requisites['buyer']['legal_address']) ?></div>
-    <?php endif; ?>
-    <?php endif; ?>
-</div>
-<?php endif; ?>
-
-<!-- Upsell: modules the client can add now or later -->
-<?php if ($showUpsell && $addons): ?>
-<div class="upsell">
-    <div class="upsell__title">Дополнительные модули и доукомплектование</div>
-    <?php if (!empty($upsellIntro)): ?>
-    <div class="upsell__intro"><?= nl2br(htmlspecialchars($upsellIntro)) ?></div>
-    <?php endif; ?>
-
-    <table class="addons">
-    <thead>
-    <tr><th>№</th><th>Модуль</th><th>Ед.изм.</th><th>Цена за ед., <?= htmlspecialchars($vatStatement) ?></th></tr>
-    </thead>
-    <tbody>
-    <?php foreach ($addons as $j => $addon): ?>
-    <tr>
-        <td class="unit"><?= $j + 1 ?></td>
-        <td>
-            <?= htmlspecialchars($addon['product_name']) ?>
-            <?php if (!empty($addon['notes'])): ?>
-            <br><span class="stock-warning"><?= htmlspecialchars($addon['notes']) ?></span>
-            <?php endif; ?>
-        </td>
-        <td class="unit"><?= htmlspecialchars($addon['unit']) ?></td>
-        <td class="price"><?= $addon['price'] > 0 ? number_format($addon['price'], 2, ',', ' ') . ' руб.' : 'по запросу' ?></td>
-    </tr>
-    <?php endforeach; ?>
-    </tbody>
-    </table>
-
-    <?php if ($upsellGallery): ?>
-    <?php if (!empty($upsellNote)): ?>
-    <div class="upsell__intro"><?= htmlspecialchars($upsellNote) ?></div>
-    <?php endif; ?>
-    <div class="gallery">
-        <?php foreach ($upsellGallery as $img): ?>
-        <img src="<?= $img ?>" alt="Полная комплектация">
-        <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-</div>
 <?php endif; ?>
 
 </body>

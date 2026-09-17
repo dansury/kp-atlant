@@ -53,10 +53,25 @@ final class KpSet {
             'pre_table_text'  => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='pre_table' ORDER BY id DESC LIMIT 1") ?: ''),
             'post_table_text' => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='post_table' ORDER BY id DESC LIMIT 1") ?: ''),
             'show_match_table' => (RequestShape::of($requestId) === RequestShape::TABLE) ? 1 : 0,
-        ]);
+        ] + self::deliveryFields($requestId));
 
         Requisites::freeze($proposalId);
         return $proposalId;
+    }
+
+    /**
+     * Доставка из таблицы подбора — в поля КП (модуль 034).
+     *
+     * Она правится строкой под позициями, а печатается строкой таблицы: у
+     * запроса КП бывает несколько, и доставка у них одна и та же.
+     */
+    private static function deliveryFields(int $requestId): array {
+        $d = RequestItems::delivery($requestId);
+        return [
+            'delivery_on'    => $d['on'],
+            'delivery_name'  => $d['name'],
+            'delivery_price' => $d['price'],
+        ];
     }
 
     /**
