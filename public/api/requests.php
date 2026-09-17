@@ -117,15 +117,42 @@ switch ($action) {
         $req['open_choices'] = RequestItems::openChoices($id);
         // Доставка — такая же строка подбора, как позиция (модуль 034)
         $req['delivery'] = RequestItems::delivery($id);
+        // Цены и условия, которыми менеджер закрыл прошлое КП: панель над
+        // таблицей подбора открывается ими, а не пустым выбором (модуль 035)
+        $req['conditions']  = Terms::conditions((int)$manager['id']);
+        $req['price_types'] = Catalog::priceTypes();
         jsonData($req);
 
     // ---- Matched catalog positions of a request (module 008) ----
 
-    case 'items':
-        requireAuth();
+    case 'items': {
+        $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
-        jsonData(['items' => RequestItems::ensure($id), 'delivery' => RequestItems::delivery($id)]);
+        jsonData([
+            'items'      => RequestItems::ensure($id),
+            'delivery'   => RequestItems::delivery($id),
+            // Цены и условия, которыми менеджер закрыл прошлое КП: следующее
+            // открывается ими же, а не пустым выбором заново (модуль 035)
+            'conditions' => Terms::conditions((int)$manager['id']),
+            'price_types'=> Catalog::priceTypes(),
+        ]);
+    }
+
+    /**
+     * Общие условия КП: тип цены, скидка и условия «под заказ» — один выбор на
+     * все позиции подбора (модуль 035). Выбор применяется к строкам И
+     * запоминается за менеджером: следующее КП начинается с него.
+     */
+    case 'items_conditions': {
+        $manager = requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $input = getInput();
+        $conditions = Terms::remember((int)$manager['id'], (array)($input['conditions'] ?? []));
+        $items = !empty($input['apply']) ? RequestItems::applyConditions($id, $conditions) : RequestItems::all($id);
+        jsonData(['items' => $items, 'conditions' => $conditions]);
+    }
 
     case 'items_save':
         requireAuth();

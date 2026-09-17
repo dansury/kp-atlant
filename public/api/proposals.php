@@ -297,6 +297,8 @@ switch ($action) {
                 foreach (['quantity', 'price', 'product_name', 'is_confirmed', 'notes', 'vat_rate', 'moysklad_product_id',
                           'description_text', 'specs_text', 'included_text', 'show_images', 'price_from', 'qty_from',
                           'alt_reason', 'site_url', 'is_excluded',
+                          // Аналог и верх вилки цен (модуль 035)
+                          'is_alternative', 'alt_of', 'price_max',
                           // Позиция «под заказ» и деньги, которые менеджер ставит руками (модуль 023)
                           'comment_text', 'discount_percent', 'price_is_manual',
                           'wait_on', 'wait_months', 'wait_discount', 'wait_prepay', 'position'] as $f) {
@@ -305,6 +307,12 @@ switch ($action) {
                 // Цену, проставленную руками, пересборка КП больше не перетирает
                 if (array_key_exists('price', $itemData) && !array_key_exists('price_is_manual', $itemData)) {
                     $upd['price_is_manual'] = 1;
+                }
+                // Вписанная руками цена отменяет вилку: «от 1 500 до 1 800»
+                // рядом с числом, которое поставил человек, — чужая цена в его
+                // строке (модуль 035)
+                if (array_key_exists('price', $itemData) && !array_key_exists('price_max', $itemData)) {
+                    $upd['price_max'] = 0;
                 }
                 // Комментарий правится как текст, а печатается как разметка —
                 // ровно так же, как описание позиции

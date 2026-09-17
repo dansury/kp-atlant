@@ -383,20 +383,26 @@ final class Boards {
         // интейк группирует письма по КОРНЮ семьи, и карточка, оставшаяся на
         // слитом id, выглядела для него отсутствующей — рядом с разложенной
         // заводилась вторая, во «Входящих» (модуль 031).
+        //
+        // Карточка ищется по ВСЕМ доскам, а не только по этой (модуль 035):
+        // перенесённая на другую доску переставала быть видимой интейку, и
+        // рядом с ней заводилась вторая, во «Входящих», — перенос выглядел
+        // задваиванием. Доска у сервиса одна по замыслу, но заводить их никто
+        // не мешает, и одна компания — это одна карточка, а не одна на доску.
         $onBoard = Db::all("SELECT d.id, COALESCE(cp.merged_into_id, d.counterparty_id) AS root_id,
-                                   d.counterparty_id, d.thread_key
+                                   d.counterparty_id, d.thread_key, c.board_id
                             FROM board_cards d
                             JOIN board_columns c ON c.id = d.column_id
-                            LEFT JOIN counterparties cp ON cp.id = d.counterparty_id
-                            WHERE c.board_id=?", [$boardId]);
+                            LEFT JOIN counterparties cp ON cp.id = d.counterparty_id");
         $haveCp = $haveThread = [];
         foreach ($onBoard as $r) {
             if ($r['root_id']) {
                 $root = (int)$r['root_id'];
                 $haveCp[$root] = true;
                 // Строку двигаем на корень: дальше она живёт как карточка той
-                // компании, под которой её теперь ищут и письма, и поиск
-                if ((int)$r['counterparty_id'] !== $root) {
+                // компании, под которой её теперь ищут и письма, и поиск.
+                // Правится только своя доска: чужую эта синхронизация не ведёт.
+                if ((int)$r['board_id'] === $boardId && (int)$r['counterparty_id'] !== $root) {
                     $name = (string)(Db::val("SELECT name FROM counterparties WHERE id=?", [$root]) ?: '');
                     Db::update('board_cards',
                                ['counterparty_id' => $root] + ($name !== '' ? ['title' => $name] : []),
@@ -678,6 +684,50 @@ final class Boards {
         }
     }
 
+    /**
+     * ==== Групповой перенос карточек (модуль 035) ====
+     *
+     * Отмеченные галочками карточки переезжают ВМЕСТЕ и в том порядке, в
+     * котором стояли. До этого перетаскивание знало ровно одну карточку —
+     * ту, за которую тянули: экран показывал переехавшую группу, база хранила
+     * одну строку, и обновление страницы возвращало остальные на место.
+     *
+     * Порядок считается один раз на всю группу: `moveCard()` на каждую
+     * карточку по очереди перенумеровывает колонку между вставками, и группа
+     * приезжала перевёрнутой.
+     *
+     * @param int[] $cardIds в том порядке, в каком они должны лечь
+     * @return int сколько карточек переехало
+     */
+    public static function moveCards(array $cardIds, int $columnId, int $position): int {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $cardIds))));
+        if (!$ids) return 0;
+        if (!Db::one("SELECT id FROM board_columns WHERE id=?", [$columnId])) {
+            throw new RuntimeException('Колонка не найдена');
+        }
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $known = array_map(fn($r) => (int)$r['id'], Db::all("SELECT id FROM board_cards WHERE id IN ($in)", $ids));
+        $moving = array_values(array_filter($ids, fn($id) => in_array($id, $known, true)));
+        if (!$moving) throw new RuntimeException('Карточка не найдена');
+
+        $siblings = array_map(fn($r) => (int)$r['id'], Db::all(
+            "SELECT id FROM board_cards WHERE column_id=? ORDER BY position, id", [$columnId]
+        ));
+        $siblings = array_values(array_filter($siblings, fn($id) => !in_array($id, $moving, true)));
+        $position = max(0, min(count($siblings), $position));
+        array_splice($siblings, $position, 0, $moving);
+
+        $now = date('Y-m-d H:i:s');
+        foreach ($siblings as $i => $id) {
+            $data = ['position' => $i];
+            // Своя история только у тех, кто ехал: карточки, которых группа
+            // подвинула, не «двигали»
+            if (in_array($id, $moving, true)) $data += ['column_id' => $columnId, 'moved_at' => $now];
+            Db::update('board_cards', $data, 'id=?', [$id]);
+        }
+        return count($moving);
+    }
+
     public static function updateCard(int $cardId, array $o): void {
         $data = [];
         if (array_key_exists('title', $o)) $data['title'] = trim((string)$o['title']) ?: 'Карточка';
@@ -866,6 +916,21 @@ final class Boards {
         $ids = array_values(array_unique(array_filter(array_map('intval', $cardIds))));
         if (!$ids) return ['done' => 0, 'failed' => 0, 'errors' => []];
 
+        // Перенос — операция над ГРУППОЙ, а не над каждой карточкой по очереди:
+        // порядок внутри группы считается один раз, иначе она приезжает
+        // перевёрнутой (модуль 035). Место назначения не указано — в конец.
+        if ($op === 'move') {
+            $columnId = (int)($opts['column_id'] ?? 0);
+            if (!$columnId) return ['done' => 0, 'failed' => count($ids), 'errors' => ['Не выбрана колонка']];
+            $position = array_key_exists('position', $opts) && $opts['position'] !== ''
+                ? (int)$opts['position'] : PHP_INT_MAX;
+            try {
+                return ['done' => self::moveCards($ids, $columnId, $position), 'failed' => 0, 'errors' => []];
+            } catch (Throwable $e) {
+                return ['done' => 0, 'failed' => count($ids), 'errors' => [$e->getMessage()]];
+            }
+        }
+
         $in = implode(',', array_fill(0, count($ids), '?'));
         $cards = Db::all("SELECT * FROM board_cards WHERE id IN ($in)", $ids);
 
@@ -873,14 +938,6 @@ final class Boards {
         foreach ($cards as $card) {
             try {
                 switch ($op) {
-                    case 'move':
-                        $columnId = (int)($opts['column_id'] ?? 0);
-                        if (!$columnId) throw new RuntimeException('Не выбрана колонка');
-                        // В конец колонки: групповое перемещение не должно
-                        // перетасовывать то, что менеджер уже разложил
-                        self::moveCard((int)$card['id'], $columnId, PHP_INT_MAX);
-                        break;
-
                     case 'remove':
                         self::dismissCard((int)$card['id']);
                         break;

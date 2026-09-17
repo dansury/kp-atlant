@@ -660,7 +660,8 @@ const App = {
                 </div>
             </div>
         `;
-        this.renderMatchedItems(req.id, req.items || [], null, {delivery: req.delivery});
+        this.renderMatchedItems(req.id, req.items || [], null,
+                                {delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
     },
 
     // ==== «Подходящие позиции»: what the letter's lines mean in our catalog ====
@@ -684,6 +685,10 @@ const App = {
         // Доставка живёт на блоке подбора: перерисовка строк её не теряет
         if (opts.delivery) host.dataset.delivery = JSON.stringify(opts.delivery);
         else if (host.dataset.delivery) opts = {...opts, delivery: JSON.parse(host.dataset.delivery)};
+        // Общие условия КП — тоже на блоке: они переживают перерисовку строк и
+        // приезжают с сервера уже теми, какими менеджер закрыл прошлое КП
+        if (opts.conditions) host.dataset.conditions = JSON.stringify(opts.conditions);
+        if (opts.price_types) host.dataset.priceTypes = JSON.stringify(opts.price_types);
         const open = items.filter(i => i.needs_choice).length;
         host.innerHTML = `
             <div class="card__title">Подходящие позиции ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}
@@ -692,6 +697,7 @@ const App = {
                подскажет локальная база товаров.</p>
             ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
                 выберите нужный, автоподбор сам не решает.</div>` : ''}
+            <div data-conditions>${this.conditionsPanel(host)}</div>
             <div data-match-rows>${items.map((i, n) => this.matchRow(i, n)).join('')}</div>
             ${items.length ? '' : '<p class="muted" data-match-empty>Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
             <div data-delivery>${this.deliveryRow(opts.delivery)}</div>
@@ -712,6 +718,90 @@ const App = {
         this.updateMatchTotal(host);
         this.bindMatchDnd(host);
         this.loadKpBoard(requestId, host);
+    },
+
+    /**
+     * ==== Цены и условия на всё КП (модуль 035) ====
+     *
+     * «Розница и минус десять на то, что под заказ» — это решение на всё
+     * предложение, а не на строку. Выставлялось оно в каждой строке по
+     * отдельности, и следующее КП начиналось с той же работы заново. Здесь это
+     * один выбор, и стоит он НАД таблицей — там, где принимают решение, а не
+     * там, где его сорок раз повторяют.
+     *
+     * Выбор запоминается за менеджером: следующее КП открывается тем, чем
+     * закрылось предыдущее. Поменял скидку — с этого места запомнена новая.
+     */
+    conditionsPanel(host) {
+        const c = host && host.dataset.conditions ? JSON.parse(host.dataset.conditions) : null;
+        if (!c) return '';
+        const types = host.dataset.priceTypes ? JSON.parse(host.dataset.priceTypes) : [];
+        return `
+            <div class="conditions">
+                <div class="conditions__title">Цены и условия — на все позиции${this.hint('kp-conditions')}</div>
+                <div class="conditions__row">
+                    <label>тип цены
+                        <select data-cond="price_type">
+                            <option value="">как в настройках</option>
+                            ${types.map(t => `<option value="${this.esc(t)}" ${t === c.price_type ? 'selected' : ''}>${this.esc(t)}</option>`).join('')}
+                        </select>
+                    </label>
+                    <label title="Скидка на каждую позицию подбора">скидка
+                        <input type="number" step="0.01" min="0" max="100" data-cond="discount" value="${Number(c.discount) || 0}">%
+                    </label>
+                    <label title="Условия ниже получат только позиции, которых нет на складе">
+                        <input type="checkbox" data-cond="wait_on" ${Number(c.wait_on) === 1 ? 'checked' : ''}> под заказ
+                    </label>
+                    <label>ждать
+                        <input type="number" min="0" max="120" data-cond="wait_months" value="${Number(c.wait_months) || 0}"> мес.
+                    </label>
+                    <label>за ожидание −
+                        <input type="number" step="0.01" min="0" max="100" data-cond="wait_discount" value="${Number(c.wait_discount) || 0}">%
+                    </label>
+                    <label>предоплата
+                        <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
+                    </label>
+                    <button class="btn btn--outline btn--sm" onclick="App.applyConditions(this)"
+                            title="Проставить выбранное всем позициям и запомнить для следующих КП">Применить ко всем</button>
+                </div>
+            </div>`;
+    },
+
+    /** Что выбрано в панели условий. */
+    collectConditions(host) {
+        const box = host && host.querySelector('[data-conditions]');
+        if (!box) return null;
+        const out = {};
+        box.querySelectorAll('[data-cond]').forEach(el => {
+            out[el.dataset.cond] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
+        });
+        return Object.keys(out).length ? out : null;
+    },
+
+    /**
+     * Проставить общие условия всем строкам — и запомнить их за менеджером.
+     *
+     * Цены пересчитывает СЕРВЕР: только он знает, что модификация без цены
+     * берёт цену товара, а товар без цены — вилку по модификациям. Строку с
+     * ценой, вписанной руками, он не трогает.
+     */
+    async applyConditions(btn) {
+        const host = this.matchHost(btn);
+        const conditions = this.collectConditions(host);
+        if (!host || !conditions) return;
+        const requestId = Number(host.dataset.requestId);
+        btn.disabled = true;
+        try {
+            const r = await this.api(`requests.php?action=items_conditions&id=${requestId}`,
+                                     {method: 'POST', body: {conditions, apply: 1}});
+            host.dataset.conditions = JSON.stringify(r.conditions || conditions);
+            this.renderMatchedItems(requestId, r.items || [], host, this.matchOpts(host));
+            this.toast('Условия проставлены и запомнены для следующих КП', 'success');
+        } catch (err) {
+            this.toast(err.message, 'error');
+        } finally {
+            btn.disabled = false;
+        }
     },
 
     /**
@@ -1545,6 +1635,56 @@ const App = {
             </div>`;
     },
 
+    /**
+     * ==== Аналог: чем это называл клиент (модуль 035) ====
+     *
+     * Галочка «аналог» открывает поле, а в поле уже стоит строка из письма или
+     * из таблицы клиента. Менеджер её правит — «Шлем ЗШ-1-2М (пр-во Армоком)»
+     * закупщик писал для себя, и в КП оно должно читаться так, как читается у
+     * него. В документе эта строка встаёт НАД названием нашего товара,
+     * курсивом серым: клиент находит в предложении свою позицию, не сверяя два
+     * документа глазами.
+     *
+     * Поле хранится отдельно от `raw_name`: письмо — это то, что написал
+     * клиент, и правка менеджера не имеет права его переписывать.
+     */
+    analogField(i = {}) {
+        const on = !!i.is_alternative;
+        return `
+            <div class="analog" data-analog ${on ? '' : 'hidden'}>
+                <span class="muted">в КП над нашим названием:</span>
+                <input type="text" data-field="alt_of" value="${this.esc(i.alt_of || i.raw_name || '')}"
+                       placeholder="Как эту позицию называл клиент"
+                       title="Печатается в КП курсивом серым над названием нашего товара">
+            </div>`;
+    },
+
+    /** Галочку подняли — поле открылось и ждёт правки; сняли — спряталось. */
+    toggleAnalog(box) {
+        const row = box.closest('[data-match-row]');
+        const field = row && row.querySelector('[data-analog]');
+        if (!field) return;
+        field.hidden = !box.checked;
+        if (!box.checked) return;
+        const input = field.querySelector('[data-field="alt_of"]');
+        if (input) input.focus();
+    },
+
+    /**
+     * Вилка цен товара, у которого своей цены нет (модуль 035).
+     *
+     * У общего товара цена часто стоит только на модификациях — и стоит там
+     * по-разному. В поле цены — низ вилки, здесь её верх: строка честно
+     * говорит, что «от 1 200» это не вся правда. Цены модификаций совпали —
+     * вилки нет и писать нечего.
+     */
+    priceRangeNote(i = {}) {
+        const max = Number(i.price_max) || 0;
+        if (max <= (Number(i.price) || 0)) return '';
+        return `<span class="muted price-range" title="Цена стоит на модификациях и отличается между ними">
+            до ${this.fmtMoney(max)}</span>`;
+    },
+
     matchRow(i = {}, index = -1) {
         const conf = i.match_confidence ? Math.round(i.match_confidence * 100) : null;
         const src = this.matchSourceLabel(i.match_source);
@@ -1556,9 +1696,8 @@ const App = {
                 <input type="hidden" data-field="article" value="${this.esc(i.article || '')}">
                 <input type="hidden" data-field="stock" value="${i.stock ?? ''}">
                 <input type="hidden" data-field="needs_choice" value="${i.needs_choice ? 1 : 0}">
-                <input type="hidden" data-field="is_alternative" value="${i.is_alternative ? 1 : 0}">
-                <input type="hidden" data-field="alt_of" value="${this.esc(i.alt_of || '')}">
                 <input type="hidden" data-field="is_out_of_scope" value="${i.is_out_of_scope ? 1 : 0}">
+                <input type="hidden" data-field="price_max" value="${i.price_max ?? 0}">
                 <div class="match-row__name">
                     ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}</div>` : ''}
                     ${this.variantNote(i)}
@@ -1568,19 +1707,28 @@ const App = {
                     <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
                            value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
                     <div class="suggest" hidden></div>
+                    ${this.analogField(i)}
                     ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted">ещё похожие:
                         ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
                 </div>
                 <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
                        placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal(this)">
                 <input type="text" data-field="unit" value="${this.esc(i.unit || 'шт.')}" placeholder="Ед." title="Единица измерения">
-                <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
-                       placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal(this)">
+                <span class="price-cell">
+                    <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
+                           placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal(this)">
+                    ${this.priceRangeNote(i)}
+                </span>
                 <span class="price-opts-slot">${this.priceOptsSelect(i.price_options || {})}</span>
                 <input type="text" data-field="notes" value="${this.esc(i.notes || '')}" placeholder="Примечание">
                 <label title="Позиция подтверждена менеджером — автоподбор её больше не трогает">
                     <input type="checkbox" data-field="is_confirmed" ${i.is_confirmed ? 'checked' : ''}> ок
                 </label>
+                <label title="Мы предлагаем не то, что клиент назвал: в КП над нашим названием встанет его собственное">
+                    <input type="checkbox" data-field="is_alternative" ${i.is_alternative ? 'checked' : ''}
+                           onchange="App.toggleAnalog(this)"> аналог
+                </label>
+                ${index === 0 ? this.hint('match-analog') : ''}
                 <div class="match-row__tools">
                     <span class="match-row__grip" draggable="true" title="Перетащить строку мышью">⠿</span>
                     <button class="btn btn--outline btn--sm" title="Выше" onclick="App.moveMatchRow(this, -1)">↑</button>
@@ -3200,7 +3348,8 @@ const App = {
             const draw = req => {
                 const kp = {proposal_id: (req.proposals && req.proposals[0]) ? req.proposals[0].id : null};
                 host.dataset.kp = JSON.stringify(kp);
-                this.renderMatchedItems(requestId, req.items || [], host, {kp, delivery: req.delivery});
+                this.renderMatchedItems(requestId, req.items || [], host,
+                    {kp, delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
             };
             // Сохранённый ответ рисуется сразу, свежий — когда придёт
             draw(await this.apiCached(`requests.php?action=get&id=${requestId}`, draw));
@@ -4213,6 +4362,8 @@ const App = {
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки — модель на это не тратится. Равнозначные варианты сервис не выбирает молча: он спрашивает.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
+        'kp-conditions':['Цены и условия на всё КП', 'Тип цены, скидка и условия «под заказ» — один выбор на все позиции, а не сорок раз по строкам. «Применить ко всем» проставляет его строкам и ЗАПОМИНАЕТ: следующее КП откроется этим же. Строку, где цену вписали руками, общий выбор не трогает, а условия ожидания получают только позиции, которых нет на складе.'],
+        'match-analog': ['Аналог', 'Мы предлагаем не то, что клиент назвал. Галочка открывает поле с его собственной формулировкой — правьте её как нужно. В КП она встанет над названием нашего товара курсивом серым, и закупщик найдёт в предложении свою позицию, не сверяя два документа глазами.'],
         'match-variant':['Модификации', 'Если в письме один товар просят в нескольких размерах или цветах («р.S-5шт, р.M-13шт»), сервис делает из этого отдельные строки с их количествами и подставляет каждой свою карточку из МойСклад — со своим артикулом, ценой и остатком.'],
         'kp-board':     ['Коммерческие предложения запроса', 'Одному запросу можно собрать несколько КП — по одному на заявку клиента. Слева стоят позиции запроса, которые ещё никуда не положили; дальше — по колонке на КП. Позицию перетаскивают мышью или переносят выпадающим списком на карточке. Счёт выставляется по конкретному КП, и счетов у одного КП может быть несколько.'],
         'kp-editor':    ['Редактор КП', 'Здесь правится всё, что попадёт в документ: цены, количества, тексты карточек товаров и блоки вокруг таблицы. Реквизиты и НДС правке не подлежат — они приходят из МойСклад и замораживаются на КП в момент создания.'],
@@ -6189,7 +6340,7 @@ const App = {
                       'По дате последнего письма компании')}
                 ${sel('Состояние', 'state', [['', 'любое'], ['unanswered', 'ждут ответа'],
                                              ['answered', 'отвечены'], ['unread', 'есть непрочитанные'],
-                                             ['kp', 'с КП'], ['nokp', 'без КП']],
+                                             ['kp', 'с КП'], ['nokp', 'без КП'], ['draft', 'черновики']],
                       'Что сейчас с карточкой')}
                 ${sel('Ящик', 'mailbox', [['', 'все ящики'],
                         ...(b.mailboxes || []).map(m => [String(m.id), this.esc(m.name)])],
@@ -6206,6 +6357,7 @@ const App = {
                             onclick="App.${f.archived ? 'archivePickAll' : 'boardPickAll'}(false)">Снять</button>
                     <button class="btn btn--outline btn--sm" onclick="App.resetBoardFilters()">Сбросить фильтры</button>
                 </span>
+                ${f.archived ? '' : this.boardPickByStateHtml()}
                 <span class="muted" data-board-shown></span>
             </details>`;
     },
@@ -6234,11 +6386,9 @@ const App = {
             const last = card.last_at ? Date.parse(String(card.last_at).replace(' ', 'T')) : 0;
             if (!last || Date.now() - last > days * 86400000) return false;
         }
-        if (f.state === 'unanswered' && !card.unanswered) return false;
-        if (f.state === 'answered'   &&  card.unanswered) return false;
-        if (f.state === 'unread'     && !card.unread) return false;
-        if (f.state === 'kp'         && !c.proposal_status) return false;
-        if (f.state === 'nokp'       &&  c.proposal_status) return false;
+        // Состояние разбирается в одном месте — им же пользуется «Отметить по
+        // статусу»: два разбора одних и тех же слов разошлись бы (модуль 035)
+        if (f.state && !this.cardInState(card, f.state)) return false;
         if (f.mailbox) {
             const boxes = (c.mailbox_ids || []).map(String);
             if (!boxes.includes(String(f.mailbox))) return false;
@@ -6453,25 +6603,50 @@ const App = {
      * Drag and drop with the browser's own HTML5 API — no library on a page that
      * has none. The card being dragged is shown where it would land, so a drop
      * is never a surprise.
+     *
+     * ==== Переезжает ГРУППА, и переезжает по-настоящему (модуль 035) ====
+     *
+     * Перетаскивание знало ровно одну карточку — ту, за которую тянули. Отметив
+     * галочками пять и потащив одну, менеджер видел на экране переехавшую
+     * группу, а база получала одну строку: обновление страницы возвращало
+     * остальные на место, «как будто я ничего не меняла». Поэтому здесь:
+     *
+     *   — тянут отмеченную карточку — едут ВСЕ отмеченные, своим порядком;
+     *   — экран перерисовывается ДОСКОЙ ИЗ ОТВЕТА сервера, а не тем, что
+     *     нарисовало перетаскивание: показанное и сохранённое — одно и то же;
+     *   — перетаскивание, которое ничем не кончилось (отпустили над шапкой
+     *     колонки, мимо доски, нажали Esc), возвращает экран как был. Раньше
+     *     карточки так и оставались лежать на новом месте — до перезагрузки.
      */
     boardBindDnd() {
         const board = document.getElementById('board');
         if (!board) return;
         let dragged = null;
+        let group = [];
+        let dropped = false;
 
         board.addEventListener('dragstart', e => {
             const card = e.target.closest('.bcard');
             if (!card) return;
             dragged = card;
-            card.classList.add('bcard--dragging');
+            dropped = false;
+            // Тянут отмеченную — едет вся отметка; тянут неотмеченную — она одна
+            const picked = this.boardPicked || new Set();
+            group = picked.has(card.dataset.card)
+                ? [...board.querySelectorAll('.bcard')].filter(el => picked.has(el.dataset.card))
+                : [card];
+            group.forEach(el => el.classList.add('bcard--dragging'));
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', card.dataset.card);
         });
 
         board.addEventListener('dragend', () => {
-            if (dragged) dragged.classList.remove('bcard--dragging');
+            group.forEach(el => el.classList.remove('bcard--dragging'));
             board.querySelectorAll('.bcol__cards--over').forEach(el => el.classList.remove('bcol__cards--over'));
+            // Бросок не состоялся — экран врёт о переезде, которого не было
+            if (dragged && !dropped) this.boardRedraw();
             dragged = null;
+            group = [];
         });
 
         board.addEventListener('dragover', e => {
@@ -6483,8 +6658,8 @@ const App = {
             // Insert before the first card whose middle is below the cursor
             const after = [...drop.querySelectorAll('.bcard:not(.bcard--dragging)')]
                 .find(el => e.clientY < el.getBoundingClientRect().top + el.offsetHeight / 2);
-            if (after) drop.insertBefore(dragged, after);
-            else drop.appendChild(dragged);
+            // Группа встаёт целиком и своим порядком — перед той же карточкой
+            group.forEach(el => after ? drop.insertBefore(el, after) : drop.appendChild(el));
         });
 
         board.addEventListener('dragleave', e => {
@@ -6496,19 +6671,40 @@ const App = {
             const drop = e.target.closest('[data-drop]');
             if (!drop || !dragged) return;
             e.preventDefault();
+            dropped = true;
             drop.classList.remove('bcol__cards--over');
 
-            const cardId = Number(dragged.dataset.card);
+            const all = [...drop.querySelectorAll('.bcard')];
+            const ids = group.map(el => Number(el.dataset.card));
             const columnId = Number(drop.dataset.drop);
-            const position = [...drop.querySelectorAll('.bcard')].indexOf(dragged);
-            this.boardRecount();
+            const position = Math.max(0, all.indexOf(group[0]));
             try {
-                await this.api('boards.php?action=card_move', {method: 'POST', body: {id: cardId, column_id: columnId, position}});
+                const r = await this.api('boards.php?action=card_move',
+                                         {method: 'POST', body: {ids, column_id: columnId, position}});
+                // Экран — это то, что лежит в базе, а не то, что нарисовала мышь
+                this.boardRedraw(r.board);
+                if (ids.length > 1) this.toast(`Перенесено карточек: ${ids.length}`, 'success');
             } catch (err) {
                 this.toast(err.message, 'error');
-                this.pageMailBoard();   // the server said no — show what it really holds
+                this.boardRedraw();   // the server said no — show what it really holds
             }
         });
+    },
+
+    /**
+     * Перерисовать колонки доски — из ответа сервера или из того, что уже
+     * загружено (модуль 035).
+     *
+     * Фильтры, поиск и отметки при этом остаются: перерисовка — это способ
+     * показать правду, а не повод сбросить человеку его работу.
+     */
+    boardRedraw(board) {
+        if (board) this.board = board;
+        const box = document.getElementById('board');
+        if (!box || !this.board) return;
+        box.innerHTML = (this.board.columns || []).map(c => this.boardColumn(c)).join('');
+        this.applyBoardFilters();
+        if (this.boardQuery) this.boardFilter(this.boardQuery);
     },
 
     /**
@@ -6523,6 +6719,62 @@ const App = {
         this.boardPicked = this.boardPicked || new Set();
         if (on) this.boardPicked.add(String(cardId)); else this.boardPicked.delete(String(cardId));
         this.boardSyncPicks();
+    },
+
+    /**
+     * ==== Отметить по статусу (модуль 035) ====
+     *
+     * «Выбрать все» — это все сорок карточек, а разбирают их не все сразу:
+     * сегодня переносят те, что ждут ответа, завтра — те, у которых уже есть
+     * КП. Фильтр для этого не годится: он ПРЯЧЕТ остальные, а отметить надо,
+     * продолжая видеть доску целиком.
+     *
+     * Отмечается всегда то, что на экране: скрытую фильтром карточку групповое
+     * действие тронуть не может, и отметить её отсюда нельзя тоже.
+     */
+    boardPickByStateHtml() {
+        const states = [
+            ['unanswered', 'ждут ответа'], ['answered', 'отвечены'], ['unread', 'непрочитанные'],
+            ['kp', 'с КП'], ['nokp', 'без КП'], ['draft', 'черновики'],
+        ];
+        return `
+            <span class="bfilter bfilter--pick" title="Отметить галочками карточки этого состояния — не пряча остальные">
+                <span>Отметить</span>
+                ${states.map(([v, label]) =>
+                    `<a onclick="App.boardPickByState('${v}')">${label}</a>`).join('')}
+            </span>`;
+    },
+
+    /** Поставить галочки видимым карточкам этого состояния, к уже отмеченным. */
+    boardPickByState(state) {
+        this.boardPicked = this.boardPicked || new Set();
+        const byId = new Map();
+        (this.board && this.board.columns || []).forEach(col =>
+            (col.cards || []).forEach(card => byId.set(String(card.id), card)));
+
+        let added = 0;
+        document.querySelectorAll('.bcard').forEach(el => {
+            if (el.hidden) return;
+            const card = byId.get(el.dataset.card);
+            if (!card || !this.cardInState(card, state)) return;
+            if (!this.boardPicked.has(el.dataset.card)) added++;
+            this.boardPicked.add(el.dataset.card);
+        });
+        this.boardSyncPicks();
+        if (!added) this.toast('Таких карточек на экране нет', 'info');
+    },
+
+    /** Состояние карточки словами фильтра — один разбор на фильтр и на отметку. */
+    cardInState(card, state) {
+        const c = card.company || {};
+        return {
+            unanswered: !!card.unanswered,
+            answered:   !card.unanswered,
+            unread:     !!card.unread,
+            kp:         !!c.proposal_status,
+            nokp:       !c.proposal_status,
+            draft:      !!card.draft,
+        }[state] ?? false;
     },
 
     /** Отметить или снять всё, что сейчас видно (скрытое фильтром — не трогаем). */
@@ -6560,11 +6812,11 @@ const App = {
                         title="Не наш профиль: переписка уйдёт в архив, карточки — с доски">🗄 В архив</button>
                 <button class="btn btn--outline btn--sm btn--danger" onclick="App.boardBulk('spam')"
                         title="Входящие письма уйдут в спам, карточки — с доски">🚫 Спам</button>
-                <label class="bfilter" title="Переместить отмеченные карточки в колонку">
+                <label class="bfilter" title="Переместить отмеченные карточки в колонку — своей доски или другой">
                     <span>В колонку</span>
                     <select onchange="if(this.value) App.boardBulk('move', {column_id: Number(this.value)}); this.value='';">
                         <option value="">выбрать…</option>
-                        ${columns.map(c => `<option value="${c.id}">${this.esc(c.title)}</option>`).join('')}
+                        ${this.bulkColumnOptions(columns)}
                     </select>
                 </label>
                 ${(this.boardFilters || {}).archived
@@ -6574,6 +6826,38 @@ const App = {
                         title="Убрать карточки с доски: письма останутся в почте, а карточка вернётся, когда компания напишет снова">Убрать с доски</button>
                 <button class="btn btn--outline btn--sm" onclick="App.boardPickAll(false)">Снять отметки</button>
             </div>`;
+    },
+
+    /**
+     * Колонки для «В колонку»: своей доски, а при нескольких досках — и чужих,
+     * группами (модуль 035). Доска у сервиса одна по замыслу, но заведённые
+     * руками существуют, и «перенести карточки с доски на доску» — это они.
+     *
+     * Список чужих досок подгружается один раз за сеанс и до тех пор список
+     * показывает свои колонки: ожидание ответа ради выпадающего списка
+     * читалось бы как зависший экран.
+     */
+    bulkColumnOptions(columns) {
+        const own = columns.map(c => `<option value="${c.id}">${this.esc(c.title)}</option>`).join('');
+        if (!this.boardTargets) { this.loadBoardTargets(); return own; }
+        const others = this.boardTargets.filter(b => Number(b.id) !== Number(this.board && this.board.id));
+        if (!others.length) return own;
+        return own + others.map(b => `
+            <optgroup label="${this.esc(b.name)}">
+                ${(b.columns || []).map(c => `<option value="${c.id}">${this.esc(c.title)}</option>`).join('')}
+            </optgroup>`).join('');
+    },
+
+    /** Доски и их колонки — один раз за сеанс, молча. */
+    async loadBoardTargets() {
+        if (this._boardTargetsPending) return;
+        this._boardTargetsPending = true;
+        try {
+            const d = await this.api('boards.php?action=targets');
+            this.boardTargets = d.items || [];
+            // Список уже нарисован своими колонками — перерисовываем панель
+            if (this.boardTargets.length > 1) this.boardSyncPicks();
+        } catch { this.boardTargets = []; }
     },
 
     /** Применить групповое действие и перерисовать доску по факту, а не по надежде. */
@@ -6598,6 +6882,8 @@ const App = {
             } else {
                 this.toast(`Готово: ${r.done}`, 'success');
             }
+            // Доска из ответа — это то, что получилось, а не то, на что надеялись
+            if (r.board && !(this.boardFilters || {}).archived) { this.boardRedraw(r.board); return; }
         } catch (err) {
             this.toast(err.message, 'error');
         }

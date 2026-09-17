@@ -706,11 +706,23 @@ final class MailArchive {
         if ($uid > 0 && Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND folder=? AND uid=?", [$mailboxId, $folder, $uid])) return true;
 
         $global = self::dedupEnabled();
+
+        // Письмо, написанное самим себе, — ДВА факта, а не один (модуль 035):
+        // оно и отправлено, и получено. Дедупликация складывала их в одну
+        // строку — ту, что легла первой, — и письмо с нашего адреса на наш же
+        // во «Входящих» не появлялось вовсе: его съедала копия из
+        // «Отправленных» (или строка, записанная самой отправкой из сервиса).
+        // Поэтому у такой входящей копии дубликатом считается только другая
+        // ВХОДЯЩАЯ. Копия себе в «Копию» письма клиенту сюда не попадает: там
+        // в «Кому» стоит клиент, и ответ остаётся в переписке один.
+        $selfCopy = $direction === 'in' && self::writtenToOurselves($msg);
+        $sameWay  = $selfCopy ? " AND direction='in'" : '';
+
         // The same message can arrive twice (INBOX + Sent sync, or a re-created mailbox)
         if ($messageId !== '') {
             $found = $global
-                ? Db::val("SELECT 1 FROM mail_messages WHERE message_id=?", [$messageId])
-                : Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND folder=?",
+                ? Db::val("SELECT 1 FROM mail_messages WHERE message_id=?$sameWay", [$messageId])
+                : Db::val("SELECT 1 FROM mail_messages WHERE mailbox_id=? AND message_id=? AND folder=?$sameWay",
                           [$mailboxId, $messageId, $folder]);
             if ($found) return true;
             // A letter WE sent is already in the archive under folder «SENT» or under
@@ -726,9 +738,33 @@ final class MailArchive {
         // body and the files are the same, so it is the same letter.
         if ($global && (string)Settings::get('MAIL_DEDUP_CONTENT', 1) === '1') {
             $hash = self::fingerprint($msg);
-            if ($hash !== '' && Db::val("SELECT 1 FROM mail_messages WHERE dedup_hash=?", [$hash])) return true;
+            if ($hash !== '' && Db::val("SELECT 1 FROM mail_messages WHERE dedup_hash=?$sameWay", [$hash])) return true;
         }
         return false;
+    }
+
+    /**
+     * Письмо, написанное самим себе: пришло с НАШЕГО адреса и адресовано
+     * ТОЛЬКО нашим (модуль 035).
+     *
+     * Так менеджер проверяет почту — отправляет письмо себе и ждёт его во
+     * «Входящих». Копия себе в «Копию» письма клиенту — не оно: в «Кому» там
+     * стоит клиент, и второй строки в переписке быть не должно.
+     */
+    private static function writtenToOurselves(array $msg): bool {
+        require_once __DIR__ . '/crm.php';
+
+        $from = MailDomains::firstAddress((string)($msg['from'] ?? ''));
+        if ($from === '' || !Crm::isOurAddress($from)) return false;
+
+        $seen = false;
+        foreach (preg_split('/[,;]/', (string)($msg['to'] ?? '')) ?: [] as $part) {
+            $addr = MailDomains::firstAddress($part);
+            if ($addr === '') continue;
+            if (!Crm::isOurAddress($addr)) return false;
+            $seen = true;
+        }
+        return $seen;
     }
 
     /** Deduplication is the default for every mailbox; a setting can switch it off. */
