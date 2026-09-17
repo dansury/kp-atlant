@@ -33,6 +33,7 @@
 | Описание товара стоит в поле, печатается в КП и не уходит в письмо | `specs/032-item-description-in-kp/spec.md` | Implemented |
 | Черновик письма — карточка в «В работе»; контрагент заводится в МойСклад по ИНН из письма | `specs/033-draft-cards-and-moysklad/spec.md` | Implemented |
 | КП как в образце, доставка строкой подбора, ИНН из переписки нейросетью | `specs/034-kp-sample-delivery-inn/spec.md` | Implemented |
+| Документ набран как образец, ход работы виден, имя файла информативное | `specs/035-kp-typography-and-progress/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |

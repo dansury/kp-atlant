@@ -493,7 +493,7 @@ switch ($action) {
         header('Content-Type: application/pdf');
         // Имя видно и во вкладке предпросмотра, и в «Сохранить как» (модуль 022)
         $name = PdfGenerator::fileName($id, 'pdf');
-        header('Content-Disposition: inline; filename="KP-' . $id . '.pdf"; '
+        header('Content-Disposition: inline; filename="' . PdfGenerator::asciiFileName($id, 'pdf') . '"; '
              . "filename*=UTF-8''" . rawurlencode($name));
         readfile($proposal['pdf_path']);
         exit;
@@ -514,7 +514,7 @@ switch ($action) {
         }
         $name = DocxGenerator::filename($id);
         header('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        header('Content-Disposition: attachment; filename="KP-' . $id . '.docx"; '
+        header('Content-Disposition: attachment; filename="' . PdfGenerator::asciiFileName($id, 'docx') . '"; '
              . "filename*=UTF-8''" . rawurlencode($name));
         header('Content-Length: ' . (string)filesize($path));
         readfile($path);
