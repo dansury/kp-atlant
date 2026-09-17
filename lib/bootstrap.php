@@ -1584,9 +1584,9 @@ SQL);
         $current = 32;
     }
 
-    // v33 — модуль 034: обращение в поддержку с файлами, мастер настройки и
+    // v36 — модуль 038: обращение в поддержку с файлами, мастер настройки и
     // проверочный запрос, по которому оценивают качество КП и письма.
-    if ($current < 33) {
+    if ($current < 36) {
         // Жалоба менеджера. В GitHub она уходит только после ревью админа,
         // поэтому у строки есть и своё состояние, и номер заведённого issue.
         Db::pdo()->exec("
@@ -1626,8 +1626,8 @@ SQL);
         // не выглядела клиентом, которому забыли ответить.
         Db::ensureColumn('requests', 'is_trial', 'INTEGER', '0');
 
-        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '33')");
-        $current = 33;
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '36')");
+        $current = 36;
     }
 }
 

@@ -26,7 +26,7 @@
 ```
 
 ### GET `?action=me`
-`setup_pending` is sent to admins only — the setup wizard has never been finished (module 034).
+`setup_pending` is sent to admins only — the setup wizard has never been finished (module 038).
 ```json
 // Response 200
 {"id": 1, "login": "admin", "name": "Кирилл", "email": "...", "is_admin": true,
@@ -80,7 +80,7 @@
 }
 ```
 
-### POST `?action=create` (manual paste, US2; files and the board card — module 034)
+### POST `?action=create` (manual paste, US2; files and the board card — module 038)
 `files` — names returned by `mail.php?action=upload`; `trial` marks the setup wizard's own
 check. The request lands as a card in «В работе» and the answer says WHERE to go.
 ```json
@@ -285,7 +285,7 @@ Forces full product cache refresh from MoySklad.
 
 ---
 
-## Support (`support.php`) — module 034
+## Support (`support.php`) — module 038
 
 Any signed-in manager may submit; review and the GitHub issue are admin-only.
 
@@ -337,7 +337,7 @@ Any signed-in manager may submit; review and the GitHub issue are admin-only.
 
 ---
 
-## Setup wizard (`setup.php`) — module 034, admin only
+## Setup wizard (`setup.php`) — module 038, admin only
 
 ### GET `?action=state`
 ```json

@@ -494,7 +494,7 @@ with the same correct answer is never stored twice: identical examples crowd the
 out of a prompt.
 
 ## Setup, support and the trial request
-A service nobody can INSTALL is a service with one operator (module 034). `SetupWizard` is
+A service nobody can INSTALL is a service with one operator (module 038). `SetupWizard` is
 not a second settings screen: it asks the same `Settings::SPEC` keys, renders its fields from
 that spec and writes through `Settings` — it stores no value of its own, only where the
 operator stopped (`settings['setup_wizard']`, no `cfg.` prefix, because state is not a

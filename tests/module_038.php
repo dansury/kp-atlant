@@ -15,11 +15,11 @@
  *   — «палец вниз» заводит обращение и предлагает модели ДОРОЖЕ нынешней;
  *   — проверочный запрос помнится мастером и не считается письмом клиента.
  *
- * Запуск:  php tests/module_034.php
+ * Запуск:  php tests/module_038.php
  *
  * База своя, в системной временной папке: `data/kp.db` не открывается вовсе.
  */
-$tmpDb = sys_get_temp_dir() . '/kp-test-034-' . getmypid() . '.db';
+$tmpDb = sys_get_temp_dir() . '/kp-test-038-' . getmypid() . '.db';
 $configPath = dirname(__DIR__) . '/config.php';
 $hadConfig = file_exists($configPath);
 
@@ -80,7 +80,7 @@ ok('таблица обращений заведена', in_array('support_ticke
 ok('таблица файлов обращения заведена', in_array('support_files', $tables, true));
 $reqCols = array_column(Db::all("PRAGMA table_info(requests)"), 'name');
 ok('у запроса есть отметка «проверочный»', in_array('is_trial', $reqCols, true));
-ok('версия схемы поднята', (int)Db::val("SELECT value FROM settings WHERE key='schema_version'") >= 33);
+ok('версия схемы поднята', (int)Db::val("SELECT value FROM settings WHERE key='schema_version'") >= 36);
 
 // =====================================================================  2
 

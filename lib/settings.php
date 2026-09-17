@@ -200,7 +200,7 @@ final class Settings {
         'FALLBACK_HOURS'        => ['notify', 'Порог эскалации, часов', 'int', false, 24, ''],
         'NOTIFICATION_POLL_SEC' => ['notify', 'Опрос уведомлений, сек', 'int', false, 30, ''],
 
-        // --- Обратная связь (модуль 034): жалоба из панели → issue репозитория ---
+        // --- Обратная связь (модуль 038): жалоба из панели → issue репозитория ---
         'SUPPORT_ENABLED'       => ['support', 'Кнопка «Написать в поддержку»', 'bool', false, 1, 'Менеджер описывает проблему прямо на том экране, где её встретил, и прикладывает файлы. Обращение уходит администратору на ревью, а не сразу в GitHub'],
         'SUPPORT_REPO'          => ['support', 'Репозиторий для issue', 'text', false, 'dansury/kp-atlant', 'В формате owner/repo. Пусто — обращения живут только в панели'],
         'SUPPORT_TOKEN'         => ['support', 'Токен GitHub для issue', 'secret', true, '', 'Fine-grained токен с правами Issues: Read and write и Contents: Read and write (файлы обращения). Пусто — берётся общий токен из «Базы знаний»'],

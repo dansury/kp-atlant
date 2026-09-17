@@ -719,7 +719,7 @@ try {
                 ],
                 // Логотип КП: «загружен» и «печатается» — не одно и то же
                 'logo'       => ['warning' => Branding::documentWarning('kp')],
-                // Чего не хватает для запуска и что просят менеджеры (модуль 034)
+                // Чего не хватает для запуска и что просят менеджеры (модуль 038)
                 'setup'      => setupSummary(),
                 'support'    => ['pending' => Support::pending(), 'repo' => Support::repo(),
                                  'token_set' => Support::token() !== ''],
