@@ -26,6 +26,10 @@ storage/product_images/*
 # Файлы, которые менеджер приложил к письму и ещё не отправил (модуль 023)
 storage/outbox/*
 !storage/outbox/.gitkeep
+# Файлы обращений в поддержку (модуль 034): их копия уезжает в issue, оригинал
+# живёт здесь и переживает деплой
+storage/support/*
+!storage/support/.gitkeep
 # Tone of Voice, отредактированный в панели (модуль 022): живёт в storage/,
 # потому что деплой перезаписывает файлы репозитория
 storage/tov.md

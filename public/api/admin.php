@@ -9,6 +9,8 @@ require_once ROOT . '/lib/managers.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/mailsync.php';
 require_once ROOT . '/lib/branding.php';
+require_once ROOT . '/lib/support.php';
+require_once ROOT . '/lib/setup_wizard.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -717,6 +719,10 @@ try {
                 ],
                 // Логотип КП: «загружен» и «печатается» — не одно и то же
                 'logo'       => ['warning' => Branding::documentWarning('kp')],
+                // Чего не хватает для запуска и что просят менеджеры (модуль 034)
+                'setup'      => setupSummary(),
+                'support'    => ['pending' => Support::pending(), 'repo' => Support::repo(),
+                                 'token_set' => Support::token() !== ''],
             ]);
 
         default:
@@ -727,6 +733,17 @@ try {
 } catch (Throwable $e) {
     Logger::exception('admin', $e, ['action' => $action]);
     jsonError($e->getMessage(), 500);
+}
+
+/** Мастер настройки на «Обзоре»: сколько шагов закрыто и на каком встали. */
+function setupSummary(): array {
+    $p = SetupWizard::progress();
+    $waiting = [];
+    foreach ($p['steps'] as $step) {
+        if (empty($step['optional']) && ($step['state']['status'] ?? '') !== 'ok') $waiting[] = (string)$step['title'];
+    }
+    return ['done' => $p['done'], 'total' => $p['total'], 'next' => $p['next'],
+            'waiting' => $waiting, 'finished' => !empty($p['state']['done_at'])];
 }
 
 /** Options for the deploy check: the switch from the panel, the creds from pull-config.php. */

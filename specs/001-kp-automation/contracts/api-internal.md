@@ -26,9 +26,11 @@
 ```
 
 ### GET `?action=me`
+`setup_pending` is sent to admins only — the setup wizard has never been finished (module 034).
 ```json
 // Response 200
-{"id": 1, "login": "admin", "name": "Кирилл", "email": "...", "is_admin": true}
+{"id": 1, "login": "admin", "name": "Кирилл", "email": "...", "is_admin": true,
+ "setup_pending": false}
 ```
 
 ---
@@ -78,12 +80,16 @@
 }
 ```
 
-### POST `?action=create` (manual paste, US2)
+### POST `?action=create` (manual paste, US2; files and the board card — module 034)
+`files` — names returned by `mail.php?action=upload`; `trial` marks the setup wizard's own
+check. The request lands as a card in «В работе» and the answer says WHERE to go.
 ```json
 // Request
-{"text": "Нужно 20 жгутов-турникетов CAT...", "counterparty_name": "ООО Ромашка"}
+{"text": "Нужно 20 жгутов-турникетов CAT...", "counterparty_name": "ООО Ромашка",
+ "files": ["a1b2__спецификация.xlsx"], "trial": false}
 // Response 201
-{"id": 2, "status": "processing"}
+{"id": 2, "status": "processing", "type": "kp_request", "counterparty_id": 7,
+ "card_id": 31, "files": 1, "hash": "mail/company/7"}
 ```
 
 ### POST `?action=assign&id=1`
@@ -276,3 +282,96 @@ Forces full product cache refresh from MoySklad.
   "payments": 2
 }
 ```
+
+---
+
+## Support (`support.php`) — module 034
+
+Any signed-in manager may submit; review and the GitHub issue are admin-only.
+
+### GET `?action=list&status=new`
+```json
+// Response 200 — a manager sees only their own tickets
+{
+  "items": [
+    {"id": 3, "kind": "bug", "title": "Не отправляется КП", "status": "new",
+     "page": "#mail/company/12", "manager_name": "Менеджер", "issue_url": null,
+     "files": [{"id": 5, "filename": "скриншот.png", "mime": "image/png", "size": 8213,
+                "remote_url": null}], "created_at": "2026-09-17T10:00:00"}
+  ],
+  "kinds": {"bug": "Не работает", "idea": "Предложение", "question": "Вопрос",
+            "quality": "Качество КП и письма"},
+  "statuses": {"new": "На ревью", "approved": "В GitHub", "declined": "Отклонена"},
+  "enabled": true, "is_admin": false, "pending": 0,
+  "repo": "dansury/kp-atlant", "token_set": true, "max_mb": 25
+}
+```
+
+### POST `?action=upload` — multipart `file`, staged like a letter's attachment
+```json
+{"ok": true, "file": {"name": "a1b2__скриншот.png", "filename": "скриншот.png", "size": 8213}}
+```
+
+### POST `?action=submit`
+```json
+// Request
+{"kind": "bug", "title": "...", "body": "...", "page": "#mail/company/12",
+ "files": ["a1b2__скриншот.png"]}
+// Response 200
+{"ok": true, "id": 3, "files": 1, "items": [/* the list again */]}
+```
+
+### GET `?action=file&id=5` — the stored file itself (not a GitHub link)
+
+### POST `?action=approve` — admin; uploads the files, then creates the issue
+```json
+// Request
+{"id": 3, "title": "Не отправляется КП из карточки"}
+// Response 200
+{"ok": true, "number": 61, "url": "https://github.com/…/issues/61", "uploaded": 1, "failed": []}
+// Response 400 — nothing was sent and the ticket is still «new»
+{"error": "Нужен токен GitHub с правом Issues: Write — «Настройки → Обратная связь»", "code": 400}
+```
+
+### POST `?action=decline` — admin; `{"id": 3, "note": "Уже есть в «Повторить»"}`
+
+---
+
+## Setup wizard (`setup.php`) — module 034, admin only
+
+### GET `?action=state`
+```json
+{
+  "steps": [
+    {"key": "moysklad", "title": "МойСклад", "why": "…", "optional": false, "skipped": false,
+     "state": {"status": "ok", "note": "Каталог: позиций 1240"},
+     "links": [{"label": "Создать токен в МойСклад", "url": "https://…", "note": "…"}],
+     "fields": [{"key": "MOYSKLAD_TOKEN", "label": "Токен МойСклад", "type": "secret",
+                 "secret": true, "value": "", "filled": true, "tail": "1a2b…9z8y"}],
+     "test": "test_moysklad"}
+  ],
+  "state": {"started_at": "…", "done_at": null, "skipped": [], "trial_request_id": 0,
+            "trial_counterparty_id": 0, "trial_votes": {}},
+  "done": 6, "total": 8, "next": "llm", "ready": false, "trial_text": "Здравствуйте!…"
+}
+```
+
+### POST `?action=save` — `{"step": "moysklad", "values": {"MOYSKLAD_TOKEN": "…"}}`
+Keys that do not belong to the step are ignored; an empty secret keeps the stored value.
+
+### POST `?action=skip` / `?action=start` / `?action=restart` / `?action=finish`
+`restart` clears the wizard's own state only — no setting is touched.
+
+### POST `?action=vote` — quality of the trial КП and letter
+```json
+// Request
+{"what": "letter", "vote": "down", "comment": "Сухое, без сроков", "model": "yandex:yandexgpt-lite"}
+// Response 200 — a «quality» support ticket plus models that cost MORE
+{"ok": true, "ticket": 9, "current": {"provider": "yandex", "model": "yandexgpt-lite"},
+ "pricier": [{"provider": "yandex", "model": "yandexgpt", "label": "YandexGPT Pro",
+              "spec": "yandex:yandexgpt", "price": null, "tier": 2}],
+ "done": 8, "total": 8}
+```
+
+### POST `?action=model` — `{"spec": "yandex:yandexgpt"}`
+Stores it as the provider's default model and moves that provider to the head of the chain.
