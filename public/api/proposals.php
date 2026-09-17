@@ -297,7 +297,7 @@ switch ($action) {
                 foreach (['quantity', 'price', 'product_name', 'is_confirmed', 'notes', 'vat_rate', 'moysklad_product_id',
                           'description_text', 'specs_text', 'included_text', 'show_images', 'price_from', 'qty_from',
                           'alt_reason', 'site_url', 'is_excluded',
-                          // Аналог и верх вилки цен (модуль 035)
+                          // Аналог и верх вилки цен (модуль 036)
                           'is_alternative', 'alt_of', 'price_max',
                           // Позиция «под заказ» и деньги, которые менеджер ставит руками (модуль 023)
                           'comment_text', 'discount_percent', 'price_is_manual',
@@ -310,7 +310,7 @@ switch ($action) {
                 }
                 // Вписанная руками цена отменяет вилку: «от 1 500 до 1 800»
                 // рядом с числом, которое поставил человек, — чужая цена в его
-                // строке (модуль 035)
+                // строке (модуль 036)
                 if (array_key_exists('price', $itemData) && !array_key_exists('price_max', $itemData)) {
                     $upd['price_max'] = 0;
                 }
@@ -501,7 +501,7 @@ switch ($action) {
         header('Content-Type: application/pdf');
         // Имя видно и во вкладке предпросмотра, и в «Сохранить как» (модуль 022)
         $name = PdfGenerator::fileName($id, 'pdf');
-        header('Content-Disposition: inline; filename="KP-' . $id . '.pdf"; '
+        header('Content-Disposition: inline; filename="' . PdfGenerator::asciiFileName($id, 'pdf') . '"; '
              . "filename*=UTF-8''" . rawurlencode($name));
         readfile($proposal['pdf_path']);
         exit;
@@ -522,7 +522,7 @@ switch ($action) {
         }
         $name = DocxGenerator::filename($id);
         header('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        header('Content-Disposition: attachment; filename="KP-' . $id . '.docx"; '
+        header('Content-Disposition: attachment; filename="' . PdfGenerator::asciiFileName($id, 'docx') . '"; '
              . "filename*=UTF-8''" . rawurlencode($name));
         header('Content-Length: ' . (string)filesize($path));
         readfile($path);

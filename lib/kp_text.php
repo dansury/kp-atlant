@@ -35,14 +35,14 @@ final class KpText {
         $n = 0;
         $total = 0.0;
         // Хоть одна вилка — и «Итого» называется «от»: сумма низов вилок и есть
-        // то, с чего начинается предложение (модуль 035)
+        // то, с чего начинается предложение (модуль 036)
         $totalIsFrom = false;
         foreach ($items as $item) {
             $n++;
             $price = Terms::price($item);
             $sum = $price * (float)$item['quantity'];
             $total += $sum;
-            // Та же вилка, что и в файле (модуль 035): письмо и документ не
+            // Та же вилка, что и в файле (модуль 036): письмо и документ не
             // имеют права назвать клиенту разные цены
             $top = Terms::priceTop($item);
             if ($top > 0 || !empty($item['price_from'])) $totalIsFrom = true;

@@ -82,6 +82,8 @@ final class Html2Docx {
         $zip->addFromString('docProps/core.xml', $this->coreProps($meta));
         $zip->addFromString('word/document.xml', $xml);
         $zip->addFromString('word/styles.xml', $this->styles());
+        $zip->addFromString('word/fontTable.xml', $this->fontTable());
+        $zip->addFromString('word/settings.xml', $this->docSettings());
         $zip->addFromString('word/_rels/document.xml.rels', $this->documentRels());
         foreach ($this->media as $name => $bytes) $zip->addFromString('word/' . $name, $bytes);
         $zip->close();
@@ -256,7 +258,7 @@ final class Html2Docx {
                 'swap', 'stock-warning', 'accent'
                                => ['color' => 'C00000'] + $style,
                 // Чем клиент называл позицию: курсив серым над нашим названием
-                // (модуль 035) — в Word теми же словами и тем же начертанием
+                // (модуль 036) — в Word теми же словами и тем же начертанием
                 'analog-of'    => ['i' => true, 'color' => '6B6B6B', 'size' => 17] + $style,
                 'sign-name'    => ['b' => true] + $style,
                 'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'right'] + $style,
@@ -402,7 +404,20 @@ final class Html2Docx {
 
     // ----------------------------------------------------------------- images
 
-    /** A data: URI from the template becomes a real part of the package. */
+    /**
+     * Картинка КП: где она стоит и как её обтекает текст (модуль 035).
+     *
+     * Все картинки печатались «в строке» (`wp:inline`) — каждая занимала целую
+     * строку во всю ширину, и документ рассыпался: знак отрывал от себя
+     * реквизиты, фотография товара выпихивала описание на страницу ниже,
+     * подпись стояла отдельной строкой между датой и расшифровкой. В образце,
+     * по которому КП уходит клиенту, они ПЛАВАЮЩИЕ: знак слева и реквизиты
+     * справа от него, фотография справа и описание слева от неё, подпись —
+     * поверх строки подписи.
+     *
+     * Что чем становится, решает класс из шаблона — там же, где это видно
+     * человеку, а не здесь по догадке о размере файла.
+     */
     private function image(DOMElement $img): string {
         $src = (string)$img->getAttribute('src');
         if (!preg_match('#^data:image/([a-z0-9.+-]+);base64,(.+)$#is', $src, $m)) return '';
@@ -413,22 +428,12 @@ final class Html2Docx {
         $size = @getimagesizefromstring($bytes);
         [$w, $h] = $size ? [(int)$size[0], (int)$size[1]] : [480, 320];
         if ($w <= 0 || $h <= 0) return '';
-        // A photo pasted at its own pixel size would run off an A4 page; a QR
-        // is not a photo and only has to stay big enough for a phone camera,
-        // and a signature scan is neither — напечатанная на полстраницы подпись
-        // и была тем, на что жаловались (модуль 034).
-        $classes = preg_split('/\s+/', strtolower(trim((string)$img->getAttribute('class')))) ?: [];
-        $maxPx = 430;
-        $maxHeightPx = 0;
-        foreach ($classes as $class) {
-            if ($class === 'logo')     { $maxPx = 220; }
-            if ($class === 'qr')       { $maxPx = 110; }
-            if ($class === 'sign-img') { $maxPx = 170; $maxHeightPx = 60; }
-        }
-        if ($w > $maxPx) { $h = (int)round($h * $maxPx / $w); $w = $maxPx; }
-        if ($maxHeightPx > 0 && $h > $maxHeightPx) {
-            $w = (int)round($w * $maxHeightPx / $h);
-            $h = $maxHeightPx;
+
+        $spec = $this->imageSpec($img);
+        if ($w > $spec['max_w']) { $h = (int)round($h * $spec['max_w'] / $w); $w = $spec['max_w']; }
+        if ($spec['max_h'] > 0 && $h > $spec['max_h']) {
+            $w = (int)round($w * $spec['max_h'] / $h);
+            $h = $spec['max_h'];
         }
         if ($w < 1 || $h < 1) return '';
 
@@ -436,19 +441,91 @@ final class Html2Docx {
         $this->media[$name] = $bytes;
         $rid = $this->addRel('http://schemas.openxmlformats.org/officeDocument/2006/relationships/image', $name);
         $id = ++$this->docPrSeq;
+        $cx = $w * self::EMU_PER_PX;
+        $cy = $h * self::EMU_PER_PX;
 
-        return '<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
-            . '<wp:extent cx="' . ($w * self::EMU_PER_PX) . '" cy="' . ($h * self::EMU_PER_PX) . '"/>'
-            . '<wp:docPr id="' . $id . '" name="Изображение ' . $id . '"/>'
+        $frame = $spec['wrap'] === null
+            ? $this->inlineFrame($cx, $cy, $id)
+            : $this->anchorFrame($cx, $cy, $id, $spec);
+
+        return '<w:r><w:drawing>' . $frame['open']
             . '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
             . '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
             . '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
             . '<pic:nvPicPr><pic:cNvPr id="' . $id . '" name="image' . $id . '.' . $ext . '"/><pic:cNvPicPr/></pic:nvPicPr>'
             . '<pic:blipFill><a:blip r:embed="' . $rid . '"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
-            . '<pic:spPr><a:xfrm><a:off x="0" y="0"/>'
-            . '<a:ext cx="' . ($w * self::EMU_PER_PX) . '" cy="' . ($h * self::EMU_PER_PX) . '"/></a:xfrm>'
+            . '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' . $cx . '" cy="' . $cy . '"/></a:xfrm>'
             . '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
-            . '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>';
+            . '</pic:pic></a:graphicData></a:graphic>'
+            . $frame['close'] . '</w:drawing></w:r>';
+    }
+
+    /**
+     * Во что превращается картинка этого класса: размер, сторона и обтекание.
+     *
+     * `wrap === null` — картинка стоит в строке, как стояли все до модуля 035.
+     */
+    private function imageSpec(DOMElement $img): array {
+        $classes = preg_split('/\s+/', strtolower(trim((string)$img->getAttribute('class')))) ?: [];
+        // Фотография товара по умолчанию: справа, описание обтекает её слева
+        $spec = ['max_w' => self::px('KP_PHOTO_WIDTH', 225), 'max_h' => 0,
+                 'wrap' => 'square', 'align' => 'right', 'behind' => 0, 'offset_v' => 0];
+        foreach ($classes as $class) {
+            if ($class === 'logo') {
+                // Знак слева, реквизиты поставщика — справа от него
+                $spec = ['max_w' => self::px('KP_LOGO_WIDTH', 160), 'max_h' => 0,
+                         'wrap' => 'square', 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
+            }
+            if ($class === 'qr') {
+                $spec = ['max_w' => 110, 'max_h' => 110,
+                         'wrap' => 'square', 'align' => 'right', 'behind' => 0, 'offset_v' => 0];
+            }
+            if ($class === 'sign-img') {
+                // Подпись ложится ПОВЕРХ строки подписи, не раздвигая текст,
+                // и приподнята над ней — как расписываются на бумаге
+                // behind=1 — подпись ложится ПОД текст: линия подписи и
+                // расшифровка остаются читаемыми, как в образце
+                $spec = ['max_w' => self::px('KP_SIGN_WIDTH', 115), 'max_h' => 105,
+                         'wrap' => 'none', 'align' => 'right', 'behind' => 1,
+                         'offset_v' => -55 * self::EMU_PER_PX];
+            }
+        }
+        return $spec;
+    }
+
+    /** Размер из настроек в пикселях, с разумными границами. */
+    private static function px(string $key, int $default): int {
+        return max(40, min(600, (int)Settings::get($key, $default)));
+    }
+
+    /** Картинка в строке текста — как стоят все, кому обтекание не задано. */
+    private function inlineFrame(int $cx, int $cy, int $id): array {
+        return [
+            'open' => '<wp:inline distT="0" distB="0" distL="0" distR="0">'
+                    . '<wp:extent cx="' . $cx . '" cy="' . $cy . '"/>'
+                    . '<wp:docPr id="' . $id . '" name="Изображение ' . $id . '"/>',
+            'close' => '</wp:inline>',
+        ];
+    }
+
+    /** Плавающая картинка: текст обтекает её или проходит под ней. */
+    private function anchorFrame(int $cx, int $cy, int $id, array $spec): array {
+        $wrap = $spec['wrap'] === 'none' ? '<wp:wrapNone/>' : '<wp:wrapSquare wrapText="bothSides"/>';
+        return [
+            'open' => '<wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0"'
+                    . ' relativeHeight="' . (251650000 + $id) . '" behindDoc="' . (int)$spec['behind'] . '"'
+                    . ' locked="0" layoutInCell="1" allowOverlap="1">'
+                    . '<wp:simplePos x="0" y="0"/>'
+                    . '<wp:positionH relativeFrom="column"><wp:align>' . $spec['align'] . '</wp:align></wp:positionH>'
+                    . '<wp:positionV relativeFrom="paragraph"><wp:posOffset>'
+                    . (int)$spec['offset_v'] . '</wp:posOffset></wp:positionV>'
+                    . '<wp:extent cx="' . $cx . '" cy="' . $cy . '"/>'
+                    . '<wp:effectExtent l="0" t="0" r="0" b="0"/>'
+                    . $wrap
+                    . '<wp:docPr id="' . $id . '" name="Изображение ' . $id . '"/>'
+                    . '<wp:cNvGraphicFramePr/>',
+            'close' => '</wp:anchor>',
+        ];
     }
 
     private function addRel(string $type, string $target): string {
@@ -481,6 +558,8 @@ final class Html2Docx {
             . $defaults
             . '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
             . '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+            . '<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>'
+            . '<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>'
             . '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
             . '</Types>';
     }
@@ -496,7 +575,9 @@ final class Html2Docx {
     private function documentRels(): string {
         $xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
              . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-             . '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>';
+             . '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+             . '<Relationship Id="rIdFonts" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>'
+             . '<Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>';
         foreach ($this->rels as $rid => [$type, $target]) {
             $xml .= '<Relationship Id="' . $rid . '" Type="' . $type . '" Target="' . $target . '"/>';
         }
@@ -504,16 +585,64 @@ final class Html2Docx {
     }
 
     private function styles(): string {
+        $font = $this->esc(self::font());
+        $half = self::bodyHalfPoints();
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             . '<w:styles ' . $this->namespaces() . '>'
             . '<w:docDefaults><w:rPrDefault><w:rPr>'
-            . '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/>'
-            . '<w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="ru-RU"/>'
+            . '<w:rFonts w:ascii="' . $font . '" w:eastAsia="' . $font . '" w:hAnsi="' . $font
+            . '" w:cs="' . $font . '"/>'
+            . '<w:sz w:val="' . $half . '"/><w:szCs w:val="' . $half . '"/><w:lang w:val="ru-RU"/>'
             . '</w:rPr></w:rPrDefault>'
             . '<w:pPrDefault><w:pPr><w:spacing w:after="80" w:line="260" w:lineRule="auto"/></w:pPr></w:pPrDefault>'
             . '</w:docDefaults>'
             . '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>'
             . '</w:styles>';
+    }
+
+    /**
+     * Шрифт документа (модуль 035).
+     *
+     * Word брал шрифт из `docDefaults` и, не найдя таблицы шрифтов, подставлял
+     * свой: КП приходило к клиенту не тем, чем его собирали. Имя лежит в
+     * настройках — это фирменный стиль, а не константа кода.
+     */
+    public static function font(): string {
+        return trim((string)Settings::get('KP_DOCX_FONT', 'Microsoft Sans Serif')) ?: 'Microsoft Sans Serif';
+    }
+
+    /** Кегль основного текста в половинках пункта — как их меряет Word. */
+    public static function bodyHalfPoints(): int {
+        $pt = (float)Settings::get('KP_DOCX_FONT_PT', 10);
+        return max(12, (int)round(max(6.0, min(20.0, $pt)) * 2));
+    }
+
+    /**
+     * Таблица шрифтов: без неё Word не знает, чем заменять отсутствующий
+     * шрифт, и берёт первый попавшийся.
+     */
+    private function fontTable(): string {
+        $font = $this->esc(self::font());
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<w:fonts ' . $this->namespaces() . '>'
+            . '<w:font w:name="' . $font . '"><w:charset w:val="CC"/><w:family w:val="swiss"/>'
+            . '<w:pitch w:val="variable"/></w:font>'
+            . '<w:font w:name="Arial"><w:charset w:val="CC"/><w:family w:val="swiss"/>'
+            . '<w:pitch w:val="variable"/></w:font>'
+            . '<w:font w:name="Times New Roman"><w:charset w:val="CC"/><w:family w:val="roman"/>'
+            . '<w:pitch w:val="variable"/></w:font>'
+            . '</w:fonts>';
+    }
+
+    /** Настройки документа: язык проверки правописания и сетка по умолчанию. */
+    private function docSettings(): string {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<w:settings ' . $this->namespaces() . '>'
+            . '<w:defaultTabStop w:val="708"/>'
+            . '<w:characterSpacingControl w:val="doNotCompress"/>'
+            . '<w:compat><w:compatSetting w:name="compatibilityMode" '
+            . 'w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat>'
+            . '</w:settings>';
     }
 
     private function coreProps(array $meta): string {
