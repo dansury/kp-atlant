@@ -1618,6 +1618,27 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '33')");
         $current = 33;
     }
+
+    // v34 — модуль 036: вилка цен по модификациям, аналог словами клиента и
+    // общие условия КП, которые запоминаются за менеджером.
+    if ($current < 34) {
+        // Верх вилки: у общего товара своей цены нет, она стоит на модификациях
+        // и они стоят по-разному. Ноль или цена строки — вилки нет.
+        Db::ensureColumn('proposal_items', 'price_max', 'REAL', '0');
+
+        // Чем именно клиент называл то, вместо чего стоит наша позиция. На
+        // строке запроса поле уже было (модуль 013) — теперь оно едет в КП и
+        // печатается над названием нашего товара.
+        Db::ensureColumn('proposal_items', 'alt_of', 'TEXT');
+
+        // Тип цены, скидка и условия ожидания, выбранные над таблицей подбора.
+        // Живут за МЕНЕДЖЕРОМ: следующее КП открывается тем же, чем закрылось
+        // предыдущее, а двое за одной доской не переписывают привычки друг другу.
+        Db::ensureColumn('managers', 'kp_terms_json', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '34')");
+        $current = 34;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

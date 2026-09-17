@@ -34,19 +34,27 @@ final class KpText {
 
         $n = 0;
         $total = 0.0;
+        // Хоть одна вилка — и «Итого» называется «от»: сумма низов вилок и есть
+        // то, с чего начинается предложение (модуль 036)
+        $totalIsFrom = false;
         foreach ($items as $item) {
             $n++;
             $price = Terms::price($item);
             $sum = $price * (float)$item['quantity'];
             $total += $sum;
+            // Та же вилка, что и в файле (модуль 036): письмо и документ не
+            // имеют права назвать клиенту разные цены
+            $top = Terms::priceTop($item);
+            if ($top > 0 || !empty($item['price_from'])) $totalIsFrom = true;
 
             $lines[] = sprintf('%d. %s — %s %s × %s = %s',
                 $n,
                 (string)$item['product_name'],
                 self::num((float)$item['quantity']),
                 (string)($item['unit'] ?: 'шт.'),
-                self::money($price),
-                self::money($sum)
+                $top > 0 ? 'от ' . self::money($price) . ' до ' . self::money($top) : self::money($price),
+                $top > 0 ? 'от ' . self::money($sum) . ' до ' . self::money($top * (float)$item['quantity'])
+                         : self::money($sum)
             );
 
             foreach ([$item['notes'] ?? '', Terms::note($item)] as $note) {
@@ -87,7 +95,8 @@ final class KpText {
         $vat = $requisites['vat'] ?? [];
         if (!array_key_exists('rate', $vat)) $vat['rate'] = (int)($proposal['vat_rate'] ?? 5);
         foreach (Requisites::vatTotals($total, $vat, Requisites::vatMode($proposal))['lines'] as $line) {
-            $body[] = $line['label'] . ($line['amount'] === null ? '' : ': ' . self::money($line['amount']));
+            $body[] = $line['label'] . ($line['amount'] === null
+                ? '' : ': ' . ($totalIsFrom ? 'от ' : '') . self::money($line['amount']));
         }
 
         // Позиции, на которые каталог не ответил, — словами клиента, как в файле

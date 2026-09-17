@@ -257,6 +257,9 @@ final class Html2Docx {
                                => ['size' => 18, 'after' => 20] + $style,
                 'swap', 'stock-warning', 'accent'
                                => ['color' => 'C00000'] + $style,
+                // Чем клиент называл позицию: курсив серым над нашим названием
+                // (модуль 036) — в Word теми же словами и тем же начертанием
+                'analog-of'    => ['i' => true, 'color' => '6B6B6B', 'size' => 17] + $style,
                 'sign-name'    => ['b' => true] + $style,
                 'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'right'] + $style,
                 'appendix__subtitle' => ['b' => true, 'size' => 24, 'align' => 'center'] + $style,

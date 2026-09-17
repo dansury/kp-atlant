@@ -162,6 +162,9 @@ class PdfGenerator {
             // Цена, которая печатается: базовая, затем ручная скидка, затем
             // скидка за ожидание — обе считаются друг на друга (модуль 023)
             $item['effective_price'] = Terms::price($item);
+            // Верх вилки, когда цена стоит только на модификациях и они стоят
+            // по-разному (модуль 036). Ноль — вилки нет, печатается одна цена
+            $item['effective_price_max'] = Terms::priceTop($item);
             $item['wait_note'] = Terms::note($item);
             // Авто-«под заказ» не печатается второй раз перед условиями ожидания,
             // которые начинаются теми же словами (модуль 034)
@@ -169,8 +172,11 @@ class PdfGenerator {
             $discount = Terms::totalDiscount($item);
             $item['discount_shown'] = $discount > 0 ? rtrim(rtrim(number_format($discount, 2, ',', ''), '0'), ',') : '';
             $item['sum'] = $item['effective_price'] * $item['quantity'];
+            $item['sum_max'] = $item['effective_price_max'] * $item['quantity'];
             $total += $item['sum'];
-            if (!empty($item['price_from'])) $totalIsFrom = true;
+            // «Итого» считается по низу вилки и честно называется «от»: сложить
+            // верх с низом — это третья сумма, которой в предложении нет
+            if (!empty($item['price_from']) || $item['effective_price_max'] > 0) $totalIsFrom = true;
             // Photos are embedded as data URIs — mPDF cannot read storage/ paths.
             // Which of them go in is the manager's pick (proposal_items.selected_images)
             $item['gallery'] = !empty($item['show_images'])
@@ -178,6 +184,16 @@ class PdfGenerator {
                 : [];
             // The same link as a picture, for a КП that gets printed (module 017)
             $item['site_qr'] = KpContent::itemQr($item);
+            // Чем клиент называл то, вместо чего стоит наша позиция (модуль
+            // 036). Печатается над названием, только когда строка отмечена
+            // аналогом; пустое поле означает, что клиент назвал это так же,
+            // как мы, — и повторять его нечего
+            $item['analog_of'] = (int)($item['is_alternative'] ?? 0) === 1
+                ? trim((string)(($item['alt_of'] ?? '') ?: ($item['requested_name'] ?? '')))
+                : '';
+            if (mb_strtolower($item['analog_of']) === mb_strtolower(trim((string)$item['product_name']))) {
+                $item['analog_of'] = '';
+            }
             // An analogue carries its own evidence into the card
             $item['alt_matched'] = KpContent::matchedSpecs($item);
             $item['alt_differs'] = KpContent::unmatchedSpecs($item);

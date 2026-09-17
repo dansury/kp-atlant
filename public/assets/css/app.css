@@ -416,8 +416,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .match-row input[type="text"], .match-row input[type="number"] { width: 100%; }
 .match-row > input[data-field="quantity"] { flex: 0 1 72px; }
 .match-row > input[data-field="unit"]     { flex: 0 1 62px; }
-.match-row > input[data-field="price"]    { flex: 0 1 96px; }
+.match-row > .price-cell                  { flex: 0 1 96px; min-width: 0; }
 .match-row > .price-opts-slot             { flex: 0 1 auto; min-width: 0; }
+/* Вилка цен: в поле низ, под ним верх — товар без своей цены стоит по-разному
+   в модификациях, и строка не имеет права молчать об этом (модуль 036) */
+.price-range { display: block; font-size: 11px; line-height: 1.3; margin-top: 2px; white-space: nowrap; }
 .match-row > input[data-field="notes"]    { flex: 1 1 150px; min-width: 0; }
 .match-row__name { flex: 1 1 100%; position: relative; min-width: 0; }
 
@@ -429,6 +432,24 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .match-row__name .muted { font-size: 12px; margin-bottom: 2px; }
 .match-row label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .price-opts-slot:empty { display: none; }
+
+/* Аналог: чем позицию называл клиент. Поле открывается галочкой и печатается
+   в КП над названием нашего товара (модуль 036) */
+.analog { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.analog .muted { font-size: 12px; white-space: nowrap; margin-bottom: 0; }
+.analog input[type="text"] { font-style: italic; }
+
+/* Цены и условия на всё КП: один выбор над таблицей вместо сорока в строках
+   (модуль 036). Светлый блок на светлом — ink переобъявляется вместе с фоном */
+.conditions { background: var(--surface-2); color: var(--text);
+              border: 1px solid var(--border); border-radius: var(--radius-sm);
+              padding: 8px 10px; margin-bottom: 10px; }
+.conditions__title { font-weight: 650; font-size: 13px; margin-bottom: 6px; }
+.conditions__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.conditions__row label { display: flex; align-items: center; gap: 4px; font-size: 12px;
+                         color: var(--text-muted); white-space: nowrap; }
+.conditions__row input[type="number"] { width: 68px; }
+.conditions__row select { width: auto; min-width: 0; max-width: 220px; font-size: 12px; padding: 6px 8px; }
 .price-opts { font-size: 12px; padding: 6px 8px; }
 
 /* Catalog autocomplete under the position name */
@@ -982,6 +1003,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* «Архив» на доске — ссылка, а не галочка: это другой экран (модуль 026) */
 .bfilter--link { cursor: pointer; color: var(--accent-ink); text-decoration: underline; }
 .bfilter--link:hover { color: var(--primary); }
+/* «Отметить по статусу»: ставит галочки, не пряча остальные карточки (модуль 036).
+   --accent-ink на белом — WCAG AA, --primary тут только на наведении */
+.bfilter--pick { flex-wrap: wrap; flex-basis: 100%; }
+.bfilter--pick a { cursor: pointer; color: var(--accent-ink); text-decoration: underline; }
+.bfilter--pick a:hover { color: var(--primary); }
 /* Архив компании стоит под её рабочими переписками, а не вместо них */
 .mlist-archive { border-top: 1px solid var(--border); margin-top: 6px; }
 .mlist-archive > summary { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--text-muted); }

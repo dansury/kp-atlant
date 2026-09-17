@@ -140,28 +140,88 @@ final class Catalog {
      * before this feature existed still has exactly one price per product).
      */
     public static function priceFor(array $product, ?int $counterpartyId = null, ?string $priceType = null): float {
+        return self::priceRange($product, $counterpartyId, $priceType)['min'];
+    }
+
+    /**
+     * Цена строки каталога ВИЛКОЙ: сколько стоит дешёвая и сколько дорогая
+     * (модуль 036).
+     *
+     * У общего товара цены часто нет вовсе — она проставлена на модификациях, и
+     * ровно потому, что они стоят по-разному. Такой товар печатался в КП нулём.
+     * Теперь он отвечает своими модификациями: `min` — с чего начинается,
+     * `max` — чем кончается. Цены совпали — вилки нет, `min === max`, и
+     * документ печатает одну цену, а не «от 1 200 до 1 200».
+     *
+     * Обратное правило — модификации без цены — стоит здесь же и работает в ту
+     * же сторону: цену ей даёт товар-родитель, ПО ТИПУ ЦЕНЫ (модуль 023).
+     *
+     * @return array{min:float,max:float}
+     */
+    public static function priceRange(array $product, ?int $counterpartyId = null, ?string $priceType = null): array {
         $prices = self::decodePrices($product['prices_json'] ?? null);
         // У модификации цены может не быть вовсе, а нужного ТИПА цены — не быть
         // даже когда другие типы есть. И то, и другое берётся с товара-родителя:
         // ноль в этой строке — это КП на ноль рублей (модуль 023).
         $prices = $prices + self::parentPrices($product);
 
+        $wanted = self::wantedType($counterpartyId, $priceType);
+        $own = (float)($product['price'] ?? 0);
+
+        if ($wanted !== '' && array_key_exists($wanted, $prices) && (float)$prices[$wanted] > 0) {
+            return self::flat((float)$prices[$wanted]);
+        }
+        if ($own > 0) return self::flat($own);
+
+        // Ни выбранного типа, ни своей цены. Своя цена есть у модификаций —
+        // спрашиваем их, и это вилка; нет модификаций — годится любая цена
+        // родителя, лишь бы это не был ноль.
+        $range = self::variantRange($product, $counterpartyId, $priceType);
+        if ($range) return $range;
+
+        foreach ($prices as $value) {
+            if ((float)$value > 0) return self::flat((float)$value);
+        }
+        return self::flat($own);
+    }
+
+    /** Тип цены: выбор на строке → тип контрагента → настройка сервиса. */
+    private static function wantedType(?int $counterpartyId, ?string $priceType): string {
         $wanted = $priceType;
         if ($wanted === null && $counterpartyId) {
             $wanted = (string)(Db::val("SELECT default_price_type FROM counterparties WHERE id=?", [$counterpartyId]) ?: '') ?: null;
         }
-        $wanted = $wanted ?? (string)Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '');
+        return (string)($wanted ?? Settings::get('CATALOG_DEFAULT_PRICE_TYPE', ''));
+    }
 
-        if ($wanted !== '' && array_key_exists($wanted, $prices)) return (float)$prices[$wanted];
+    /** @return array{min:float,max:float} */
+    private static function flat(float $v): array {
+        return ['min' => $v, 'max' => $v];
+    }
 
-        $own = (float)($product['price'] ?? 0);
-        if ($own > 0) return $own;
-        // Ни выбранного типа, ни своей цены — годится любая цена родителя,
-        // лишь бы это не был ноль
-        foreach ($prices as $value) {
-            if ((float)$value > 0) return (float)$value;
+    /**
+     * Вилка по модификациям товара, или null — модификаций нет или все они
+     * тоже без цены. Сама модификация сюда не ходит: у неё своих модификаций
+     * нет, и рекурсия была бы лишним запросом на каждую строку подбора.
+     *
+     * @return array{min:float,max:float}|null
+     */
+    private static function variantRange(array $product, ?int $counterpartyId, ?string $priceType): ?array {
+        $id = trim((string)($product['moysklad_id'] ?? ''));
+        if ($id === '' || (string)($product['product_type'] ?? '') === 'variant') return null;
+
+        $values = [];
+        foreach (Db::all("SELECT moysklad_id, price, prices_json, parent_id, product_type
+                          FROM products_cache
+                          WHERE parent_id=? AND COALESCE(is_archived, 0) = 0", [$id]) as $variant) {
+            // Родителя модификация уже не переспрашивает: его цены мы только что
+            // не нашли, и второй заход в базу на каждую из них ничего не даст
+            $variant['parent_id'] = '';
+            $price = self::priceFor($variant, $counterpartyId, $priceType);
+            if ($price > 0) $values[] = $price;
         }
-        return $own;
+        if (!$values) return null;
+        return ['min' => min($values), 'max' => max($values)];
     }
 
     /** Цены товара-родителя модификации, по типам. Для товара — пустой массив. */

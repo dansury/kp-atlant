@@ -37,6 +37,9 @@
     .signature .sign-name { margin-left: 8px; }
     .stock-warning { color: #c00; font-size: 9pt; }
     .note { font-size: 9pt; color: #666; }
+    /* Чем клиент называл позицию, вместо которой стоит наша (модуль 036).
+       Серый на белом 4.6:1 — WCAG AA для мелкого текста */
+    .analog-of { font-size: 8.5pt; color: #6b6b6b; font-style: italic; }
     /* Приложение: описания товаров за таблицей цен (модуль 034) */
     .appendix { page-break-before: always; margin-bottom: 10px; }
     .appendix__title { font-size: 13pt; font-weight: bold; text-align: right; }
@@ -247,6 +250,16 @@
 <tr>
     <td class="num"><?= $i + 1 ?></td>
     <td>
+        <?php /* ==== Аналог: чем это называл клиент (модуль 036) ====
+                 Над названием НАШЕГО товара стоит строка из письма или из
+                 таблицы клиента — курсивом, серым: закупщик находит в нашем
+                 предложении свою собственную позицию, не сверяя два документа
+                 глазами. Печатается только по галочке «аналог»: без неё это
+                 наш товар под нашим же именем, и вторая строка — шум. */ ?>
+        <?php $analogOf = trim((string)($item['analog_of'] ?? '')); ?>
+        <?php if ($analogOf !== ''): ?>
+        <div class="analog-of"><em><?= htmlspecialchars($analogOf) ?></em></div>
+        <?php endif; ?>
         <?= htmlspecialchars($item['product_name']) ?>
         <?php /* Примечание менеджера. Автоматическое «под заказ» сюда не
                  печатается, когда ниже идут условия ожидания: они начинаются
@@ -263,9 +276,14 @@
     </td>
     <td class="qty"><?= htmlspecialchars($item['unit']) ?></td>
     <td class="qty"><?= !empty($item['qty_from']) ? 'от ' . $item['quantity'] : $item['quantity'] ?></td>
+<?php /* Вилка цен (модуль 036): у общего товара своей цены нет, она стоит на
+         модификациях и они стоят по-разному. Совпали — печатается одна цена. */ ?>
+<?php $priceTop = (float)($item['effective_price_max'] ?? 0); ?>
     <td class="price"><?php if (!empty($item['discount_shown'])): ?><span class="was"><?= number_format($item['price'], 2, ',', ' ') ?> руб. −<?= htmlspecialchars($item['discount_shown']) ?>%</span><br><?php endif;
-        ?><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?> руб.</td>
-    <td class="sum"><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?> руб.</td>
+        ?><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?><?php
+        if ($priceTop > 0) echo ' до ' . number_format($priceTop, 2, ',', ' '); ?> руб.</td>
+    <td class="sum"><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?><?php
+        if ($priceTop > 0) echo ' до ' . number_format((float)($item['sum_max'] ?? 0), 2, ',', ' '); ?> руб.</td>
 </tr>
 <?php endforeach; ?>
 <?php if (!empty($delivery)): ?>
