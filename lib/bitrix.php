@@ -308,6 +308,14 @@ final class Bitrix {
         }
         // The search page is never verified: it answers 200 whatever we ask it
         $search = self::fromSearch($product);
+        // Модуль сайта подключён, а страницу товара он не дал — в КП уйдёт
+        // ссылка на поиск, и понять это можно только из журнала (модуль 035)
+        if ($search !== null && self::webhook() !== '') {
+            Logger::warning('bitrix', 'Сайт не дал страницу товара — в КП уйдёт ссылка на поиск: '
+                            . (string)($product['name'] ?? ''),
+                            ['article' => (string)($product['article'] ?? ''),
+                             'code' => (string)($product['code'] ?? ''), 'url' => $search]);
+        }
         return [$search, $search === null ? 'none' : 'search'];
     }
 

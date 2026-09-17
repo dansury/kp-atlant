@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <style>
-    body { font-family: DejaVu Sans, sans-serif; font-size: 11pt; color: #222; line-height: 1.5; margin: 0; padding: 20px 40px; }
+    /* Тот же кегль, что у документа Word (10 пт): PDF и .docx — один документ,
+       и различаться они могут только шрифтом. Кириллицу во всех начертаниях в
+       mPDF умеет DejaVu Sans, поэтому имя шрифта здесь своё (модуль 035). */
+    body { font-family: DejaVu Sans, sans-serif; font-size: 10pt; color: #222; line-height: 1.45; margin: 0; padding: 20px 40px; }
     .header { text-align: right; font-size: 9pt; color: #555; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; min-height: 62px; }
     .header .entity-name { font-weight: bold; font-size: 10pt; color: #222; }
     /* Знак — слева вверху, до всего остального: реквизиты отправителя стоят
@@ -25,11 +28,13 @@
        были стилями четырёх зашитых абзацев и больше не печатаются */
     .conditions { margin-top: 20px; font-size: 10pt; color: #333; }
     .conditions p { margin: 5px 0; }
-    .signature { margin-top: 40px; display: table; width: 100%; }
-    .signature .date { display: table-cell; width: 50%; vertical-align: bottom; font-size: 10pt; }
-    .signature .sign { display: table-cell; width: 50%; text-align: right; vertical-align: bottom; }
-    .signature .sign img { max-height: 50px; max-width: 160px; }
-    .signature .sign-name { font-size: 10pt; margin-top: 5px; }
+    /* Дата, подпись и расшифровка — ОДНОЙ строкой, как в образце: картинка
+       подписи стоит поверх линии, а не отдельным абзацем (модуль 035) */
+    .signature { margin-top: 36px; font-size: 10pt; }
+    .signature__date { margin-right: 6px; }
+    .signature__line { letter-spacing: 0; }
+    .signature img.sign-img { max-height: 46px; max-width: 115px; margin-bottom: -6px; }
+    .signature .sign-name { margin-left: 8px; }
     .stock-warning { color: #c00; font-size: 9pt; }
     .note { font-size: 9pt; color: #666; }
     /* Приложение: описания товаров за таблицей цен (модуль 034) */
@@ -40,6 +45,7 @@
     /* Product card: description, photo gallery, specs, kit contents */
     .card { margin: 18px 0 10px; }
     .card--break { page-break-before: always; }
+    .card__end { clear: both; }
     /* Цена «до скидки» рядом с ценой «после» — клиент должен видеть, за что платит меньше */
     .was { font-size: 8pt; color: #777; text-decoration: line-through; }
     .card__name { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
@@ -53,6 +59,10 @@
     .card__desc p, .card__list p { margin: 0 0 5px; }
     .gallery { margin: 10px 0; text-align: center; }
     .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; }
+    /* В приложении фотография стоит СПРАВА, а описание обтекает её слева —
+       так собран образец, по которому КП уходит клиенту (модуль 035) */
+    .card .gallery { float: right; width: 225px; margin: 0 0 8px 12px; text-align: right; }
+    .card .gallery img { max-width: 225px; max-height: 240px; }
     .disclaimer { font-size: 8.5pt; color: #666; font-style: italic; margin-top: 8px; }
 
     /* Correspondence table: what was asked for vs what we answer with */
@@ -80,7 +90,8 @@
     /* The same address as a picture: on paper the link above is not clickable.
        Kept small and beside the text, never a block of its own — the card is
        about the product, and the QR is a convenience on the way out. */
-    .card__qr { margin-top: 4px; }
+    /* QR стоит справа, под фотографией, и текст обтекает его — как в образце */
+    .card__qr { float: right; clear: right; margin: 8px 0 4px 12px; text-align: right; }
     .card__qr img { vertical-align: middle; }
     .card__qr-note { font-size: 8.5pt; color: #666; }
 
@@ -308,13 +319,15 @@
      Картинка — подпись МЕНЕДЖЕРА этого КП, расшифровка — его же; ничего своего
      он не завёл — печатается подписант организации. -->
 <div class="signature">
-    <div class="date"><?= $date ?></div>
-    <div class="sign">
-        <?php if ($signaturePath !== ''): ?>
-        <img class="sign-img" src="<?= $signaturePath ?>" alt="Подпись">
-        <?php endif; ?>
-        <div class="sign-name"><?= htmlspecialchars($signatoryName) ?></div>
-    </div>
+    <span class="signature__date"><?= $date ?></span>
+    <?php if ($signaturePath !== ''): ?>
+    <!-- Подпись ложится ПОВЕРХ строки, а не встаёт отдельной строкой между
+         датой и расшифровкой: class="sign-img" говорит конвертеру в Word, что
+         эту картинку текст не раздвигает (модуль 035) -->
+    <img class="sign-img" src="<?= $signaturePath ?>" alt="Подпись">
+    <?php endif; ?>
+    <span class="signature__line">_____________________________</span>
+    <span class="sign-name"><?= htmlspecialchars($signatoryName) ?></span>
 </div>
 
 <?php /* Ссылка на приложение: таблица на первой странице, описания — за ней */ ?>
@@ -426,6 +439,20 @@
     <div class="card__name"><?= $i + 1 ?>. <?= htmlspecialchars($item['product_name']) ?></div>
     <?php endif; ?>
 
+    <?php /* Фотография стоит ПЕРЕД описанием: она плавает справа, и текст
+             обтекает её слева. Стояла после — и обтекать было уже нечего,
+             фотография просто падала под текст (модуль 035) */ ?>
+    <?php if ($showImages && !empty($item['gallery'])): ?>
+    <div class="gallery">
+        <?php foreach ($item['gallery'] as $img): ?>
+        <img src="<?= $img ?>" alt="<?= htmlspecialchars($item['product_name']) ?>">
+        <?php endforeach; ?>
+        <?php if (!empty($imagesNote)): ?>
+        <div class="disclaimer">* <?= htmlspecialchars($imagesNote) ?></div>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
     <?php if (!empty($item['is_alternative'])): ?>
     <!-- Why this position stands where another was asked for, and what it was
          proved to meet. Never «извините» — the facts and nothing else. -->
@@ -448,17 +475,6 @@
 
     <?php if (trim($cardDesc) !== ''): ?>
     <div class="card__desc"><?= Markup::markdownToHtml($cardDesc) ?></div>
-    <?php endif; ?>
-
-    <?php if ($showImages && !empty($item['gallery'])): ?>
-    <div class="gallery">
-        <?php foreach ($item['gallery'] as $img): ?>
-        <img src="<?= $img ?>" alt="<?= htmlspecialchars($item['product_name']) ?>">
-        <?php endforeach; ?>
-    </div>
-    <?php if (!empty($imagesNote)): ?>
-    <div class="disclaimer">* <?= htmlspecialchars($imagesNote) ?></div>
-    <?php endif; ?>
     <?php endif; ?>
 
     <?php if (!empty($item['specs_text'])): ?>
@@ -489,6 +505,9 @@
     </div>
     <?php endif; ?>
     <?php endif; ?>
+    <?php /* Обтекание фотографии закрывается здесь: без этого следующая
+             карточка начиналась бы сбоку от предыдущей (модуль 035) */ ?>
+    <div class="card__end"></div>
 </div>
 <?php endif; ?>
 <?php endforeach; ?>

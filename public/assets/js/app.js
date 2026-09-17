@@ -784,14 +784,18 @@ const App = {
     matchKpButton(requestId, kp) {
         // «Собрать КП в файл» — то, чего под таблицей подбора не хватало: КП
         // собирается и сразу скачивается, без захода в редактор (модуль 023)
+        // Word и PDF — два равноправных выхода: до модуля 035 кнопка была одна и
+        // отдавала только Word, а PDF в карточке взять было негде
         const files = `<button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'docx')"
-                       title="Собрать КП и скачать файлом">⬇ Собрать КП в файл</button>`;
+                       title="Собрать КП и скачать файлом Word">⬇ Собрать КП в Word</button>
+                <button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'pdf')"
+                       title="Собрать КП и скачать файлом PDF">⬇ …в PDF</button>`;
         if (kp.proposal_id) {
-            return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId})"
+            return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId}, this)"
                             title="Собрать ещё одно КП из этих позиций">Собрать КП заново</button>
                     ${files}`;
         }
-        return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId})">Сформировать КП</button>
+        return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId}, this)">Сформировать КП</button>
                 ${files}`;
     },
 
@@ -827,10 +831,18 @@ const App = {
         const proposals = board.proposals || [];
         const pool = board.pool || [];
 
-        // Ни одного КП — доска пуста по определению, и колонка «Позиции
-        // запроса» была бы копией таблицы прямо над ней. Первое КП заводит
-        // кнопка «Сформировать КП», а доска появляется вместе с ним.
-        if (!proposals.length) { box.innerHTML = ''; return; }
+        // Ни одного КП — доска пуста по определению, и колонка «Позиции запроса»
+        // была бы копией таблицы прямо над ней. Но гаснуть МОЛЧА она не может:
+        // после «Убрать» экран выглядел так, будто позиции пропали вместе с КП
+        // (модуль 035). Говорим, куда они делись.
+        if (!proposals.length) {
+            box.innerHTML = pool.length
+                ? `<p class="muted" style="margin-top:12px">Ни одного КП по этому запросу нет.
+                     Позиции (${pool.length}) вернулись в таблицу подбора выше —
+                     соберите КП кнопкой «Сформировать КП».</p>`
+                : '';
+            return;
+        }
 
         box.innerHTML = `
             <div class="card__title" style="margin-top:14px">Коммерческие предложения${this.hint('kp-board')}</div>
@@ -893,7 +905,9 @@ const App = {
                 <div class="kpcol__actions">
                     <button class="btn btn--primary btn--sm" onclick="App.openKp(${p.id}, this)">Открыть</button>
                     <button class="btn btn--outline btn--sm"
-                            onclick="App.saveAs('/api/proposals.php?action=docx&id=${p.id}', 'KP-${p.id}.docx')">⬇ Word</button>
+                            onclick="App.saveAs('/api/proposals.php?action=docx&id=${p.id}')">⬇ Word</button>
+                    <button class="btn btn--outline btn--sm" title="Тот же документ в PDF"
+                            onclick="App.saveAs('/api/proposals.php?action=preview&id=${p.id}')">⬇ PDF</button>
                     <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${p.id}, this)"
                             title="${(p.invoices || []).length ? 'Выставить ещё один счёт по этому КП' : 'Выставить счёт по этому КП'}"
                             ${(p.items || []).length ? '' : 'disabled'}>🧾 ${(p.invoices || []).length ? 'Ещё счёт' : 'Счёт'}</button>
@@ -1082,7 +1096,15 @@ const App = {
             const board = await this.api(`proposals.php?action=delete&id=${proposalId}`,
                                          {method: 'POST', body: {}});
             this.drawKpBoard(requestId, null, board);
-            this.toast('КП убрано', 'success');
+            // Позиции вернулись в таблицу подбора — её и перечитываем, иначе
+            // возврата не видно до следующего нажатия чего угодно (модуль 035)
+            const host = this.kpHost(requestId);
+            if (host) {
+                const res = await this.api(`requests.php?action=items&id=${requestId}`);
+                this.renderMatchedItems(requestId, res.items || [], host,
+                                        {...this.matchOpts(host), delivery: res.delivery});
+            }
+            this.toast('КП убрано — позиции вернулись в подбор', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -1098,6 +1120,8 @@ const App = {
         btn.disabled = true;
         const label = btn.textContent;
         btn.textContent = 'Собираем...';
+        const say = this.kpProgress(btn, '');
+        say('Собираем КП: каталог, реквизиты, фотографии, документ...');
         try {
             if (host) await this.saveMatchedItems(host, true);
             let proposalId = host && host.dataset.kp ? (JSON.parse(host.dataset.kp).proposal_id || 0) : 0;
@@ -1122,9 +1146,10 @@ const App = {
             // «собрать в файл» и «посмотреть, что собралось» — одно движение
             // менеджера, а не два (модуль 034)
             this.openKpUnderLetter(proposalId, btn);
-            await this.download(url, `KP-${proposalId}.${format === 'pdf' ? 'pdf' : 'docx'}`);
+            await this.download(url);
+            say('');
             this.toast('КП собрано — файл скачивается, предпросмотр под письмом', 'success');
-        } catch (err) { this.toast(err.message, 'error'); }
+        } catch (err) { say(err.message, true); this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = label; }
     },
 
@@ -1153,13 +1178,25 @@ const App = {
         const href = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = href;
-        a.download = filename || '';
+        // Имя даёт СЕРВЕР: «КП_Атлант_Армор_для_ООО_Воевода_от_17.09.2026.docx».
+        // Запасное `KP-32.docx` — то, что уходило клиенту вместо него, пока имя
+        // прописывали здесь, в кнопке (модуль 035).
+        a.download = this.filenameOf(res) || filename || '';
         a.rel = 'noopener';
         document.body.appendChild(a);
         a.click();
         a.remove();
         // Освобождать сразу нельзя: Safari не успевает начать скачивание
         setTimeout(() => URL.revokeObjectURL(href), 20000);
+    },
+
+    /** Имя файла из Content-Disposition: сначала filename*=UTF-8'', потом filename. */
+    filenameOf(res) {
+        const cd = res.headers.get('Content-Disposition') || '';
+        const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+        if (star) { try { return decodeURIComponent(star[1].trim()); } catch { /* битая кодировка */ } }
+        const plain = /filename="([^"]+)"/i.exec(cd) || /filename=([^;]+)/i.exec(cd);
+        return plain ? plain[1].trim() : '';
     },
 
     /** Скачать и сказать вслух, если не вышло — для кнопок прямо в разметке. */
@@ -1245,9 +1282,9 @@ const App = {
                                    oninput="App.kpResize(this)"><span data-kp-size>${height}vh</span>
                         </label>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.saveAs('/api/proposals.php?action=docx&id=${id}', 'KP-${id}.docx')">⬇ Word</button>
+                                onclick="App.saveAs('/api/proposals.php?action=docx&id=${id}')">⬇ Word</button>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.saveAs('/api/proposals.php?action=preview&id=${id}', 'KP-${id}.pdf')">⬇ PDF</button>
+                                onclick="App.saveAs('/api/proposals.php?action=preview&id=${id}')">⬇ PDF</button>
                         <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)">✎ Править текст</button>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
@@ -1258,11 +1295,50 @@ const App = {
                     </span>
                 </div>
                 <div data-kp-edit></div>
-                <iframe class="kp-preview" style="height:${height}vh"
-                        src="/api/proposals.php?action=preview&id=${id}"
+                <!-- Пока документ собирается, в рамке был белый прямоугольник, и
+                     было не отличить «ещё считает» от «не открылось» (модуль 035) -->
+                <div data-kp-state class="loading">Собираем документ...</div>
+                <iframe class="kp-preview" style="height:${height}vh;display:none"
                         title="Предпросмотр КП #${id}"></iframe>
             </div>`;
         slot.scrollIntoView({behavior: 'smooth', block: 'start'});
+        this.fillKpPreview(slot, id);
+    },
+
+    /**
+     * Наполнить рамку предпросмотра — и сказать вслух, если не вышло.
+     *
+     * Документ сначала запрашивается, и только ответивший сервер попадает в
+     * рамку: иначе ошибка сборки показывалась как пустое окно, а сборка на
+     * полминуты — как «ничего не происходит».
+     */
+    async fillKpPreview(slot, id) {
+        const state = slot.querySelector('[data-kp-state]');
+        const frame = slot.querySelector('.kp-preview');
+        if (!state || !frame) return;
+        state.className = 'loading';
+        state.textContent = 'Собираем документ...';
+        const url = `/api/proposals.php?action=preview&id=${id}`;
+        // Сборка PDF на живом каталоге идёт секундами — говорим об этом вслух
+        const slow = setTimeout(() => {
+            if (state.isConnected) state.textContent = 'Собираем документ — фотографии товаров считаются дольше всего...';
+        }, 4000);
+        try {
+            const res = await fetch(url, {credentials: 'same-origin'});
+            if (!res.ok) throw new Error(await this.errorTextOf(res));
+            // Сервер ответил документом — можно показывать
+            if (!slot.isConnected || slot.dataset.open !== String(id)) return;
+            frame.src = url;
+            frame.style.display = '';
+            state.remove();
+        } catch (err) {
+            state.className = 'no';
+            state.innerHTML = `<strong>КП не открылось.</strong> ${this.esc(err.message)}
+                <button class="btn btn--outline btn--sm" style="margin-left:8px"
+                        onclick="App.fillKpPreview(this.closest('.kp-open').parentElement, ${id})">Повторить</button>`;
+        } finally {
+            clearTimeout(slow);
+        }
     },
 
     /**
@@ -2191,9 +2267,14 @@ const App = {
      * «КП #undefined не найдено». Теперь КП раскрывается предпросмотром в той
      * же карточке — всё управление остаётся в одном месте.
      */
-    async generateKP(requestId) {
-        const btn = document.getElementById('genBtn');
-        if (btn) { btn.disabled = true; btn.textContent = 'Генерация...'; }
+    async generateKP(requestId, from) {
+        const btn = from || document.getElementById('genBtn');
+        const label = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Собираем КП...'; }
+        // Сборка КП — это каталог, реквизиты, фотографии и рендер PDF: полминуты
+        // на живом каталоге. Молчащий экран всё это время читался как «кнопка не
+        // работает», поэтому ход работы виден и ошибка тоже (модуль 035).
+        const say = this.kpProgress(from, 'Собираем КП: каталог, реквизиты, фотографии, документ...');
         try {
             // The KP is built from «Подходящие позиции» — send the table as it
             // looks on screen, not as it was last saved. On the letter card
@@ -2202,8 +2283,10 @@ const App = {
             if (host && host.querySelector('[data-match-row]')) {
                 await this.saveMatchedItems(host, true);
             }
+            say('Собираем документ — это может занять до минуты...');
             const id = this.proposalId(
                 await this.api(`proposals.php?action=generate&request_id=${requestId}`, {method: 'POST', body: {}}));
+            say('');
             this.toast('КП сформировано', 'success');
             if (host) {
                 host.dataset.kp = JSON.stringify({proposal_id: id});
@@ -2216,10 +2299,40 @@ const App = {
                 location.hash = `mail/proposal/${id}`;
             }
         } catch (err) {
+            // Ошибка остаётся НА ЭКРАНЕ: тост гаснет через пару секунд, а
+            // разбираться с «не собралось» приходится дольше
+            say(err.message, true);
             this.toast(err.message, 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Сформировать КП'; }
+            if (btn) { btn.disabled = false; btn.textContent = label || 'Сформировать КП'; }
         }
+    },
+
+    /**
+     * Строка хода работы под кнопками подбора (модуль 035).
+     *
+     * Возвращает функцию: зовут её с текстом — он появляется, с пустым — гаснет,
+     * со вторым аргументом — остаётся красным до следующего действия.
+     */
+    kpProgress(from, initial = '') {
+        const host = this.matchHost(from);
+        if (!host) return () => {};
+        // Строка живёт РЯДОМ с таблицей подбора, а не внутри неё: сборка КП
+        // начинается с сохранения позиций, а оно перерисовывает таблицу целиком
+        // — вложенная строка исчезала вместе с ней, не успев показаться
+        // (модуль 035)
+        let box = host.parentElement && host.parentElement.querySelector('[data-kp-progress]');
+        if (!box) {
+            box = document.createElement('div');
+            box.dataset.kpProgress = '1';
+            host.insertAdjacentElement('afterend', box);
+        }
+        const say = (text, bad = false) => {
+            box.className = text ? (bad ? 'no' : 'loading') : '';
+            box.innerHTML = text ? this.esc(text) : '';
+        };
+        if (initial) say(initial);
+        return say;
     },
 
     // Assign request to current manager
