@@ -243,6 +243,26 @@ try {
                 'manager_id'      => (int)$manager['id'],
             ]);
 
+            /**
+             * Каждое отправленное письмо — образец для промптов (модуль 040).
+             *
+             * В паре с письмом контрагента и с тем, что предлагала модель:
+             * по этим парам видно, как мы отвечаем на самом деле, и из них
+             * одной кнопкой собираются правила для промпта.
+             */
+            if ($source) {
+                require_once ROOT . '/lib/learning.php';
+                Learning::recordSent([
+                    'subject'        => (string)($source['subject'] ?? ''),
+                    'question'       => (string)($source['body_text'] ?? ''),
+                    'auto_answer'    => (string)($source['model_draft_text'] ?? ''),
+                    'correct_answer' => (string)($input['text'] ?? ''),
+                    'manager_id'     => (int)$manager['id'],
+                    'context'        => ['category' => $source['category'] ?? null,
+                                         'mail_message_id' => (int)$source['id']],
+                ]);
+            }
+
             // The company chat shows the same message, so nothing is invisible there
             if ($counterpartyId) {
                 Crm::logEvent($counterpartyId, 'out', $text, [
@@ -345,6 +365,11 @@ try {
 
             $ctx = [
                 'org_name'        => $msg['counterparty_name'] ?? '',
+                // К кому обращаться: контакт компании, а не адрес ящика (модуль 040)
+                'contact_person'  => $msg['counterparty_id']
+                    ? (string)(Db::val("SELECT contact_person FROM counterparties WHERE id=?",
+                                       [(int)$msg['counterparty_id']]) ?: '')
+                    : '',
                 'attachments'     => $attachText,
                 'thread'          => array_reverse($thread),
                 'counterparty_id' => $msg['counterparty_id'] ?? null,
@@ -399,9 +424,18 @@ try {
                 }
             }
 
+            // Форма письма одна на все пути черновика — и на готовый черновик
+            // из синхронизации, и на ответ без классификатора (модуль 040)
+            require_once ROOT . '/lib/letter_shape.php';
+            $text = LetterShape::apply($text, (string)($ctx['contact_person'] ?: ($msg['from_name'] ?? '')));
+
             // Промпты ответа заканчиваются словами «без подписи — её подставит
             // система». Система подставляет её здесь (модуль 038).
             $text = MailSignature::appendText($text, MailSignature::forManager((int)$manager['id']));
+
+            // Чем ответила модель — помним: отправленное письмо встанет с этим
+            // в пару и попадёт в «Исправления» (модуль 040)
+            Db::update('mail_messages', ['model_draft_text' => $text], 'id=?', [$id]);
 
             $used = LLM::currentModel();
             Logger::info('mail', "Черновик ответа на письмо #$id создан (" . Triage::label($category) . ')', [

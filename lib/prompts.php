@@ -850,6 +850,42 @@ TEXT;
         Logger::info('prompts', "Промпт «{$key}» возвращён к встроенному", ['manager_id' => $managerId]);
     }
 
+    /**
+     * Вернуть версию из истории (модуль 040).
+     *
+     * История была списком для чтения: увидеть прежний текст можно было, а
+     * вернуть его — только выделив и скопировав руками. Откат идёт через
+     * `save()`, поэтому нынешний текст тоже попадает в историю: откат самого
+     * отката всегда возможен.
+     */
+    public static function restore(string $key, int $historyId, ?int $managerId): string {
+        $row = Db::one("SELECT content FROM prompt_history WHERE id=? AND key=?", [$historyId, $key]);
+        if (!$row) throw new InvalidArgumentException('Такой версии промпта нет');
+        self::save($key, (string)$row['content'], $managerId);
+        return (string)$row['content'];
+    }
+
+    /**
+     * Дописать к промпту готовый блок правил — то, что модель собрала из
+     * правок менеджеров (модуль 040). Одной кнопкой, с историей, как обычное
+     * сохранение: неудачное подмешивание откатывается тем же откатом.
+     */
+    public static function append(string $key, string $block, ?int $managerId): string {
+        $block = trim($block);
+        if ($block === '') throw new InvalidArgumentException('Нечего подмешивать');
+        // Именно `text()`, а не `render()`: там плейсхолдеры уже подставлены и
+        // приписан блок дисциплины — сохранять такое как промпт нельзя
+        $current = self::text($key);
+        // Дважды один и тот же блок в промпт не попадает
+        if (str_contains($current, $block)) return $current;
+        $merged = rtrim($current) . "\n\n" . self::LEARNED_HEADER . "\n" . $block . "\n";
+        self::save($key, $merged, $managerId);
+        return $merged;
+    }
+
+    /** Заголовок блока, подмешанного из правок: по нему его видно в тексте промпта. */
+    public const LEARNED_HEADER = '===== ИЗ ПРАВОК МЕНЕДЖЕРОВ =====';
+
     public static function history(string $key, int $limit = 20): array {
         return Db::all("SELECT h.id, h.content, h.created_at, m.name AS manager_name
                         FROM prompt_history h LEFT JOIN managers m ON m.id = h.manager_id

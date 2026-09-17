@@ -12,6 +12,7 @@ require_once __DIR__ . '/site_forms.php';
 require_once __DIR__ . '/bounce.php';
 require_once __DIR__ . '/mail_text.php';
 require_once __DIR__ . '/request_items.php';
+require_once __DIR__ . '/letter_shape.php';
 
 final class Triage {
 
@@ -347,8 +348,25 @@ final class Triage {
         $system = in_array('wiki', $sources, true)
             ? Knowledge::augment($promptKey, $vars, $query)
             : Prompts::render($promptKey, $vars);
+        // Форма письма одна на все промпты ответа и держится сервисом, а не
+        // моделью: обращение по имени и отчеству, дальше суть (модуль 040)
+        $system .= LetterShape::instruction();
 
-        return LLM::chatText($system, self::userMessage($message, $ctx), 0.4);
+        $text = LLM::chatText($system, self::userMessage($message, $ctx), 0.4);
+        return LetterShape::apply($text, self::person($message, $ctx));
+    }
+
+    /**
+     * К кому обращаться в ответе: имя контакта из карточки, из подписи письма
+     * или из его заголовка. Не нашлось — письмо начнётся просто «Добрый день!».
+     */
+    private static function person(array $message, array $ctx): ?string {
+        foreach ([$ctx['contact_person'] ?? null, $message['contact_person'] ?? null,
+                  $message['from_name'] ?? null] as $candidate) {
+            $name = trim((string)$candidate);
+            if ($name !== '' && LetterShape::address($name) !== '') return $name;
+        }
+        return null;
     }
 
     /** The letter itself, its thread and its attachments — what a manager would read. */

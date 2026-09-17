@@ -1698,6 +1698,10 @@ SQL);
         )");
         Db::q("CREATE INDEX IF NOT EXISTS idx_mail_trash_deleted ON mail_trash(deleted_at)");
 
+        // Чем ответила модель на это письмо: отправленное письмо встаёт с этим
+        // в пару в «Исправлениях» и кормит промпты (модуль 040)
+        Db::ensureColumn('mail_messages', 'model_draft_text', 'TEXT');
+
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '36')");
         $current = 36;
     }

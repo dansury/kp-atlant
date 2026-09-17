@@ -4726,6 +4726,7 @@ const App = {
         'signature':    ['Моя подпись', 'КП подписывает тот, кто его отправляет. Загрузите картинку своей подписи и напишите расшифровку — они встанут под вашими КП. Пусто — печатается подписант организации.'],
         'knowledge':    ['База знаний', 'Вики компании из репозитория GitHub. В промпт она попадает не целиком, а теми разделами, которые относятся к тексту письма. Это ЗНАНИЯ О ТОВАРЕ — инструкции про кнопки сюда класть нельзя, они мешают модели отвечать.'],
         'knowledge-check': ['Проверка подбора', 'Вставьте текст письма — увидите, какие разделы вики попадут в промпт и что сервис на это ответит. Ответ можно тут же забраковать кнопкой 👎 и написать, как он должен был звучать: эта правка уйдёт в обучение.'],
+        'rethink':      ['Переосмыслить правки', 'Модель читает последние правки менеджеров и отправленные письма и собирает из них короткий свод правил. Свод сам никуда не уходит: его читают, правят и одной кнопкой подмешивают в выбранный промпт — отдельным блоком «ИЗ ПРАВОК МЕНЕДЖЕРОВ». Модель для этой работы выбирается здесь же: читать сотню писем лучше моделью поумнее.'],
         'prompts':      ['Промпты', 'Инструкции, по которым нейросеть пишет каждый ответ и каждое письмо. Правится текстом; у каждого промпта есть история и кнопка «Вернуть встроенный». Ко всем добавляется общий блок дисциплины — его отдельно дублировать не надо.'],
         'tov':          ['Tone of Voice', 'Как мы разговариваем с клиентом: обращение, длина фраз, что обещаем и чего не обещаем. Подмешивается в каждый ответ. Это НЕ база знаний: факты о товаре живут в вики, здесь — только манера речи.'],
         'stores':       ['Склады для остатков', 'Отметьте склады, с которых вы реально отгружаете. Остаток считается только по ним: остаток витрины или брака, попавший в КП, превращается в обещание, которого не выполнить. Ничего не отмечено — считаем по всем складам.'],
@@ -8007,6 +8008,26 @@ const App = {
         } catch (err) { this.testOut(this.esc(err.message), 'no'); }
     },
 
+    /**
+     * Список организаций МойСклад в поле настройки (модуль 040).
+     *
+     * Поле требовало «ID организации» — 36 знаков, которые брали из адресной
+     * строки МойСклад и переписывали руками. Теперь это список имён с ИНН;
+     * МойСклад недоступен — поле остаётся с тем, что в нём стоит, и его
+     * по-прежнему можно вписать.
+     */
+    async loadOrganizations(selectId, current) {
+        try {
+            const d = await this.api('admin.php?action=moysklad_organizations');
+            const sel = document.getElementById(selectId);
+            if (!sel || !(d.items || []).length) return;
+            sel.innerHTML = `<option value="">(первая организация аккаунта)</option>`
+                + d.items.map(o => `<option value="${this.esc(o.id)}" ${o.id === current ? 'selected' : ''}>
+                        ${this.esc(o.name)}${o.inn ? ' · ИНН ' + this.esc(o.inn) : ''}</option>`).join('');
+            sel.value = current || '';
+        } catch { /* нет связи с МойСклад — остаётся то, что уже выбрано */ }
+    },
+
     async testLlm(provider) {
         this.testOut('Спрашиваем модель...', 'muted');
         try {
@@ -8279,6 +8300,14 @@ const App = {
                         <select id="${id}"><option value="${this.esc(it.value)}">${this.esc(it.value) || '(без звука)'}</option></select>
                         <button type="button" class="btn btn--outline btn--sm" onclick="App.playSoundPreview('${id}')">▶ Послушать</button>
                     </span>`;
+                }
+                // Организация выбирается из списка МойСклад, а не переписывается
+                // идентификатором из адресной строки (модуль 040)
+                if (it.type === 'organization') {
+                    this.loadOrganizations(id, String(it.value));
+                    return `<select id="${id}">
+                        <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первая организация аккаунта)'}</option>
+                    </select>`;
                 }
                 // Списки синонимов и текст блока дисциплины — многострочные
                 if (it.type === 'textarea') return `<textarea id="${id}" rows="6">${this.esc(it.value)}</textarea>`;
@@ -9649,10 +9678,13 @@ const App = {
     async adminPrompts() {
         try {
             const d = await this.api('admin.php?action=prompts');
+            const llm = await this.loadLlmModels();
+            this.promptKeys = (d.items || []).map(p => ({key: p.key, title: p.title}));
             document.getElementById('adminBody').innerHTML = `
                 <div class="card"><div class="card__title">Промпты${this.hint('prompts')}</div>
                    <p>Системные промпты, с которыми сервис обращается к нейросети.
                    Пустое поле вернёт встроенный текст. Плейсхолдеры <code>{{...}}</code> подставляются кодом — не удаляйте их.</p></div>
+                ${this.rethinkCard(llm)}
                 ${d.items.map(p => `
                     <div class="card">
                         <div class="flex flex--between">
@@ -9667,10 +9699,83 @@ const App = {
                             <button class="btn btn--primary btn--sm" onclick="App.savePrompt('${p.key}')">Сохранить</button>
                             ${p.is_custom ? `<button class="btn btn--outline btn--sm" onclick="App.resetPrompt('${p.key}')">Вернуть встроенный</button>` : ''}
                             ${p.history ? `<button class="btn btn--outline btn--sm" onclick="App.promptHistory('${p.key}')">История (${p.history})</button>` : ''}
+                            ${p.content.includes('ИЗ ПРАВОК МЕНЕДЖЕРОВ')
+                                ? '<span class="badge badge--confirmed">есть блок из правок</span>' : ''}
                         </div>
                     </div>`).join('')}
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    /**
+     * ==== Промпты учатся на правках (модуль 040) ====
+     *
+     * Правок набирается сотня, и читать их подряд некому. Модель — её выбирают
+     * здесь же, можно взять поумнее — читает их и пишет короткий свод правил.
+     * Свод не уходит в промпт сам: его читает человек и подмешивает кнопкой,
+     * в тот промпт, который сам и выберет. Неудачно — откат из истории.
+     */
+    rethinkCard(llm) {
+        return `
+            <div class="card">
+                <div class="card__title">Переосмыслить правки нейросетью${this.hint('rethink')}</div>
+                <p class="muted">Модель прочитает последние правки и отправленные письма и напишет
+                   короткий свод правил — его можно подмешать в любой промпт одной кнопкой.</p>
+                <div class="flex flex--wrap" style="gap:8px">
+                    <select id="rethinkKind" title="По каким правкам учиться">
+                        <option value="sent">Отправленные письма</option>
+                        <option value="reply">Правки ответов</option>
+                        <option value="category">Правки классификации</option>
+                        <option value="answer">Правки подбора</option>
+                        <option value="kp">Правки текста КП</option>
+                    </select>
+                    <select id="rethinkLimit" title="Сколько последних правок прочитать">
+                        <option value="20">20 последних</option>
+                        <option value="40" selected>40 последних</option>
+                        <option value="80">80 последних</option>
+                    </select>
+                    ${this.replyModelSelect(llm).replace('id="cmpModel"', 'id="rethinkModel"')}
+                    <button class="btn btn--primary btn--sm" onclick="App.rethinkLearning(this)">Переосмыслить</button>
+                </div>
+                <div id="rethinkOut" style="margin-top:10px"></div>
+            </div>`;
+    },
+
+    async rethinkLearning(btn) {
+        const out = document.getElementById('rethinkOut');
+        btn.disabled = true;
+        out.innerHTML = '<div class="loading">Модель читает правки — это занимает до минуты...</div>';
+        try {
+            const r = await this.api('admin.php?action=learning_rethink', {method: 'POST', body: {
+                kind:  document.getElementById('rethinkKind').value,
+                limit: Number(document.getElementById('rethinkLimit').value) || 40,
+                model: (document.getElementById('rethinkModel') || {}).value || '',
+            }});
+            out.innerHTML = `
+                <p class="muted">Прочитано правок: ${r.samples} · модель ${this.esc(r.model)}</p>
+                <textarea id="rethinkText" rows="10">${this.esc(r.text)}</textarea>
+                <div class="flex flex--wrap" style="margin-top:8px;gap:8px">
+                    <select id="rethinkTarget" title="В какой промпт подмешать">
+                        ${(this.promptKeys || []).map(p =>
+                            `<option value="${this.esc(p.key)}">${this.esc(p.title)}</option>`).join('')}
+                    </select>
+                    <button class="btn btn--primary btn--sm" onclick="App.mergeIntoPrompt(this)">Подмешать в промпт</button>
+                </div>`;
+        } catch (err) {
+            out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        } finally { btn.disabled = false; }
+    },
+
+    async mergeIntoPrompt(btn) {
+        const key = document.getElementById('rethinkTarget').value;
+        const block = document.getElementById('rethinkText').value;
+        if (!confirm('Подмешать этот блок в промпт? Прежний текст останется в истории — откат возможен.')) return;
+        btn.disabled = true;
+        try {
+            await this.api('admin.php?action=prompt_append', {method: 'POST', body: {key, block}});
+            this.toast('Блок подмешан в промпт', 'success');
+            this.adminPrompts();
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
     },
 
     async savePrompt(key) {
@@ -9690,13 +9795,51 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
+    /**
+     * История промпта: видно, ЧЕМ версия отличается от нынешней, и её можно
+     * вернуть (модуль 040). Раньше это был список текстов для чтения: чтобы
+     * откатить неудачную правку, её выделяли и копировали руками.
+     */
     async promptHistory(key) {
         const d = await this.api(`admin.php?action=prompt_history&key=${encodeURIComponent(key)}`);
-        this.modal('История промпта', d.items.map(h => `
+        this.modal('История промпта', (d.items || []).map(h => `
             <div class="card" style="margin-bottom:8px">
-                <div class="muted">${this.fmtDate(h.created_at)} ${h.manager_name ? '· ' + this.esc(h.manager_name) : ''}</div>
-                <pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto">${this.esc(h.content)}</pre>
+                <div class="flex flex--between">
+                    <div class="muted">${this.fmtDate(h.created_at)} ${h.manager_name ? '· ' + this.esc(h.manager_name) : ''}</div>
+                    <button class="btn btn--outline btn--sm"
+                            onclick="App.restorePrompt('${this.jsStr(key)}', ${h.id})">Вернуть эту версию</button>
+                </div>
+                <pre class="diff">${this.diffHtml(h.content || '', d.current || '')}</pre>
             </div>`).join('') || '<p class="muted">Пока пусто</p>');
+    },
+
+    /**
+     * Построчная разница: что было в этой версии и чего нет сейчас — красным,
+     * что появилось с тех пор — зелёным. Сравнение по строкам, а не по словам:
+     * промпт читают абзацами, и строка целиком — правильная единица правки.
+     */
+    diffHtml(oldText, newText) {
+        const was = new Set(String(oldText).split('\n').map(l => l.trim()));
+        const now = new Set(String(newText).split('\n').map(l => l.trim()));
+        return String(oldText).split('\n').map(line => {
+            const t = line.trim();
+            if (t !== '' && !now.has(t)) return `<span class="diff--gone">${this.esc(line)}</span>`;
+            return this.esc(line);
+        }).join('\n') + (
+            String(newText).split('\n').filter(l => l.trim() !== '' && !was.has(l.trim())).length
+                ? `\n<span class="diff--new">— и появилось с тех пор: `
+                  + this.esc(String(newText).split('\n').filter(l => l.trim() !== '' && !was.has(l.trim())).length)
+                  + ` строк(и)</span>` : '');
+    },
+
+    async restorePrompt(key, historyId) {
+        if (!confirm('Вернуть эту версию промпта? Нынешний текст тоже попадёт в историю.')) return;
+        try {
+            await this.api('admin.php?action=prompt_restore', {method: 'POST', body: {key, history_id: historyId}});
+            this.closeModal();
+            this.toast('Версия промпта возвращена', 'success');
+            this.adminPrompts();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // ---- Error log ----

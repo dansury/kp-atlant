@@ -471,6 +471,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Фотографии позиции в таблице подбора (модуль 039) */
 .match-extra__photos { margin: 6px 0; }
 .match-photos { margin-top: 6px; }
+/* Разница версий промпта (модуль 040): что ушло и сколько появилось */
+.diff { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflow: auto; }
+.diff--gone { background: #fdeaea; color: var(--danger); text-decoration: line-through; }
+.diff--new { color: var(--text-muted); font-style: italic; }
 .suggest__item:last-child { border-bottom: none; }
 .suggest__item:hover { background: var(--surface-2); }
 
