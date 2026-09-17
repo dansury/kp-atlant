@@ -91,6 +91,16 @@ document and never `htmlspecialchars()` a card field into it: the first ships a 
 signed offer, the second ships the tags themselves. `toMarkdown()` is idempotent, so calling it
 on a field a manager has already edited is safe.
 
+Описание товара у позиции ОДНО (модуль 032). В поле под строкой подбора стоит описание из
+`products_cache` — уже синхронизированное, за ним не ходят в МойСклад на каждый показ, — и
+менеджер правит его там, где видит. Нетронутое на строке не хранится (`RequestItems::ownComment()`):
+подбор поставит другой товар — поменяется и описание, а копия прежнего осталась бы врать.
+Карточка КП печатает `comment_text`, если менеджер его написал, иначе `description_text`: два
+поля растут из одного текста МойСклад, и напечатанные подряд читаются как повтор. «Характеристики»
+и «Комплектация» — свои блоки, поэтому в поле попадает только описательная часть
+(`KpContent::splitDescription()`). В промпт ответа клиенту описание не идёт вовсе: письмо называет
+позиции, цены и сроки, а товар читается в КП.
+
 A position the manager folds as «нет в наличии» (`proposal_items.is_excluded`) leaves the
 priced table, the cards and «Итого» — `KpContent::printedItems()` is the ONE place that
 decides what the document prints — but it never leaves the document: `unmatchedRows()` picks
@@ -204,6 +214,31 @@ it — it may refine the name, the article and the stock, never the number.
 A variant with no price of its own inherits the product's — BY PRICE TYPE, not «whichever is
 there»: size L has its own «Розница» while only the product has «Опт безнал», and a КП billed
 at wholesale must take the product's wholesale price.
+
+НДС стоит под итогом КП ВСЕГДА — выделенным из цены, прибавленным к ней или формулировкой
+неплательщика (модуль 030). До него сумма налога печаталась только по галочке
+`show_vat_total`, выключенной по умолчанию, и клиент получал итог, про который непонятно,
+что в нём есть. Галочки нет; колонка осталась в старых строках и ничего не решает.
+
+Каким налог печатается, решает `KP_VAT_MODE`: `included` — цена каталога уже с налогом, и
+документ выделяет его из итога («Цена за ед., в т.ч. НДС 5%» · «Итого» · «в т.ч. НДС»);
+`added` — цена без налога, и он прибавляется к итогу («Цена за ед., без НДС» · «Итого без
+НДС» · «НДС 5%» · «Итого с НДС»). Это ОФОРМЛЕНИЕ, а не факт из МойСклад, поэтому в снимок
+реквизитов оно не замораживается: ставка и `payerVat` печатаются те, с которыми КП
+подписывали, а вид цены — сегодняшний, и переключатель действует на все КП разом. У
+отдельного КП может стоять своё (`proposals.vat_mode`); пусто — «как в настройках».
+
+Считается налог в ОДНОМ месте — `Requisites::vatTotals()` — и оттуда же приходят СЛОВА под
+итогом: PDF, Word и текст письма (`KpText`) печатают одни и те же строки, а доска КП
+(`KpSet::board()`) показывает тот же итог и ту же оговорку про налог — при «цене + НДС»
+сумма строк ещё не то, что заплатит клиент. Сумма налога, посчитанная второй раз другой
+формулой, — это вторая сумма в одном предложении.
+
+`added` меняет то, что клиент платит, поэтому счёт и заказ обязаны сказать то же самое:
+`Requisites::msVatFlags()` отдаёт `vatEnabled`/`vatIncluded`, а `invoices.php` и `orders.php`
+кладут их в документ МойСклад. Счёт «в т.ч. НДС» по КП «цена + НДС» — это скидка размером в
+налог. В самом МойСклад «Цены включают НДС» должно стоять так же: за аккаунт сервис этого не
+решает, и настройка об этом прямо предупреждает.
 
 ## Mail
 Letters live in threads, not rows: `MailThreads::keyFor()` groups them by the subject with
@@ -358,6 +393,18 @@ do not hide the draft button when there is nothing to answer: disable it and say
 conversation with no request says so in the positions block — a silently missing table reads
 as a feature that disappeared.
 
+A letter being WRITTEN is work too, and it is on the board (module 033). The draft saves
+itself from the first keystroke — for every letter, the first letter to a company included:
+a draft has no message id and no thread key of its own, so it is keyed by the company it is
+addressed to (`MailDrafts`). Saving it puts a card into «В работе» — the column is named
+(`board_columns.kind='work'`), like the intake one, so renaming or reordering columns cannot
+redirect the drafts. The card is filled in FROM THE LETTER: the company from the signature,
+the ИНН and the phone out of the body, the subject and the first line — never a second form
+asking the manager for what he has just typed. A company card already on the board is never
+duplicated: it moves out of «Входящие» (somebody is writing to it), and a column the manager
+dragged it into is left alone. Sending the letter keeps the card and clears the draft; an
+erased draft takes its own card with it but never one that carries correspondence.
+
 «Письма» is ONE board and a card on it is a COMPANY (module 011) — its letters, its requests
 and its КП are things you open the card to see, never a second list beside it. New mail puts
 itself there: `Boards::sync()` runs on every open of the board, so nothing waits for a manager
@@ -415,6 +462,17 @@ stock»: the unfiltered report is tried, then `/entity/assortment`, which carrie
 readable by a token with no rights to reports. The result carries `error` and `fallback`, and
 zero updated positions is reported RED in the panel — a refresh that matched nothing is a
 breakage, not an empty warehouse, and silence about it costs a month of wrong КП.
+
+## Контрагент, которого нет в МойСклад
+A letter from a company МойСклад does not know is a dead end — no invoice, no order — and the
+only way out used to be retyping the ИНН from the signature by hand. The ИНН is found instead:
+`Crm::moyskladHint()` takes it off the company card, and when there is none, out of the letter
+itself, attachments included (`Crm::letterText()`), and says so (`inn_from_letter`). It never
+calls МойСклад — it is what the letter card shows; the network is touched only when somebody
+presses «Создать контрагента в МойСклад». That button SEARCHES BY ИНН FIRST and links what it
+finds: two companies with one ИНН in the reference book is a worse outcome than a missing one.
+A card created here takes the conversation with it (`Crm::attachThread`) — letters, requests
+and contacts — so the company is not an empty rectangle.
 
 ## Prompts and the model's discipline
 Every system prompt gets the discipline block appended by `Prompts::render()` — do the whole

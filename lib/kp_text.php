@@ -53,7 +53,9 @@ final class KpText {
                 $note = trim((string)$note);
                 if ($note !== '') $lines[] = '   ' . $note;
             }
-            // Развёрнутый комментарий по товару — то же, что печатается в файле
+            // Описание позиции — то же и тем же выбором, что в файле: слова
+            // менеджера, если он их написал, иначе описание из МойСклад. Один
+            // блок, а не два подряд (модуль 032).
             $comment = trim(Markup::toPlainText((string)($item['comment_text'] ?? '')));
             if ($comment === '') $comment = trim(Markup::toPlainText((string)($item['description_text'] ?? '')));
             if ($comment !== '') $lines[] = '   ' . mb_substr($comment, 0, 600);
@@ -79,15 +81,13 @@ final class KpText {
         $body[] = '';
         $body[] = $lines ? implode("\n", $lines) : 'Позиции уточняются.';
         $body[] = '';
-        $body[] = 'Итого: ' . self::money($total);
-
+        // Итог и налог — теми же словами и теми же цифрами, что в файле
+        // (модуль 030): письмо и документ не могут называть клиенту разные
+        // суммы, поэтому строки приходят из `Requisites::vatTotals()`
         $vat = $requisites['vat'] ?? [];
-        $paysVat = !array_key_exists('pays_vat', $vat) || (bool)$vat['pays_vat'];
-        if (!$paysVat) {
-            $body[] = (string)($vat['statement'] ?? 'НДС не облагается');
-        } elseif (!empty($proposal['show_vat_total'])) {
-            $rate = (int)($vat['rate'] ?? ($proposal['vat_rate'] ?? 0));
-            if ($rate > 0) $body[] = "в т.ч. НДС $rate%: " . self::money($total - $total / (1 + $rate / 100));
+        if (!array_key_exists('rate', $vat)) $vat['rate'] = (int)($proposal['vat_rate'] ?? 5);
+        foreach (Requisites::vatTotals($total, $vat, Requisites::vatMode($proposal))['lines'] as $line) {
+            $body[] = $line['label'] . ($line['amount'] === null ? '' : ': ' . self::money($line['amount']));
         }
 
         // Позиции, на которые каталог не ответил, — словами клиента, как в файле

@@ -11,6 +11,7 @@ require_once ROOT . '/lib/triage.php';
 require_once ROOT . '/lib/mail_threads.php';
 require_once ROOT . '/lib/attachments.php';
 require_once ROOT . '/lib/outbox.php';
+require_once ROOT . '/lib/drafts.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -91,10 +92,21 @@ try {
             // со всей цепочки ещё до того, как её кто-нибудь прочёл. Отметка
             // ставится только тогда, когда её попросили: `read=1`.
             if (!empty($_GET['read'])) MailThreads::markRead($key);
+            // Контрагент письма: есть ли он у нас, есть ли он в МойСклад и с
+            // каким ИНН его туда заводить (модуль 033)
+            $lastIn = null;
+            foreach ($messages as $m) if (($m['direction'] ?? '') === 'in') $lastIn = $m;
+
             jsonData([
                 'thread'    => $summary,
                 'messages'  => $messages,
                 'reply'     => MailThreads::replyContext($key),
+                'moysklad'  => Crm::moyskladHint(
+                    !empty($summary['counterparty_id']) ? (int)$summary['counterparty_id'] : null,
+                    Crm::letterText($lastIn),
+                    ['name' => (string)($lastIn['real_from_name'] ?? $lastIn['from_name'] ?? ''),
+                     'email' => (string)($lastIn['real_from_email'] ?? $lastIn['from_email'] ?? '')]
+                ),
                 'mailboxes' => array_map(
                     fn($b) => ['id' => $b['id'], 'name' => $b['name'], 'email' => $b['email']],
                     Mailboxes::forManager($manager)
@@ -137,12 +149,14 @@ try {
 
             // Replying keeps the thread and the company card of the original message
             $replyTo = null;
+            $source = null;
             $counterpartyId = isset($input['counterparty_id']) ? (int)$input['counterparty_id'] : null;
             $requestId = isset($input['request_id']) ? (int)$input['request_id'] : null;
             $threadKey = trim((string)($input['thread_key'] ?? '')) ?: null;
             if (!empty($input['reply_to_id'])) {
                 $src = MailArchive::get((int)$input['reply_to_id']);
                 if ($src) {
+                    $source = $src;
                     $replyTo = $src['message_id'] ?: null;
                     $counterpartyId = $counterpartyId ?: ($src['counterparty_id'] ? (int)$src['counterparty_id'] : null);
                     $requestId = $requestId ?: ($src['request_id'] ? (int)$src['request_id'] : null);
@@ -152,12 +166,42 @@ try {
                 }
             }
 
+            // Черновик этого письма уже знает компанию, которой пишут, —
+            // даже если форма её не передала (модуль 033)
+            $draftKeys = [
+                'draft_id'        => $input['draft_id'] ?? 0,
+                'mail_message_id' => $input['reply_to_id'] ?? 0,
+                'thread_key'      => $threadKey ?? '',
+                'counterparty_id' => $counterpartyId ?: 0,
+            ];
+            $draft = MailDrafts::find($draftKeys, (int)$manager['id']);
+            if (!$counterpartyId && $draft && !empty($draft['counterparty_id'])) {
+                $counterpartyId = (int)$draft['counterparty_id'];
+            }
+
             $subject = (string)($input['subject'] ?? '');
+
+            // Оформление, которое менеджер видел в поле, уходит клиенту: жирный,
+            // списки и ссылки перестали срезаться по дороге. Чужого тут нет —
+            // но разметка всё равно проходит тот же фильтр, что и входящая.
+            $html = trim((string)($input['html'] ?? ''));
+            $html = $html !== ''
+                ? MailArchive::sanitizeHtml($html)
+                : '<p>' . nl2br(htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')) . '</p>';
+
+            // Ответ несёт письмо, на которое отвечает (модуль 031): клиенту не
+            // приходится вспоминать, о каком заказе речь, а нам — пересказывать
+            // его же вопрос своими словами.
+            $quoted = MailText::withQuote($text, $html, $source);
+            $text = $quoted['text'];
+            $html = $quoted['html'];
+
             $res = Mailer::send([
                 'to'              => $to,
                 'cc'              => array_filter(array_map('trim', explode(',', (string)($input['cc'] ?? '')))),
                 'subject'         => $subject,
                 'text'            => $text,
+                'html'            => $html,
                 'mailbox_id'      => $input['mailbox_id'] ?? null,
                 'manager_id'      => (int)$manager['id'],
                 'counterparty_id' => $counterpartyId,
@@ -168,14 +212,18 @@ try {
                 'attachments'     => Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']),
             ]);
 
-            // Отправленное письмо — уже не черновик
-            if (!empty($input['reply_to_id'])) {
-                Db::q("DELETE FROM mail_drafts WHERE mail_message_id=? AND manager_id=?",
-                      [(int)$input['reply_to_id'], (int)$manager['id']]);
-            }
-            if ($threadKey) {
-                Db::q("DELETE FROM mail_drafts WHERE thread_key=? AND manager_id=?", [$threadKey, (int)$manager['id']]);
-            }
+            // Отправленное письмо — уже не черновик, но его карточка остаётся
+            // на доске и в своей колонке (модуль 033)
+            MailDrafts::sent($draftKeys, (int)$manager['id'], [
+                'thread_key'      => (string)(Db::val("SELECT thread_key FROM mail_messages WHERE id=?",
+                                                      [(int)$res['archive_id']]) ?: $threadKey),
+                'counterparty_id' => $counterpartyId,
+                'mail_message_id' => (int)$res['archive_id'],
+                'title'           => $counterpartyId
+                    ? (string)(Db::val("SELECT name FROM counterparties WHERE id=?", [$counterpartyId]) ?: $to)
+                    : $to,
+                'manager_id'      => (int)$manager['id'],
+            ]);
 
             // The company chat shows the same message, so nothing is invisible there
             if ($counterpartyId) {
@@ -323,11 +371,15 @@ try {
 
             if ($kind === 'invoice') {
                 require_once ROOT . '/lib/sync.php';
+                require_once ROOT . '/lib/invoice_name.php';
                 $inv = Db::one("SELECT * FROM invoices WHERE id=?", [$id]);
                 if (!$inv) jsonError('Счёт не найден', 404);
                 $path = MsSync::ensureInvoicePdf($id);
                 if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад', 502);
-                $name = 'Счёт ' . $inv['name'] . '.pdf';
+                // Имя по шаблону из настроек, и менеджер мог поправить его в
+                // самом письме — присланное побеждает (модуль 029)
+                $name = safeAttachmentName((string)($input['filename'] ?? ''))
+                     ?: InvoiceName::forInvoice($id);
             } elseif ($kind === 'kp' || $kind === 'kp_docx') {
                 require_once ROOT . '/lib/pdf.php';
                 require_once ROOT . '/lib/docx.php';
@@ -348,52 +400,40 @@ try {
             jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'])]);
         }
 
-        // ---- Черновик ответа: вкладку закрыли — текст остался (модуль 023) ----
+        // ---- Черновик письма: вкладку закрыли — текст остался (модули 023, 033) ----
 
         case 'draft_get': {
-            $id  = (int)($_GET['id'] ?? 0);
-            $key = trim((string)($_GET['thread_key'] ?? ''));
-            $row = $id
-                ? Db::one("SELECT * FROM mail_drafts WHERE mail_message_id=? AND manager_id=?", [$id, (int)$manager['id']])
-                : ($key !== '' ? Db::one("SELECT * FROM mail_drafts WHERE thread_key=? AND manager_id=? ORDER BY id DESC LIMIT 1",
-                                         [$key, (int)$manager['id']]) : null);
+            $row = MailDrafts::find([
+                'draft_id'        => $_GET['draft_id'] ?? 0,
+                'mail_message_id' => $_GET['id'] ?? 0,
+                'thread_key'      => $_GET['thread_key'] ?? '',
+                'counterparty_id' => $_GET['counterparty_id'] ?? 0,
+            ], (int)$manager['id']);
             jsonData(['draft' => $row ?: null]);
         }
 
         case 'draft_save': {
-            $id   = (int)($input['id'] ?? 0);
-            $key  = trim((string)($input['thread_key'] ?? ''));
-            $body = (string)($input['body'] ?? '');
-            if (!$id && $key === '') jsonError('Не указано письмо');
-
-            // Пустой черновик — это не черновик, а стёртое поле
-            if (trim(strip_tags($body)) === '') {
-                if ($id) Db::q("DELETE FROM mail_drafts WHERE mail_message_id=? AND manager_id=?", [$id, (int)$manager['id']]);
-                elseif ($key !== '') Db::q("DELETE FROM mail_drafts WHERE thread_key=? AND manager_id=?", [$key, (int)$manager['id']]);
-                jsonOk(['saved' => false]);
-            }
-
-            $data = [
-                'mail_message_id' => $id ?: null,
-                'thread_key'      => $key ?: null,
-                'manager_id'      => (int)$manager['id'],
-                'body'            => $body,
-                'subject'         => (string)($input['subject'] ?? ''),
-                'updated_at'      => date('Y-m-d H:i:s'),
-            ];
-            $existing = $id
-                ? Db::one("SELECT id FROM mail_drafts WHERE mail_message_id=? AND manager_id=?", [$id, (int)$manager['id']])
-                : Db::one("SELECT id FROM mail_drafts WHERE thread_key=? AND manager_id=?", [$key, (int)$manager['id']]);
-            if ($existing) Db::update('mail_drafts', $data, 'id=?', [$existing['id']]);
-            else Db::insert('mail_drafts', $data);
-            jsonOk(['saved' => true]);
+            // Черновик сохраняется у ЛЮБОГО письма, в том числе у первого письма
+            // компании: раньше без id письма или ключа цепочки набранный текст
+            // просто не уходил на сервер (модуль 033)
+            jsonOk(MailDrafts::save([
+                'draft_id'        => $input['draft_id'] ?? 0,
+                'mail_message_id' => $input['id'] ?? 0,
+                'thread_key'      => $input['thread_key'] ?? '',
+                'counterparty_id' => $input['counterparty_id'] ?? 0,
+                'to'              => $input['to'] ?? '',
+                'subject'         => $input['subject'] ?? '',
+                'body'            => $input['body'] ?? '',
+            ], (int)$manager['id']));
         }
 
         case 'draft_clear': {
-            $id  = (int)($input['id'] ?? 0);
-            $key = trim((string)($input['thread_key'] ?? ''));
-            if ($id) Db::q("DELETE FROM mail_drafts WHERE mail_message_id=? AND manager_id=?", [$id, (int)$manager['id']]);
-            if ($key !== '') Db::q("DELETE FROM mail_drafts WHERE thread_key=? AND manager_id=?", [$key, (int)$manager['id']]);
+            MailDrafts::clear([
+                'draft_id'        => $input['draft_id'] ?? 0,
+                'mail_message_id' => $input['id'] ?? 0,
+                'thread_key'      => $input['thread_key'] ?? '',
+                'counterparty_id' => $input['counterparty_id'] ?? 0,
+            ], (int)$manager['id']);
             jsonOk();
         }
 
@@ -483,7 +523,7 @@ try {
                     $errors[] = $e->getMessage();
                 }
             }
-            Logger::info('mail', "Групповая операция «$op» по $done перепискам",
+            Logger::info('mail', "Групповая операция «{$op}» по $done перепискам",
                          ['manager_id' => (int)$manager['id'], 'failed' => $failed]);
             jsonOk(['done' => $done, 'failed' => $failed, 'errors' => array_slice($errors, 0, 5)]);
         }
@@ -532,4 +572,19 @@ try {
 } catch (Throwable $e) {
     Logger::exception('mail', $e, ['action' => $action]);
     jsonError($e->getMessage(), 500);
+}
+
+/**
+ * Имя вложения, набранное руками (модуль 029). Пустое — пусть решает шаблон;
+ * всё, что ломает файловую систему и заголовок письма, вычищается, а `.pdf`
+ * дописывается: менеджер правит имя, а не расширение.
+ */
+function safeAttachmentName(string $name): string {
+    $name = trim(preg_replace('/\s+/u', ' ', $name) ?? '');
+    if ($name === '') return '';
+    $name = (string)preg_replace('#[\\\\/:*?"<>|\r\n]+#u', '_', $name);
+    $name = trim($name, '_ .');
+    if ($name === '') return '';
+    if (!preg_match('/\.pdf$/iu', $name)) $name .= '.pdf';
+    return mb_substr($name, 0, 180);
 }

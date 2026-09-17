@@ -281,6 +281,98 @@ class Crm {
         return $out;
     }
 
+    /**
+     * Чего не хватает письму, чтобы у него был контрагент в МойСклад (модуль 033).
+     *
+     * Входящее письмо от компании, которой в МойСклад ещё нет, упиралось в
+     * тупик: счёт не выставить, заказ не создать, а завести контрагента можно
+     * было только руками, перепечатав ИНН из подписи. ИНН здесь и находится —
+     * на карточке или в самом письме, — и уходит в форму создания уже готовым.
+     *
+     * Ничего не создаёт и в сеть не ходит: это то, что показывает карточка письма.
+     *
+     * @param string $text письмо целиком: тело, подпись, текст вложений
+     * @param array  $from from_name / from_email письма
+     * @return array{counterparty_id:?int,name:string,inn:string,inn_from_letter:bool,
+     *               email:string,phone:string,linked:bool,moysklad_id:string}
+     */
+    public static function moyskladHint(?int $counterpartyId, string $text, array $from = []): array {
+        $cp = $counterpartyId
+            ? Db::one("SELECT id, name, inn, contact_email, contact_phone, moysklad_id FROM counterparties WHERE id=?",
+                      [self::rootId($counterpartyId)])
+            : null;
+
+        $found = self::requisitesFromText($text);
+        $inn = self::cleanInn((string)($cp['inn'] ?? ''));
+        $innFromLetter = false;
+        if (!$inn) {
+            $inn = self::cleanInn((string)($found['inn'] ?? ''));
+            $innFromLetter = $inn !== null;
+        }
+
+        // Имя компании: карточка → «Полное наименование» из реквизитов →
+        // подпись письма → имя отправителя. Адрес именем компании не считаем
+        $name = trim((string)($cp['name'] ?? ''));
+        if ($name === '' || filter_var($name, FILTER_VALIDATE_EMAIL) !== false) {
+            $name = trim((string)($found['legal_title'] ?? ''))
+                ?: (self::companyFromText($text) ?: trim((string)($from['name'] ?? '')));
+        }
+
+        $email = trim((string)($cp['contact_email'] ?? '')) ?: trim((string)($from['email'] ?? ''));
+        return [
+            'counterparty_id' => $cp ? (int)$cp['id'] : null,
+            'name'            => $name,
+            'inn'             => (string)($inn ?? ''),
+            'inn_from_letter' => $innFromLetter,
+            'email'           => $email,
+            'phone'           => trim((string)($cp['contact_phone'] ?? '')),
+            'moysklad_id'     => trim((string)($cp['moysklad_id'] ?? '')),
+            'linked'          => trim((string)($cp['moysklad_id'] ?? '')) !== '',
+        ];
+    }
+
+    /** Письмо целиком для поиска реквизитов: тело и текст вложений. */
+    public static function letterText(?array $msg): string {
+        if (!$msg) return '';
+        $text = (string)($msg['body_text'] ?? '');
+        $id = (int)($msg['id'] ?? 0);
+        if ($id) {
+            foreach (Db::all("SELECT extracted_text FROM attachments WHERE mail_message_id=?", [$id]) as $a) {
+                if (!empty($a['extracted_text'])) $text .= "\n" . $a['extracted_text'];
+            }
+        }
+        return $text;
+    }
+
+    /**
+     * Переписка неизвестного отправителя переезжает на карточку компании:
+     * письма, их запросы и контакты. Без этого заведённая из письма компания
+     * остаётся пустой карточкой, а переписка — висеть «новым адресом».
+     *
+     * @return int сколько писем переехало
+     */
+    public static function attachThread(string $threadKey, int $counterpartyId): int {
+        $threadKey = trim($threadKey);
+        if ($threadKey === '' || !$counterpartyId) return 0;
+        $counterpartyId = self::rootId($counterpartyId);
+
+        $moved = Db::update('mail_messages', ['counterparty_id' => $counterpartyId],
+                            'thread_key=? AND counterparty_id IS NULL', [$threadKey]);
+        Db::q("UPDATE requests SET counterparty_id=? WHERE counterparty_id IS NULL AND id IN
+               (SELECT request_id FROM mail_messages WHERE thread_key=? AND request_id IS NOT NULL)",
+              [$counterpartyId, $threadKey]);
+
+        foreach (Db::all("SELECT DISTINCT from_email, from_name FROM mail_messages
+                          WHERE thread_key=? AND direction='in'", [$threadKey]) as $m) {
+            $addr = (string)($m['from_email'] ?? '');
+            if ($addr !== '' && !self::isOurAddress($addr)) {
+                self::upsertContact($counterpartyId, $m['from_name'] ?: null, $addr);
+            }
+        }
+        self::recalcAnswerState($counterpartyId);
+        return $moved;
+    }
+
     public static function upsertContact(int $counterpartyId, ?string $name, ?string $email, ?string $phone = null): void {
         $email = $email ? mb_strtolower(trim($email)) : null;
         if (!$email) return;
@@ -398,6 +490,121 @@ class Crm {
         unset($r);
 
         return array_reverse($rows); // oldest first, chat style
+    }
+
+    /**
+     * Организации карточки (модуль 029): сама компания плюс дописанные руками.
+     *
+     * Карточка всегда первая и удалению не подлежит — это она и есть. Счёт
+     * выставляется на ту, что выбрана; ничего не выбрано — на карточку.
+     */
+    public static function orgs(int $counterpartyId): array {
+        $cp = Db::one("SELECT id, name, inn, moysklad_id FROM counterparties WHERE id=?", [$counterpartyId]);
+        if (!$cp) return [];
+        $out = [[
+            'id'          => 0,
+            'name'        => (string)$cp['name'],
+            'inn'         => (string)($cp['inn'] ?? ''),
+            'kpp'         => '',
+            'moysklad_id' => (string)($cp['moysklad_id'] ?? ''),
+            'edo_id'      => '',
+            'note'        => '',
+            'primary'     => true,
+        ]];
+        foreach (Db::all("SELECT * FROM counterparty_orgs WHERE counterparty_id=? ORDER BY id",
+                         [$counterpartyId]) as $row) {
+            $out[] = [
+                'id'          => (int)$row['id'],
+                'name'        => (string)$row['name'],
+                'inn'         => (string)($row['inn'] ?? ''),
+                'kpp'         => (string)($row['kpp'] ?? ''),
+                'moysklad_id' => (string)($row['moysklad_id'] ?? ''),
+                'edo_id'      => (string)($row['edo_id'] ?? ''),
+                'note'        => (string)($row['note'] ?? ''),
+                'primary'     => false,
+            ];
+        }
+        return $out;
+    }
+
+    public static function addOrg(int $counterpartyId, array $data): int {
+        return Db::insert('counterparty_orgs', [
+            'counterparty_id' => $counterpartyId,
+            'name'            => (string)$data['name'],
+            'inn'             => ($data['inn'] ?? '') !== '' ? (string)$data['inn'] : null,
+            'kpp'             => ($data['kpp'] ?? '') !== '' ? (string)$data['kpp'] : null,
+            'moysklad_id'     => ($data['moysklad_id'] ?? '') !== '' ? (string)$data['moysklad_id'] : null,
+            'edo_id'          => ($data['edo_id'] ?? '') !== '' ? (string)$data['edo_id'] : null,
+            'note'            => ($data['note'] ?? '') !== '' ? (string)$data['note'] : null,
+        ]);
+    }
+
+    /** Организация по её id внутри карточки; 0 — сама карточка. */
+    public static function org(int $counterpartyId, int $orgId): ?array {
+        foreach (self::orgs($counterpartyId) as $o) {
+            if ((int)$o['id'] === $orgId) return $o;
+        }
+        return null;
+    }
+
+    /**
+     * Заказы и счета компании — строками для той же ленты (модуль 029).
+     *
+     * Раньше они стояли двумя отдельными карточками в правой колонке, а ссылки
+     * на МойСклад — в третьем месте, под КП. Одна и та же сделка читалась из
+     * трёх углов экрана. Теперь всё, что случилось с компанией, — один список
+     * сверху вниз, и у каждой строки есть ссылка туда, где документ живёт.
+     *
+     * `request_id` у строки — чтобы экран мог приглушить то, что к открытому
+     * запросу отношения не имеет: у компании их за год десятки.
+     */
+    public static function documents(int $counterpartyId): array {
+        require_once __DIR__ . '/reserves.php';
+        $out = [];
+        foreach (Db::all(
+            "SELECT id, moysklad_id, name, sum, state_name, moment, created_at, request_id, proposal_id,
+                    COALESCE(applicable, 1) AS applicable,
+                    reserve_until, reserve_reminded_at, reserve_released_at
+             FROM orders WHERE counterparty_id=? ORDER BY id DESC LIMIT 50", [$counterpartyId]) as $o) {
+            $out[] = [
+                'kind'        => 'doc',
+                'doc'         => 'order',
+                'id'          => (int)$o['id'],
+                'title'       => 'Заказ ' . (string)$o['name'],
+                'sum'         => (float)$o['sum'],
+                'state_name'  => $o['state_name'],
+                'url'         => 'https://online.moysklad.ru/app/#customerorder/edit?id=' . (string)$o['moysklad_id'],
+                'request_id'  => $o['request_id'] !== null ? (int)$o['request_id'] : null,
+                'proposal_id' => $o['proposal_id'] !== null ? (int)$o['proposal_id'] : null,
+                // Резерв под неоплаченный счёт (модуль 026) переехал сюда вместе
+                // с заказом: кнопка «Снять резерв» стоит там же, где заказ
+                'reserve'     => Reserves::state($o),
+                'created_at'  => (string)($o['moment'] ?: $o['created_at']),
+            ];
+        }
+        foreach (Db::all(
+            "SELECT i.id, i.moysklad_id, i.name, i.sum, i.payed_sum, i.state_name, i.moment,
+                    i.created_at, i.sent_at, i.proposal_id, o.request_id
+             FROM invoices i LEFT JOIN orders o ON o.id = i.order_id
+             WHERE i.counterparty_id=? ORDER BY i.id DESC LIMIT 50", [$counterpartyId]) as $i) {
+            $out[] = [
+                'kind'        => 'doc',
+                'doc'         => 'invoice',
+                'id'          => (int)$i['id'],
+                'title'       => 'Счёт ' . (string)$i['name'],
+                'sum'         => (float)$i['sum'],
+                'payed_sum'   => (float)$i['payed_sum'],
+                'state_name'  => $i['state_name'],
+                'sent_at'     => $i['sent_at'],
+                'url'         => 'https://online.moysklad.ru/app/#invoiceout/edit?id=' . (string)$i['moysklad_id'],
+                'pdf_url'     => '/api/invoices.php?action=pdf&id=' . (int)$i['id'],
+                'request_id'  => $i['request_id'] !== null ? (int)$i['request_id'] : null,
+                'proposal_id' => $i['proposal_id'] !== null ? (int)$i['proposal_id'] : null,
+                'created_at'  => (string)($i['moment'] ?: $i['created_at']),
+            ];
+        }
+        usort($out, fn($a, $b) => strcmp($a['created_at'], $b['created_at']));
+        return $out;
     }
 
     public static function chatCount(int $counterpartyId, bool $withLetters = false): int {

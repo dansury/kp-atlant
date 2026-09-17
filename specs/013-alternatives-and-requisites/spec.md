@@ -131,10 +131,20 @@ touches them.
 - `Requisites::syncCounterparty()` does the same for the buyer, and
   `syncContract()` records the newest non-archived договор between the two.
 - **VAT is decided, not guessed.** `payerVat: false` → the КП says «НДС не
-  облагается» (`KP_VAT_EXEMPT_NOTE`) and no VAT line is printed. Otherwise the
+  облагается» (`KP_VAT_EXEMPT_NOTE`) and no VAT amount is printed. Otherwise the
   rate comes from the `vat` МойСклад keeps on the very products of this КП, and
   the настройка «НДС по умолчанию» is only reached for when the catalog is silent.
   The snapshot records which of the three it was, in words.
+- **The amount is always printed** (module 030), and in one of two shapes chosen by
+  `KP_VAT_MODE`: `included` — the catalog price already carries the tax and the
+  document takes it out of the total; `added` — the price is net and the tax is
+  added to it, so the client pays more than the table sums to. The shape is
+  presentation, not a МойСклад fact, so it is NOT frozen into the snapshot: the
+  rate and `payerVat` print as signed, the shape prints as set today, and one КП
+  may override it in `proposals.vat_mode`. `Requisites::vatTotals()` is the one
+  place that does the arithmetic and words the lines — the PDF, the Word file and
+  the letter body print the same ones. A счёт or заказ made from such a КП carries
+  `vatEnabled`/`vatIncluded` to match (`Requisites::msVatFlags()`).
 - **`proposals.requisites_json` is a SNAPSHOT**, written once when the КП is
   generated. A КП reprinted six months later carries the requisites it was signed
   with, not today's bank account. `Requisites::forProposal()` falls back to a fresh

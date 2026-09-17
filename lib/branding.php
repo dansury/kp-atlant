@@ -242,8 +242,7 @@ final class Branding {
         imagecopyresampled($canvas, $src, (int)(($size - $dw) / 2), (int)(($size - $dh) / 2), 0, 0, $dw, $dh, $sw, $sh);
 
         imagepng($canvas, $cache);
-        imagedestroy($canvas);
-        imagedestroy($src);
+        unset($canvas, $src);   // imagedestroy() deprecated с PHP 8.5 и бесполезен с 8.0
         return is_file($cache) ? $cache : $source;
     }
 

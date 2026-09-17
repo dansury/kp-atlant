@@ -88,19 +88,31 @@ switch ($action) {
              FROM invoices WHERE counterparty_id=? ORDER BY moment DESC, id DESC LIMIT 20",
             [$id]
         );
+        // Организации, на которые эта компания просит счета (модуль 029).
+        // Первая строка — сама карточка: счёт по умолчанию идёт на неё.
+        $cp['orgs'] = Crm::orgs($id);
         $cp['merged_cards'] = Db::all("SELECT id, name FROM counterparties WHERE merged_into_id=?", [$id]);
         $cp['suggested_email'] = Crm::primaryEmail($id);
         // Сколько компаний на самом деле пишет из этой карточки: больше одной —
         // и на карточке появляется кнопка «Разделить по отправителям»
         $cp['senders_count'] = count(Crm::sendersOf($id));
+        // Контрагента нет в МойСклад — карточка сама предлагает завести его с
+        // ИНН, найденным в письмах компании (модуль 033)
+        $cp['moysklad_hint'] = Crm::moyskladHint($id, Crm::letterText(Db::one(
+            "SELECT id, body_text FROM mail_messages WHERE counterparty_id=? AND direction='in'
+             ORDER BY date_at DESC, id DESC LIMIT 1", [$id])));
         jsonData($cp);
     }
 
     /**
-     * Every conversation this company ever had, newest first (module 011).
+     * Every conversation this company ever had, OLDEST first (module 029).
      * The company card is where mail is read now — there is no separate mail
      * list to switch to — so the request behind each thread and its КП come
      * back with it, and the card can be painted from one answer.
+     *
+     * Порядок — как в почтовом клиенте и как в самой переписке: старое сверху,
+     * свежее снизу. Раньше список шёл сверху вниз от нового к старому, а письма
+     * ВНУТРИ переписки — наоборот, и карточка читалась в две стороны сразу.
      */
     case 'threads': {
         $manager = requireAuth();
@@ -121,7 +133,7 @@ switch ($action) {
             }
         }
         $items = array_values($items);
-        usort($items, fn($a, $b) => strcmp((string)$b['last_at'], (string)$a['last_at']));
+        usort($items, fn($a, $b) => strcmp((string)$a['last_at'], (string)$b['last_at']));
 
         // The КП that answered each request, so the thread row can link straight to it
         foreach ($items as &$t) {
@@ -130,6 +142,9 @@ switch ($action) {
                 : null;
             // They wrote last → we owe an answer. Bold on the card, dim once answered.
             $t['unanswered'] = $t['last_direction'] === 'in';
+            // Чьё последнее письмо — словами, а не одной стрелкой: карточку
+            // открывают именно ради этого вопроса (модуль 029)
+            $t['last_mine'] = $t['last_direction'] === 'out';
         }
         unset($t);
         // Ящики нужны здесь же: поле ответа на карточке открыто всегда, в том
@@ -158,6 +173,9 @@ switch ($action) {
         $withLetters = !empty($_GET['letters']);
         jsonData([
             'items'  => Crm::chat($id, $limit, $offset, $withLetters),
+            // Заказы и счета идут той же лентой: сделка читается одним списком,
+            // а не собирается из трёх карточек по углам экрана (модуль 029)
+            'docs'   => Crm::documents($id),
             'total'  => Crm::chatCount($id, $withLetters),
             'offset' => $offset,
         ]);
@@ -177,6 +195,28 @@ switch ($action) {
             'request_id' => !empty($input['request_id']) ? (int)$input['request_id'] : null,
             'subject'    => 'Заметка',
         ]);
+        jsonOk(['id' => $noteId]);
+    }
+
+    /**
+     * Удалить заметку. Только заметку: веха сделки и письмо — не заметки, и
+     * стирать их этой кнопкой нельзя, иначе «убрать лишнюю строку» однажды
+     * сотрёт отправленное КП из истории.
+     */
+    case 'note_delete': {
+        requireAuth();
+        $id = Crm::rootId((int)($_GET['id'] ?? 0));
+        $noteId = (int)($_GET['note_id'] ?? 0) ?: (int)(getInput()['note_id'] ?? 0);
+        if (!$noteId) jsonError('Не указана заметка');
+        // Заметка ищется В ЭТОЙ карточке: описка в номере не должна стереть
+        // чужую заметку из другой компании
+        $row = Db::one("SELECT id, direction, event_type FROM correspondence
+                        WHERE id=? AND counterparty_id=?", [$noteId, $id]);
+        if (!$row) jsonError('Заметка не найдена', 404);
+        if ((string)$row['direction'] !== 'note' || !empty($row['event_type'])) {
+            jsonError('Это не заметка — удалить можно только заметку');
+        }
+        Db::q("DELETE FROM correspondence WHERE id=?", [$noteId]);
         jsonOk(['id' => $noteId]);
     }
 
@@ -285,6 +325,123 @@ switch ($action) {
             Db::update('counterparties', $fields, 'id=?', [$id]);
         }
         jsonOk();
+    }
+
+    /**
+     * Организации карточки (модуль 029).
+     *
+     * «Прошу счёт на 15 штук в адрес АО ТИКО-Пластик, 2 штуки в адрес ООО Нова
+     * Ролл Пак» — одно письмо, один контакт, две организации. Карточка держит
+     * их списком, как держит несколько счетов, и счёт выставляется на выбранную.
+     */
+    case 'org_add': {
+        requireAuth();
+        $id = Crm::rootId((int)($_GET['id'] ?? 0));
+        if (!Db::one("SELECT id FROM counterparties WHERE id=?", [$id])) jsonError('Не найдено', 404);
+        $input = getInput();
+        $name = trim((string)($input['name'] ?? ''));
+        if ($name === '') jsonError('Название организации не может быть пустым');
+        $orgId = Crm::addOrg($id, [
+            'name'        => $name,
+            'inn'         => trim((string)($input['inn'] ?? '')),
+            'kpp'         => trim((string)($input['kpp'] ?? '')),
+            'moysklad_id' => trim((string)($input['moysklad_id'] ?? '')),
+            'edo_id'      => trim((string)($input['edo_id'] ?? '')),
+            'note'        => trim((string)($input['note'] ?? '')),
+        ]);
+        jsonOk(['id' => $orgId, 'items' => Crm::orgs($id)]);
+    }
+
+    case 'org_delete': {
+        requireAuth();
+        $id = Crm::rootId((int)($_GET['id'] ?? 0));
+        $orgId = (int)($_GET['org_id'] ?? 0);
+        Db::q("DELETE FROM counterparty_orgs WHERE id=? AND counterparty_id=?", [$orgId, $id]);
+        jsonOk(['items' => Crm::orgs($id)]);
+    }
+
+    /**
+     * «Создать контрагента в МойСклад» прямо из письма (модуль 033).
+     *
+     * Письмо от компании, которой в МойСклад нет, дальше не едет: ни счёта,
+     * ни заказа. Одно нажатие на карточке письма — и контрагент заведён с тем
+     * ИНН, который нашёлся в подписи или во вложении.
+     *
+     * Двойника не заводим: ИНН сначала ищется в МойСклад, и найденный
+     * контрагент просто привязывается — в справочнике должна остаться одна
+     * компания, а не две с одинаковым ИНН.
+     */
+    case 'moysklad_create': {
+        $manager = requireAuth();
+        $input = getInput();
+
+        $inn   = Crm::cleanInn((string)($input['inn'] ?? ''));
+        $name  = trim((string)($input['name'] ?? ''));
+        $email = trim((string)($input['email'] ?? ''));
+        $phone = trim((string)($input['phone'] ?? ''));
+        $key   = trim((string)($input['thread_key'] ?? ''));
+        if ($inn === null && trim((string)($input['inn'] ?? '')) !== '') {
+            jsonError('ИНН — это 10 цифр у организации или 12 у предпринимателя');
+        }
+
+        // 1. Карточка компании у нас. Нет — заводим из того, что знает письмо
+        $cpId = !empty($input['counterparty_id']) ? Crm::rootId((int)$input['counterparty_id']) : 0;
+        if (!$cpId) {
+            if ($name === '' && $email === '') jsonError('Не из чего завести компанию: нет ни названия, ни адреса');
+            $cpId = (int)Crm::resolveCounterparty([
+                'inn' => $inn ?: '', 'name' => $name, 'email' => $email, 'phone' => $phone ?: null,
+            ]);
+            if (!$cpId) jsonError('Компания не завелась');
+            // Переписка уезжает на новую карточку вместе с запросами и контактами
+            if ($key !== '') Crm::attachThread($key, $cpId);
+        }
+        $cp = Db::one("SELECT * FROM counterparties WHERE id=?", [$cpId]);
+        if ($name === '') $name = (string)$cp['name'];
+        if ($inn === null) $inn = Crm::cleanInn((string)($cp['inn'] ?? ''));
+        if ($inn !== null && trim((string)($cp['inn'] ?? '')) === '') {
+            Db::update('counterparties', ['inn' => $inn, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+        }
+
+        require_once ROOT . '/lib/moysklad.php';
+
+        // Уже привязан — второй раз не заводим
+        if (trim((string)($cp['moysklad_id'] ?? '')) !== '') {
+            jsonOk(['counterparty_id' => $cpId, 'moysklad_id' => (string)$cp['moysklad_id'], 'created' => false,
+                    'found' => true, 'url' => MoySklad::counterpartyUrl((string)$cp['moysklad_id'])]);
+        }
+
+        $token = trim((string)($cfg['MOYSKLAD_TOKEN'] ?? ''));
+        if ($token === '') jsonError('В настройках не задан токен МойСклад', 400);
+        MoySklad::init($token);
+
+        // 2. Тот же ИНН уже в МойСклад — привязываем, а не плодим двойника
+        $msId = ''; $created = false; $found = false;
+        if ($inn) {
+            foreach (MoySklad::searchCounterparties($inn) as $c) {
+                if (Crm::cleanInn((string)($c['inn'] ?? '')) === $inn) { $msId = (string)$c['id']; $found = true; break; }
+            }
+        }
+        if ($msId === '') {
+            if ($name === '') jsonError('У компании нет названия — МойСклад его требует');
+            $made = MoySklad::createCounterparty([
+                'name'  => $name,
+                'inn'   => $inn ?: '',
+                'email' => $email ?: (string)($cp['contact_email'] ?? ''),
+                'phone' => $phone ?: (string)($cp['contact_phone'] ?? ''),
+            ]);
+            $msId = (string)($made['id'] ?? '');
+            if ($msId === '') jsonError('МойСклад не вернул контрагента: ' . MoySklad::lastErrorMessage(), 502);
+            $created = true;
+        }
+
+        Db::update('counterparties', ['moysklad_id' => $msId, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+        Logger::info('moysklad', ($created ? 'Контрагент заведён в МойСклад: ' : 'Контрагент найден в МойСклад по ИНН: ') . $name,
+                     ['counterparty_id' => $cpId, 'moysklad_id' => $msId, 'inn' => $inn,
+                      'manager_id' => (int)$manager['id']]);
+
+        jsonOk(['counterparty_id' => $cpId, 'moysklad_id' => $msId, 'created' => $created, 'found' => $found,
+                'inn' => (string)($inn ?? ''), 'name' => $name,
+                'url' => MoySklad::counterpartyUrl($msId)]);
     }
 
     case 'lookup_moysklad': {
