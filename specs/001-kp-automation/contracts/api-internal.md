@@ -162,23 +162,28 @@ Sends email with PDF attachment.
 ## Products (`products.php`)
 
 ### GET `?action=search&q=аптечка+лазарь`
+Возвращает то, что можно ВЫБРАТЬ: у товара с модификациями — сами модификации, у товара без
+модификаций — его самого. `stock` — свободный остаток, резерв уже вычтен.
 ```json
 // Response 200
 {
   "items": [
     {
-      "moysklad_id": "abc-123",
-      "name": "Аптечка тактическая «Лазарь» Multicam",
+      "moysklad_id": "abc-124",
+      "name": "Аптечка тактическая «Лазарь» (Цвет: Multicam)",
+      "variant_label": "Multicam",
+      "group_name": "Аптечка тактическая «Лазарь»",
+      "group_article": "APT-LAZ",
       "article": "APT-LAZ-MC",
       "price": 4500.00,
-      "stock": 25,
-      "reserved": 3,
+      "stock": 22,
       "unit": "шт.",
-      "match_score": 0.92
+      "prices": {"Розница": 4500.00}
     }
   ]
 }
 ```
+`variant_label` и `group_name` пустые — это товар без модификаций, он выбирается сам.
 
 ### POST `?action=refresh_cache`
 Forces full product cache refresh from MoySklad.

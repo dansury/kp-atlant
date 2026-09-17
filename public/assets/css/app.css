@@ -435,7 +435,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .suggest { position: absolute; z-index: 30; left: 0; right: 0; top: 100%;
            background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
            box-shadow: var(--shadow-lg); max-height: 260px; overflow-y: auto; }
+/* Заголовок семьи модификаций: сам товар не выбирается — выбирают размер */
+.suggest__group { position: sticky; top: 0; padding: 6px 10px 3px; font-size: 12px;
+                  color: var(--text-muted); background: var(--surface-2);
+                  border-bottom: 1px solid var(--border); }
 .suggest__item { padding: 6px 10px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
+.suggest__item--variant { padding-left: 18px; }
 .suggest__item:last-child { border-bottom: none; }
 .suggest__item:hover { background: var(--surface-2); }
 
