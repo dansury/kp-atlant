@@ -3842,6 +3842,90 @@ const App = {
         this.restoreComposerDraft(key);
     },
 
+    /**
+     * ==== Перенаправить письмо (модуль 037) ====
+     *
+     * Письмо целиком — со вложениями и шапкой «от кого» — уходит на другой
+     * адрес: запрос в снабжение, счёт в бухгалтерию. Делается это здесь, а не
+     * в чужом почтовом клиенте, поэтому пересылка остаётся в переписке.
+     *
+     * Адрес запоминается сам: во второй раз его выбирают нажатием, а не
+     * набирают. Список чистится крестиком — человек увольняется, а адрес
+     * остаётся.
+     */
+    async forwardMail(id) {
+        this._forwardId = id;
+        this.modal('Перенаправить письмо', `
+            <div class="form-group">
+                <label>Кому переслать</label>
+                <input type="email" id="fwdTo" placeholder="адрес@компания.ру" autocomplete="off">
+            </div>
+            <div id="fwdSaved" class="fwd-saved muted">Загружаем сохранённые адреса...</div>
+            <div class="form-group">
+                <label>Что дописать от себя</label>
+                <textarea id="fwdNote" rows="3" placeholder="Необязательно: пара слов получателю"></textarea>
+            </div>
+            <div class="flex flex--end" style="gap:8px;margin-top:12px">
+                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
+                <button class="btn btn--primary" id="fwdGo" onclick="App.forwardSend(this)">Перенаправить</button>
+            </div>`);
+        this.forwardAddresses();
+    },
+
+    /** Сохранённые адреса — список под полем ввода. */
+    async forwardAddresses(known) {
+        const box = document.getElementById('fwdSaved');
+        if (!box) return;
+        try {
+            const list = known || (await this.api('mail.php?action=forward_addresses')).addresses || [];
+            box.innerHTML = list.length
+                ? 'Сохранённые адреса: ' + list.map(a => `
+                    <span class="chip fwd-chip">
+                        <a onclick="App.forwardPick('${this.jsStr(a.email)}')"
+                           title="${this.esc(a.name || a.email)}">${this.esc(a.email)}</a>
+                        <button title="Убрать адрес из базы"
+                                onclick="App.forwardForget(${Number(a.id)})">×</button>
+                    </span>`).join(' ')
+                : 'Сюда ещё не пересылали — наберите адрес, он запомнится сам.';
+        } catch (err) {
+            box.textContent = 'Сохранённые адреса не загрузились: ' + err.message;
+        }
+    },
+
+    forwardPick(email) {
+        const field = document.getElementById('fwdTo');
+        if (field) { field.value = email; field.focus(); }
+    },
+
+    /** Убрать адрес из базы — вместе со счётчиком, которым он держался в списке. */
+    async forwardForget(id) {
+        try {
+            const d = await this.api('mail.php?action=forward_address_delete', {method: 'POST', body: {id}});
+            this.forwardAddresses(d.addresses || []);
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async forwardSend(btn) {
+        const to = (document.getElementById('fwdTo') || {}).value || '';
+        if (!to.trim()) { this.toast('Укажите адрес, на который переслать', 'error'); return; }
+        btn.disabled = true;
+        btn.textContent = 'Отправляем...';
+        try {
+            await this.api('mail.php?action=forward', {method: 'POST', body: {
+                id:   this._forwardId,
+                to:   to.trim(),
+                text: (document.getElementById('fwdNote') || {}).value || '',
+            }});
+            this.closeModal();
+            this.toast('Письмо перенаправлено на ' + to.trim(), 'success');
+            this.route();
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Перенаправить';
+        }
+    },
+
     async threadDraft(key, btn) {
         const c = this.composerOf(key);
         if (!c) return;
@@ -6079,7 +6163,14 @@ const App = {
         const sentBad = m.direction === 'out'
             && ['failed', 'bounced', 'bounce_soft'].includes(m.sent_state);
         const open = m.direction === 'in' && (isLast || Number(m.is_read) === 0);
-        const preview = (m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        // Свёрнутое письмо показывает начало текста в ТОМ ЖЕ поле, где потом
+        // раскроется тело: два поля подряд читались как два письма (модуль 037)
+        const preview = (m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+        // Почтовый адрес рядом с именем: «Иванов» в переписке бывает не один,
+        // и отвечать надо на адрес, а не на имя (модуль 037)
+        const addr = m.direction === 'in'
+            ? (m.real_from_email || m.from_email || '')
+            : (m.from_email || '');
         const cls = ['lmsg', m.direction === 'in' ? 'lmsg--in' : 'lmsg--out'];
         if (open) cls.push('lmsg--open');
         return `
@@ -6088,6 +6179,7 @@ const App = {
                     <!-- Кто написал: у пересланного письма это человек из шапки
                          пересылки, а не наш ящик, через который оно пришло -->
                     <span class="lmsg__who">${this.esc(m.real_from_name || m.from_name || m.from_email || '—')}</span>
+                    ${addr ? `<span class="lmsg__addr muted" title="Почтовый адрес отправителя">&lt;${this.esc(addr)}&gt;</span>` : ''}
                     <span class="lmsg__to muted">${m.direction === 'in' ? '→ нам' : '→ ' + this.esc(m.to_emails)}</span>
                     <span class="lmsg__date muted">${this.fmtDate(m.date_at)}</span>
                     <!-- Удалить одно письмо, не открывая его и не трогая переписку:
@@ -6104,23 +6196,28 @@ const App = {
                     ${m.has_attachment ? '<span title="есть вложения">📎</span>' : ''}
                     ${sentBad ? '<span class="badge badge--warning" title="Копия не попала в «Отправленные» на сервере">нет в «Отправленных»</span>' : ''}
                 </div>
-                ${preview ? `<div class="lmsg__preview muted">${this.esc(preview)}</div>` : ''}
-                <div class="lmsg__body">
-                    ${m.cc_emails ? `<div class="muted" style="margin-bottom:6px">Копия: ${this.esc(m.cc_emails)}</div>` : ''}
-                    ${this.msgBodyHtml(m)}
-                    ${(m.attachments || []).length ? `<div class="msg__files">
-                        ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
-                    </div>` : ''}
-                    <div class="lmsg__actions">
-                        <button class="btn btn--outline btn--sm"
-                                onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
-                            Ответить на это письмо</button>
-                        ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" title="Не наш профиль: письмо уйдёт в «Архив» на сервере"
-                            onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
-                        ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
-                        ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
-                        <button class="btn btn--outline btn--sm btn--danger"
-                                onclick="App.deleteMail(${m.id}, {thread: '${this.jsStr(key || '')}'})">🗑 Удалить письмо</button>
+                <div class="lmsg__text">
+                    ${preview ? `<div class="lmsg__peek muted">${this.esc(preview)}</div>` : ''}
+                    <div class="lmsg__full">
+                        ${m.cc_emails ? `<div class="muted" style="margin-bottom:6px">Копия: ${this.esc(m.cc_emails)}</div>` : ''}
+                        ${this.msgBodyHtml(m)}
+                        ${(m.attachments || []).length ? `<div class="msg__files">
+                            ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
+                        </div>` : ''}
+                        <div class="lmsg__actions">
+                            <button class="btn btn--outline btn--sm"
+                                    onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
+                                Ответить на это письмо</button>
+                            ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" title="Не наш профиль: письмо уйдёт в «Архив» на сервере"
+                                onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
+                            ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
+                            ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
+                            <button class="btn btn--outline btn--sm"
+                                    title="Отправить это письмо целиком на другой адрес — со вложениями и шапкой «от кого»"
+                                    onclick="App.forwardMail(${m.id})">↪ Перенаправить</button>
+                            <button class="btn btn--outline btn--sm btn--danger"
+                                    onclick="App.deleteMail(${m.id}, {thread: '${this.jsStr(key || '')}'})">🗑 Удалить письмо</button>
+                        </div>
                     </div>
                 </div>
             </article>`;

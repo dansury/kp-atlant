@@ -8,6 +8,7 @@ require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
 require_once ROOT . '/lib/attachments.php';
+require_once ROOT . '/lib/kp_set.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -151,6 +152,8 @@ switch ($action) {
         $input = getInput();
         $conditions = Terms::remember((int)$manager['id'], (array)($input['conditions'] ?? []));
         $items = !empty($input['apply']) ? RequestItems::applyConditions($id, $conditions) : RequestItems::all($id);
+        // Тот же срок ожидания — в уже собранные КП запроса (модуль 037)
+        if (!empty($input['apply'])) KpSet::syncWaitFromRequest($id);
         jsonData(['items' => $items, 'conditions' => $conditions]);
     }
 
@@ -165,7 +168,10 @@ switch ($action) {
         $delivery = array_key_exists('delivery', $input)
             ? RequestItems::saveDelivery($id, is_array($input['delivery']) ? $input['delivery'] : null)
             : RequestItems::delivery($id);
-        jsonData(['items' => $items, 'delivery' => $delivery]);
+        // Срок ожидания правится здесь, а печатается в КП: собранные раньше
+        // документы держали прежний срок, пока их никто не сводил (модуль 037)
+        $rebuilt = KpSet::syncWaitFromRequest($id);
+        jsonData(['items' => $items, 'delivery' => $delivery, 'kp_rebuilt' => $rebuilt]);
 
     case 'items_choose':
         // The manager answered «какая из равнозначных» — the line stops asking

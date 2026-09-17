@@ -355,6 +355,61 @@ final class KpSet {
                             [$proposalId]);
     }
 
+    /**
+     * Условия ожидания из таблицы подбора — в КП этого запроса (модуль 037).
+     *
+     * Срок ожидания ставится в подборе, а печатается в КП дважды: строкой «под
+     * заказ, срок ожидания 6 месяцев» и сроком исполнения в условиях. Пока их
+     * никто не сводил, КП, собранное ДО правки, печатало прежние три месяца —
+     * те, что проставились по умолчанию в день сборки, — и менеджер выставлял
+     * срок второй раз, уже в документе.
+     *
+     * Переписывается только то, что в подборе ЗАПОЛНЕНО: пустое поле означает
+     * «как в настройках», а не «ноль», и своё значение КП за ним не теряет.
+     * Отправленное клиенту КП не трогается вовсе — документ, который он держит
+     * в руках, печатается так, как его подписали.
+     *
+     * @return int сколько КП пересобралось
+     */
+    public static function syncWaitFromRequest(int $requestId): int {
+        $source = [];
+        foreach (Db::all("SELECT id, wait_on, wait_months, wait_discount, wait_prepay
+                          FROM request_items WHERE request_id=?", [$requestId]) as $row) {
+            $source[(int)$row['id']] = $row;
+        }
+        if (!$source) return 0;
+
+        $items = Db::all(
+            "SELECT i.id, i.proposal_id, i.request_item_id,
+                    i.wait_on, i.wait_months, i.wait_discount, i.wait_prepay
+             FROM proposal_items i
+             JOIN proposals p ON p.id = i.proposal_id
+             WHERE p.request_id=? AND p.status NOT IN ('sent', 'order_created')
+               AND i.request_item_id IS NOT NULL", [$requestId]);
+
+        $touched = [];
+        foreach ($items as $item) {
+            $src = $source[(int)$item['request_item_id']] ?? null;
+            if (!$src) continue;
+
+            $upd = [];
+            foreach (['wait_on', 'wait_months', 'wait_discount', 'wait_prepay'] as $field) {
+                $value = $src[$field] ?? null;
+                // Выключатель «под заказ» пустым не бывает: подбор пишет 0 или 1
+                if ($field !== 'wait_on' && ($value === null || $value === '')) continue;
+                if ((string)$value === (string)($item[$field] ?? '')) continue;
+                $upd[$field] = $value;
+            }
+            if (!$upd) continue;
+
+            Db::update('proposal_items', $upd, 'id=?', [(int)$item['id']]);
+            $touched[(int)$item['proposal_id']] = true;
+        }
+
+        foreach (array_keys($touched) as $proposalId) self::rebuild($proposalId);
+        return count($touched);
+    }
+
     /** Убрать дыры в нумерации после удаления строки. */
     public static function resequence(int $proposalId): void {
         foreach (Db::all("SELECT id FROM proposal_items WHERE proposal_id=? ORDER BY position, id",
