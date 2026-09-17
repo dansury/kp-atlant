@@ -8,6 +8,7 @@ require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
 require_once ROOT . '/lib/attachments.php';
+require_once ROOT . '/lib/kp_set.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -138,7 +139,10 @@ switch ($action) {
         $delivery = array_key_exists('delivery', $input)
             ? RequestItems::saveDelivery($id, is_array($input['delivery']) ? $input['delivery'] : null)
             : RequestItems::delivery($id);
-        jsonData(['items' => $items, 'delivery' => $delivery]);
+        // Срок ожидания правится здесь, а печатается в КП: собранные раньше
+        // документы держали прежний срок, пока их никто не сводил (модуль 035)
+        $rebuilt = KpSet::syncWaitFromRequest($id);
+        jsonData(['items' => $items, 'delivery' => $delivery, 'kp_rebuilt' => $rebuilt]);
 
     case 'items_choose':
         // The manager answered «какая из равнозначных» — the line stops asking

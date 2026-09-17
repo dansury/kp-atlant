@@ -1618,6 +1618,23 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '33')");
         $current = 33;
     }
+
+    // v34 — модуль 035: письмо пересылается из сервиса, и адрес пересылки
+    // запоминается, чтобы во второй раз его выбирали, а не набирали.
+    if ($current < 34) {
+        Db::q("
+        CREATE TABLE IF NOT EXISTS forward_addresses (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            email        TEXT NOT NULL UNIQUE,
+            name         TEXT,
+            uses         INTEGER DEFAULT 0,
+            last_used_at TEXT,
+            created_at   TEXT
+        )");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '34')");
+        $current = 34;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
