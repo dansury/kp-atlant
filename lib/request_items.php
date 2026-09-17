@@ -535,6 +535,42 @@ final class RequestItems {
     }
 
     /**
+     * ==== Доставка строкой подбора (модуль 034) ====
+     *
+     * Доставка считалась полем в «Настройках КП» — экран за двумя переходами от
+     * таблицы подбора, — и про неё забывали: КП уходило клиенту с оговоркой
+     * «доставка считается отдельно» и без единой цифры. Теперь это обычная
+     * строка под позициями: она стоит там всегда, правится там же и убирается
+     * крестиком, как любая другая.
+     *
+     * Живёт на ЗАПРОСЕ и копируется в каждое его КП: у запроса КП бывает
+     * несколько, и доставка у них одна и та же.
+     *
+     * @return array{on:int,name:string,price:float}
+     */
+    public static function delivery(int $requestId): array {
+        $r = Db::one("SELECT delivery_on, delivery_name, delivery_price FROM requests WHERE id=?", [$requestId]) ?: [];
+        return [
+            // Колонки нет у запроса, заведённого до модуля 034, — значит «да»:
+            // доставку считают почти всегда
+            'on'    => ($r['delivery_on'] ?? null) === null ? 1 : (int)$r['delivery_on'],
+            'name'  => trim((string)($r['delivery_name'] ?? '')) ?: 'Доставка',
+            'price' => round((float)($r['delivery_price'] ?? 0), 2),
+        ];
+    }
+
+    /** Сохранить строку доставки. Пришло null — строку убрали крестиком. */
+    public static function saveDelivery(int $requestId, ?array $d): array {
+        Db::update('requests', [
+            'delivery_on'    => $d === null ? 0 : 1,
+            'delivery_name'  => $d === null ? null : (trim((string)($d['name'] ?? '')) ?: 'Доставка'),
+            'delivery_price' => $d === null ? 0 : max(0.0, round((float)($d['price'] ?? 0), 2)),
+            'updated_at'     => date('Y-m-d H:i:s'),
+        ], 'id=?', [$requestId]);
+        return self::delivery($requestId);
+    }
+
+    /**
      * Table rows → the shape proposals.php already inserts, so a KP built from
      * the confirmed table and one built from a fresh match share the same code.
      */

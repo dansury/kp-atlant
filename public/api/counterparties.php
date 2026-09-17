@@ -98,9 +98,10 @@ switch ($action) {
         $cp['senders_count'] = count(Crm::sendersOf($id));
         // Контрагента нет в МойСклад — карточка сама предлагает завести его с
         // ИНН, найденным в письмах компании (модуль 033)
-        $cp['moysklad_hint'] = Crm::moyskladHint($id, Crm::letterText(Db::one(
-            "SELECT id, body_text FROM mail_messages WHERE counterparty_id=? AND direction='in'
-             ORDER BY date_at DESC, id DESC LIMIT 1", [$id])));
+        // Реквизиты ищутся по ВСЕЙ переписке и вложениям компании, а не в
+        // последнем письме: ИНН чаще стоит в первом, в карточке предприятия
+        // (модуль 034)
+        $cp['moysklad_hint'] = Crm::moyskladHint($id, Crm::correspondenceText($id));
         jsonData($cp);
     }
 
@@ -361,11 +362,16 @@ switch ($action) {
     }
 
     /**
-     * «Создать контрагента в МойСклад» прямо из письма (модуль 033).
+     * «Завести в МойСклад» — одной кнопкой на любой организации карточки
+     * (модули 033 и 034).
      *
      * Письмо от компании, которой в МойСклад нет, дальше не едет: ни счёта,
      * ни заказа. Одно нажатие на карточке письма — и контрагент заведён с тем
      * ИНН, который нашёлся в подписи или во вложении.
+     *
+     * `org_id` указывает, КАКУЮ организацию карточки заводим: 0 (или пусто) —
+     * саму карточку, иначе вторую фирму из «Организаций для счёта». Раньше на
+     * это было две разные кнопки, делавшие одно и то же на разных строках.
      *
      * Двойника не заводим: ИНН сначала ищется в МойСклад, и найденный
      * контрагент просто привязывается — в справочнике должна остаться одна
@@ -396,18 +402,31 @@ switch ($action) {
             if ($key !== '') Crm::attachThread($key, $cpId);
         }
         $cp = Db::one("SELECT * FROM counterparties WHERE id=?", [$cpId]);
-        if ($name === '') $name = (string)$cp['name'];
-        if ($inn === null) $inn = Crm::cleanInn((string)($cp['inn'] ?? ''));
-        if ($inn !== null && trim((string)($cp['inn'] ?? '')) === '') {
-            Db::update('counterparties', ['inn' => $inn, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+
+        // Вторая фирма карточки: заводим ЕЁ, а привязка ложится на строку
+        // организации, а не на карточку компании (модуль 034)
+        $orgId = (int)($input['org_id'] ?? 0);
+        $org = $orgId ? Db::one("SELECT * FROM counterparty_orgs WHERE id=? AND counterparty_id=?", [$orgId, $cpId]) : null;
+        if ($orgId && !$org) jsonError('Организация не найдена в карточке', 404);
+
+        if ($org) {
+            if ($name === '') $name = (string)$org['name'];
+            if ($inn === null) $inn = Crm::cleanInn((string)($org['inn'] ?? ''));
+        } else {
+            if ($name === '') $name = (string)$cp['name'];
+            if ($inn === null) $inn = Crm::cleanInn((string)($cp['inn'] ?? ''));
+            if ($inn !== null && trim((string)($cp['inn'] ?? '')) === '') {
+                Db::update('counterparties', ['inn' => $inn, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+            }
         }
 
         require_once ROOT . '/lib/moysklad.php';
 
         // Уже привязан — второй раз не заводим
-        if (trim((string)($cp['moysklad_id'] ?? '')) !== '') {
-            jsonOk(['counterparty_id' => $cpId, 'moysklad_id' => (string)$cp['moysklad_id'], 'created' => false,
-                    'found' => true, 'url' => MoySklad::counterpartyUrl((string)$cp['moysklad_id'])]);
+        $linked = trim((string)(($org['moysklad_id'] ?? null) ?? ($cp['moysklad_id'] ?? '')));
+        if ($linked !== '') {
+            jsonOk(['counterparty_id' => $cpId, 'org_id' => $orgId, 'moysklad_id' => $linked, 'created' => false,
+                    'found' => true, 'orgs' => Crm::orgs($cpId), 'url' => MoySklad::counterpartyUrl($linked)]);
         }
 
         $token = trim((string)($cfg['MOYSKLAD_TOKEN'] ?? ''));
@@ -434,14 +453,68 @@ switch ($action) {
             $created = true;
         }
 
-        Db::update('counterparties', ['moysklad_id' => $msId, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+        if ($org) {
+            $upd = ['moysklad_id' => $msId];
+            if ($inn && trim((string)($org['inn'] ?? '')) === '') $upd['inn'] = $inn;
+            Db::update('counterparty_orgs', $upd, 'id=?', [$orgId]);
+        } else {
+            Db::update('counterparties', ['moysklad_id' => $msId, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+        }
         Logger::info('moysklad', ($created ? 'Контрагент заведён в МойСклад: ' : 'Контрагент найден в МойСклад по ИНН: ') . $name,
-                     ['counterparty_id' => $cpId, 'moysklad_id' => $msId, 'inn' => $inn,
+                     ['counterparty_id' => $cpId, 'org_id' => $orgId, 'moysklad_id' => $msId, 'inn' => $inn,
                       'manager_id' => (int)$manager['id']]);
 
-        jsonOk(['counterparty_id' => $cpId, 'moysklad_id' => $msId, 'created' => $created, 'found' => $found,
-                'inn' => (string)($inn ?? ''), 'name' => $name,
+        jsonOk(['counterparty_id' => $cpId, 'org_id' => $orgId, 'moysklad_id' => $msId,
+                'created' => $created, 'found' => $found,
+                'inn' => (string)($inn ?? ''), 'name' => $name, 'orgs' => Crm::orgs($cpId),
                 'url' => MoySklad::counterpartyUrl($msId)]);
+    }
+
+    /**
+     * «Найти ИНН» — по всей переписке и вложениям, а не глазами (модуль 034).
+     *
+     * Сначала обычный поиск по образцу: он бесплатен и отвечает в большинстве
+     * писем. Не нашёл — спрашиваем нейросеть, она читает ту же переписку.
+     * Найденный ИНН сразу ложится на карточку, если её поле пустое: перепечатать
+     * его руками во второй раз не должно быть нужно.
+     */
+    case 'find_inn': {
+        requireAuth();
+        $cpId = !empty($_GET['id']) ? Crm::rootId((int)$_GET['id']) : 0;
+        $key  = trim((string)($_GET['thread_key'] ?? ''));
+        $text = Crm::correspondenceText($cpId ?: null, $key);
+        if (trim($text) === '') jsonError('В переписке нет текста, в котором можно искать', 400);
+
+        $found = Crm::requisitesFromText($text);
+        $inn = Crm::cleanInn((string)($found['inn'] ?? ''));
+        $source = $inn !== null ? 'найден в тексте письма' : '';
+        $byLlm = null;
+
+        if ($inn === null) {
+            $byLlm = Crm::requisitesByLlm($text);
+            $inn = $byLlm['inn'];
+            $source = $inn !== null ? ((string)$byLlm['source'] ?: 'нашла нейросеть') : '';
+            foreach (['kpp', 'ogrn', 'legal_title', 'legal_address'] as $f) {
+                if (($found[$f] ?? null) === null && $byLlm[$f] !== null) $found[$f] = $byLlm[$f];
+            }
+        }
+
+        // Пустое поле карточки заполняем, заполненное не трогаем
+        if ($inn !== null && $cpId) {
+            $was = trim((string)(Db::val("SELECT inn FROM counterparties WHERE id=?", [$cpId]) ?: ''));
+            if ($was === '') {
+                Db::update('counterparties', ['inn' => $inn, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$cpId]);
+            }
+        }
+
+        jsonData([
+            'inn'         => (string)($inn ?? ''),
+            'kpp'         => (string)($found['kpp'] ?? ''),
+            'ogrn'        => (string)($found['ogrn'] ?? ''),
+            'legal_title' => (string)($found['legal_title'] ?? ''),
+            'source'      => $source,
+            'by_llm'      => $byLlm !== null && $inn !== null,
+        ]);
     }
 
     case 'lookup_moysklad': {

@@ -115,6 +115,8 @@ switch ($action) {
         // afterwards. Matching here is local only: opening a card costs no model call.
         $req['items'] = RequestItems::ensure($id);
         $req['open_choices'] = RequestItems::openChoices($id);
+        // Доставка — такая же строка подбора, как позиция (модуль 034)
+        $req['delivery'] = RequestItems::delivery($id);
         jsonData($req);
 
     // ---- Matched catalog positions of a request (module 008) ----
@@ -123,14 +125,20 @@ switch ($action) {
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
-        jsonData(['items' => RequestItems::ensure($id)]);
+        jsonData(['items' => RequestItems::ensure($id), 'delivery' => RequestItems::delivery($id)]);
 
     case 'items_save':
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         $input = getInput();
-        jsonData(['items' => RequestItems::save($id, (array)($input['items'] ?? []))]);
+        $items = RequestItems::save($id, (array)($input['items'] ?? []));
+        // Строку доставки убрали крестиком — она приходит как null, и это
+        // решение, а не «поле забыли прислать» (модуль 034)
+        $delivery = array_key_exists('delivery', $input)
+            ? RequestItems::saveDelivery($id, is_array($input['delivery']) ? $input['delivery'] : null)
+            : RequestItems::delivery($id);
+        jsonData(['items' => $items, 'delivery' => $delivery]);
 
     case 'items_choose':
         // The manager answered «какая из равнозначных» — the line stops asking
@@ -167,7 +175,7 @@ switch ($action) {
         $useLlm = ($_GET['smart'] ?? '0') === '1';
         // The counts come back with the rows: «ничего не нашлось» must not look
         // the same on screen as «нашлось всё» (module 018)
-        jsonData(RequestItems::rematchReport($id, $useLlm));
+        jsonData(RequestItems::rematchReport($id, $useLlm) + ['delivery' => RequestItems::delivery($id)]);
 
     case 'create':
         $manager = requireAuth();

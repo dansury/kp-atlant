@@ -344,7 +344,21 @@ class Attachments {
         if (!$key || !$folder) return null;
 
         $maxPages = (int)(Db::val("SELECT value FROM settings WHERE key='ocr_max_pages'") ?: 3);
-        $content = base64_encode(file_get_contents($path));
+
+        // Vision принимает запрос не больше 10 МБ, а файл едет в нём base64 —
+        // это +33% к размеру. Скан на 9 МБ отвечал HTTP 400 без внятной
+        // причины, и в журнале копились «Yandex Vision вернул HTTP 400»
+        // (модуль 034). Такой файл не распознаём — и говорим почему.
+        $size = (int)@filesize($path);
+        if ($size <= 0 || (int)ceil($size * 4 / 3) > 9_500_000) {
+            Logger::warning('ocr', $size <= 0
+                ? 'Вложение пустое — распознавать нечего'
+                : 'Вложение больше 7 МБ (' . round($size / 1048576, 1) . ' МБ) — Yandex Vision такие не принимает',
+                ['path' => basename($path), 'bytes' => $size]);
+            return null;
+        }
+
+        $content = base64_encode((string)file_get_contents($path));
         $out = [];
 
         // PDF: Vision recognizes one page per request, pass page index
@@ -365,9 +379,13 @@ class Attachments {
                     // 429 is Vision's rate limit, not a broken setup — a whole archive
                     // download hits it routinely, so it is a warning with a hint
                     $rate = $code === 429;
+                    // Причина, которую назвал Vision, — в самом заголовке записи:
+                    // «HTTP 400» без неё ничего не говорит тому, кто читает журнал
+                    $why = self::visionMessage((string)$resp);
                     Logger::log($rate ? 'warning' : 'error', 'ocr',
-                        "Yandex Vision вернул HTTP $code" . ($rate ? ' — превышен лимит запросов, распознавание пропущено' : ''),
-                        ['response' => substr((string)$resp, 0, 500)]);
+                        "Yandex Vision вернул HTTP $code"
+                        . ($rate ? ' — превышен лимит запросов, распознавание пропущено' : ($why !== '' ? ' — ' . $why : '')),
+                        ['response' => substr((string)$resp, 0, 500), 'mime' => $mime]);
                     return null;
                 }
                 break; // no more pages
@@ -379,6 +397,14 @@ class Attachments {
         }
 
         return $out ? implode("\n\n", $out) : null;
+    }
+
+    /** Что Vision сказал про отказ — одной строкой для журнала. */
+    private static function visionMessage(string $body): string {
+        $data = json_decode($body, true);
+        if (!is_array($data)) return '';
+        $msg = (string)($data['message'] ?? ($data['error']['message'] ?? ($data['error'] ?? '')));
+        return trim(mb_substr($msg, 0, 200));
     }
 
     /** One Vision call, retried with a pause while the service answers 429/5xx. */

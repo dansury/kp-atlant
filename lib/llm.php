@@ -413,16 +413,7 @@ class LLM {
         $why = 'пустой ответ';
         for ($i = 0; $i < $maxRetries; $i++) {
             $raw = self::call($system, $user, $temp, true);
-            // Strip markdown fences
-            $raw = preg_replace('/^```\w*\n|```$/m', '', trim($raw));
-            // Strip <think> tags
-            $raw = preg_replace('/<think>.*?<\/think>/s', '', $raw);
-            $raw = trim($raw);
-            $data = json_decode($raw, true);
-            // Models like to wrap the object in a sentence — take the object itself
-            if (!is_array($data) && preg_match('/[{\[].*[}\]]/s', $raw, $m)) {
-                $data = json_decode($m[0], true);
-            }
+            $data = self::decodeJson($raw);
             if (is_array($data)) return $data;
             // json_last_error() is reset by any json_encode() further down (logging,
             // for one), so the reason has to be captured right here
@@ -432,6 +423,110 @@ class LLM {
         }
         Logger::error('llm', 'Модель вернула не-JSON после ' . $maxRetries . ' попыток: ' . $why, ['tail' => mb_substr($raw, -400)]);
         throw new LLMException("Failed to parse JSON after $maxRetries attempts: $why");
+    }
+
+    /**
+     * Ответ модели как массив — или null, если это и правда не JSON (модуль 034).
+     *
+     * Модель отдаёт объект, но вокруг него бывает всё что угодно: ограда
+     * ```json, рассуждение в <think>, фраза «вот результат:» перед скобкой,
+     * «умные» кавычки вместо прямых, запятая перед закрывающей скобкой. Хуже
+     * того — ответ обрывается на полуслове, когда упирается в `maxTokens`: это
+     * и был «Failed to parse JSON after 3 attempts: Syntax error» в журнале,
+     * причём три попытки подряд обрывались одинаково.
+     *
+     * Разбор идёт от самого дешёвого к самому терпеливому и останавливается на
+     * первом, который дал массив. Ничего не придумывается: закрываются только
+     * те скобки, которые модель ОТКРЫЛА.
+     */
+    public static function decodeJson(string $raw): ?array {
+        // Ограда и рассуждения снимаются всегда
+        $raw = (string)preg_replace('/<think>.*?<\/think>/su', '', trim($raw));
+        $raw = (string)preg_replace('/```[a-z]*\s*/iu', '', $raw);
+        $raw = trim(str_replace('```', '', $raw));
+        if ($raw === '') return null;
+
+        $tries = [$raw];
+        // Объект или массив внутри фразы — берём самый широкий кусок
+        if (preg_match('/[{\[].*[}\]]/su', $raw, $m)) $tries[] = $m[0];
+        // Обрыв на полуслове: дописываем скобки, которые модель открыла
+        $repaired = self::repairJson($raw);
+        if ($repaired !== null) $tries[] = $repaired;
+
+        foreach ($tries as $candidate) {
+            $data = json_decode($candidate, true);
+            if (is_array($data)) return $data;
+            // Хвостовая запятая и «ёлочки» вместо прямых кавычек
+            $clean = preg_replace('/,\s*([}\]])/u', '$1', $candidate);
+            $clean = strtr((string)$clean, ['“' => '"', '”' => '"', '„' => '"', '«' => '"', '»' => '"']);
+            $data = json_decode((string)$clean, true);
+            if (is_array($data)) return $data;
+        }
+        return null;
+    }
+
+    /**
+     * Оборванный ответ — закрыть то, что открыто, и обрубить хвост.
+     *
+     * Ровно то, что делает человек, глядя на обрезанный JSON: отрезать
+     * недописанное значение и закрыть скобки в обратном порядке. Отрезаем по
+     * последнему месту, где значение БЫЛО ДОПИСАНО, — ключ без значения и
+     * оборванная строка уходят вместе с хвостом. Ничего не придумывается:
+     * закрываются только те скобки, которые модель открыла.
+     */
+    private static function repairJson(string $raw): ?string {
+        $start = strcspn($raw, '{[');
+        $len = strlen($raw);
+        if ($start >= $len) return null;
+        $raw = substr($raw, $start);
+        $len = strlen($raw);
+
+        $stack = [];
+        $best = null;                       // [позиция, копия стека] после целого значения
+        $i = 0;
+        while ($i < $len) {
+            $c = $raw[$i];
+            if ($c === '{' || $c === '[') { $stack[] = $c === '{' ? '}' : ']'; $i++; continue; }
+            if ($c === '}' || $c === ']') { array_pop($stack); $best = [++$i, $stack]; continue; }
+            if ($c === ',' || $c === ':' || ctype_space($c)) { $i++; continue; }
+            if ($c === '"') {
+                $j = self::endOfString($raw, $i);
+                if ($j === null) break;     // строка оборвалась — дальше только мусор
+                $i = $j;
+                // Строка перед двоеточием — ключ, а не значение: обрезать по ней нельзя
+                if (!self::nextIsColon($raw, $i)) $best = [$i, $stack];
+                continue;
+            }
+            // Число, true, false, null
+            $j = $i;
+            while ($j < $len && !str_contains(",:{}[] \t\r\n", $raw[$j])) $j++;
+            if ($j === $i) { $i++; continue; }
+            $i = $j;
+            $best = [$i, $stack];
+        }
+
+        if ($best === null || !$best[1]) return null;   // чинить нечего
+        return substr($raw, 0, $best[0]) . implode('', array_reverse($best[1]));
+    }
+
+    /** Индекс сразу за закрывающей кавычкой строки; null — строка не закрыта. */
+    private static function endOfString(string $raw, int $at): ?int {
+        $len = strlen($raw);
+        for ($i = $at + 1; $i < $len; $i++) {
+            if ($raw[$i] === '\\') { $i++; continue; }
+            if ($raw[$i] === '"') return $i + 1;
+        }
+        return null;
+    }
+
+    /** Следом за этим местом стоит двоеточие — значит, слева был ключ. */
+    private static function nextIsColon(string $raw, int $from): bool {
+        $len = strlen($raw);
+        for ($i = $from; $i < $len; $i++) {
+            if (ctype_space($raw[$i])) continue;
+            return $raw[$i] === ':';
+        }
+        return false;
     }
 
     // Core call with fallback chain

@@ -143,8 +143,13 @@ final class Html2Docx {
         if (!$n instanceof DOMElement) return '';
         $tag = strtolower($n->tagName);
         $style = $this->styleOf($n, $inherited);
+        // «С новой страницы» из шаблона — явным разрывом, а не свойством абзаца:
+        // блок бывает контейнером, и его собственный абзац в Word не печатается
+        // вовсе (приложение №1 и карточка товара — модуль 034)
+        $break = $this->startsPage($n)
+            ? '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:br w:type="page"/></w:r></w:p>' : '';
 
-        return match ($tag) {
+        return $break . match ($tag) {
             'table' => $this->table($n, $style),
             'ul', 'ol' => $this->list($n, $style, $tag === 'ol'),
             'hr' => '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="CCCCCC"/></w:pBdr></w:pPr></w:p>',
@@ -156,6 +161,12 @@ final class Html2Docx {
                 ? $this->blocks($n, $style)
                 : $this->paragraph($this->inlineChildren($n, $style), $style),
         };
+    }
+
+    /** Блок, который в документе начинает новую страницу. */
+    private function startsPage(DOMElement $n): bool {
+        return (bool)preg_match('/(^|\s)(appendix|card--break)(\s|$)/',
+                                (string)$n->getAttribute('class'));
     }
 
     private function hasBlockChild(DOMElement $n): bool {
@@ -245,6 +256,8 @@ final class Html2Docx {
                 'swap', 'stock-warning', 'accent'
                                => ['color' => 'C00000'] + $style,
                 'sign-name'    => ['b' => true] + $style,
+                'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'right'] + $style,
+                'appendix__subtitle' => ['b' => true, 'size' => 24, 'align' => 'center'] + $style,
                 default        => $style,
             };
         }
@@ -398,13 +411,23 @@ final class Html2Docx {
         [$w, $h] = $size ? [(int)$size[0], (int)$size[1]] : [480, 320];
         if ($w <= 0 || $h <= 0) return '';
         // A photo pasted at its own pixel size would run off an A4 page; a QR
-        // is not a photo and only has to stay big enough for a phone camera
-        $maxPx = match (strtolower(trim((string)$img->getAttribute('class')))) {
-            'logo' => 220,
-            'qr'   => 110,
-            default => 430,
-        };
+        // is not a photo and only has to stay big enough for a phone camera,
+        // and a signature scan is neither — напечатанная на полстраницы подпись
+        // и была тем, на что жаловались (модуль 034).
+        $classes = preg_split('/\s+/', strtolower(trim((string)$img->getAttribute('class')))) ?: [];
+        $maxPx = 430;
+        $maxHeightPx = 0;
+        foreach ($classes as $class) {
+            if ($class === 'logo')     { $maxPx = 220; }
+            if ($class === 'qr')       { $maxPx = 110; }
+            if ($class === 'sign-img') { $maxPx = 170; $maxHeightPx = 60; }
+        }
         if ($w > $maxPx) { $h = (int)round($h * $maxPx / $w); $w = $maxPx; }
+        if ($maxHeightPx > 0 && $h > $maxHeightPx) {
+            $w = (int)round($w * $maxHeightPx / $h);
+            $h = $maxHeightPx;
+        }
+        if ($w < 1 || $h < 1) return '';
 
         $name = 'media/image' . (count($this->media) + 1) . '.' . $ext;
         $this->media[$name] = $bytes;

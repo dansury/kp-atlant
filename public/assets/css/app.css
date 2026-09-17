@@ -579,6 +579,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    что из просьбы клиента мы отбросили, — но гаснет, потому что в документ и в
    ответ она не уйдёт (модуль 022) */
 .match-row--out { opacity: .62; }
+/* Доставка — строка подбора, а не поле в дальнем редакторе КП (модуль 034).
+   Она стоит под позициями всегда и убирается крестиком, как любая другая. */
+.match-row--delivery { background: var(--surface-2); }
+.match-row--delivery > input[data-delivery-price] { flex: 0 1 96px; width: auto; }
+.match-row--delivery > .muted { font-size: 12px; }
 .match-row--out input, .match-row--out .suggest { text-decoration: line-through; }
 .note--out { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
              padding: 6px 10px; font-size: 12px; margin: 4px 0; color: var(--text); }

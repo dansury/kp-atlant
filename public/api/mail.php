@@ -101,9 +101,12 @@ try {
                 'thread'    => $summary,
                 'messages'  => $messages,
                 'reply'     => MailThreads::replyContext($key),
+                // ИНН ищется по всей переписке и вложениям, а не в последнем
+                // письме: в карточке предприятия он приезжает первым (модуль 034)
                 'moysklad'  => Crm::moyskladHint(
                     !empty($summary['counterparty_id']) ? (int)$summary['counterparty_id'] : null,
-                    Crm::letterText($lastIn),
+                    Crm::correspondenceText(
+                        !empty($summary['counterparty_id']) ? (int)$summary['counterparty_id'] : null, $key),
                     ['name' => (string)($lastIn['real_from_name'] ?? $lastIn['from_name'] ?? ''),
                      'email' => (string)($lastIn['real_from_email'] ?? $lastIn['from_email'] ?? '')]
                 ),
