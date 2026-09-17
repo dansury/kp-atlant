@@ -12,6 +12,7 @@ require_once ROOT . '/lib/mail_threads.php';
 require_once ROOT . '/lib/attachments.php';
 require_once ROOT . '/lib/outbox.php';
 require_once ROOT . '/lib/drafts.php';
+require_once ROOT . '/lib/forwards.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -101,9 +102,12 @@ try {
                 'thread'    => $summary,
                 'messages'  => $messages,
                 'reply'     => MailThreads::replyContext($key),
+                // ИНН ищется по всей переписке и вложениям, а не в последнем
+                // письме: в карточке предприятия он приезжает первым (модуль 034)
                 'moysklad'  => Crm::moyskladHint(
                     !empty($summary['counterparty_id']) ? (int)$summary['counterparty_id'] : null,
-                    Crm::letterText($lastIn),
+                    Crm::correspondenceText(
+                        !empty($summary['counterparty_id']) ? (int)$summary['counterparty_id'] : null, $key),
                     ['name' => (string)($lastIn['real_from_name'] ?? $lastIn['from_name'] ?? ''),
                      'email' => (string)($lastIn['real_from_email'] ?? $lastIn['from_email'] ?? '')]
                 ),
@@ -240,6 +244,33 @@ try {
             jsonOk($res + ['warning' => $res['sent_state'] === 'failed'
                 ? 'Письмо ушло, но копия не попала в «Отправленные»: ' . (string)$res['sent_error']
                 : null]);
+
+        /**
+         * ==== Перенаправление письма (модуль 037) ====
+         *
+         * Письмо читает не всегда тот, кому оно нужно: запрос уходит в
+         * снабжение, счёт — в бухгалтерию. Пересылка делается здесь, а не в
+         * чужом почтовом клиенте, — тогда она видна в переписке компании.
+         */
+        case 'forward_addresses':
+            jsonData(['addresses' => Forwards::all()]);
+
+        case 'forward_address_delete':
+            $addrId = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!$addrId) jsonError('Не указан адрес');
+            Forwards::forget($addrId);
+            jsonData(['addresses' => Forwards::all()]);
+
+        case 'forward':
+            $mailId = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!$mailId) jsonError('Не указано письмо');
+            try {
+                $res = Forwards::send($mailId, (string)($input['to'] ?? ''), (string)($input['text'] ?? ''),
+                                      (int)$manager['id'], $input['mailbox_id'] ?? null);
+            } catch (Throwable $e) {
+                jsonError($e->getMessage(), 400);
+            }
+            jsonOk($res + ['addresses' => Forwards::all()]);
 
         case 'draft_reply':
             // «Создать ответ»: the draft is generated here and only here — the mail

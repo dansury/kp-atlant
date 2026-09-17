@@ -416,8 +416,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .match-row input[type="text"], .match-row input[type="number"] { width: 100%; }
 .match-row > input[data-field="quantity"] { flex: 0 1 72px; }
 .match-row > input[data-field="unit"]     { flex: 0 1 62px; }
-.match-row > input[data-field="price"]    { flex: 0 1 96px; }
+.match-row > .price-cell                  { flex: 0 1 96px; min-width: 0; }
 .match-row > .price-opts-slot             { flex: 0 1 auto; min-width: 0; }
+/* Вилка цен: в поле низ, под ним верх — товар без своей цены стоит по-разному
+   в модификациях, и строка не имеет права молчать об этом (модуль 036) */
+.price-range { display: block; font-size: 11px; line-height: 1.3; margin-top: 2px; white-space: nowrap; }
 .match-row > input[data-field="notes"]    { flex: 1 1 150px; min-width: 0; }
 .match-row__name { flex: 1 1 100%; position: relative; min-width: 0; }
 
@@ -429,6 +432,24 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .match-row__name .muted { font-size: 12px; margin-bottom: 2px; }
 .match-row label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .price-opts-slot:empty { display: none; }
+
+/* Аналог: чем позицию называл клиент. Поле открывается галочкой и печатается
+   в КП над названием нашего товара (модуль 036) */
+.analog { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.analog .muted { font-size: 12px; white-space: nowrap; margin-bottom: 0; }
+.analog input[type="text"] { font-style: italic; }
+
+/* Цены и условия на всё КП: один выбор над таблицей вместо сорока в строках
+   (модуль 036). Светлый блок на светлом — ink переобъявляется вместе с фоном */
+.conditions { background: var(--surface-2); color: var(--text);
+              border: 1px solid var(--border); border-radius: var(--radius-sm);
+              padding: 8px 10px; margin-bottom: 10px; }
+.conditions__title { font-weight: 650; font-size: 13px; margin-bottom: 6px; }
+.conditions__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.conditions__row label { display: flex; align-items: center; gap: 4px; font-size: 12px;
+                         color: var(--text-muted); white-space: nowrap; }
+.conditions__row input[type="number"] { width: 68px; }
+.conditions__row select { width: auto; min-width: 0; max-width: 220px; font-size: 12px; padding: 6px 8px; }
 .price-opts { font-size: 12px; padding: 6px 8px; }
 
 /* Catalog autocomplete under the position name */
@@ -534,6 +555,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
               padding: 9px 14px 4px; cursor: pointer; font-size: 12px; }
 .lmsg__head:hover { background: var(--surface-2); }
 .lmsg__who { font-weight: 600; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+/* Почтовый адрес рядом с именем: «Иванов» в переписке бывает не один */
+.lmsg__addr { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
 .lmsg__to { min-width: 0; overflow-wrap: anywhere; }
 .lmsg__date { margin-left: auto; white-space: nowrap; }
 /* Удаление одного письма не должно быть промахом: кнопка проявляется там, куда
@@ -549,16 +572,32 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .lmsg__tags:empty { display: none; }
 .lmsg__folder { font-size: 11px; }
 
-/* Свёрнутое письмо читается по началу текста прямо в строке; развёрнутое
-   показывает тело, и повторять его в шапке незачем (модуль 020) */
-.lmsg__preview { padding: 0 14px 10px; font-size: 12px; overflow: hidden;
-                 display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.lmsg--open .lmsg__preview { display: none; }
+/* Текст письма — ОДНО поле на оба состояния (модуль 037).
+   Свёрнутое показывало начало текста своим блоком, раскрытое — тело своим, и
+   два блока подряд читались как два пришедших письма. Теперь это одно место:
+   свёрнуто — две строки с затуханием, нажали — те же поля стали телом. */
+.lmsg__text { padding: 0 14px 12px; font-size: 13px; overflow-wrap: anywhere; }
+.lmsg__peek { font-size: 12px; overflow: hidden; position: relative;
+              display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* Обрыв текста виден: строка не заканчивается, а гаснет */
+.lmsg__peek::after { content: ''; position: absolute; right: 0; bottom: 0; width: 60px; height: 1.4em;
+                     background: linear-gradient(90deg, transparent, var(--surface)); }
+.lmsg--out .lmsg__peek::after { background: linear-gradient(90deg, transparent, var(--surface-2)); }
+.lmsg--open .lmsg__peek { display: none; }
 
-.lmsg__body { display: none; padding: 0 14px 12px; font-size: 13px; overflow-wrap: anywhere; }
-.lmsg--open .lmsg__body { display: block; }
+.lmsg__full { display: none; }
+.lmsg--open .lmsg__full { display: block; }
 .lmsg__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
                  padding-top: 10px; border-top: 1px solid var(--border); }
+
+/* Адреса перенаправления: список под полем, каждый со своим крестиком —
+   человек увольняется, а его адрес остаётся в базе (модуль 037) */
+.fwd-saved { font-size: 12px; line-height: 2; margin: -4px 0 12px; }
+.fwd-chip { padding: 2px 4px 2px 8px; }
+.fwd-chip a { cursor: pointer; }
+.fwd-chip button { border: 0; background: none; cursor: pointer; padding: 0 4px;
+                   color: var(--text-muted); line-height: 1; }
+.fwd-chip button:hover { color: var(--danger); }
 
 /* Тело письма: текстовое — как текст, размеченное — в своей песочнице */
 .mail-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -579,6 +618,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    что из просьбы клиента мы отбросили, — но гаснет, потому что в документ и в
    ответ она не уйдёт (модуль 022) */
 .match-row--out { opacity: .62; }
+/* Доставка — строка подбора, а не поле в дальнем редакторе КП (модуль 034).
+   Она стоит под позициями всегда и убирается крестиком, как любая другая. */
+.match-row--delivery { background: var(--surface-2); }
+.match-row--delivery > input[data-delivery-price] { flex: 0 1 96px; width: auto; }
+.match-row--delivery > .muted { font-size: 12px; }
 .match-row--out input, .match-row--out .suggest { text-decoration: line-through; }
 .note--out { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
              padding: 6px 10px; font-size: 12px; margin: 4px 0; color: var(--text); }
@@ -795,7 +839,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
        stand on one line — the composer's mailbox picker, the chips of a
        conversation — wraps too, so the card stops being wider than the screen. */
     .card, .mrow, .lmsg, .conv, .msg, .composer { max-width: 100%; }
-    .lmsg__body, .msg__body, .mail-plain, .conv__subject, .conv__meta, .conv__preview,
+    .lmsg__text, .msg__body, .mail-plain, .conv__subject, .conv__meta, .conv__preview,
     .mrow__subject, .mrow__meta, .mrow__preview,
     .bcard__title, .bcard__subject { overflow-wrap: anywhere; }
     .lmsg__head { gap: 6px; }
@@ -977,6 +1021,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* «Архив» на доске — ссылка, а не галочка: это другой экран (модуль 026) */
 .bfilter--link { cursor: pointer; color: var(--accent-ink); text-decoration: underline; }
 .bfilter--link:hover { color: var(--primary); }
+/* «Отметить по статусу»: ставит галочки, не пряча остальные карточки (модуль 036).
+   --accent-ink на белом — WCAG AA, --primary тут только на наведении */
+.bfilter--pick { flex-wrap: wrap; flex-basis: 100%; }
+.bfilter--pick a { cursor: pointer; color: var(--accent-ink); text-decoration: underline; }
+.bfilter--pick a:hover { color: var(--primary); }
 /* Архив компании стоит под её рабочими переписками, а не вместо них */
 .mlist-archive { border-top: 1px solid var(--border); margin-top: 6px; }
 .mlist-archive > summary { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--text-muted); }

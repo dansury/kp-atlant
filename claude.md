@@ -215,6 +215,25 @@ A variant with no price of its own inherits the product's — BY PRICE TYPE, not
 there»: size L has its own «Розница» while only the product has «Опт безнал», and a КП billed
 at wholesale must take the product's wholesale price.
 
+Цена строки каталога считается ВИЛКОЙ — `Catalog::priceRange()`, и `priceFor()` отдаёт её низ
+(модуль 036). У общего товара своей цены часто нет вовсе: она стоит на модификациях, и стоит
+там по-разному — такой товар уходил в КП нулём. Отвечают его модификации: `min` — с чего
+начинается, `max` — чем кончается; цены совпали — вилки нет, и документ печатает одну цену, а
+не «от 1 200 до 1 200». Модификация сама за модификациями не ходит: своих у неё нет.
+Вилка живёт, пока цена строки и есть её низ: вписанное руками число отменяет её целиком.
+Печатается она одинаково в PDF, в Word и в тексте письма, а «Итого» при ней называется «от»:
+сумма низов и есть то, с чего начинается предложение. Складывать верх с низом нельзя — это
+третья сумма, которой в предложении нет.
+
+Тип цены, скидка и условия «под заказ» — решение на ВСЁ КП, а не на строку, и стоит оно над
+таблицей подбора (модуль 036). Выбор запоминается за МЕНЕДЖЕРОМ (`Terms::conditions()` /
+`Terms::remember()`, `managers.kp_terms_json`), а не в настройках сервиса: двое за одной доской
+работают с разными покупателями. Проставляет его строкам сервер
+(`RequestItems::applyConditions()`) — только он знает, что модификация без цены берёт цену
+товара, а товар без цены берёт низ вилки. Строку с ценой, вписанной руками, общий выбор не
+трогает, а условия ожидания получают ТОЛЬКО позиции, которых нет на складе: «под заказ» на том,
+что лежит на полке, — это скидка ни за что.
+
 НДС стоит под итогом КП ВСЕГДА — выделенным из цены, прибавленным к ней или формулировкой
 неплательщика (модуль 030). До него сумма налога печаталась только по галочке
 `show_vat_total`, выключенной по умолчанию, и клиент получал итог, про который непонятно,
@@ -287,6 +306,12 @@ and the sha1 of every attachment — is the second, for a gateway that rewrote t
 A letter shorter than 40 characters is NEVER matched by content: two «Спасибо!» in one thread
 are two letters. Any new way into the archive goes through `storeIncoming()`, or it brings the
 duplicates back.
+
+Письмо, написанное самим себе, — ДВА факта, а не один: оно и отправлено, и получено (модуль
+036). Так проверяют почту, и входящую копию съедала копия из «Отправленных». У такой входящей
+копии дубликатом считается только другая ВХОДЯЩАЯ, и только когда письмо пришло с нашего адреса
+и адресовано ТОЛЬКО нашим (`MailArchive::writtenToOurselves()`). Копия себе в «Копию» письма
+клиенту под это не подходит — в «Кому» там стоит клиент, — и ответ остаётся в переписке один.
 
 History is not a new request. An mbox import (`MboxImport`, `storage/mbox/`) and «Скачать весь
 архив» store letters `processed_at` and `is_read = 1`, resume from a saved cursor — a byte
@@ -413,6 +438,17 @@ of the board, and do not make a card carry one letter again. A card with an unan
 is bold and rises inside its column; an answered one dims and keeps the order it was dragged
 into — the column itself is the manager's decision and code never changes it.
 
+Отмеченные галочками карточки переезжают ГРУППОЙ и своим порядком (модуль 036,
+`Boards::moveCards()` — порядок считается один раз на всю группу, иначе она приезжает
+перевёрнутой). Экран доски не имеет права врать: перетаскивание рисует переезд само, поэтому
+после броска доска перерисовывается ОТВЕТОМ СЕРВЕРА, а перетаскивание, которое ничем не
+кончилось, возвращает её как было. Показанное и сохранённое — одно и то же, иначе обновление
+страницы отменяет работу, которую человек уже видел сделанной. Фильтры, поиск и отметки при
+такой перерисовке остаются.
+Отмечают карточки и ПО СТАТУСУ — ждут ответа, непрочитанные, с КП: фильтр для этого не годится,
+он ПРЯЧЕТ остальные, а отметить надо, продолжая видеть доску целиком. Состояние карточки
+разбирается в одном месте (`App.cardInState()`), общем с фильтром.
+
 ## Analogues, the shape of a request, and the КП document
 A position with no FREE remainder (`stock - reserved`) is never left blank: `Alternatives`
 answers it with something we can ship — by name through `Synonyms` (built-in groups plus
@@ -422,6 +458,14 @@ proof. A claim our own description does not support never reaches the document, 
 made it. Every path here must give the same answer with no model key, only flatter: the
 model pass sharpens the choice, it is not what finds it. A line with no analogue in stock
 stays «под заказ» — it never becomes a question to the manager or to the client.
+
+Аналог называется СЛОВАМИ КЛИЕНТА (модуль 036). Галочка «аналог» на строке подбора открывает
+поле, в котором уже стоит строка из письма, — менеджер её правит, и в КП она печатается над
+названием нашего товара курсивом серым: закупщик находит в предложении свою позицию, не сверяя
+два документа глазами. Живёт она в `alt_of` — том же поле, в котором аналог хранится с модуля
+013, — и едет в `proposal_items.alt_of`; `raw_name` правка не переписывает: письмо — это то,
+что написал клиент. Галочки нет — в документе только наше название: вторая строка под нашим же
+именем это шум.
 
 Whether a request arrived as a table is decided by `RequestShape` from the letter alone,
 stored once on `requests.shape`, and never asked or inferred by a model — a table-shaped

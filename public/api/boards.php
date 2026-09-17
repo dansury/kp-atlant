@@ -84,9 +84,21 @@ try {
             jsonOk(['id' => $id]);
         }
 
-        case 'card_move':
-            Boards::moveCard((int)($input['id'] ?? 0), (int)($input['column_id'] ?? 0), (int)($input['position'] ?? 0));
-            jsonOk();
+        /**
+         * Перенос карточек. `ids` — группа, отмеченная галочками: она едет
+         * целиком и в своём порядке (модуль 036). Ответ несёт ДОСКУ: экран
+         * перерисовывается тем, что лежит в базе, а не тем, что нарисовало
+         * перетаскивание, — иначе переезд виден до обновления страницы и
+         * пропадает после него.
+         */
+        case 'card_move': {
+            $ids = !empty($input['ids']) ? (array)$input['ids'] : [(int)($input['id'] ?? 0)];
+            $columnId = (int)($input['column_id'] ?? 0);
+            Boards::moveCards($ids, $columnId, (int)($input['position'] ?? 0));
+            // Возвращается ТА доска, на которую человек смотрит, а не та, куда
+            // уехали карточки: групповое «в колонку» умеет целить и на чужую
+            jsonOk(['board' => Boards::get((int)Boards::singleton()['id'])]);
+        }
 
         case 'card_save':
             Boards::updateCard((int)($input['id'] ?? 0), $input);
@@ -112,7 +124,9 @@ try {
             $res = Boards::bulk($ids, $op, $input, (int)$manager['id']);
             Logger::info('boards', "Групповая операция «{$op}»: {$res['done']} карточек",
                          ['manager_id' => (int)$manager['id'], 'failed' => $res['failed']]);
-            jsonOk($res);
+            // Доска в ответе — чтобы экран показал то, что получилось, а не то,
+            // на что надеялся браузер (модуль 036)
+            jsonOk($res + ['board' => Boards::get((int)Boards::singleton()['id'])]);
         }
 
         // Where a thread already sits — the mail page shows it, and «в доску»

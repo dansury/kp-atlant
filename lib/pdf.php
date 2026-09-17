@@ -30,7 +30,7 @@ class PdfGenerator {
         ]);
         $mpdf->SetTitle('Коммерческое предложение');
         $mpdf->SetAuthor($legal['short_name'] ?? 'Atlant Armour');
-        $mpdf->WriteHTML($html);
+        self::writeHtml($mpdf, $html, $proposalId);
 
         // Save to file
         $dir = ROOT . '/data/kp';
@@ -56,6 +56,51 @@ class PdfGenerator {
         ], 'id=?', [$proposalId]);
 
         return $path;
+    }
+
+    /**
+     * Отдать документ mPDF так, чтобы он собрался (модуль 034).
+     *
+     * mPDF режет HTML регулярными выражениями, а КП несёт фотографии товаров
+     * прямо в разметке, в base64: пять карточек по 400 КБ — и разметка
+     * перестаёт помещаться в `pcre.backtrack_limit`, который по умолчанию
+     * равен одному мегабайту. Сборка падала с «The HTML code size is larger
+     * than pcre.backtrack_limit», а менеджер видел «ничего не происходит».
+     *
+     * Сначала поднимаем предел под размер этого документа. Если хостинг не даёт
+     * его поднять (`ini_set` закрыт) — собираем КП без фотографий: документ без
+     * картинок отправить можно, а отсутствующий нельзя.
+     */
+    private static function writeHtml(Mpdf $mpdf, string $html, int $proposalId): void {
+        self::raisePcreLimits(strlen($html));
+        try {
+            $mpdf->WriteHTML($html);
+            return;
+        } catch (\Throwable $e) {
+            if (!str_contains($e->getMessage(), 'pcre.backtrack_limit')) throw $e;
+        }
+
+        $light = self::withoutPhotos($html);
+        Logger::warning('kp', 'КП собрано без фотографий: разметка с ними не помещается в pcre.backtrack_limit',
+                        ['proposal_id' => $proposalId, 'bytes' => strlen($html)]);
+        $mpdf->WriteHTML($light);
+    }
+
+    /** Поднять пределы PCRE под размер разметки — молча, если хостинг не даёт. */
+    private static function raisePcreLimits(int $bytes): void {
+        $need = max(1_000_000, $bytes * 4);
+        foreach (['pcre.backtrack_limit', 'pcre.recursion_limit'] as $key) {
+            if ((int)ini_get($key) < $need) @ini_set($key, (string)$need);
+        }
+    }
+
+    /** Та же разметка без фотографий товаров: знак, QR и подпись остаются. */
+    private static function withoutPhotos(string $html): string {
+        return (string)preg_replace_callback(
+            '#<img\b[^>]*>#i',
+            fn(array $m) => preg_match('/class="[^"]*\b(logo|qr|sign-img)\b/i', $m[0]) ? $m[0] : '',
+            $html
+        );
     }
 
     /**
@@ -105,6 +150,10 @@ class PdfGenerator {
             [$proposalId]
         );
 
+        // Ссылку на сайт читает и таблица, и карточка товара, и «есть ли вообще
+        // приложение» — значение берётся один раз, до цикла (модуль 034)
+        $showSiteLink = (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1;
+
         // Calc totals. A single "от" price makes the whole total a floor,
         // the way the reference KP prints "Итого: от 40 000 руб".
         $total = 0;
@@ -113,12 +162,21 @@ class PdfGenerator {
             // Цена, которая печатается: базовая, затем ручная скидка, затем
             // скидка за ожидание — обе считаются друг на друга (модуль 023)
             $item['effective_price'] = Terms::price($item);
+            // Верх вилки, когда цена стоит только на модификациях и они стоят
+            // по-разному (модуль 036). Ноль — вилки нет, печатается одна цена
+            $item['effective_price_max'] = Terms::priceTop($item);
             $item['wait_note'] = Terms::note($item);
+            // Авто-«под заказ» не печатается второй раз перед условиями ожидания,
+            // которые начинаются теми же словами (модуль 034)
+            $item['notes'] = Terms::itemNote($item);
             $discount = Terms::totalDiscount($item);
             $item['discount_shown'] = $discount > 0 ? rtrim(rtrim(number_format($discount, 2, ',', ''), '0'), ',') : '';
             $item['sum'] = $item['effective_price'] * $item['quantity'];
+            $item['sum_max'] = $item['effective_price_max'] * $item['quantity'];
             $total += $item['sum'];
-            if (!empty($item['price_from'])) $totalIsFrom = true;
+            // «Итого» считается по низу вилки и честно называется «от»: сложить
+            // верх с низом — это третья сумма, которой в предложении нет
+            if (!empty($item['price_from']) || $item['effective_price_max'] > 0) $totalIsFrom = true;
             // Photos are embedded as data URIs — mPDF cannot read storage/ paths.
             // Which of them go in is the manager's pick (proposal_items.selected_images)
             $item['gallery'] = !empty($item['show_images'])
@@ -126,11 +184,36 @@ class PdfGenerator {
                 : [];
             // The same link as a picture, for a КП that gets printed (module 017)
             $item['site_qr'] = KpContent::itemQr($item);
+            // Чем клиент называл то, вместо чего стоит наша позиция (модуль
+            // 036). Печатается над названием, только когда строка отмечена
+            // аналогом; пустое поле означает, что клиент назвал это так же,
+            // как мы, — и повторять его нечего
+            $item['analog_of'] = (int)($item['is_alternative'] ?? 0) === 1
+                ? trim((string)(($item['alt_of'] ?? '') ?: ($item['requested_name'] ?? '')))
+                : '';
+            if (mb_strtolower($item['analog_of']) === mb_strtolower(trim((string)$item['product_name']))) {
+                $item['analog_of'] = '';
+            }
             // An analogue carries its own evidence into the card
             $item['alt_matched'] = KpContent::matchedSpecs($item);
             $item['alt_differs'] = KpContent::unmatchedSpecs($item);
+
+            // Описание карточки: комментарий МЕНЕДЖЕРА, если он его написал,
+            // иначе описание из МойСклад (модуль 032). Печатается один блок.
+            $item['card_desc'] = trim((string)($item['comment_text'] ?? '')) !== ''
+                ? (string)$item['comment_text'] : (string)($item['description_text'] ?? '');
+            // Есть ли этой позиции что показать в приложении №1 (модуль 034)
+            $item['has_card'] = trim((string)$item['card_desc']) !== ''
+                || !empty($item['specs_text']) || !empty($item['included_text'])
+                || !empty($item['gallery']) || !empty($item['is_alternative'])
+                || ($showSiteLink && !empty($item['site_url']));
         }
         unset($item);
+
+        // Приложение печатается, только когда в нём есть хоть одна карточка:
+        // пустая страница «Приложение №1» в подписанном документе — брак
+        $hasAppendix = false;
+        foreach ($items as $row) { if (!empty($row['has_card'])) { $hasAppendix = true; break; } }
 
         // Доставка отдельной строкой: она не входит в цену товара
         $delivery = null;
@@ -151,9 +234,11 @@ class PdfGenerator {
         $vatTotals = Requisites::vatTotals($total, $vat, Requisites::vatMode($proposal));
 
         // Default intro
+        // Короткое имя, а не «ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ …»: так
+        // названа компания в шапке документа и в образце КП (модуль 034)
         $introText = $proposal['intro_text'] ?: sprintf(
             'По Вашему запросу %s имеет возможность поставить следующее вещевое имущество:',
-            $legal['full_name']
+            trim((string)($legal['short_name'] ?? '')) ?: (string)$legal['full_name']
         );
 
         // Условия поставки — один правимый блок (модуль 026). КП, собранное до
@@ -224,7 +309,8 @@ class PdfGenerator {
             'unmatched' => $unmatched,
             'unmatchedNote' => (string)Settings::get('KP_UNMATCHED_NOTE',
                 'По этим позициям запроса мы уточняем наличие, сроки и цену и вернёмся с ответом отдельно.'),
-            'showSiteLink' => (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1,
+            'showSiteLink' => $showSiteLink,
+            'hasAppendix' => $hasAppendix,
             'qrHint' => trim((string)Settings::get('KP_QR_HINT', '')),
             'pageBreakPerItem' => (int)Settings::get('KP_PAGE_BREAK', 1) === 1,
             'termsText' => $termsText,
@@ -334,6 +420,34 @@ class PdfGenerator {
      * и почта, — а всё, что ломает файловые системы и заголовок вложения
      * (слэши, кавычки, двоеточия, пробелы), становится подчёркиванием.
      */
+    /**
+     * То же имя латиницей — для запасного `filename=` в заголовке (модуль 035).
+     *
+     * `filename*=UTF-8''` понимают все нынешние браузеры, но в заголовке
+     * положено оставить и ASCII-вариант. До сих пор им стояло `KP-32.docx`, и
+     * всякий, кто читал заголовок буквально, сохранял файл под этим именем.
+     */
+    public static function asciiFileName(int $proposalId, string $ext = 'pdf'): string {
+        $map = [
+            'а'=>'a','б'=>'b','в'=>'v','г'=>'g','д'=>'d','е'=>'e','ё'=>'e','ж'=>'zh','з'=>'z',
+            'и'=>'i','й'=>'y','к'=>'k','л'=>'l','м'=>'m','н'=>'n','о'=>'o','п'=>'p','р'=>'r',
+            'с'=>'s','т'=>'t','у'=>'u','ф'=>'f','х'=>'h','ц'=>'c','ч'=>'ch','ш'=>'sh','щ'=>'sch',
+            'ъ'=>'','ы'=>'y','ь'=>'','э'=>'e','ю'=>'yu','я'=>'ya',
+        ];
+        $name = self::fileName($proposalId, $ext);
+        $lower = mb_strtolower($name);
+        $out = '';
+        for ($i = 0, $n = mb_strlen($lower); $i < $n; $i++) {
+            $ch = mb_substr($lower, $i, 1);
+            $was = mb_substr($name, $i, 1);
+            $latin = $map[$ch] ?? null;
+            if ($latin === null) { $out .= preg_match('/[A-Za-z0-9._-]/', $was) ? $was : '_'; continue; }
+            // Заглавная кириллица остаётся заглавной латиницей
+            $out .= ($was !== $ch) ? ucfirst($latin) : $latin;
+        }
+        return (string)preg_replace('/_+/', '_', $out);
+    }
+
     private static function translitPart(string $value): string {
         $value = trim(preg_replace('/\s+/u', ' ', $value) ?? '');
         $value = str_replace(['«', '»', '"', "'", '“', '”'], '', $value);
@@ -345,13 +459,33 @@ class PdfGenerator {
         return mb_substr($value, 0, 60);
     }
 
-    // Generate KP number: YYYY-NNN
+    /**
+     * Номер КП: ГГГГ-NNN, и он НЕ ПОВТОРЯЕТСЯ (модуль 035).
+     *
+     * Считался как «сколько уже есть, плюс один». Убрали одно КП — и следующее
+     * получало номер только что убранного: у двух разных документов, ушедших
+     * клиенту, оказывался один номер. Теперь берётся наибольший выданный за год
+     * и к нему прибавляется единица; занятый номер пропускается — на случай,
+     * если два КП собираются в одну секунду.
+     */
     private static function generateNumber(): string {
         $year = date('Y');
-        $count = Db::val(
-            "SELECT COUNT(*) FROM proposals WHERE number LIKE ?",
-            ["$year-%"]
-        );
-        return sprintf('%s-%03d', $year, $count + 1);
+        $key = 'kp_number_seq_' . $year;
+
+        // Счётчик идёт ТОЛЬКО вперёд и живёт в настройках: считать по строкам в
+        // таблице нельзя — убранное КП уносило свой номер, и его получал
+        // следующий документ
+        $last = (int)(Db::val("SELECT value FROM settings WHERE key=?", [$key]) ?: 0);
+        foreach (Db::all("SELECT number FROM proposals WHERE number LIKE ?", ["$year-%"]) as $row) {
+            if (preg_match('/^\d{4}-(\d+)$/', (string)$row['number'], $m)) {
+                $last = max($last, (int)$m[1]);
+            }
+        }
+        do {
+            $number = sprintf('%s-%03d', $year, ++$last);
+        } while (Db::val("SELECT 1 FROM proposals WHERE number=?", [$number]));
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [$key, (string)$last]);
+        return $number;
     }
 }

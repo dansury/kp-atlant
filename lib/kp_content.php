@@ -125,9 +125,16 @@ class KpContent {
             // The product's page on atlant-armour.ru (module 013). Resolved and
             // verified once, here, so the PDF never waits on the site — and
             // frozen on the item, so a reprint carries the link it was sent with.
-            if (empty($item['site_url']) && (int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1) {
+            //
+            // Замороженная ссылка на ПОИСК — не то, что замораживали: она
+            // стояла в строке, пока модуля сайта не было, и уезжала в КП уже
+            // после того, как его подключили (модуль 034). Такую переспрашиваем;
+            // настоящую страницу товара не трогаем никогда.
+            $frozen = trim((string)($item['site_url'] ?? ''));
+            if ((int)Settings::get('KP_SHOW_SITE_LINK', 1) === 1
+                && ($frozen === '' || Bitrix::isSearchUrl($frozen))) {
                 $url = Bitrix::productUrl($msId);
-                if ($url) $upd['site_url'] = $url;
+                if ($url && $url !== $frozen) $upd['site_url'] = $url;
             }
 
             if ($upd) Db::update('proposal_items', $upd, 'id=?', [$item['id']]);

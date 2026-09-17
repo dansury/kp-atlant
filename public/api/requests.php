@@ -8,6 +8,7 @@ require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
 require_once ROOT . '/lib/attachments.php';
+require_once ROOT . '/lib/kp_set.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -115,22 +116,62 @@ switch ($action) {
         // afterwards. Matching here is local only: opening a card costs no model call.
         $req['items'] = RequestItems::ensure($id);
         $req['open_choices'] = RequestItems::openChoices($id);
+        // Доставка — такая же строка подбора, как позиция (модуль 034)
+        $req['delivery'] = RequestItems::delivery($id);
+        // Цены и условия, которыми менеджер закрыл прошлое КП: панель над
+        // таблицей подбора открывается ими, а не пустым выбором (модуль 036)
+        $req['conditions']  = Terms::conditions((int)$manager['id']);
+        $req['price_types'] = Catalog::priceTypes();
         jsonData($req);
 
     // ---- Matched catalog positions of a request (module 008) ----
 
-    case 'items':
-        requireAuth();
+    case 'items': {
+        $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
-        jsonData(['items' => RequestItems::ensure($id)]);
+        jsonData([
+            'items'      => RequestItems::ensure($id),
+            'delivery'   => RequestItems::delivery($id),
+            // Цены и условия, которыми менеджер закрыл прошлое КП: следующее
+            // открывается ими же, а не пустым выбором заново (модуль 036)
+            'conditions' => Terms::conditions((int)$manager['id']),
+            'price_types'=> Catalog::priceTypes(),
+        ]);
+    }
+
+    /**
+     * Общие условия КП: тип цены, скидка и условия «под заказ» — один выбор на
+     * все позиции подбора (модуль 036). Выбор применяется к строкам И
+     * запоминается за менеджером: следующее КП начинается с него.
+     */
+    case 'items_conditions': {
+        $manager = requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $input = getInput();
+        $conditions = Terms::remember((int)$manager['id'], (array)($input['conditions'] ?? []));
+        $items = !empty($input['apply']) ? RequestItems::applyConditions($id, $conditions) : RequestItems::all($id);
+        // Тот же срок ожидания — в уже собранные КП запроса (модуль 037)
+        if (!empty($input['apply'])) KpSet::syncWaitFromRequest($id);
+        jsonData(['items' => $items, 'conditions' => $conditions]);
+    }
 
     case 'items_save':
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         $input = getInput();
-        jsonData(['items' => RequestItems::save($id, (array)($input['items'] ?? []))]);
+        $items = RequestItems::save($id, (array)($input['items'] ?? []));
+        // Строку доставки убрали крестиком — она приходит как null, и это
+        // решение, а не «поле забыли прислать» (модуль 034)
+        $delivery = array_key_exists('delivery', $input)
+            ? RequestItems::saveDelivery($id, is_array($input['delivery']) ? $input['delivery'] : null)
+            : RequestItems::delivery($id);
+        // Срок ожидания правится здесь, а печатается в КП: собранные раньше
+        // документы держали прежний срок, пока их никто не сводил (модуль 037)
+        $rebuilt = KpSet::syncWaitFromRequest($id);
+        jsonData(['items' => $items, 'delivery' => $delivery, 'kp_rebuilt' => $rebuilt]);
 
     case 'items_choose':
         // The manager answered «какая из равнозначных» — the line stops asking
@@ -167,7 +208,7 @@ switch ($action) {
         $useLlm = ($_GET['smart'] ?? '0') === '1';
         // The counts come back with the rows: «ничего не нашлось» must not look
         // the same on screen as «нашлось всё» (module 018)
-        jsonData(RequestItems::rematchReport($id, $useLlm));
+        jsonData(RequestItems::rematchReport($id, $useLlm) + ['delivery' => RequestItems::delivery($id)]);
 
     /**
      * Запрос, который принесли мимо почты (модуль 038).

@@ -53,10 +53,25 @@ final class KpSet {
             'pre_table_text'  => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='pre_table' ORDER BY id DESC LIMIT 1") ?: ''),
             'post_table_text' => (string)(Db::val("SELECT manager_text FROM corrections WHERE field='post_table' ORDER BY id DESC LIMIT 1") ?: ''),
             'show_match_table' => (RequestShape::of($requestId) === RequestShape::TABLE) ? 1 : 0,
-        ]);
+        ] + self::deliveryFields($requestId));
 
         Requisites::freeze($proposalId);
         return $proposalId;
+    }
+
+    /**
+     * Доставка из таблицы подбора — в поля КП (модуль 034).
+     *
+     * Она правится строкой под позициями, а печатается строкой таблицы: у
+     * запроса КП бывает несколько, и доставка у них одна и та же.
+     */
+    private static function deliveryFields(int $requestId): array {
+        $d = RequestItems::delivery($requestId);
+        return [
+            'delivery_on'    => $d['on'],
+            'delivery_name'  => $d['name'],
+            'delivery_price' => $d['price'],
+        ];
     }
 
     /**
@@ -92,6 +107,9 @@ final class KpSet {
             'unit'                => $match['unit'] ?? 'шт.',
             'quantity'            => $m['quantity'],
             'price'               => $match['price'] ?? 0,
+            // Вилка цен: цена стоит только на модификациях и они стоят по-разному
+            // (модуль 036). Равен цене или ноль — вилки нет, печатается одна цена.
+            'price_max'           => (float)($match['price_max'] ?? 0),
             'stock_available'     => $match['stock'] ?? null,
             'stock_reserved'      => $match['reserved'] ?? null,
             'match_confidence'    => $match['score'] ?? null,
@@ -108,6 +126,10 @@ final class KpSet {
             'wait_discount'       => $m['wait_discount'] ?? null,
             'wait_prepay'         => $m['wait_prepay'] ?? null,
             'is_alternative'      => !empty($m['is_alternative']) ? 1 : 0,
+            // Слова КЛИЕНТА про то, вместо чего стоит наша позиция: КП печатает
+            // их над её названием. Менеджер их правит, поэтому это не
+            // `requested_name`, а своё поле (модуль 036)
+            'alt_of'              => trim((string)($m['alt_of'] ?? '')) ?: ($m['raw_name'] ?? null),
             'alt_reason'          => $m['alt_specs']['reason'] ?? null,
             'alt_specs_json'      => !empty($m['alt_specs'])
                 ? json_encode($m['alt_specs'], JSON_UNESCAPED_UNICODE) : null,
@@ -331,6 +353,61 @@ final class KpSet {
     private static function nextPosition(int $proposalId): int {
         return (int)Db::val("SELECT COALESCE(MAX(position), 0) + 1 FROM proposal_items WHERE proposal_id=?",
                             [$proposalId]);
+    }
+
+    /**
+     * Условия ожидания из таблицы подбора — в КП этого запроса (модуль 037).
+     *
+     * Срок ожидания ставится в подборе, а печатается в КП дважды: строкой «под
+     * заказ, срок ожидания 6 месяцев» и сроком исполнения в условиях. Пока их
+     * никто не сводил, КП, собранное ДО правки, печатало прежние три месяца —
+     * те, что проставились по умолчанию в день сборки, — и менеджер выставлял
+     * срок второй раз, уже в документе.
+     *
+     * Переписывается только то, что в подборе ЗАПОЛНЕНО: пустое поле означает
+     * «как в настройках», а не «ноль», и своё значение КП за ним не теряет.
+     * Отправленное клиенту КП не трогается вовсе — документ, который он держит
+     * в руках, печатается так, как его подписали.
+     *
+     * @return int сколько КП пересобралось
+     */
+    public static function syncWaitFromRequest(int $requestId): int {
+        $source = [];
+        foreach (Db::all("SELECT id, wait_on, wait_months, wait_discount, wait_prepay
+                          FROM request_items WHERE request_id=?", [$requestId]) as $row) {
+            $source[(int)$row['id']] = $row;
+        }
+        if (!$source) return 0;
+
+        $items = Db::all(
+            "SELECT i.id, i.proposal_id, i.request_item_id,
+                    i.wait_on, i.wait_months, i.wait_discount, i.wait_prepay
+             FROM proposal_items i
+             JOIN proposals p ON p.id = i.proposal_id
+             WHERE p.request_id=? AND p.status NOT IN ('sent', 'order_created')
+               AND i.request_item_id IS NOT NULL", [$requestId]);
+
+        $touched = [];
+        foreach ($items as $item) {
+            $src = $source[(int)$item['request_item_id']] ?? null;
+            if (!$src) continue;
+
+            $upd = [];
+            foreach (['wait_on', 'wait_months', 'wait_discount', 'wait_prepay'] as $field) {
+                $value = $src[$field] ?? null;
+                // Выключатель «под заказ» пустым не бывает: подбор пишет 0 или 1
+                if ($field !== 'wait_on' && ($value === null || $value === '')) continue;
+                if ((string)$value === (string)($item[$field] ?? '')) continue;
+                $upd[$field] = $value;
+            }
+            if (!$upd) continue;
+
+            Db::update('proposal_items', $upd, 'id=?', [(int)$item['id']]);
+            $touched[(int)$item['proposal_id']] = true;
+        }
+
+        foreach (array_keys($touched) as $proposalId) self::rebuild($proposalId);
+        return count($touched);
     }
 
     /** Убрать дыры в нумерации после удаления строки. */

@@ -67,15 +67,28 @@ class MsSync {
             Db::update('orders', $fields, 'id=?', [$existing['id']]);
             $localId = (int)$existing['id'];
         } else {
-            $localId = Db::insert('orders', array_merge($fields, [
-                'moysklad_id'     => $msOrderId,
-                'counterparty_id' => $cpId,
-                'request_id'      => $links['request_id'] ?? null,
-                'proposal_id'     => $links['proposal_id'] ?? null,
-                'manager_id'      => $links['manager_id'] ?? null,
-                // На какую организацию карточки заказ, если их несколько (модуль 029)
-                'org_id'          => $links['org_id'] ?? null,
-            ]));
+            try {
+                $localId = Db::insert('orders', array_merge($fields, [
+                    'moysklad_id'     => $msOrderId,
+                    'counterparty_id' => $cpId,
+                    'request_id'      => $links['request_id'] ?? null,
+                    'proposal_id'     => $links['proposal_id'] ?? null,
+                    'manager_id'      => $links['manager_id'] ?? null,
+                    // На какую организацию карточки заказ, если их несколько (модуль 029)
+                    'org_id'          => $links['org_id'] ?? null,
+                ]));
+            } catch (PDOException $e) {
+                // МойСклад шлёт вебхук дважды на один и тот же заказ, и второй
+                // приходит, пока первый ещё пишет строку: оба видят «заказа
+                // нет» и оба вставляют. Гонка кончалась падением «UNIQUE
+                // constraint failed: orders.moysklad_id» в журнале (модуль 034).
+                // Заказ уже есть — значит, работа сделана, и это не ошибка.
+                if (!self::isDuplicate($e)) throw $e;
+                $row = Db::one("SELECT id FROM orders WHERE moysklad_id=?", [$msOrderId]);
+                if (!$row) throw $e;
+                Db::update('orders', $fields, 'id=?', [(int)$row['id']]);
+                return (int)$row['id'];
+            }
 
             Crm::logEvent($cpId, 'note', "Заказ {$o['name']} создан в МойСклад на сумму " . number_format($o['sum'], 2, ',', ' ') . ' ₽', [
                 'request_id' => $links['request_id'] ?? null,
@@ -87,6 +100,12 @@ class MsSync {
         }
 
         return $localId;
+    }
+
+    /** Нарушение уникальности — не ошибка синхронизации, а «уже записано». */
+    private static function isDuplicate(PDOException $e): bool {
+        return str_contains($e->getMessage(), 'UNIQUE constraint failed')
+            || ($e->getCode() === '23000' && str_contains($e->getMessage(), 'Duplicate entry'));
     }
 
     // Pull invoices issued against a local order (FR-030)
@@ -125,11 +144,21 @@ class MsSync {
             Db::update('invoices', $fields, 'id=?', [$existing['id']]);
             $id = (int)$existing['id'];
         } else {
-            $id = Db::insert('invoices', array_merge($fields, [
-                'moysklad_id'     => $inv['id'],
-                'order_id'        => $localOrderId,
-                'counterparty_id' => $cpId,
-            ]));
+            try {
+                $id = Db::insert('invoices', array_merge($fields, [
+                    'moysklad_id'     => $inv['id'],
+                    'order_id'        => $localOrderId,
+                    'counterparty_id' => $cpId,
+                ]));
+            } catch (PDOException $e) {
+                // Тот же двойной вебхук, что и у заказов (модуль 034)
+                if (!self::isDuplicate($e)) throw $e;
+                $row = Db::one("SELECT id FROM invoices WHERE moysklad_id=?", [$inv['id']]);
+                if (!$row) throw $e;
+                Db::update('invoices', $fields, 'id=?', [(int)$row['id']]);
+                self::ensureInvoicePdf((int)$row['id']);
+                return (int)$row['id'];
+            }
 
             Crm::logEvent($cpId, 'note', "Счёт {$inv['name']} выставлен в МойСклад на сумму " . number_format($inv['sum'], 2, ',', ' ') . ' ₽', [
                 'event_type' => 'invoice_created',

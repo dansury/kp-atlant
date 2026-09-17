@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <style>
-    body { font-family: DejaVu Sans, sans-serif; font-size: 11pt; color: #222; line-height: 1.5; margin: 0; padding: 20px 40px; }
+    /* Тот же кегль, что у документа Word (10 пт): PDF и .docx — один документ,
+       и различаться они могут только шрифтом. Кириллицу во всех начертаниях в
+       mPDF умеет DejaVu Sans, поэтому имя шрифта здесь своё (модуль 035). */
+    body { font-family: DejaVu Sans, sans-serif; font-size: 10pt; color: #222; line-height: 1.45; margin: 0; padding: 20px 40px; }
     .header { text-align: right; font-size: 9pt; color: #555; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; min-height: 62px; }
     .header .entity-name { font-weight: bold; font-size: 10pt; color: #222; }
     /* Знак — слева вверху, до всего остального: реквизиты отправителя стоят
@@ -25,17 +28,27 @@
        были стилями четырёх зашитых абзацев и больше не печатаются */
     .conditions { margin-top: 20px; font-size: 10pt; color: #333; }
     .conditions p { margin: 5px 0; }
-    .signature { margin-top: 40px; display: table; width: 100%; }
-    .signature .date { display: table-cell; width: 50%; vertical-align: bottom; font-size: 10pt; }
-    .signature .sign { display: table-cell; width: 50%; text-align: right; vertical-align: bottom; }
-    .signature .sign img { max-height: 50px; }
-    .signature .sign-name { font-size: 10pt; margin-top: 5px; }
+    /* Дата, подпись и расшифровка — ОДНОЙ строкой, как в образце: картинка
+       подписи стоит поверх линии, а не отдельным абзацем (модуль 035) */
+    .signature { margin-top: 36px; font-size: 10pt; }
+    .signature__date { margin-right: 6px; }
+    .signature__line { letter-spacing: 0; }
+    .signature img.sign-img { max-height: 46px; max-width: 115px; margin-bottom: -6px; }
+    .signature .sign-name { margin-left: 8px; }
     .stock-warning { color: #c00; font-size: 9pt; }
     .note { font-size: 9pt; color: #666; }
+    /* Чем клиент называл позицию, вместо которой стоит наша (модуль 036).
+       Серый на белом 4.6:1 — WCAG AA для мелкого текста */
+    .analog-of { font-size: 8.5pt; color: #6b6b6b; font-style: italic; }
+    /* Приложение: описания товаров за таблицей цен (модуль 034) */
+    .appendix { page-break-before: always; margin-bottom: 10px; }
+    .appendix__title { font-size: 13pt; font-weight: bold; text-align: right; }
+    .appendix__subtitle { font-size: 12pt; font-weight: bold; text-align: center; margin-top: 10px; }
 
     /* Product card: description, photo gallery, specs, kit contents */
     .card { margin: 18px 0 10px; }
     .card--break { page-break-before: always; }
+    .card__end { clear: both; }
     /* Цена «до скидки» рядом с ценой «после» — клиент должен видеть, за что платит меньше */
     .was { font-size: 8pt; color: #777; text-decoration: line-through; }
     .card__name { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
@@ -49,6 +62,10 @@
     .card__desc p, .card__list p { margin: 0 0 5px; }
     .gallery { margin: 10px 0; text-align: center; }
     .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; }
+    /* В приложении фотография стоит СПРАВА, а описание обтекает её слева —
+       так собран образец, по которому КП уходит клиенту (модуль 035) */
+    .card .gallery { float: right; width: 225px; margin: 0 0 8px 12px; text-align: right; }
+    .card .gallery img { max-width: 225px; max-height: 240px; }
     .disclaimer { font-size: 8.5pt; color: #666; font-style: italic; margin-top: 8px; }
 
     /* Correspondence table: what was asked for vs what we answer with */
@@ -76,7 +93,8 @@
     /* The same address as a picture: on paper the link above is not clickable.
        Kept small and beside the text, never a block of its own — the card is
        about the product, and the QR is a convenience on the way out. */
-    .card__qr { margin-top: 4px; }
+    /* QR стоит справа, под фотографией, и текст обтекает его — как в образце */
+    .card__qr { float: right; clear: right; margin: 8px 0 4px 12px; text-align: right; }
     .card__qr img { vertical-align: middle; }
     .card__qr-note { font-size: 8.5pt; color: #666; }
 
@@ -132,6 +150,11 @@
     <?php endif; ?>
     <?php if ($seller['email'] !== ''): ?>
     <div><?= htmlspecialchars($seller['email']) ?></div>
+    <?php endif; ?>
+    <?php /* Банк стоит здесь, в шапке, а не блоком внизу: так собран образец,
+             по которому КП уходят клиенту (модуль 034) */ ?>
+    <?php if (!empty($showRequisites) && !empty($seller['bank']['line'])): ?>
+    <div>Банк: <?= htmlspecialchars($seller['bank']['line']) ?></div>
     <?php endif; ?>
 </div>
 
@@ -227,7 +250,21 @@
 <tr>
     <td class="num"><?= $i + 1 ?></td>
     <td>
+        <?php /* ==== Аналог: чем это называл клиент (модуль 036) ====
+                 Над названием НАШЕГО товара стоит строка из письма или из
+                 таблицы клиента — курсивом, серым: закупщик находит в нашем
+                 предложении свою собственную позицию, не сверяя два документа
+                 глазами. Печатается только по галочке «аналог»: без неё это
+                 наш товар под нашим же именем, и вторая строка — шум. */ ?>
+        <?php $analogOf = trim((string)($item['analog_of'] ?? '')); ?>
+        <?php if ($analogOf !== ''): ?>
+        <div class="analog-of"><em><?= htmlspecialchars($analogOf) ?></em></div>
+        <?php endif; ?>
         <?= htmlspecialchars($item['product_name']) ?>
+        <?php /* Примечание менеджера. Автоматическое «под заказ» сюда не
+                 печатается, когда ниже идут условия ожидания: они начинаются
+                 теми же словами, и в документ уходило «под заказ  под заказ,
+                 срок ожидания 3 месяца» (модуль 034). */ ?>
         <?php if (!empty($item['notes'])): ?>
         <br><span class="stock-warning"><?= htmlspecialchars($item['notes']) ?></span>
         <?php endif; ?>
@@ -239,9 +276,14 @@
     </td>
     <td class="qty"><?= htmlspecialchars($item['unit']) ?></td>
     <td class="qty"><?= !empty($item['qty_from']) ? 'от ' . $item['quantity'] : $item['quantity'] ?></td>
-    <td class="price"><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?> руб.<?php
-        if (!empty($item['discount_shown'])): ?><br><span class="was"><?= number_format($item['price'], 2, ',', ' ') ?> руб. −<?= htmlspecialchars($item['discount_shown']) ?>%</span><?php endif; ?></td>
-    <td class="sum"><?= !empty($item['price_from']) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?> руб.</td>
+<?php /* Вилка цен (модуль 036): у общего товара своей цены нет, она стоит на
+         модификациях и они стоят по-разному. Совпали — печатается одна цена. */ ?>
+<?php $priceTop = (float)($item['effective_price_max'] ?? 0); ?>
+    <td class="price"><?php if (!empty($item['discount_shown'])): ?><span class="was"><?= number_format($item['price'], 2, ',', ' ') ?> руб. −<?= htmlspecialchars($item['discount_shown']) ?>%</span><br><?php endif;
+        ?><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?><?php
+        if ($priceTop > 0) echo ' до ' . number_format($priceTop, 2, ',', ' '); ?> руб.</td>
+    <td class="sum"><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?><?php
+        if ($priceTop > 0) echo ' до ' . number_format((float)($item['sum_max'] ?? 0), 2, ',', ' '); ?> руб.</td>
 </tr>
 <?php endforeach; ?>
 <?php if (!empty($delivery)): ?>
@@ -268,97 +310,6 @@
     if ($line['amount'] !== null): ?>: <?= $totalIsFrom ? 'от ' : '' ?><?= number_format($line['amount'], 2, ',', ' ') ?> руб.<?php endif; ?></div>
 <?php endforeach; ?>
 
-<!-- Product cards: description, photos, specs, kit contents -->
-<?php $printedCards = 0; ?>
-<?php foreach ($items as $i => $item): ?>
-<?php
-    // Описание карточки: комментарий менеджера, если он его написал, иначе
-    // описание из МойСклад (модуль 032). Печатается ОДИН блок: оба поля растут
-    // из одного текста, и напечатанные подряд они читались бы как повтор.
-    $cardDesc = trim((string)($item['comment_text'] ?? '')) !== ''
-        ? (string)$item['comment_text'] : (string)($item['description_text'] ?? '');
-    $hasCard = trim($cardDesc) !== '' || !empty($item['specs_text'])
-            || !empty($item['included_text']) || !empty($item['gallery'])
-            || !empty($item['is_alternative'])
-            || (!empty($showSiteLink) && !empty($item['site_url']));
-?>
-<?php if ($hasCard): ?>
-<?php /* Каждая карточка товара — со своей страницы: иначе описание, фото и
-         характеристики рвутся ровно посередине (модуль 023). Первую не
-         отрываем — она идёт сразу за «Итого». */ ?>
-<div class="card<?= (!empty($pageBreakPerItem) && $printedCards > 0) ? ' card--break' : '' ?>">
-<?php $printedCards++; ?>
-    <?php if (count($items) > 1): ?>
-    <div class="card__name"><?= $i + 1 ?>. <?= htmlspecialchars($item['product_name']) ?></div>
-    <?php endif; ?>
-
-    <?php if (!empty($item['is_alternative'])): ?>
-    <!-- Why this position stands where another was asked for, and what it was
-         proved to meet. Never «извините» — the facts and nothing else. -->
-    <div class="card__desc">
-        <span class="swap">Предлагается вместо «<?= htmlspecialchars((string)($item['requested_name'] ?? '')) ?>»<?php
-            if (trim((string)($item['alt_reason'] ?? '')) !== '') echo ': ' . htmlspecialchars($item['alt_reason']); ?>.</span>
-        <?php if (!empty($item['alt_matched'])): ?>
-        <ul class="fits">
-            <?php foreach ($item['alt_matched'] as $fit): ?>
-            <li>соответствует требованию «<?= htmlspecialchars($fit['requirement']) ?>»<?php
-                if ($fit['ours'] !== '') echo ' — ' . htmlspecialchars($fit['ours']); ?></li>
-            <?php endforeach; ?>
-        </ul>
-        <?php endif; ?>
-        <?php if (!empty($item['alt_differs'])): ?>
-        <div class="fits">отличается от запроса: <?= htmlspecialchars(implode('; ', $item['alt_differs'])) ?></div>
-        <?php endif; ?>
-    </div>
-    <?php endif; ?>
-
-    <?php if (trim($cardDesc) !== ''): ?>
-    <div class="card__desc"><?= Markup::markdownToHtml($cardDesc) ?></div>
-    <?php endif; ?>
-
-    <?php if ($showImages && !empty($item['gallery'])): ?>
-    <div class="gallery">
-        <?php foreach ($item['gallery'] as $img): ?>
-        <img src="<?= $img ?>" alt="<?= htmlspecialchars($item['product_name']) ?>">
-        <?php endforeach; ?>
-    </div>
-    <?php if (!empty($imagesNote)): ?>
-    <div class="disclaimer">* <?= htmlspecialchars($imagesNote) ?></div>
-    <?php endif; ?>
-    <?php endif; ?>
-
-    <?php if (!empty($item['specs_text'])): ?>
-    <div class="card__subtitle">Характеристики:</div>
-    <div class="card__list"><?= Markup::markdownToHtml((string)$item['specs_text']) ?></div>
-    <?php endif; ?>
-
-    <?php if (!empty($item['included_text'])): ?>
-    <div class="card__subtitle">Комплектация:</div>
-    <div class="card__list"><?= Markup::markdownToHtml((string)$item['included_text']) ?></div>
-    <?php endif; ?>
-
-    <?php if (!empty($showSiteLink) && !empty($item['site_url'])): ?>
-    <!-- The product's own page on the shop, verified before it was cached -->
-    <div class="card__link">Подробнее на сайте:
-        <a href="<?= htmlspecialchars($item['site_url']) ?>"><?= htmlspecialchars($item['site_url']) ?></a>
-    </div>
-    <?php if (!empty($item['site_qr'])): ?>
-    <!-- The same link for a printed copy. class="qr" is what tells the Word
-         converter this is not a photograph and must stay small. -->
-    <div class="card__qr">
-        <img class="qr" src="<?= $item['site_qr'] ?>"
-             width="<?= (int)($qrSize ?? 90) ?>" height="<?= (int)($qrSize ?? 90) ?>"
-             alt="QR-код страницы товара на сайте">
-        <?php if (($qrHint ?? '') !== ''): ?>
-        <span class="card__qr-note">&nbsp;<?= htmlspecialchars($qrHint) ?></span>
-        <?php endif; ?>
-    </div>
-    <?php endif; ?>
-    <?php endif; ?>
-</div>
-<?php endif; ?>
-<?php endforeach; ?>
-
 <!-- Positions we could not match to the catalog (module 018).
      The КП names them in the client's own words. Before this block they were
      priced at nothing and the client was left to spot the hole himself. -->
@@ -379,13 +330,6 @@
 <div class="block"><?= nl2br(htmlspecialchars($postTableText)) ?></div>
 <?php endif; ?>
 
-<!-- Условия поставки — один блок, который правит менеджер (модуль 026).
-     Раньше здесь стояли четыре абзаца, написанные прямо в шаблоне: гарантия на
-     год и «стоимость включает» были неправдой, а поправить их было негде. -->
-<?php if (trim((string)$termsText) !== ''): ?>
-<div class="conditions"><?= nl2br(htmlspecialchars($termsText)) ?></div>
-<?php endif; ?>
-
 <!-- Дата и подпись.
      Пустой строки под подпись здесь больше нет: место, оставленное «под
      роспись», в подписанном документе читается как незаполненный бланк
@@ -393,14 +337,28 @@
      Картинка — подпись МЕНЕДЖЕРА этого КП, расшифровка — его же; ничего своего
      он не завёл — печатается подписант организации. -->
 <div class="signature">
-    <div class="date"><?= $date ?></div>
-    <div class="sign">
-        <?php if ($signaturePath !== ''): ?>
-        <img src="<?= $signaturePath ?>" alt="Подпись">
-        <?php endif; ?>
-        <div class="sign-name"><?= htmlspecialchars($signatoryName) ?></div>
-    </div>
+    <span class="signature__date"><?= $date ?></span>
+    <?php if ($signaturePath !== ''): ?>
+    <!-- Подпись ложится ПОВЕРХ строки, а не встаёт отдельной строкой между
+         датой и расшифровкой: class="sign-img" говорит конвертеру в Word, что
+         эту картинку текст не раздвигает (модуль 035) -->
+    <img class="sign-img" src="<?= $signaturePath ?>" alt="Подпись">
+    <?php endif; ?>
+    <span class="signature__line">_____________________________</span>
+    <span class="sign-name"><?= htmlspecialchars($signatoryName) ?></span>
 </div>
+
+<?php /* Ссылка на приложение: таблица на первой странице, описания — за ней */ ?>
+<?php if (!empty($hasAppendix)): ?>
+<div class="block">Более подробное описание товаров приведено в приложении №1.</div>
+<?php endif; ?>
+
+<!-- Условия поставки — один блок, который правит менеджер (модуль 026).
+     Раньше здесь стояли четыре абзаца, написанные прямо в шаблоне: гарантия на
+     год и «стоимость включает» были неправдой, а поправить их было негде. -->
+<?php if (trim((string)$termsText) !== ''): ?>
+<div class="conditions"><?= nl2br(htmlspecialchars($termsText)) ?></div>
+<?php endif; ?>
 
 <!-- Договор и покупатель: то, чего в шапке нет.
      Реквизиты ПОСТАВЩИКА раньше печатались здесь второй раз — ИНН, КПП, ОГРН и
@@ -409,12 +367,10 @@
      не было, — банк, договор и адресат. Ничего в этом блоке никогда не пишет
      модель: это снимок из МойСклад, замороженный на КП (модуль 013). -->
 <?php $hasBuyerLine = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? ''))) !== ''; ?>
-<?php if (!empty($showRequisites) && (!empty($seller['bank']['line']) || !empty($requisites['contract']) || $hasBuyerLine)): ?>
+<?php if (!empty($showRequisites) && (!empty($requisites['contract']) || $hasBuyerLine)): ?>
 <div class="req">
-    <?php if (!empty($seller['bank']['line'])): ?>
-    <div class="req__row">Банк: <?= htmlspecialchars($seller['bank']['line']) ?></div>
-    <?php endif; ?>
-
+    <?php /* Банк печатается в шапке первой страницы (модуль 034) — здесь остаются
+             только договор и адресат */ ?>
     <?php if (!empty($requisites['contract'])): ?>
     <div class="req__row">Договор: <?= htmlspecialchars($requisites['contract']['name']) ?><?php
         if ($requisites['contract']['date'] !== '') echo ' от ' . htmlspecialchars($requisites['contract']['date']); ?></div>
@@ -473,6 +429,107 @@
     </div>
     <?php endif; ?>
 </div>
+<?php endif; ?>
+
+
+<?php /* ==== Приложение №1: описание товаров (модуль 034) ==== */ ?>
+<?php if (!empty($hasAppendix)): ?>
+<div class="appendix">
+    <div class="appendix__title">Приложение №1</div>
+    <div class="appendix__subtitle">Описание товаров</div>
+</div>
+<!-- Приложение №1: описание товаров (модуль 034).
+     В образце, по которому КП уходит клиенту, таблица с ценами живёт на
+     первой странице и читается целиком, а описания, фотографии и
+     характеристики вынесены за неё отдельным приложением. -->
+<?php $printedCards = 0; ?>
+<?php foreach ($items as $i => $item): ?>
+<?php /* Описание, характеристики и фото посчитаны при сборке документа
+         (модуль 034): «есть ли приложение» надо знать раньше, чем оно печатается */ ?>
+<?php $cardDesc = (string)($item['card_desc'] ?? ''); ?>
+<?php if (!empty($item['has_card'])): ?>
+<?php /* Каждая карточка товара — со своей страницы: иначе описание, фото и
+         характеристики рвутся ровно посередине (модуль 023). Первую не
+         отрываем — она идёт сразу за «Итого». */ ?>
+<div class="card<?= (!empty($pageBreakPerItem) && $printedCards > 0) ? ' card--break' : '' ?>">
+<?php $printedCards++; ?>
+    <?php if (count($items) > 1): ?>
+    <div class="card__name"><?= $i + 1 ?>. <?= htmlspecialchars($item['product_name']) ?></div>
+    <?php endif; ?>
+
+    <?php /* Фотография стоит ПЕРЕД описанием: она плавает справа, и текст
+             обтекает её слева. Стояла после — и обтекать было уже нечего,
+             фотография просто падала под текст (модуль 035) */ ?>
+    <?php if ($showImages && !empty($item['gallery'])): ?>
+    <div class="gallery">
+        <?php foreach ($item['gallery'] as $img): ?>
+        <img src="<?= $img ?>" alt="<?= htmlspecialchars($item['product_name']) ?>">
+        <?php endforeach; ?>
+        <?php if (!empty($imagesNote)): ?>
+        <div class="disclaimer">* <?= htmlspecialchars($imagesNote) ?></div>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
+    <?php if (!empty($item['is_alternative'])): ?>
+    <!-- Why this position stands where another was asked for, and what it was
+         proved to meet. Never «извините» — the facts and nothing else. -->
+    <div class="card__desc">
+        <span class="swap">Предлагается вместо «<?= htmlspecialchars((string)($item['requested_name'] ?? '')) ?>»<?php
+            if (trim((string)($item['alt_reason'] ?? '')) !== '') echo ': ' . htmlspecialchars($item['alt_reason']); ?>.</span>
+        <?php if (!empty($item['alt_matched'])): ?>
+        <ul class="fits">
+            <?php foreach ($item['alt_matched'] as $fit): ?>
+            <li>соответствует требованию «<?= htmlspecialchars($fit['requirement']) ?>»<?php
+                if ($fit['ours'] !== '') echo ' — ' . htmlspecialchars($fit['ours']); ?></li>
+            <?php endforeach; ?>
+        </ul>
+        <?php endif; ?>
+        <?php if (!empty($item['alt_differs'])): ?>
+        <div class="fits">отличается от запроса: <?= htmlspecialchars(implode('; ', $item['alt_differs'])) ?></div>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
+    <?php if (trim($cardDesc) !== ''): ?>
+    <div class="card__desc"><?= Markup::markdownToHtml($cardDesc) ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($item['specs_text'])): ?>
+    <div class="card__subtitle">Характеристики:</div>
+    <div class="card__list"><?= Markup::markdownToHtml((string)$item['specs_text']) ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($item['included_text'])): ?>
+    <div class="card__subtitle">Комплектация:</div>
+    <div class="card__list"><?= Markup::markdownToHtml((string)$item['included_text']) ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($showSiteLink) && !empty($item['site_url'])): ?>
+    <!-- The product's own page on the shop, verified before it was cached -->
+    <div class="card__link">Подробнее на сайте:
+        <a href="<?= htmlspecialchars($item['site_url']) ?>"><?= htmlspecialchars($item['site_url']) ?></a>
+    </div>
+    <?php if (!empty($item['site_qr'])): ?>
+    <!-- The same link for a printed copy. class="qr" is what tells the Word
+         converter this is not a photograph and must stay small. -->
+    <div class="card__qr">
+        <img class="qr" src="<?= $item['site_qr'] ?>"
+             width="<?= (int)($qrSize ?? 90) ?>" height="<?= (int)($qrSize ?? 90) ?>"
+             alt="QR-код страницы товара на сайте">
+        <?php if (($qrHint ?? '') !== ''): ?>
+        <span class="card__qr-note">&nbsp;<?= htmlspecialchars($qrHint) ?></span>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+    <?php endif; ?>
+    <?php /* Обтекание фотографии закрывается здесь: без этого следующая
+             карточка начиналась бы сбоку от предыдущей (модуль 035) */ ?>
+    <div class="card__end"></div>
+</div>
+<?php endif; ?>
+<?php endforeach; ?>
+
 <?php endif; ?>
 
 </body>

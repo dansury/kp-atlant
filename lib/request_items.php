@@ -290,13 +290,16 @@ final class RequestItems {
         // Every price type the matched product has — the card offers it as a
         // pick next to the price field («как руками, так и выбором»)
         $ids = array_values(array_unique(array_filter(array_column($rows, 'moysklad_product_id'))));
-        $prices = [];
+        $prices = $catalog = [];
         if ($ids) {
             $placeholders = implode(',', array_fill(0, count($ids), '?'));
-            foreach (Db::all("SELECT moysklad_id, prices_json FROM products_cache WHERE moysklad_id IN ($placeholders)", $ids) as $p) {
+            foreach (Db::all("SELECT moysklad_id, price, prices_json, parent_id, product_type, is_archived
+                              FROM products_cache WHERE moysklad_id IN ($placeholders)", $ids) as $p) {
                 $prices[$p['moysklad_id']] = Catalog::decodePrices($p['prices_json']);
+                $catalog[(string)$p['moysklad_id']] = $p;
             }
         }
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
         $candidateIds = array_reduce($rows, function ($acc, $r) {
             $list = $r['match_variants'] ? (json_decode((string)$r['match_variants'], true) ?: []) : [];
             return array_merge($acc, array_column($list, 'moysklad_id'));
@@ -324,6 +327,18 @@ final class RequestItems {
             unset($cand);
             $row['variant_stock'] = $variantStock[(string)($row['moysklad_product_id'] ?? '')]['items'] ?? [];
             $row['price_options'] = $prices[$row['moysklad_product_id']] ?? [];
+            // Вилка цен общего товара (модуль 036): своей цены у него нет, а у
+            // модификаций она разная — строка стоит «от» дешёвой «до» дорогой.
+            // Вилка живёт, только пока цена строки и есть низ этой вилки:
+            // менеджер вписал своё число — вилки больше нет, есть его цена.
+            $row['price_max'] = (float)($row['price'] ?? 0);
+            $p = $catalog[(string)($row['moysklad_product_id'] ?? '')] ?? null;
+            if ($p && (int)($row['price_is_manual'] ?? 0) !== 1) {
+                $range = Catalog::priceRange($p, $counterpartyId);
+                if ($range['max'] > $range['min'] && abs($range['min'] - (float)$row['price']) < 0.005) {
+                    $row['price_max'] = $range['max'];
+                }
+            }
             // Which of the client's requirements this analogue meets — the card
             // shows it, and so does the КП
             $row['alternative'] = !empty($row['alt_specs_json'])
@@ -508,7 +523,11 @@ final class RequestItems {
                 // longer our analogue but their choice, and the КП stops
                 // explaining it as a swap
                 'is_alternative'      => !empty($row['is_alternative']) ? 1 : 0,
-                'alt_of'              => trim((string)($row['alt_of'] ?? '')) ?: null,
+                // Чем клиент называл то, вместо чего стоит наша позиция. Поле
+                // пустое, а галочка «аналог» поднята — значит, он назвал это
+                // строкой своего письма, и она же и печатается (модуль 036)
+                'alt_of'              => trim((string)($row['alt_of'] ?? ''))
+                                         ?: (!empty($row['is_alternative']) ? ($rawName ?: null) : null),
                 // Решение «это не к нам» принимает человек и оно живёт на строке
                 'is_out_of_scope'     => !empty($row['is_out_of_scope']) ? 1 : 0,
                 'updated_at'          => date('Y-m-d H:i:s'),
@@ -532,6 +551,42 @@ final class RequestItems {
             }
         }
         return self::all($requestId);
+    }
+
+    /**
+     * ==== Доставка строкой подбора (модуль 034) ====
+     *
+     * Доставка считалась полем в «Настройках КП» — экран за двумя переходами от
+     * таблицы подбора, — и про неё забывали: КП уходило клиенту с оговоркой
+     * «доставка считается отдельно» и без единой цифры. Теперь это обычная
+     * строка под позициями: она стоит там всегда, правится там же и убирается
+     * крестиком, как любая другая.
+     *
+     * Живёт на ЗАПРОСЕ и копируется в каждое его КП: у запроса КП бывает
+     * несколько, и доставка у них одна и та же.
+     *
+     * @return array{on:int,name:string,price:float}
+     */
+    public static function delivery(int $requestId): array {
+        $r = Db::one("SELECT delivery_on, delivery_name, delivery_price FROM requests WHERE id=?", [$requestId]) ?: [];
+        return [
+            // Колонки нет у запроса, заведённого до модуля 034, — значит «да»:
+            // доставку считают почти всегда
+            'on'    => ($r['delivery_on'] ?? null) === null ? 1 : (int)$r['delivery_on'],
+            'name'  => trim((string)($r['delivery_name'] ?? '')) ?: 'Доставка',
+            'price' => round((float)($r['delivery_price'] ?? 0), 2),
+        ];
+    }
+
+    /** Сохранить строку доставки. Пришло null — строку убрали крестиком. */
+    public static function saveDelivery(int $requestId, ?array $d): array {
+        Db::update('requests', [
+            'delivery_on'    => $d === null ? 0 : 1,
+            'delivery_name'  => $d === null ? null : (trim((string)($d['name'] ?? '')) ?: 'Доставка'),
+            'delivery_price' => $d === null ? 0 : max(0.0, round((float)($d['price'] ?? 0), 2)),
+            'updated_at'     => date('Y-m-d H:i:s'),
+        ], 'id=?', [$requestId]);
+        return self::delivery($requestId);
     }
 
     /**
@@ -575,6 +630,8 @@ final class RequestItems {
                     'article'     => $row['article'] ?? '',
                     'unit'        => $row['unit'] ?: 'шт.',
                     'price'       => (float)($row['price'] ?? 0),
+                    // Верх вилки, когда цена стоит только на модификациях
+                    'price_max'   => (float)($row['price_max'] ?? 0),
                     'stock'       => $row['stock'],
                     'reserved'    => null,
                     'score'       => $row['match_confidence'] ?? null,
@@ -582,6 +639,52 @@ final class RequestItems {
             ];
         }
         return $out;
+    }
+
+    /**
+     * ==== Общие условия КП (модуль 036) ====
+     *
+     * Тип цены и скидка — решение на ВСЁ предложение, а не на строку: «этому
+     * покупателю розница, на то, что под заказ, — минус десять». Раньше это
+     * выставлялось в каждой строке по отдельности, и следующее КП начиналось с
+     * той же работы заново.
+     *
+     * Цены пересчитываются в одном месте — `Catalog::priceFor()`, — поэтому
+     * выбор типа цены доходит и до модификации без своей цены (возьмёт цену
+     * товара), и до товара без цены (возьмёт низ вилки по модификациям).
+     *
+     * Строка с ценой, вписанной руками, не трогается: она и есть решение
+     * менеджера, а общий выбор — только предложение по умолчанию (модуль 023).
+     * Условия ожидания ставятся ТОЛЬКО тем строкам, которых нет на складе:
+     * «под заказ» на том, что лежит на полке, — это скидка ни за что.
+     */
+    public static function applyConditions(int $requestId, array $c): array {
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
+        $priceType = trim((string)($c['price_type'] ?? ''));
+        $discount  = array_key_exists('discount', $c) ? max(0.0, min(100.0, (float)$c['discount'])) : null;
+
+        foreach (Db::all("SELECT * FROM request_items WHERE request_id=?", [$requestId]) as $row) {
+            $upd = [];
+            $productId = trim((string)($row['moysklad_product_id'] ?? ''));
+            if ($priceType !== '' && $productId !== '' && (int)($row['price_is_manual'] ?? 0) !== 1) {
+                $p = Db::one("SELECT moysklad_id, price, prices_json, parent_id, product_type
+                              FROM products_cache WHERE moysklad_id=?", [$productId]);
+                if ($p) $upd['price'] = Catalog::priceFor($p, $counterpartyId, $priceType);
+            }
+            if ($discount !== null) $upd['discount_percent'] = $discount;
+
+            // «Под заказ» — про пустую полку, и только про неё
+            if (Terms::isBackorder($row)) {
+                if (array_key_exists('wait_on', $c))       $upd['wait_on']       = !empty($c['wait_on']) ? 1 : 0;
+                if (array_key_exists('wait_months', $c))   $upd['wait_months']   = max(0, (int)$c['wait_months']);
+                if (array_key_exists('wait_discount', $c)) $upd['wait_discount'] = max(0.0, min(100.0, (float)$c['wait_discount']));
+                if (array_key_exists('wait_prepay', $c))   $upd['wait_prepay']   = max(0, min(100, (int)$c['wait_prepay']));
+            }
+            if (!$upd) continue;
+            $upd['updated_at'] = date('Y-m-d H:i:s');
+            Db::update('request_items', $upd, 'id=?', [(int)$row['id']]);
+        }
+        return self::all($requestId);
     }
 
     /**

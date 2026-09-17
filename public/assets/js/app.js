@@ -754,7 +754,8 @@ const App = {
                 </div>
             </div>
         `;
-        this.renderMatchedItems(req.id, req.items || []);
+        this.renderMatchedItems(req.id, req.items || [], null,
+                                {delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
     },
 
     // ==== «Подходящие позиции»: what the letter's lines mean in our catalog ====
@@ -775,6 +776,13 @@ const App = {
         if (!host) return;
         host.dataset.matchHost = '1';
         host.dataset.requestId = requestId;
+        // Доставка живёт на блоке подбора: перерисовка строк её не теряет
+        if (opts.delivery) host.dataset.delivery = JSON.stringify(opts.delivery);
+        else if (host.dataset.delivery) opts = {...opts, delivery: JSON.parse(host.dataset.delivery)};
+        // Общие условия КП — тоже на блоке: они переживают перерисовку строк и
+        // приезжают с сервера уже теми, какими менеджер закрыл прошлое КП
+        if (opts.conditions) host.dataset.conditions = JSON.stringify(opts.conditions);
+        if (opts.price_types) host.dataset.priceTypes = JSON.stringify(opts.price_types);
         const open = items.filter(i => i.needs_choice).length;
         host.innerHTML = `
             <div class="card__title">Подходящие позиции ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}
@@ -783,8 +791,10 @@ const App = {
                подскажет локальная база товаров.</p>
             ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
                 выберите нужный, автоподбор сам не решает.</div>` : ''}
+            <div data-conditions>${this.conditionsPanel(host)}</div>
             <div data-match-rows>${items.map((i, n) => this.matchRow(i, n)).join('')}</div>
             ${items.length ? '' : '<p class="muted" data-match-empty>Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
+            <div data-delivery>${this.deliveryRow(opts.delivery)}</div>
             <div class="flex flex--wrap" style="margin-top:10px">
                 <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
                 <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
@@ -805,6 +815,150 @@ const App = {
     },
 
     /**
+     * ==== Цены и условия на всё КП (модуль 036) ====
+     *
+     * «Розница и минус десять на то, что под заказ» — это решение на всё
+     * предложение, а не на строку. Выставлялось оно в каждой строке по
+     * отдельности, и следующее КП начиналось с той же работы заново. Здесь это
+     * один выбор, и стоит он НАД таблицей — там, где принимают решение, а не
+     * там, где его сорок раз повторяют.
+     *
+     * Выбор запоминается за менеджером: следующее КП открывается тем, чем
+     * закрылось предыдущее. Поменял скидку — с этого места запомнена новая.
+     */
+    conditionsPanel(host) {
+        const c = host && host.dataset.conditions ? JSON.parse(host.dataset.conditions) : null;
+        if (!c) return '';
+        const types = host.dataset.priceTypes ? JSON.parse(host.dataset.priceTypes) : [];
+        return `
+            <div class="conditions">
+                <div class="conditions__title">Цены и условия — на все позиции${this.hint('kp-conditions')}</div>
+                <div class="conditions__row">
+                    <label>тип цены
+                        <select data-cond="price_type">
+                            <option value="">как в настройках</option>
+                            ${types.map(t => `<option value="${this.esc(t)}" ${t === c.price_type ? 'selected' : ''}>${this.esc(t)}</option>`).join('')}
+                        </select>
+                    </label>
+                    <label title="Скидка на каждую позицию подбора">скидка
+                        <input type="number" step="0.01" min="0" max="100" data-cond="discount" value="${Number(c.discount) || 0}">%
+                    </label>
+                    <label title="Условия ниже получат только позиции, которых нет на складе">
+                        <input type="checkbox" data-cond="wait_on" ${Number(c.wait_on) === 1 ? 'checked' : ''}> под заказ
+                    </label>
+                    <label>ждать
+                        <input type="number" min="0" max="120" data-cond="wait_months" value="${Number(c.wait_months) || 0}"> мес.
+                    </label>
+                    <label>за ожидание −
+                        <input type="number" step="0.01" min="0" max="100" data-cond="wait_discount" value="${Number(c.wait_discount) || 0}">%
+                    </label>
+                    <label>предоплата
+                        <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
+                    </label>
+                    <button class="btn btn--outline btn--sm" onclick="App.applyConditions(this)"
+                            title="Проставить выбранное всем позициям и запомнить для следующих КП">Применить ко всем</button>
+                </div>
+            </div>`;
+    },
+
+    /** Что выбрано в панели условий. */
+    collectConditions(host) {
+        const box = host && host.querySelector('[data-conditions]');
+        if (!box) return null;
+        const out = {};
+        box.querySelectorAll('[data-cond]').forEach(el => {
+            out[el.dataset.cond] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
+        });
+        return Object.keys(out).length ? out : null;
+    },
+
+    /**
+     * Проставить общие условия всем строкам — и запомнить их за менеджером.
+     *
+     * Цены пересчитывает СЕРВЕР: только он знает, что модификация без цены
+     * берёт цену товара, а товар без цены — вилку по модификациям. Строку с
+     * ценой, вписанной руками, он не трогает.
+     */
+    async applyConditions(btn) {
+        const host = this.matchHost(btn);
+        const conditions = this.collectConditions(host);
+        if (!host || !conditions) return;
+        const requestId = Number(host.dataset.requestId);
+        btn.disabled = true;
+        try {
+            const r = await this.api(`requests.php?action=items_conditions&id=${requestId}`,
+                                     {method: 'POST', body: {conditions, apply: 1}});
+            host.dataset.conditions = JSON.stringify(r.conditions || conditions);
+            this.renderMatchedItems(requestId, r.items || [], host, this.matchOpts(host));
+            this.toast('Условия проставлены и запомнены для следующих КП', 'success');
+        } catch (err) {
+            this.toast(err.message, 'error');
+        } finally {
+            btn.disabled = false;
+        }
+    },
+
+    /**
+     * ==== Доставка строкой подбора (модуль 034) ====
+     *
+     * Доставка правилась полем в «Настройках КП» — за двумя переходами от
+     * таблицы подбора, — и про неё забывали: КП уходило с оговоркой «доставка
+     * считается отдельно» и без единой цифры. Здесь это обычная строка под
+     * позициями. Она стоит там с самого начала и убирается крестиком, как
+     * любая другая; убранная — не печатается ни строкой, ни рублём в «Итого».
+     */
+    deliveryRow(delivery) {
+        const d = delivery || {on: 1, name: 'Доставка', price: 0};
+        if (Number(d.on) !== 1) {
+            return `<div class="match-row match-row--delivery" data-delivery-row data-off="1">
+                <div class="match-row__name muted">Доставка из КП убрана — в документ не печатается</div>
+                <button class="btn btn--outline btn--sm" onclick="App.deliveryToggle(this, 1)">+ Вернуть доставку</button>
+            </div>`;
+        }
+        return `<div class="match-row match-row--delivery" data-delivery-row>
+            <div class="match-row__name">
+                <div class="muted">Отдельная строка КП — не входит в цену товара</div>
+                <input type="text" data-delivery-name value="${this.esc(d.name || 'Доставка')}"
+                       placeholder="Доставка">
+            </div>
+            <span class="muted">усл.</span>
+            <span class="muted">1</span>
+            <input type="number" step="0.01" min="0" data-delivery-price value="${Number(d.price) || 0}"
+                   placeholder="Цена" title="Стоимость доставки" oninput="App.updateMatchTotal(this)">
+            <div class="match-row__tools">
+                <button class="btn btn--outline btn--sm" title="Убрать доставку из КП"
+                        onclick="App.deliveryToggle(this, 0)">×</button>
+            </div>
+        </div>`;
+    },
+
+    /** Убрать доставку из КП или вернуть её обратно. */
+    deliveryToggle(from, on) {
+        const host = this.matchHost(from);
+        const box = host && host.querySelector('[data-delivery]');
+        if (!box) return;
+        // Убранная строка помнит свою цену: вернуть её и увидеть ноль вместо
+        // посчитанной доставки — значит считать её второй раз
+        const current = this.collectDelivery(host);
+        if (current) box.dataset.was = JSON.stringify(current);
+        const was = box.dataset.was ? JSON.parse(box.dataset.was) : {name: 'Доставка', price: 0};
+        box.innerHTML = this.deliveryRow({on, name: was.name, price: was.price});
+        this.updateMatchTotal(host);
+    },
+
+    /** Что стоит в строке доставки сейчас; null — её убрали. */
+    collectDelivery(host) {
+        const row = host && host.querySelector('[data-delivery-row]');
+        if (!row || row.dataset.off === '1') return null;
+        const name = row.querySelector('[data-delivery-name]');
+        const price = row.querySelector('[data-delivery-price]');
+        return {
+            name: (name && name.value.trim()) || 'Доставка',
+            price: parseFloat(price && price.value) || 0,
+        };
+    },
+
+    /**
      * «Сформировать КП» right under the positions — the next step, in place.
      *
      * Открыть, скачать, выставить счёт и завести второе КП можно ниже, на доске
@@ -814,14 +968,18 @@ const App = {
     matchKpButton(requestId, kp) {
         // «Собрать КП в файл» — то, чего под таблицей подбора не хватало: КП
         // собирается и сразу скачивается, без захода в редактор (модуль 023)
+        // Word и PDF — два равноправных выхода: до модуля 035 кнопка была одна и
+        // отдавала только Word, а PDF в карточке взять было негде
         const files = `<button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'docx')"
-                       title="Собрать КП и скачать файлом">⬇ Собрать КП в файл</button>`;
+                       title="Собрать КП и скачать файлом Word">⬇ Собрать КП в Word</button>
+                <button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'pdf')"
+                       title="Собрать КП и скачать файлом PDF">⬇ …в PDF</button>`;
         if (kp.proposal_id) {
-            return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId})"
+            return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId}, this)"
                             title="Собрать ещё одно КП из этих позиций">Собрать КП заново</button>
                     ${files}`;
         }
-        return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId})">Сформировать КП</button>
+        return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId}, this)">Сформировать КП</button>
                 ${files}`;
     },
 
@@ -857,10 +1015,18 @@ const App = {
         const proposals = board.proposals || [];
         const pool = board.pool || [];
 
-        // Ни одного КП — доска пуста по определению, и колонка «Позиции
-        // запроса» была бы копией таблицы прямо над ней. Первое КП заводит
-        // кнопка «Сформировать КП», а доска появляется вместе с ним.
-        if (!proposals.length) { box.innerHTML = ''; return; }
+        // Ни одного КП — доска пуста по определению, и колонка «Позиции запроса»
+        // была бы копией таблицы прямо над ней. Но гаснуть МОЛЧА она не может:
+        // после «Убрать» экран выглядел так, будто позиции пропали вместе с КП
+        // (модуль 035). Говорим, куда они делись.
+        if (!proposals.length) {
+            box.innerHTML = pool.length
+                ? `<p class="muted" style="margin-top:12px">Ни одного КП по этому запросу нет.
+                     Позиции (${pool.length}) вернулись в таблицу подбора выше —
+                     соберите КП кнопкой «Сформировать КП».</p>`
+                : '';
+            return;
+        }
 
         box.innerHTML = `
             <div class="card__title" style="margin-top:14px">Коммерческие предложения${this.hint('kp-board')}</div>
@@ -917,13 +1083,15 @@ const App = {
                             <div class="flex flex--wrap" style="gap:6px;align-items:center">
                                 <a href="${this.esc(i.url)}" target="_blank" rel="noopener">Счёт ${this.esc(i.name)} ↗</a>
                                 <span class="muted">${this.fmtMoney(i.sum)}${i.payed_sum > 0 ? ' · оплачено ' + this.fmtMoney(i.payed_sum) : ''}</span>
-                                <a onclick="App.download('${i.pdf_url}', 'Счёт ${this.jsStr(i.name)}.pdf')">PDF</a>
+                                <a onclick="App.saveAs('${i.pdf_url}', 'Счёт ${this.jsStr(i.name)}.pdf')">PDF</a>
                             </div>`).join('')}
                     </div>` : ''}
                 <div class="kpcol__actions">
                     <button class="btn btn--primary btn--sm" onclick="App.openKp(${p.id}, this)">Открыть</button>
                     <button class="btn btn--outline btn--sm"
-                            onclick="App.download('/api/proposals.php?action=docx&id=${p.id}', 'KP-${p.id}.docx')">⬇ Word</button>
+                            onclick="App.saveAs('/api/proposals.php?action=docx&id=${p.id}')">⬇ Word</button>
+                    <button class="btn btn--outline btn--sm" title="Тот же документ в PDF"
+                            onclick="App.saveAs('/api/proposals.php?action=preview&id=${p.id}')">⬇ PDF</button>
                     <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${p.id}, this)"
                             title="${(p.invoices || []).length ? 'Выставить ещё один счёт по этому КП' : 'Выставить счёт по этому КП'}"
                             ${(p.items || []).length ? '' : 'disabled'}>🧾 ${(p.invoices || []).length ? 'Ещё счёт' : 'Счёт'}</button>
@@ -1112,7 +1280,15 @@ const App = {
             const board = await this.api(`proposals.php?action=delete&id=${proposalId}`,
                                          {method: 'POST', body: {}});
             this.drawKpBoard(requestId, null, board);
-            this.toast('КП убрано', 'success');
+            // Позиции вернулись в таблицу подбора — её и перечитываем, иначе
+            // возврата не видно до следующего нажатия чего угодно (модуль 035)
+            const host = this.kpHost(requestId);
+            if (host) {
+                const res = await this.api(`requests.php?action=items&id=${requestId}`);
+                this.renderMatchedItems(requestId, res.items || [], host,
+                                        {...this.matchOpts(host), delivery: res.delivery});
+            }
+            this.toast('КП убрано — позиции вернулись в подбор', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -1128,6 +1304,8 @@ const App = {
         btn.disabled = true;
         const label = btn.textContent;
         btn.textContent = 'Собираем...';
+        const say = this.kpProgress(btn, '');
+        say('Собираем КП: каталог, реквизиты, фотографии, документ...');
         try {
             if (host) await this.saveMatchedItems(host, true);
             let proposalId = host && host.dataset.kp ? (JSON.parse(host.dataset.kp).proposal_id || 0) : 0;
@@ -1136,14 +1314,26 @@ const App = {
                     `proposals.php?action=generate&request_id=${requestId}`, {method: 'POST', body: {}}));
                 if (host) host.dataset.kp = JSON.stringify({proposal_id: proposalId});
             } else {
-                await this.api(`proposals.php?action=update&id=${proposalId}`, {method: 'POST', body: {}});
+                // Доставку из таблицы подбора несём в уже собранное КП: новое
+                // забирает её при создании, старое — здесь (модуль 034)
+                const d = host ? this.collectDelivery(host) : null;
+                await this.api(`proposals.php?action=update&id=${proposalId}`, {method: 'POST', body: {
+                    delivery_on: d ? 1 : 0,
+                    delivery_name: d ? d.name : '',
+                    delivery_price: d ? d.price : 0,
+                }});
             }
             const url = format === 'pdf'
                 ? `/api/proposals.php?action=preview&id=${proposalId}`
                 : `/api/proposals.php?action=docx&id=${proposalId}`;
-            this.download(url, `KP-${proposalId}.${format === 'pdf' ? 'pdf' : 'docx'}`);
-            this.toast('КП собрано — файл скачивается', 'success');
-        } catch (err) { this.toast(err.message, 'error'); }
+            // Документ раскрывается ПОД письмом и одновременно скачивается:
+            // «собрать в файл» и «посмотреть, что собралось» — одно движение
+            // менеджера, а не два (модуль 034)
+            this.openKpUnderLetter(proposalId, btn);
+            await this.download(url);
+            say('');
+            this.toast('КП собрано — файл скачивается, предпросмотр под письмом', 'success');
+        } catch (err) { say(err.message, true); this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = label; }
     },
 
@@ -1153,15 +1343,59 @@ const App = {
      * `window.open` на КП оставлял за собой пустое окно с PDF, из которого
      * менеджер возвращался кнопкой «назад» — а всё управление КП должно
      * оставаться в одной карточке.
+     *
+     * Файл забирается запросом, а не ссылкой `<a download>` (модуль 034):
+     * ссылка молча складывала на диск ОШИБКУ СЕРВЕРА под именем `KP-29.docx` —
+     * нажатие выглядело как «ничего не происходит», а в папке лежал JSON с
+     * «Not found». Теперь ошибка видна тостом и попадает в журнал, а на диск
+     * уходит только настоящий документ.
      */
-    download(url, filename) {
+    async download(url, filename) {
+        let res;
+        try {
+            res = await fetch(url, {credentials: 'same-origin'});
+        } catch (err) {
+            throw new Error('Файл не скачался: ' + err.message);
+        }
+        if (!res.ok) throw new Error(await this.errorTextOf(res));
+        const blob = await res.blob();
+        const href = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url;
-        a.download = filename || '';
+        a.href = href;
+        // Имя даёт СЕРВЕР: «КП_Атлант_Армор_для_ООО_Воевода_от_17.09.2026.docx».
+        // Запасное `KP-32.docx` — то, что уходило клиенту вместо него, пока имя
+        // прописывали здесь, в кнопке (модуль 035).
+        a.download = this.filenameOf(res) || filename || '';
         a.rel = 'noopener';
         document.body.appendChild(a);
         a.click();
         a.remove();
+        // Освобождать сразу нельзя: Safari не успевает начать скачивание
+        setTimeout(() => URL.revokeObjectURL(href), 20000);
+    },
+
+    /** Имя файла из Content-Disposition: сначала filename*=UTF-8'', потом filename. */
+    filenameOf(res) {
+        const cd = res.headers.get('Content-Disposition') || '';
+        const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+        if (star) { try { return decodeURIComponent(star[1].trim()); } catch { /* битая кодировка */ } }
+        const plain = /filename="([^"]+)"/i.exec(cd) || /filename=([^;]+)/i.exec(cd);
+        return plain ? plain[1].trim() : '';
+    },
+
+    /** Скачать и сказать вслух, если не вышло — для кнопок прямо в разметке. */
+    saveAs(url, filename) {
+        this.download(url, filename).catch(err => this.toast(err.message, 'error'));
+    },
+
+    /** Что на самом деле ответил сервер: JSON с полем error, иначе текст. */
+    async errorTextOf(res) {
+        const body = await res.text().catch(() => '');
+        try {
+            const data = JSON.parse(body);
+            if (data && data.error) return data.error;
+        } catch { /* не JSON — значит страница или пусто */ }
+        return `Сервер ответил ${res.status}${body ? ': ' + body.replace(/<[^>]*>/g, ' ').trim().slice(0, 200) : ''}`;
     },
 
     /**
@@ -1188,7 +1422,17 @@ const App = {
      * ссылке экран честно писал «КП #undefined не найдено» — потому что id
      * брался из ответа, которого не было.
      */
-    async openKp(proposalId, btn) {
+    /**
+     * Раскрыть КП под письмом и НЕ закрыть его, если оно уже открыто.
+     *
+     * «Собрать КП в файл» зовёт это после сборки: нажатие на кнопку не должно
+     * захлопывать документ, который только что собрали (модуль 034).
+     */
+    openKpUnderLetter(proposalId, btn) {
+        this.openKp(proposalId, btn, true);
+    },
+
+    async openKp(proposalId, btn, keepOpen = false) {
         const id = Number(proposalId) || 0;
         if (!id) { this.toast('КП ещё не собрано — нажмите «Сформировать КП»', 'error'); return; }
         // Документ раскрывается В ЛЕВОЙ КОЛОНКЕ, под полем письма (модуль 029):
@@ -1202,7 +1446,12 @@ const App = {
                 || host.appendChild(Object.assign(document.createElement('div'), {dataset: {kpSlot: '1'}}))));
         // Карточки под рукой нет (страница редактора КП) — только тогда переход
         if (!slot) { location.hash = '#mail/proposal/' + id; return; }
-        if (slot.dataset.open === String(id)) { slot.innerHTML = ''; slot.dataset.open = ''; return; }
+        if (slot.dataset.open === String(id)) {
+            if (keepOpen) { slot.scrollIntoView({behavior: 'smooth', block: 'start'}); return; }
+            slot.innerHTML = '';
+            slot.dataset.open = '';
+            return;
+        }
         slot.dataset.open = String(id);
         const height = Number(localStorage.getItem('kpHeight')) || 60;
         slot.innerHTML = `
@@ -1217,9 +1466,9 @@ const App = {
                                    oninput="App.kpResize(this)"><span data-kp-size>${height}vh</span>
                         </label>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.download('/api/proposals.php?action=docx&id=${id}', 'KP-${id}.docx')">⬇ Word</button>
+                                onclick="App.saveAs('/api/proposals.php?action=docx&id=${id}')">⬇ Word</button>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.download('/api/proposals.php?action=preview&id=${id}', 'KP-${id}.pdf')">⬇ PDF</button>
+                                onclick="App.saveAs('/api/proposals.php?action=preview&id=${id}')">⬇ PDF</button>
                         <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)">✎ Править текст</button>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
@@ -1230,11 +1479,50 @@ const App = {
                     </span>
                 </div>
                 <div data-kp-edit></div>
-                <iframe class="kp-preview" style="height:${height}vh"
-                        src="/api/proposals.php?action=preview&id=${id}"
+                <!-- Пока документ собирается, в рамке был белый прямоугольник, и
+                     было не отличить «ещё считает» от «не открылось» (модуль 035) -->
+                <div data-kp-state class="loading">Собираем документ...</div>
+                <iframe class="kp-preview" style="height:${height}vh;display:none"
                         title="Предпросмотр КП #${id}"></iframe>
             </div>`;
         slot.scrollIntoView({behavior: 'smooth', block: 'start'});
+        this.fillKpPreview(slot, id);
+    },
+
+    /**
+     * Наполнить рамку предпросмотра — и сказать вслух, если не вышло.
+     *
+     * Документ сначала запрашивается, и только ответивший сервер попадает в
+     * рамку: иначе ошибка сборки показывалась как пустое окно, а сборка на
+     * полминуты — как «ничего не происходит».
+     */
+    async fillKpPreview(slot, id) {
+        const state = slot.querySelector('[data-kp-state]');
+        const frame = slot.querySelector('.kp-preview');
+        if (!state || !frame) return;
+        state.className = 'loading';
+        state.textContent = 'Собираем документ...';
+        const url = `/api/proposals.php?action=preview&id=${id}`;
+        // Сборка PDF на живом каталоге идёт секундами — говорим об этом вслух
+        const slow = setTimeout(() => {
+            if (state.isConnected) state.textContent = 'Собираем документ — фотографии товаров считаются дольше всего...';
+        }, 4000);
+        try {
+            const res = await fetch(url, {credentials: 'same-origin'});
+            if (!res.ok) throw new Error(await this.errorTextOf(res));
+            // Сервер ответил документом — можно показывать
+            if (!slot.isConnected || slot.dataset.open !== String(id)) return;
+            frame.src = url;
+            frame.style.display = '';
+            state.remove();
+        } catch (err) {
+            state.className = 'no';
+            state.innerHTML = `<strong>КП не открылось.</strong> ${this.esc(err.message)}
+                <button class="btn btn--outline btn--sm" style="margin-left:8px"
+                        onclick="App.fillKpPreview(this.closest('.kp-open').parentElement, ${id})">Повторить</button>`;
+        } finally {
+            clearTimeout(slow);
+        }
     },
 
     /**
@@ -1407,7 +1695,7 @@ const App = {
                         <button class="btn btn--primary btn--sm"
                                 onclick="App.attachDoc('invoice', ${r.invoice_id}, this)">📎 Приложить к письму</button>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.download('${r.pdf_url}', 'Счёт ${this.jsStr(r.name)}.pdf')">⬇ Файлом</button>` : ''}
+                                onclick="App.saveAs('${r.pdf_url}', 'Счёт ${this.jsStr(r.name)}.pdf')">⬇ Файлом</button>` : ''}
                     <a class="btn btn--outline btn--sm" href="${this.esc(r.url)}" target="_blank" rel="noopener">МойСклад ↗</a>
                 </div>
             </div>`;
@@ -1517,6 +1805,56 @@ const App = {
             </div>`;
     },
 
+    /**
+     * ==== Аналог: чем это называл клиент (модуль 036) ====
+     *
+     * Галочка «аналог» открывает поле, а в поле уже стоит строка из письма или
+     * из таблицы клиента. Менеджер её правит — «Шлем ЗШ-1-2М (пр-во Армоком)»
+     * закупщик писал для себя, и в КП оно должно читаться так, как читается у
+     * него. В документе эта строка встаёт НАД названием нашего товара,
+     * курсивом серым: клиент находит в предложении свою позицию, не сверяя два
+     * документа глазами.
+     *
+     * Поле хранится отдельно от `raw_name`: письмо — это то, что написал
+     * клиент, и правка менеджера не имеет права его переписывать.
+     */
+    analogField(i = {}) {
+        const on = !!i.is_alternative;
+        return `
+            <div class="analog" data-analog ${on ? '' : 'hidden'}>
+                <span class="muted">в КП над нашим названием:</span>
+                <input type="text" data-field="alt_of" value="${this.esc(i.alt_of || i.raw_name || '')}"
+                       placeholder="Как эту позицию называл клиент"
+                       title="Печатается в КП курсивом серым над названием нашего товара">
+            </div>`;
+    },
+
+    /** Галочку подняли — поле открылось и ждёт правки; сняли — спряталось. */
+    toggleAnalog(box) {
+        const row = box.closest('[data-match-row]');
+        const field = row && row.querySelector('[data-analog]');
+        if (!field) return;
+        field.hidden = !box.checked;
+        if (!box.checked) return;
+        const input = field.querySelector('[data-field="alt_of"]');
+        if (input) input.focus();
+    },
+
+    /**
+     * Вилка цен товара, у которого своей цены нет (модуль 036).
+     *
+     * У общего товара цена часто стоит только на модификациях — и стоит там
+     * по-разному. В поле цены — низ вилки, здесь её верх: строка честно
+     * говорит, что «от 1 200» это не вся правда. Цены модификаций совпали —
+     * вилки нет и писать нечего.
+     */
+    priceRangeNote(i = {}) {
+        const max = Number(i.price_max) || 0;
+        if (max <= (Number(i.price) || 0)) return '';
+        return `<span class="muted price-range" title="Цена стоит на модификациях и отличается между ними">
+            до ${this.fmtMoney(max)}</span>`;
+    },
+
     matchRow(i = {}, index = -1) {
         const conf = i.match_confidence ? Math.round(i.match_confidence * 100) : null;
         const src = this.matchSourceLabel(i.match_source);
@@ -1528,9 +1866,8 @@ const App = {
                 <input type="hidden" data-field="article" value="${this.esc(i.article || '')}">
                 <input type="hidden" data-field="stock" value="${i.stock ?? ''}">
                 <input type="hidden" data-field="needs_choice" value="${i.needs_choice ? 1 : 0}">
-                <input type="hidden" data-field="is_alternative" value="${i.is_alternative ? 1 : 0}">
-                <input type="hidden" data-field="alt_of" value="${this.esc(i.alt_of || '')}">
                 <input type="hidden" data-field="is_out_of_scope" value="${i.is_out_of_scope ? 1 : 0}">
+                <input type="hidden" data-field="price_max" value="${i.price_max ?? 0}">
                 <div class="match-row__name">
                     ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}</div>` : ''}
                     ${this.variantNote(i)}
@@ -1540,19 +1877,28 @@ const App = {
                     <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
                            value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
                     <div class="suggest" hidden></div>
+                    ${this.analogField(i)}
                     ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted">ещё похожие:
                         ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
                 </div>
                 <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
                        placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal(this)">
                 <input type="text" data-field="unit" value="${this.esc(i.unit || 'шт.')}" placeholder="Ед." title="Единица измерения">
-                <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
-                       placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal(this)">
+                <span class="price-cell">
+                    <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
+                           placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal(this)">
+                    ${this.priceRangeNote(i)}
+                </span>
                 <span class="price-opts-slot">${this.priceOptsSelect(i.price_options || {})}</span>
                 <input type="text" data-field="notes" value="${this.esc(i.notes || '')}" placeholder="Примечание">
                 <label title="Позиция подтверждена менеджером — автоподбор её больше не трогает">
                     <input type="checkbox" data-field="is_confirmed" ${i.is_confirmed ? 'checked' : ''}> ок
                 </label>
+                <label title="Мы предлагаем не то, что клиент назвал: в КП над нашим названием встанет его собственное">
+                    <input type="checkbox" data-field="is_alternative" ${i.is_alternative ? 'checked' : ''}
+                           onchange="App.toggleAnalog(this)"> аналог
+                </label>
+                ${index === 0 ? this.hint('match-analog') : ''}
                 <div class="match-row__tools">
                     <span class="match-row__grip" draggable="true" title="Перетащить строку мышью">⠿</span>
                     <button class="btn btn--outline btn--sm" title="Выше" onclick="App.moveMatchRow(this, -1)">↑</button>
@@ -1936,10 +2282,14 @@ const App = {
             }
             return Math.round(p * 100) / 100;
         };
-        const total = rows.reduce((s, r) => s + priceOf(r) * r.quantity, 0);
+        let total = rows.reduce((s, r) => s + priceOf(r) * r.quantity, 0);
+        // Доставка стоит в КП отдельной строкой — значит и в сумме тоже
+        const delivery = this.collectDelivery(host);
+        if (delivery) total += delivery.price;
         const noPrice = rows.filter(r => !r.price).length;
-        el.innerHTML = all.length
+        el.innerHTML = all.length || delivery
             ? `Позиций: ${rows.length} · сумма по каталогу: ${this.fmtMoney(total)}`
+              + (delivery ? ` · в т.ч. доставка ${this.fmtMoney(delivery.price)}` : '')
               + (noPrice ? ` · без цены: ${noPrice}` : '')
               + (dropped ? ` · не наша номенклатура: ${dropped}` : '')
             : '';
@@ -1951,10 +2301,10 @@ const App = {
         if (!host) return [];
         const requestId = Number(host.dataset.requestId);
         const res = await this.api(`requests.php?action=items_save&id=${requestId}`, {
-            method: 'POST', body: {items: this.collectMatchedItems(host)},
+            method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
         });
         if (!silent) this.toast('Позиции сохранены', 'success');
-        this.renderMatchedItems(requestId, res.items || [], host, this.matchOpts(host));
+        this.renderMatchedItems(requestId, res.items || [], host, {...this.matchOpts(host), delivery: res.delivery});
         return res.items;
     },
 
@@ -1981,9 +2331,10 @@ const App = {
         note.textContent = smart ? 'Спрашиваем нейросеть и подбираем...' : 'Подбираем по каталогу...';
         host.appendChild(note);
         try {
-            await this.api(`requests.php?action=items_save&id=${requestId}`, {method: 'POST', body: {items: pending}});
+            await this.api(`requests.php?action=items_save&id=${requestId}`, {method: 'POST',
+                body: {items: pending, delivery: this.collectDelivery(host)}});
             const res = await this.api(`requests.php?action=items_rematch&id=${requestId}&smart=${smart ? 1 : 0}`, {method: 'POST'});
-            this.renderMatchedItems(requestId, res.items || [], host, opts);
+            this.renderMatchedItems(requestId, res.items || [], host, {...opts, delivery: res.delivery});
             this.toast(this.rematchSummary(res), res.repicked && !res.found ? 'info' : 'success');
         } catch (err) {
             this.toast(err.message, 'error');
@@ -2007,7 +2358,10 @@ const App = {
 
     // A redraw must not lose the letter card's «Сформировать КП» line
     matchOpts(host) {
-        return host && host.dataset.kp ? {kp: JSON.parse(host.dataset.kp)} : {};
+        const opts = {};
+        if (host && host.dataset.kp) opts.kp = JSON.parse(host.dataset.kp);
+        if (host && host.dataset.delivery) opts.delivery = JSON.parse(host.dataset.delivery);
+        return opts;
     },
 
     // Attachments of the incoming email (FR-021, FR-022)
@@ -2155,9 +2509,14 @@ const App = {
      * «КП #undefined не найдено». Теперь КП раскрывается предпросмотром в той
      * же карточке — всё управление остаётся в одном месте.
      */
-    async generateKP(requestId) {
-        const btn = document.getElementById('genBtn');
-        if (btn) { btn.disabled = true; btn.textContent = 'Генерация...'; }
+    async generateKP(requestId, from) {
+        const btn = from || document.getElementById('genBtn');
+        const label = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Собираем КП...'; }
+        // Сборка КП — это каталог, реквизиты, фотографии и рендер PDF: полминуты
+        // на живом каталоге. Молчащий экран всё это время читался как «кнопка не
+        // работает», поэтому ход работы виден и ошибка тоже (модуль 035).
+        const say = this.kpProgress(from, 'Собираем КП: каталог, реквизиты, фотографии, документ...');
         try {
             // The KP is built from «Подходящие позиции» — send the table as it
             // looks on screen, not as it was last saved. On the letter card
@@ -2166,8 +2525,10 @@ const App = {
             if (host && host.querySelector('[data-match-row]')) {
                 await this.saveMatchedItems(host, true);
             }
+            say('Собираем документ — это может занять до минуты...');
             const id = this.proposalId(
                 await this.api(`proposals.php?action=generate&request_id=${requestId}`, {method: 'POST', body: {}}));
+            say('');
             this.toast('КП сформировано', 'success');
             if (host) {
                 host.dataset.kp = JSON.stringify({proposal_id: id});
@@ -2180,10 +2541,40 @@ const App = {
                 location.hash = `mail/proposal/${id}`;
             }
         } catch (err) {
+            // Ошибка остаётся НА ЭКРАНЕ: тост гаснет через пару секунд, а
+            // разбираться с «не собралось» приходится дольше
+            say(err.message, true);
             this.toast(err.message, 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Сформировать КП'; }
+            if (btn) { btn.disabled = false; btn.textContent = label || 'Сформировать КП'; }
         }
+    },
+
+    /**
+     * Строка хода работы под кнопками подбора (модуль 035).
+     *
+     * Возвращает функцию: зовут её с текстом — он появляется, с пустым — гаснет,
+     * со вторым аргументом — остаётся красным до следующего действия.
+     */
+    kpProgress(from, initial = '') {
+        const host = this.matchHost(from);
+        if (!host) return () => {};
+        // Строка живёт РЯДОМ с таблицей подбора, а не внутри неё: сборка КП
+        // начинается с сохранения позиций, а оно перерисовывает таблицу целиком
+        // — вложенная строка исчезала вместе с ней, не успев показаться
+        // (модуль 035)
+        let box = host.parentElement && host.parentElement.querySelector('[data-kp-progress]');
+        if (!box) {
+            box = document.createElement('div');
+            box.dataset.kpProgress = '1';
+            host.insertAdjacentElement('afterend', box);
+        }
+        const say = (text, bad = false) => {
+            box.className = text ? (bad ? 'no' : 'loading') : '';
+            box.innerHTML = text ? this.esc(text) : '';
+        };
+        if (initial) say(initial);
+        return say;
     },
 
     // Assign request to current manager
@@ -2301,13 +2692,17 @@ const App = {
                         <textarea id="termsText" rows="5"
                             placeholder="Печатается в конце КП. Пусто — условий в документе не будет."
                             >${this.esc(proposal.terms_text_edit || '')}</textarea>
-                        <div class="muted" style="margin-top:4px"><code>{execution_days}</code> и
-                            <code>{validity_days}</code> подставятся из полей ниже.
+                        <div class="muted" style="margin-top:4px"><code>{execution_term}</code> —
+                            срок исполнения словами: дни из поля ниже, а если хоть одна позиция под заказ —
+                            срок ожидания из таблицы подбора. <code>{validity_days}</code> — срок действия цены.
                             Сохранение делает этот текст заготовкой для следующих КП.</div>
                     </div>
                     <!-- Доставка отдельной строкой: она не спрятана в цене товара -->
                     <div class="card">
                         <div class="card__title">Доставка</div>
+                        <p class="muted">Это значения ЭТОГО КП. Обычно доставку правят строкой под
+                           позициями подбора — и она уходит во все КП запроса; собранное оттуда КП
+                           перепишет то, что стоит здесь (модуль 034).</p>
                         <div class="form-group">
                             <label><input type="checkbox" id="deliveryOn" ${proposal.delivery_on == 1 ? 'checked' : ''}>
                                 Отдельной строкой в таблице и в итоге</label>
@@ -3160,7 +3555,8 @@ const App = {
             const draw = req => {
                 const kp = {proposal_id: (req.proposals && req.proposals[0]) ? req.proposals[0].id : null};
                 host.dataset.kp = JSON.stringify(kp);
-                this.renderMatchedItems(requestId, req.items || [], host, {kp});
+                this.renderMatchedItems(requestId, req.items || [], host,
+                    {kp, delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
             };
             // Сохранённый ответ рисуется сразу, свежий — когда придёт
             draw(await this.apiCached(`requests.php?action=get&id=${requestId}`, draw));
@@ -3540,6 +3936,90 @@ const App = {
         this.restoreComposerDraft(key);
     },
 
+    /**
+     * ==== Перенаправить письмо (модуль 037) ====
+     *
+     * Письмо целиком — со вложениями и шапкой «от кого» — уходит на другой
+     * адрес: запрос в снабжение, счёт в бухгалтерию. Делается это здесь, а не
+     * в чужом почтовом клиенте, поэтому пересылка остаётся в переписке.
+     *
+     * Адрес запоминается сам: во второй раз его выбирают нажатием, а не
+     * набирают. Список чистится крестиком — человек увольняется, а адрес
+     * остаётся.
+     */
+    async forwardMail(id) {
+        this._forwardId = id;
+        this.modal('Перенаправить письмо', `
+            <div class="form-group">
+                <label>Кому переслать</label>
+                <input type="email" id="fwdTo" placeholder="адрес@компания.ру" autocomplete="off">
+            </div>
+            <div id="fwdSaved" class="fwd-saved muted">Загружаем сохранённые адреса...</div>
+            <div class="form-group">
+                <label>Что дописать от себя</label>
+                <textarea id="fwdNote" rows="3" placeholder="Необязательно: пара слов получателю"></textarea>
+            </div>
+            <div class="flex flex--end" style="gap:8px;margin-top:12px">
+                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
+                <button class="btn btn--primary" id="fwdGo" onclick="App.forwardSend(this)">Перенаправить</button>
+            </div>`);
+        this.forwardAddresses();
+    },
+
+    /** Сохранённые адреса — список под полем ввода. */
+    async forwardAddresses(known) {
+        const box = document.getElementById('fwdSaved');
+        if (!box) return;
+        try {
+            const list = known || (await this.api('mail.php?action=forward_addresses')).addresses || [];
+            box.innerHTML = list.length
+                ? 'Сохранённые адреса: ' + list.map(a => `
+                    <span class="chip fwd-chip">
+                        <a onclick="App.forwardPick('${this.jsStr(a.email)}')"
+                           title="${this.esc(a.name || a.email)}">${this.esc(a.email)}</a>
+                        <button title="Убрать адрес из базы"
+                                onclick="App.forwardForget(${Number(a.id)})">×</button>
+                    </span>`).join(' ')
+                : 'Сюда ещё не пересылали — наберите адрес, он запомнится сам.';
+        } catch (err) {
+            box.textContent = 'Сохранённые адреса не загрузились: ' + err.message;
+        }
+    },
+
+    forwardPick(email) {
+        const field = document.getElementById('fwdTo');
+        if (field) { field.value = email; field.focus(); }
+    },
+
+    /** Убрать адрес из базы — вместе со счётчиком, которым он держался в списке. */
+    async forwardForget(id) {
+        try {
+            const d = await this.api('mail.php?action=forward_address_delete', {method: 'POST', body: {id}});
+            this.forwardAddresses(d.addresses || []);
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async forwardSend(btn) {
+        const to = (document.getElementById('fwdTo') || {}).value || '';
+        if (!to.trim()) { this.toast('Укажите адрес, на который переслать', 'error'); return; }
+        btn.disabled = true;
+        btn.textContent = 'Отправляем...';
+        try {
+            await this.api('mail.php?action=forward', {method: 'POST', body: {
+                id:   this._forwardId,
+                to:   to.trim(),
+                text: (document.getElementById('fwdNote') || {}).value || '',
+            }});
+            this.closeModal();
+            this.toast('Письмо перенаправлено на ' + to.trim(), 'success');
+            this.route();
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Перенаправить';
+        }
+    },
+
     async threadDraft(key, btn) {
         const c = this.composerOf(key);
         if (!c) return;
@@ -3703,14 +4183,14 @@ const App = {
                 <p><strong>МойСклад:</strong> ${cp.moysklad_id
                     ? `<a href="${this.esc(this.msUrl(cp.moysklad_id))}" target="_blank" rel="noopener">привязан ↗</a>`
                     : '<span class="muted">не привязан</span>'}</p>
-                ${cp.moysklad_id ? '' : this.msCreateLink(cp.moysklad_hint || {
-                    counterparty_id: cp.id, name: cp.name, inn: cp.inn || '', email: cp.contact_email || ''})}
                 ${cp.merged_cards && cp.merged_cards.length
                     ? `<p class="muted">Объединено с: ${cp.merged_cards.map(m => this.esc(m.name)).join(', ')}</p>` : ''}
 
                 <!-- Организации: в одном письме просят счёт на две фирмы сразу
                      («15 штук в адрес АО ТИКО-Пластик, 2 — в адрес ООО Нова
-                     Ролл Пак»). Их столько же, сколько нужно, — как счетов -->
+                     Ролл Пак»). Их столько же, сколько нужно, — как счетов.
+                     Завести фирму в МойСклад — действие НАД СТРОКОЙ организации;
+                     отдельной кнопки над списком больше нет (модуль 034). -->
                 <div class="card__sub">Организации для счёта (${orgs.length})</div>
                 <div id="cpOrgs">${this.orgListHtml(cp.id, orgs)}</div>
                 <button class="btn btn--outline btn--sm" onclick="App.addOrgForm(${cp.id})">+ Организация</button>
@@ -3748,7 +4228,14 @@ const App = {
         `;
     },
 
-    /** Список организаций карточки: сама компания и дописанные руками. */
+    /**
+     * Список организаций карточки: сама компания и дописанные руками.
+     *
+     * Каждая строка несёт своё действие: не заведена в МойСклад — «Завести»,
+     * заведена — ссылка на карточку в МойСклад. Отдельной кнопки «Создать
+     * контрагента в МойСклад» над списком больше нет, она делала то же самое
+     * (модуль 034).
+     */
     orgListHtml(cpId, orgs) {
         if (!orgs.length) return '<p class="muted">Организаций нет</p>';
         return orgs.map(o => `
@@ -3756,13 +4243,20 @@ const App = {
                 <div style="min-width:0">
                     <div>${this.esc(o.name)} ${o.primary ? '<span class="chip">карточка</span>' : ''}</div>
                     <small class="muted">
-                        ${o.inn ? 'ИНН ' + this.esc(o.inn) : 'без ИНН'}${o.kpp ? ' / ' + this.esc(o.kpp) : ''}
-                        · МойСклад ${o.moysklad_id ? 'привязан' : '<span class="no">не привязан</span>'}
+                        ${o.inn ? 'ИНН ' + this.esc(o.inn) : '<span class="no">без ИНН</span>'}${o.kpp ? ' / ' + this.esc(o.kpp) : ''}
+                        · МойСклад ${o.moysklad_id
+                            ? `<a href="${this.esc(this.msUrl(o.moysklad_id))}" target="_blank" rel="noopener">привязан ↗</a>`
+                            : '<span class="no">не привязан</span>'}
                         ${o.edo_id ? ' · ЭДО ' + this.esc(o.edo_id) : ''}
                     </small>
                 </div>
-                ${o.primary ? '' : `<button class="btn btn--sm btn--outline btn--danger"
-                    onclick="App.deleteOrg(${cpId}, ${o.id}, '${this.jsStr(o.name)}')">Убрать</button>`}
+                <div class="flex flex--wrap">
+                    ${o.moysklad_id ? '' : `<button class="btn btn--sm btn--outline"
+                        title="Завести эту фирму в МойСклад. Контрагент с таким ИНН там уже есть — просто привяжем"
+                        onclick="App.msCreateForm({counterparty_id: ${cpId}, org_id: ${o.id}, name: '${this.jsStr(o.name)}', inn: '${this.jsStr(o.inn || '')}'})">➕ Завести в МойСклад</button>`}
+                    ${o.primary ? '' : `<button class="btn btn--sm btn--outline btn--danger"
+                        onclick="App.deleteOrg(${cpId}, ${o.id}, '${this.jsStr(o.name)}')">Убрать</button>`}
+                </div>
             </div>`).join('');
     },
 
@@ -4159,6 +4653,8 @@ const App = {
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки — модель на это не тратится. Равнозначные варианты сервис не выбирает молча: он спрашивает.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
+        'kp-conditions':['Цены и условия на всё КП', 'Тип цены, скидка и условия «под заказ» — один выбор на все позиции, а не сорок раз по строкам. «Применить ко всем» проставляет его строкам и ЗАПОМИНАЕТ: следующее КП откроется этим же. Строку, где цену вписали руками, общий выбор не трогает, а условия ожидания получают только позиции, которых нет на складе.'],
+        'match-analog': ['Аналог', 'Мы предлагаем не то, что клиент назвал. Галочка открывает поле с его собственной формулировкой — правьте её как нужно. В КП она встанет над названием нашего товара курсивом серым, и закупщик найдёт в предложении свою позицию, не сверяя два документа глазами.'],
         'match-variant':['Модификации', 'Если в письме один товар просят в нескольких размерах или цветах («р.S-5шт, р.M-13шт»), сервис делает из этого отдельные строки с их количествами и подставляет каждой свою карточку из МойСклад — со своим артикулом, ценой и остатком.'],
         'kp-board':     ['Коммерческие предложения запроса', 'Одному запросу можно собрать несколько КП — по одному на заявку клиента. Слева стоят позиции запроса, которые ещё никуда не положили; дальше — по колонке на КП. Позицию перетаскивают мышью или переносят выпадающим списком на карточке. Счёт выставляется по конкретному КП, и счетов у одного КП может быть несколько.'],
         'kp-editor':    ['Редактор КП', 'Здесь правится всё, что попадёт в документ: цены, количества, тексты карточек товаров и блоки вокруг таблицы. Реквизиты и НДС правке не подлежат — они приходят из МойСклад и замораживаются на КП в момент создания.'],
@@ -5154,8 +5650,10 @@ const App = {
                     <div class="form-group"><label>Условия поставки — заготовка для новых КП</label>
                         <textarea id="kpTerms" rows="5">${this.esc(g.default_terms_text || '')}</textarea>
                         <div class="muted">Печатается в конце КП одним блоком.
-                            <code>{execution_days}</code> и <code>{validity_days}</code> подставляются
-                            из полей самого КП. Пусто — условия не печатаются вовсе.</div></div>
+                            <code>{execution_term}</code> — срок исполнения словами (дни из полей КП,
+                            а при позициях под заказ — срок ожидания из подбора),
+                            <code>{validity_days}</code> — срок действия цены.
+                            Пусто — условия не печатаются вовсе.</div></div>
                     <div class="form-group"><label>Оговорка под фотографиями</label>
                         <textarea id="kpImagesNote" rows="2">${this.esc(g.kp_images_note || '')}</textarea></div>
                     <button class="btn btn--primary" onclick="App.saveKpSettings()">Сохранить</button>
@@ -5570,8 +6068,7 @@ const App = {
                     </div>
                 </div>
                 <div class="flex flex--wrap">
-                    <a href="#mail" class="btn btn--outline btn--sm">← На доску</a>
-                    <button class="btn btn--outline btn--sm" onclick="App.boardPick('${this.jsStr(key)}')">▦ В доску</button>
+                    <a href="#mail" class="btn btn--outline btn--sm">← К доске</a>
                     ${t.archived_at
                         ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(key)}')">↩ Вернуть в работу</button>`
                         : `<button class="btn btn--outline btn--sm" onclick="App.archiveThread('${this.jsStr(key)}', ${t.count})">🗄 В архив</button>`}
@@ -5659,15 +6156,23 @@ const App = {
         this._ms = {hint: hint || {}, threadKey: threadKey || ''};
         const inn = hint.inn || '';
         return `<div class="ms-offer">
-            <p class="muted">Контрагента нет в МойСклад${inn ? ` · ИНН ${this.esc(inn)}` : ' · ИНН в письме не нашёлся'}</p>
+            <p class="muted">Контрагента нет в МойСклад${inn
+                ? ` · ИНН ${this.esc(inn)}`
+                : ' · ИНН в переписке не нашёлся — его поищет нейросеть'}</p>
             <button class="btn btn--outline btn--sm" onclick="App.msCreateForm()">
                 ➕ Создать контрагента в МойСклад</button>
         </div>`;
     },
 
-    /** ИНН и название перед отправкой видно и можно поправить. */
-    msCreateForm() {
-        const hint = (this._ms || {}).hint || {};
+    /**
+     * ИНН и название перед отправкой видно и можно поправить.
+     *
+     * $hint передаётся, когда форму открывает строка организации в карточке
+     * компании (модуль 034); без него берётся подсказка письма.
+     */
+    msCreateForm(hint) {
+        if (hint) this._ms = {hint, threadKey: (this._ms || {}).threadKey || ''};
+        hint = (this._ms || {}).hint || {};
         this.modal('Контрагент в МойСклад', `
             <p class="muted">Заведём контрагента с этим ИНН. Если контрагент с таким ИНН
                в МойСклад уже есть, компания просто привяжется к нему — двойника не будет.</p>
@@ -5680,8 +6185,44 @@ const App = {
                 <input type="text" id="msInn" value="${this.esc(hint.inn || '')}" inputmode="numeric"
                        placeholder="10 или 12 цифр">
             </div>
+            <div class="flex flex--wrap" style="margin-bottom:8px">
+                <button class="btn btn--outline btn--sm" id="msFind" onclick="App.msFindInn()"
+                        title="Прочитать переписку и вложения и найти ИНН в них">✦ Найти ИНН в переписке</button>
+                <span id="msInnNote" class="muted"></span>
+            </div>
             <button class="btn btn--primary btn--block" id="msGo" onclick="App.msCreate()">
                 Создать в МойСклад</button>`);
+    },
+
+    /**
+     * Найти ИНН в письмах и вложениях: сначала по образцу, потом нейросетью.
+     *
+     * Раньше ИНН подставлялся, только если стоял словом «ИНН» в последнем
+     * письме. В карточке предприятия, в скане счёта и в подписи первого письма
+     * его не видели — и менеджер перепечатывал руками (модуль 034).
+     */
+    async msFindInn() {
+        const {hint = {}, threadKey = ''} = this._ms || {};
+        const btn = document.getElementById('msFind');
+        const note = document.getElementById('msInnNote');
+        if (btn) { btn.disabled = true; btn.textContent = 'Читаем переписку...'; }
+        if (note) note.textContent = '';
+        try {
+            const q = [];
+            if (hint.counterparty_id) q.push('id=' + Number(hint.counterparty_id));
+            if (threadKey) q.push('thread_key=' + encodeURIComponent(threadKey));
+            const d = await this.api('counterparties.php?action=find_inn&' + q.join('&'));
+            const field = document.getElementById('msInn');
+            if (d.inn) {
+                if (field) field.value = d.inn;
+                const nameField = document.getElementById('msName');
+                if (nameField && !nameField.value && d.legal_title) nameField.value = d.legal_title;
+                if (note) note.textContent = d.by_llm ? `нашла нейросеть — ${d.source}` : d.source;
+            } else if (note) {
+                note.textContent = 'ИНН в переписке и во вложениях не нашёлся — впишите руками';
+            }
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { if (btn) { btn.disabled = false; btn.textContent = '✦ Найти ИНН в переписке'; } }
     },
 
     async msCreate() {
@@ -5691,6 +6232,7 @@ const App = {
         try {
             const r = await this.api('counterparties.php?action=moysklad_create', {method: 'POST', body: {
                 counterparty_id: hint.counterparty_id || 0,
+                org_id: hint.org_id || 0,
                 thread_key: threadKey,
                 name: (document.getElementById('msName') || {}).value || '',
                 inn: (document.getElementById('msInn') || {}).value || '',
@@ -5723,7 +6265,14 @@ const App = {
         const sentBad = m.direction === 'out'
             && ['failed', 'bounced', 'bounce_soft'].includes(m.sent_state);
         const open = m.direction === 'in' && (isLast || Number(m.is_read) === 0);
-        const preview = (m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        // Свёрнутое письмо показывает начало текста в ТОМ ЖЕ поле, где потом
+        // раскроется тело: два поля подряд читались как два письма (модуль 037)
+        const preview = (m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+        // Почтовый адрес рядом с именем: «Иванов» в переписке бывает не один,
+        // и отвечать надо на адрес, а не на имя (модуль 037)
+        const addr = m.direction === 'in'
+            ? (m.real_from_email || m.from_email || '')
+            : (m.from_email || '');
         const cls = ['lmsg', m.direction === 'in' ? 'lmsg--in' : 'lmsg--out'];
         if (open) cls.push('lmsg--open');
         return `
@@ -5732,6 +6281,7 @@ const App = {
                     <!-- Кто написал: у пересланного письма это человек из шапки
                          пересылки, а не наш ящик, через который оно пришло -->
                     <span class="lmsg__who">${this.esc(m.real_from_name || m.from_name || m.from_email || '—')}</span>
+                    ${addr ? `<span class="lmsg__addr muted" title="Почтовый адрес отправителя">&lt;${this.esc(addr)}&gt;</span>` : ''}
                     <span class="lmsg__to muted">${m.direction === 'in' ? '→ нам' : '→ ' + this.esc(m.to_emails)}</span>
                     <span class="lmsg__date muted">${this.fmtDate(m.date_at)}</span>
                     <!-- Удалить одно письмо, не открывая его и не трогая переписку:
@@ -5748,23 +6298,28 @@ const App = {
                     ${m.has_attachment ? '<span title="есть вложения">📎</span>' : ''}
                     ${sentBad ? '<span class="badge badge--warning" title="Копия не попала в «Отправленные» на сервере">нет в «Отправленных»</span>' : ''}
                 </div>
-                ${preview ? `<div class="lmsg__preview muted">${this.esc(preview)}</div>` : ''}
-                <div class="lmsg__body">
-                    ${m.cc_emails ? `<div class="muted" style="margin-bottom:6px">Копия: ${this.esc(m.cc_emails)}</div>` : ''}
-                    ${this.msgBodyHtml(m)}
-                    ${(m.attachments || []).length ? `<div class="msg__files">
-                        ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
-                    </div>` : ''}
-                    <div class="lmsg__actions">
-                        <button class="btn btn--outline btn--sm"
-                                onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
-                            Ответить на это письмо</button>
-                        ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" title="Не наш профиль: письмо уйдёт в «Архив» на сервере"
-                            onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
-                        ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
-                        ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
-                        <button class="btn btn--outline btn--sm btn--danger"
-                                onclick="App.deleteMail(${m.id}, {thread: '${this.jsStr(key || '')}'})">🗑 Удалить письмо</button>
+                <div class="lmsg__text">
+                    ${preview ? `<div class="lmsg__peek muted">${this.esc(preview)}</div>` : ''}
+                    <div class="lmsg__full">
+                        ${m.cc_emails ? `<div class="muted" style="margin-bottom:6px">Копия: ${this.esc(m.cc_emails)}</div>` : ''}
+                        ${this.msgBodyHtml(m)}
+                        ${(m.attachments || []).length ? `<div class="msg__files">
+                            ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
+                        </div>` : ''}
+                        <div class="lmsg__actions">
+                            <button class="btn btn--outline btn--sm"
+                                    onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
+                                Ответить на это письмо</button>
+                            ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" title="Не наш профиль: письмо уйдёт в «Архив» на сервере"
+                                onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
+                            ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
+                            ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
+                            <button class="btn btn--outline btn--sm"
+                                    title="Отправить это письмо целиком на другой адрес — со вложениями и шапкой «от кого»"
+                                    onclick="App.forwardMail(${m.id})">↪ Перенаправить</button>
+                            <button class="btn btn--outline btn--sm btn--danger"
+                                    onclick="App.deleteMail(${m.id}, {thread: '${this.jsStr(key || '')}'})">🗑 Удалить письмо</button>
+                        </div>
                     </div>
                 </div>
             </article>`;
@@ -5782,18 +6337,45 @@ const App = {
         </div>`;
     },
 
-    // Which board this conversation already sits on
+    /**
+     * Этап переписки — строкой кнопок, у КАЖДОГО письма (модуль 034).
+     *
+     * Раньше здесь стояла надпись «На доске: Входящие»: она сообщала, где
+     * карточка лежит, и не давала её сдвинуть. Перевести письмо на другой этап
+     * можно было только через «▦ В доску» — а у писем, чья карточка на доске
+     * ещё не заведена, и того не было. Теперь это те же кнопки, что на карточке
+     * компании: ряд этапов, текущий выделен, нажатие переносит. Карточки нет —
+     * первое нажатие её и заводит, поэтому переводить можно ЛЮБОЕ письмо.
+     */
     async loadThreadPlacement(key) {
         const box = document.getElementById('threadPlacement');
         if (!box) return;
         try {
-            const d = await this.api('boards.php?action=placement&thread_key=' + encodeURIComponent(key));
-            box.innerHTML = (d.items || []).length ? `<div class="card card--inline">
-                <span class="muted">На доске:</span>
-                ${d.items.map(p => `<a class="chip" href="#mail/board" style="border-color:${this.esc(p.color || '#ccc')}">
-                    ${this.esc(p.column_title)}</a>`).join('')}
-            </div>` : '';
+            const [d, t] = await Promise.all([
+                this.api('boards.php?action=placement&thread_key=' + encodeURIComponent(key)),
+                this.api('boards.php?action=targets'),
+            ]);
+            const columns = (t.items[0] || {}).columns || [];
+            if (!columns.length) { box.innerHTML = ''; return; }
+            const here = (d.items || [])[0];
+            box.innerHTML = `<div class="card card--inline">
+                <span class="muted">Этап:</span>
+                ${columns.map(c => `<button class="btn btn--sm ${here && here.column_id == c.id ? 'btn--primary' : 'btn--outline'}"
+                    style="border-color:${this.esc(c.color || '#ccc')}"
+                    onclick="App.moveThreadCard('${this.jsStr(key)}', ${c.id})">${this.esc(c.title)}</button>`).join('')}
+                ${here ? '' : '<span class="muted">карточки на доске ещё нет — нажатие её заведёт</span>'}
+            </div>`;
         } catch { box.innerHTML = ''; }
+    },
+
+    /** Перенести переписку на этап; карточки нет — она заводится этим же нажатием. */
+    async moveThreadCard(key, columnId) {
+        try {
+            await this.api('boards.php?action=card_add', {method: 'POST',
+                body: {column_id: columnId, thread_key: key}});
+            this.toast('Переписка переведена на этап', 'success');
+            this.loadThreadPlacement(key);
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // A single letter, for links that point at one message rather than a thread
@@ -6072,7 +6654,7 @@ const App = {
                       'По дате последнего письма компании')}
                 ${sel('Состояние', 'state', [['', 'любое'], ['unanswered', 'ждут ответа'],
                                              ['answered', 'отвечены'], ['unread', 'есть непрочитанные'],
-                                             ['kp', 'с КП'], ['nokp', 'без КП']],
+                                             ['kp', 'с КП'], ['nokp', 'без КП'], ['draft', 'черновики']],
                       'Что сейчас с карточкой')}
                 ${sel('Ящик', 'mailbox', [['', 'все ящики'],
                         ...(b.mailboxes || []).map(m => [String(m.id), this.esc(m.name)])],
@@ -6089,6 +6671,7 @@ const App = {
                             onclick="App.${f.archived ? 'archivePickAll' : 'boardPickAll'}(false)">Снять</button>
                     <button class="btn btn--outline btn--sm" onclick="App.resetBoardFilters()">Сбросить фильтры</button>
                 </span>
+                ${f.archived ? '' : this.boardPickByStateHtml()}
                 <span class="muted" data-board-shown></span>
             </details>`;
     },
@@ -6117,11 +6700,9 @@ const App = {
             const last = card.last_at ? Date.parse(String(card.last_at).replace(' ', 'T')) : 0;
             if (!last || Date.now() - last > days * 86400000) return false;
         }
-        if (f.state === 'unanswered' && !card.unanswered) return false;
-        if (f.state === 'answered'   &&  card.unanswered) return false;
-        if (f.state === 'unread'     && !card.unread) return false;
-        if (f.state === 'kp'         && !c.proposal_status) return false;
-        if (f.state === 'nokp'       &&  c.proposal_status) return false;
+        // Состояние разбирается в одном месте — им же пользуется «Отметить по
+        // статусу»: два разбора одних и тех же слов разошлись бы (модуль 036)
+        if (f.state && !this.cardInState(card, f.state)) return false;
         if (f.mailbox) {
             const boxes = (c.mailbox_ids || []).map(String);
             if (!boxes.includes(String(f.mailbox))) return false;
@@ -6339,25 +6920,50 @@ const App = {
      * Drag and drop with the browser's own HTML5 API — no library on a page that
      * has none. The card being dragged is shown where it would land, so a drop
      * is never a surprise.
+     *
+     * ==== Переезжает ГРУППА, и переезжает по-настоящему (модуль 036) ====
+     *
+     * Перетаскивание знало ровно одну карточку — ту, за которую тянули. Отметив
+     * галочками пять и потащив одну, менеджер видел на экране переехавшую
+     * группу, а база получала одну строку: обновление страницы возвращало
+     * остальные на место, «как будто я ничего не меняла». Поэтому здесь:
+     *
+     *   — тянут отмеченную карточку — едут ВСЕ отмеченные, своим порядком;
+     *   — экран перерисовывается ДОСКОЙ ИЗ ОТВЕТА сервера, а не тем, что
+     *     нарисовало перетаскивание: показанное и сохранённое — одно и то же;
+     *   — перетаскивание, которое ничем не кончилось (отпустили над шапкой
+     *     колонки, мимо доски, нажали Esc), возвращает экран как был. Раньше
+     *     карточки так и оставались лежать на новом месте — до перезагрузки.
      */
     boardBindDnd() {
         const board = document.getElementById('board');
         if (!board) return;
         let dragged = null;
+        let group = [];
+        let dropped = false;
 
         board.addEventListener('dragstart', e => {
             const card = e.target.closest('.bcard');
             if (!card) return;
             dragged = card;
-            card.classList.add('bcard--dragging');
+            dropped = false;
+            // Тянут отмеченную — едет вся отметка; тянут неотмеченную — она одна
+            const picked = this.boardPicked || new Set();
+            group = picked.has(card.dataset.card)
+                ? [...board.querySelectorAll('.bcard')].filter(el => picked.has(el.dataset.card))
+                : [card];
+            group.forEach(el => el.classList.add('bcard--dragging'));
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', card.dataset.card);
         });
 
         board.addEventListener('dragend', () => {
-            if (dragged) dragged.classList.remove('bcard--dragging');
+            group.forEach(el => el.classList.remove('bcard--dragging'));
             board.querySelectorAll('.bcol__cards--over').forEach(el => el.classList.remove('bcol__cards--over'));
+            // Бросок не состоялся — экран врёт о переезде, которого не было
+            if (dragged && !dropped) this.boardRedraw();
             dragged = null;
+            group = [];
         });
 
         board.addEventListener('dragover', e => {
@@ -6369,8 +6975,8 @@ const App = {
             // Insert before the first card whose middle is below the cursor
             const after = [...drop.querySelectorAll('.bcard:not(.bcard--dragging)')]
                 .find(el => e.clientY < el.getBoundingClientRect().top + el.offsetHeight / 2);
-            if (after) drop.insertBefore(dragged, after);
-            else drop.appendChild(dragged);
+            // Группа встаёт целиком и своим порядком — перед той же карточкой
+            group.forEach(el => after ? drop.insertBefore(el, after) : drop.appendChild(el));
         });
 
         board.addEventListener('dragleave', e => {
@@ -6382,19 +6988,40 @@ const App = {
             const drop = e.target.closest('[data-drop]');
             if (!drop || !dragged) return;
             e.preventDefault();
+            dropped = true;
             drop.classList.remove('bcol__cards--over');
 
-            const cardId = Number(dragged.dataset.card);
+            const all = [...drop.querySelectorAll('.bcard')];
+            const ids = group.map(el => Number(el.dataset.card));
             const columnId = Number(drop.dataset.drop);
-            const position = [...drop.querySelectorAll('.bcard')].indexOf(dragged);
-            this.boardRecount();
+            const position = Math.max(0, all.indexOf(group[0]));
             try {
-                await this.api('boards.php?action=card_move', {method: 'POST', body: {id: cardId, column_id: columnId, position}});
+                const r = await this.api('boards.php?action=card_move',
+                                         {method: 'POST', body: {ids, column_id: columnId, position}});
+                // Экран — это то, что лежит в базе, а не то, что нарисовала мышь
+                this.boardRedraw(r.board);
+                if (ids.length > 1) this.toast(`Перенесено карточек: ${ids.length}`, 'success');
             } catch (err) {
                 this.toast(err.message, 'error');
-                this.pageMailBoard();   // the server said no — show what it really holds
+                this.boardRedraw();   // the server said no — show what it really holds
             }
         });
+    },
+
+    /**
+     * Перерисовать колонки доски — из ответа сервера или из того, что уже
+     * загружено (модуль 036).
+     *
+     * Фильтры, поиск и отметки при этом остаются: перерисовка — это способ
+     * показать правду, а не повод сбросить человеку его работу.
+     */
+    boardRedraw(board) {
+        if (board) this.board = board;
+        const box = document.getElementById('board');
+        if (!box || !this.board) return;
+        box.innerHTML = (this.board.columns || []).map(c => this.boardColumn(c)).join('');
+        this.applyBoardFilters();
+        if (this.boardQuery) this.boardFilter(this.boardQuery);
     },
 
     /**
@@ -6409,6 +7036,62 @@ const App = {
         this.boardPicked = this.boardPicked || new Set();
         if (on) this.boardPicked.add(String(cardId)); else this.boardPicked.delete(String(cardId));
         this.boardSyncPicks();
+    },
+
+    /**
+     * ==== Отметить по статусу (модуль 036) ====
+     *
+     * «Выбрать все» — это все сорок карточек, а разбирают их не все сразу:
+     * сегодня переносят те, что ждут ответа, завтра — те, у которых уже есть
+     * КП. Фильтр для этого не годится: он ПРЯЧЕТ остальные, а отметить надо,
+     * продолжая видеть доску целиком.
+     *
+     * Отмечается всегда то, что на экране: скрытую фильтром карточку групповое
+     * действие тронуть не может, и отметить её отсюда нельзя тоже.
+     */
+    boardPickByStateHtml() {
+        const states = [
+            ['unanswered', 'ждут ответа'], ['answered', 'отвечены'], ['unread', 'непрочитанные'],
+            ['kp', 'с КП'], ['nokp', 'без КП'], ['draft', 'черновики'],
+        ];
+        return `
+            <span class="bfilter bfilter--pick" title="Отметить галочками карточки этого состояния — не пряча остальные">
+                <span>Отметить</span>
+                ${states.map(([v, label]) =>
+                    `<a onclick="App.boardPickByState('${v}')">${label}</a>`).join('')}
+            </span>`;
+    },
+
+    /** Поставить галочки видимым карточкам этого состояния, к уже отмеченным. */
+    boardPickByState(state) {
+        this.boardPicked = this.boardPicked || new Set();
+        const byId = new Map();
+        (this.board && this.board.columns || []).forEach(col =>
+            (col.cards || []).forEach(card => byId.set(String(card.id), card)));
+
+        let added = 0;
+        document.querySelectorAll('.bcard').forEach(el => {
+            if (el.hidden) return;
+            const card = byId.get(el.dataset.card);
+            if (!card || !this.cardInState(card, state)) return;
+            if (!this.boardPicked.has(el.dataset.card)) added++;
+            this.boardPicked.add(el.dataset.card);
+        });
+        this.boardSyncPicks();
+        if (!added) this.toast('Таких карточек на экране нет', 'info');
+    },
+
+    /** Состояние карточки словами фильтра — один разбор на фильтр и на отметку. */
+    cardInState(card, state) {
+        const c = card.company || {};
+        return {
+            unanswered: !!card.unanswered,
+            answered:   !card.unanswered,
+            unread:     !!card.unread,
+            kp:         !!c.proposal_status,
+            nokp:       !c.proposal_status,
+            draft:      !!card.draft,
+        }[state] ?? false;
     },
 
     /** Отметить или снять всё, что сейчас видно (скрытое фильтром — не трогаем). */
@@ -6446,11 +7129,11 @@ const App = {
                         title="Не наш профиль: переписка уйдёт в архив, карточки — с доски">🗄 В архив</button>
                 <button class="btn btn--outline btn--sm btn--danger" onclick="App.boardBulk('spam')"
                         title="Входящие письма уйдут в спам, карточки — с доски">🚫 Спам</button>
-                <label class="bfilter" title="Переместить отмеченные карточки в колонку">
+                <label class="bfilter" title="Переместить отмеченные карточки в колонку — своей доски или другой">
                     <span>В колонку</span>
                     <select onchange="if(this.value) App.boardBulk('move', {column_id: Number(this.value)}); this.value='';">
                         <option value="">выбрать…</option>
-                        ${columns.map(c => `<option value="${c.id}">${this.esc(c.title)}</option>`).join('')}
+                        ${this.bulkColumnOptions(columns)}
                     </select>
                 </label>
                 ${(this.boardFilters || {}).archived
@@ -6460,6 +7143,38 @@ const App = {
                         title="Убрать карточки с доски: письма останутся в почте, а карточка вернётся, когда компания напишет снова">Убрать с доски</button>
                 <button class="btn btn--outline btn--sm" onclick="App.boardPickAll(false)">Снять отметки</button>
             </div>`;
+    },
+
+    /**
+     * Колонки для «В колонку»: своей доски, а при нескольких досках — и чужих,
+     * группами (модуль 036). Доска у сервиса одна по замыслу, но заведённые
+     * руками существуют, и «перенести карточки с доски на доску» — это они.
+     *
+     * Список чужих досок подгружается один раз за сеанс и до тех пор список
+     * показывает свои колонки: ожидание ответа ради выпадающего списка
+     * читалось бы как зависший экран.
+     */
+    bulkColumnOptions(columns) {
+        const own = columns.map(c => `<option value="${c.id}">${this.esc(c.title)}</option>`).join('');
+        if (!this.boardTargets) { this.loadBoardTargets(); return own; }
+        const others = this.boardTargets.filter(b => Number(b.id) !== Number(this.board && this.board.id));
+        if (!others.length) return own;
+        return own + others.map(b => `
+            <optgroup label="${this.esc(b.name)}">
+                ${(b.columns || []).map(c => `<option value="${c.id}">${this.esc(c.title)}</option>`).join('')}
+            </optgroup>`).join('');
+    },
+
+    /** Доски и их колонки — один раз за сеанс, молча. */
+    async loadBoardTargets() {
+        if (this._boardTargetsPending) return;
+        this._boardTargetsPending = true;
+        try {
+            const d = await this.api('boards.php?action=targets');
+            this.boardTargets = d.items || [];
+            // Список уже нарисован своими колонками — перерисовываем панель
+            if (this.boardTargets.length > 1) this.boardSyncPicks();
+        } catch { this.boardTargets = []; }
     },
 
     /** Применить групповое действие и перерисовать доску по факту, а не по надежде. */
@@ -6484,6 +7199,8 @@ const App = {
             } else {
                 this.toast(`Готово: ${r.done}`, 'success');
             }
+            // Доска из ответа — это то, что получилось, а не то, на что надеялись
+            if (r.board && !(this.boardFilters || {}).archived) { this.boardRedraw(r.board); return; }
         } catch (err) {
             this.toast(err.message, 'error');
         }
@@ -6556,32 +7273,6 @@ const App = {
                    + 'а карточка вернётся сама, когда компания напишет снова.')) return;
         await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
         this.pageMailBoard();
-    },
-
-    // «В доску» from a conversation: only one board, so this just picks the
-    // column — no board-list to choose from any more (item 2)
-    async boardPick(threadKey) {
-        const d = await this.api('boards.php?action=targets');
-        const b = d.items[0];
-        if (!b) { this.toast('Доска пока недоступна', 'error'); return; }
-        this.modal('Положить переписку на доску', `
-            <div class="board-pick">
-                <div class="flex flex--wrap">
-                    ${b.columns.map(c => `<button class="btn btn--outline btn--sm"
-                        style="border-color:${this.esc(c.color || '#ccc')}"
-                        onclick="App.boardPut(${c.id}, '${this.jsStr(threadKey)}')">${this.esc(c.title)}</button>`).join('')}
-                </div>
-            </div>
-        `);
-    },
-
-    async boardPut(columnId, threadKey) {
-        try {
-            await this.api('boards.php?action=card_add', {method: 'POST', body: {column_id: columnId, thread_key: threadKey}});
-            this.closeModal();
-            this.toast('Переписка на доске', 'success');
-            this.loadThreadPlacement(threadKey);
-        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // Model list for the reply window, loaded once per session

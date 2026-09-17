@@ -45,27 +45,67 @@ final class Bitrix {
     public static function productUrl(string $moyskladId): ?string {
         if ($moyskladId === '' || !self::enabled()) return null;
 
-        $row = Db::one("SELECT moysklad_id, name, article, code, parent_id, site_url, site_url_synced_at
+        $row = Db::one("SELECT moysklad_id, name, article, code, parent_id, site_url, site_url_synced_at, site_url_source
                         FROM products_cache WHERE moysklad_id=?", [$moyskladId]);
         if (!$row) return null;
 
-        if (self::fresh($row['site_url_synced_at'] ?? null)) {
+        if (self::fresh($row['site_url_synced_at'] ?? null) && !self::staleSearchLink($row)) {
             return ($row['site_url'] ?? '') !== '' ? (string)$row['site_url'] : null;
         }
 
-        $url = self::resolve($row);
+        [$url, $source] = self::resolveWithSource($row);
 
         // A variant has no page of its own — the product's page is the answer
         if ($url === null && !empty($row['parent_id'])) {
             $parent = Db::one("SELECT moysklad_id, name, article, code, parent_id FROM products_cache WHERE moysklad_id=?",
                               [$row['parent_id']]);
-            if ($parent) $url = self::resolve($parent);
+            if ($parent) [$url, $source] = self::resolveWithSource($parent);
         }
 
         // An empty string is a decision too: «checked, the site has no such page»
-        Db::q("UPDATE products_cache SET site_url=?, site_url_synced_at=datetime('now') WHERE moysklad_id=?",
-              [$url ?? '', $moyskladId]);
+        Db::q("UPDATE products_cache SET site_url=?, site_url_source=?, site_url_synced_at=datetime('now') WHERE moysklad_id=?",
+              [$url ?? '', $source, $moyskladId]);
         return $url;
+    }
+
+    /**
+     * Ссылка на ПОИСК, которую пора переспросить (модуль 034).
+     *
+     * Пока модуля сайта не было, каждая позиция получала последний вариант —
+     * «/search/?q=артикул» — и он ложился в кэш на месяц. Модуль подключили, а
+     * в КП по-прежнему уходила ссылка на поиск: срок кэша ещё не вышел, и
+     * настоящую страницу товара никто не спрашивал. Поисковая ссылка теперь
+     * держится ровно до тех пор, пока спросить больше некого.
+     */
+    private static function staleSearchLink(array $row): bool {
+        $source = trim((string)($row['site_url_source'] ?? ''));
+        // Строка из прежних версий источника не знает — считаем поиском, если
+        // адрес выглядит как поиск
+        if ($source === '') {
+            $url = (string)($row['site_url'] ?? '');
+            $source = ($url !== '' && self::looksLikeSearch($url)) ? 'search' : 'unknown';
+        }
+        if ($source !== 'search') return false;
+        // Спросить есть кого: вебхук сайта или шаблон адреса товара
+        return self::webhook() !== '' || trim((string)Settings::get('BITRIX_URL_TEMPLATE', '')) !== '';
+    }
+
+    /**
+     * Ссылка ведёт на ПОИСК по сайту, а не на страницу товара (модуль 034).
+     *
+     * Строка КП замораживает ссылку в момент сборки — в том числе поисковую,
+     * поставленную до того, как подключили модуль сайта. Спрашивают отсюда:
+     * такую ссылку стоит переспросить, обычную — нет.
+     */
+    public static function isSearchUrl(string $url): bool {
+        return trim($url) !== '' && self::looksLikeSearch($url);
+    }
+
+    /** Адрес ведёт на поиск по сайту, а не на страницу товара. */
+    private static function looksLikeSearch(string $url): bool {
+        $template = trim((string)Settings::get('BITRIX_SEARCH_TEMPLATE', ''));
+        $path = (string)(parse_url($template ?: '/search/', PHP_URL_PATH) ?: '/search/');
+        return $path !== '' && str_contains($url, $path);
     }
 
     /** Warm the cache outside a КП — for cron, so a generation never waits. */
@@ -213,7 +253,9 @@ final class Bitrix {
             if (!$rows) continue;
 
             foreach ($rows as $row) {
-                Db::q("UPDATE products_cache SET site_url=?, site_url_synced_at=datetime('now')
+                // Источник — модуль сайта: это НАСТОЯЩАЯ страница товара, и она
+                // перебивает лежавшую в кэше ссылку на поиск (модуль 034)
+                Db::q("UPDATE products_cache SET site_url=?, site_url_source='webhook', site_url_synced_at=datetime('now')
                        WHERE moysklad_id=?",
                       [$item['url'], (string)$row['moysklad_id']]);
             }
@@ -246,13 +288,35 @@ final class Bitrix {
     // ---------------------------------------------------------------- resolving
 
     private static function resolve(array $product): ?string {
-        foreach ([self::fromWebhook($product), self::fromTemplate($product)] as $url) {
+        return self::resolveWithSource($product)[0];
+    }
+
+    /**
+     * Ссылка и то, ЧЕМ она найдена: вебхук сайта, шаблон адреса или поиск.
+     *
+     * Источник сохраняется рядом со ссылкой: только по нему видно, что в кэше
+     * лежит последний вариант, а не страница товара, — и что его надо
+     * переспросить, когда модуль сайта наконец подключили (модуль 034).
+     *
+     * @return array{0:?string,1:string}
+     */
+    private static function resolveWithSource(array $product): array {
+        foreach (['webhook' => self::fromWebhook($product), 'template' => self::fromTemplate($product)] as $source => $url) {
             if ($url === null) continue;
             if (!self::verify($url)) continue;
-            return $url;
+            return [$url, $source];
         }
         // The search page is never verified: it answers 200 whatever we ask it
-        return self::fromSearch($product);
+        $search = self::fromSearch($product);
+        // Модуль сайта подключён, а страницу товара он не дал — в КП уйдёт
+        // ссылка на поиск, и понять это можно только из журнала (модуль 035)
+        if ($search !== null && self::webhook() !== '') {
+            Logger::warning('bitrix', 'Сайт не дал страницу товара — в КП уйдёт ссылка на поиск: '
+                            . (string)($product['name'] ?? ''),
+                            ['article' => (string)($product['article'] ?? ''),
+                             'code' => (string)($product['code'] ?? ''), 'url' => $search]);
+        }
+        return [$search, $search === null ? 'none' : 'search'];
     }
 
     /**
