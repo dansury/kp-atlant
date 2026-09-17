@@ -412,11 +412,13 @@ const App = {
                     // вторым почтовым клиентом рядом с доской — со своим
                     // поиском, своими вкладками и всеми письмами подряд.
                     // Старая закладка открывает доску с включённым архивом.
-                    if (seg === 'inbox') {
-                        this.boardFilters = Object.assign(this.boardFilters || {}, {archived: 1});
-                        location.replace('#mail');
-                        return;
-                    }
+                    // Старая закладка открывает доску В РАБОТЕ, а не архив
+                    // (модуль 039): архив включался здесь сам, и после удаления
+                    // или архивации письма экран уезжал в «Письма · архив» —
+                    // человек нажимал «в архив», а попадал в чужую комнату.
+                    if (seg === 'inbox') { location.replace('#mail'); return; }
+                    // Корзина писем (модуль 039): удалённое письмо возвращается
+                    if (seg === 'trash') return this.pageMailTrash();
                     if (seg === 't') return this.pageMailThread(decodeURIComponent(params[1] || ''));
                     if (seg === 'msg') return this.pageMailMessage(params[1]);
                     // Отдельного списка запросов больше нет: всё открывается с
@@ -479,7 +481,7 @@ const App = {
         // Архив — это та же доска, открытая ссылкой «Архив», отсюда и заголовок:
         // «Письма · архив», а не отдельный раздел «Архив писем»
         const titles = {board: (this.boardFilters || {}).archived ? 'Письма · архив' : 'Письма',
-                        requests: 'Запросы', companies: 'Компании'};
+                        trash: 'Письма · корзина', requests: 'Запросы', companies: 'Компании'};
         return `
             <div class="flex flex--between flex--wrap" style="margin-bottom:10px;gap:10px">
                 <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
@@ -1861,6 +1863,12 @@ const App = {
                     </label>
                     ${i.wait_note ? `<span class="muted">${this.esc(i.wait_note)}</span>` : ''}
                 </div>
+                <div class="match-extra__photos">
+                    <!-- Фото выбираются здесь, сразу после товара (модуль 039) -->
+                    <button class="btn btn--outline btn--sm" ${i.id ? '' : 'disabled title="Сначала сохраните строку"'}
+                            onclick="App.toggleMatchPhotos(this, ${i.id || 0})">🖼 Фото в КП</button>
+                    <div class="match-photos" data-match-photos hidden></div>
+                </div>
                 <textarea data-field="comment_text" rows="4" class="match-extra__comment"
                           data-from-catalog="${i.comment_from_catalog ? 1 : 0}" oninput="this.dataset.fromCatalog = 0"
                           placeholder="Описание товара — печатается в карточке КП. Подставлено из МойСклад, правьте как нужно"
@@ -2094,18 +2102,23 @@ const App = {
                             p.group_article ? ' · ' + this.esc(p.group_article) : ''}</div>`;
                     }
                     group = p.group_name || null;
-                    const meta = [p.article || p.code || '', this.fmtMoney(p.price),
+                    // Товар целиком: цена — вилка по модификациям, остаток — их сумма
+                    const range = Number(p.price_max) > Number(p.price)
+                        ? `${this.fmtMoney(p.price)} — ${this.fmtMoney(p.price_max)}` : this.fmtMoney(p.price);
+                    const meta = [p.article || p.code || '', range,
                                   this.stockPlain(p.stock)].filter(Boolean).join(' · ');
                     return head + `
-                    <div class="suggest__item ${p.variant_label ? 'suggest__item--variant' : ''}"
+                    <div class="suggest__item ${p.variant_label ? 'suggest__item--variant' : ''} ${p.is_group ? 'suggest__item--group' : ''}"
                          onmousedown="App.pickSuggest(this, '${this.jsStr(JSON.stringify({
                         moysklad_id: p.moysklad_id, name: p.name, article: p.article || p.code || '',
-                        unit: p.unit || 'шт.', price: p.price || 0, stock: p.stock ?? '', prices: p.prices || {},
+                        unit: p.unit || 'шт.', price: p.price || 0, price_max: p.price_max || 0,
+                        stock: p.stock ?? '', prices: p.prices || {},
                         // Описание едет вместе с позицией — иначе поле комментария
                         // остаётся пустым при выборе из подсказки (модуль 032)
                         description: p.description || '',
                     }))}')">
-                        <div>${this.esc(p.variant_label || p.name)}</div>
+                        <div>${this.esc(p.variant_label || p.name)}${
+                            p.is_group ? ' <span class="muted">— весь товар, без размера</span>' : ''}</div>
                         <div class="muted">${this.esc(meta)}</div>
                     </div>`;
                 }).join('');
@@ -2131,7 +2144,15 @@ const App = {
         set('article', p.article);
         set('unit', p.unit);
         set('price', p.price);
+        set('price_max', p.price_max || 0);
         set('stock', p.stock);
+        // Вилка цен рисуется рядом с ценой и обновляется вместе с выбором
+        const range = row.querySelector('.price-cell .price-range');
+        if (range) range.remove();
+        if (Number(p.price_max) > Number(p.price)) {
+            row.querySelector('.price-cell').insertAdjacentHTML('beforeend',
+                this.priceRangeNote({price: p.price, price_max: p.price_max}));
+        }
         // Описание принадлежит товару, а не строке: выбрали другую позицию —
         // в поле её описание. Написанное менеджером не трогаем (модуль 032).
         const comment = row.querySelector('[data-field="comment_text"]');
@@ -2885,6 +2906,63 @@ const App = {
                 </div>`;
         } catch (err) {
             box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
+        }
+    },
+
+    /**
+     * ==== Фотографии позиции прямо в таблице подбора (модуль 039) ====
+     *
+     * Картинки выбирались только в уже собранном КП — то есть после того, как
+     * документ собран, а не тогда, когда определились с товаром. Теперь выбор
+     * стоит на строке подбора и едет в КП вместе с позицией; уже собранные
+     * неотправленные КП этого запроса подхватывают его сразу.
+     */
+    async toggleMatchPhotos(btn, itemId) {
+        const box = btn.parentElement.querySelector('[data-match-photos]');
+        if (!box || !itemId) return;
+        if (!box.hidden) { box.hidden = true; return; }
+        box.hidden = false;
+        box.innerHTML = '<div class="loading">Загружаем фотографии...</div>';
+        try {
+            const d = await this.api(`requests.php?action=item_images&item_id=${itemId}`);
+            if (!d.available.length) {
+                box.innerHTML = '<div class="muted">Фотографий у позиции нет. Их приносит синхронизация '
+                              + 'с МойСклад или импорт каталога из Excel.</div>';
+                return;
+            }
+            // «Выбор не делали» — это все фотографии, как было до выбора
+            const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
+            box.innerHTML = `
+                <div class="muted">В КП пойдут отмеченные (${chosen.length} из ${d.available.length}):</div>
+                <div class="photos">
+                    ${d.available.map(a => `
+                        <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
+                            <input type="checkbox" data-photo-key="${this.esc(a.key)}"
+                                   ${chosen.includes(a.key) ? 'checked' : ''}
+                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked);
+                                             App.saveMatchPhotos(this, ${itemId})">
+                            <img src="${this.esc(a.url)}" alt="" loading="lazy">
+                        </label>`).join('')}
+                </div>
+                <div class="muted" data-photo-saved></div>`;
+        } catch (err) {
+            box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
+        }
+    },
+
+    /** Галочка на фотографии сохраняется сама — «Сохранить» для неё не нужно. */
+    async saveMatchPhotos(input, itemId) {
+        const box = input.closest('[data-match-photos]');
+        const selected = [...box.querySelectorAll('[data-photo-key]')]
+            .filter(b => b.checked).map(b => b.dataset.photoKey);
+        const note = box.querySelector('[data-photo-saved]');
+        try {
+            const r = await this.api(`requests.php?action=item_images_save&item_id=${itemId}`,
+                                     {method: 'POST', body: {selected}});
+            if (note) note.textContent = `выбрано ${selected.length}`
+                + (r.kp_items ? ` · в КП обновлено позиций: ${r.kp_items}` : '');
+        } catch (err) {
+            if (note) note.textContent = 'не сохранилось: ' + err.message;
         }
     },
 
@@ -6407,7 +6485,7 @@ const App = {
                     ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
                     ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
                     ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
-                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail/inbox'}')">🗑 Удалить</button>
+                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail'}')">🗑 Удалить</button>
                 </div>
             </div>
             <div class="card">
@@ -6461,6 +6539,7 @@ const App = {
             <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
             <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
             <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn()">+ Колонка</button>
+            <a href="#mail/trash" class="btn btn--outline btn--sm" title="Удалённые письма — их можно вернуть">🗑 Корзина</a>
         `);
         // action=get syncs first: the intake is not a button somebody remembers
         // to press, it is what opening the board means
@@ -6482,6 +6561,71 @@ const App = {
     },
 
     /**
+     * ==== Корзина писем (модуль 039) ====
+     *
+     * Удалить можно любое письмо, и любое можно вернуть: до сих пор удаление
+     * было окончательным, и «удалить» приходилось выбирать как приговор.
+     * Здесь письмо лежит целиком, со своими файлами, пока корзину не очистят.
+     */
+    async pageMailTrash() {
+        document.getElementById('app').innerHTML = this.mailShellHtml('trash', `
+            <button class="btn btn--outline btn--sm btn--danger" onclick="App.purgeTrash()">
+                Очистить корзину</button>`);
+        const box = document.getElementById('mailBody');
+        box.innerHTML = '<div class="loading">Загрузка корзины...</div>';
+        try {
+            const d = await this.api('mail.php?action=trash');
+            const items = d.items || [];
+            box.innerHTML = `
+                <div class="card card--flush">
+                    <div class="mlist">
+                        ${items.map(t => `
+                            <div class="mrow">
+                                <div class="mrow__main">
+                                    <div class="mrow__subject">${this.esc(t.subject) || '<em>без темы</em>'}</div>
+                                    <div class="mrow__meta">${this.esc(t.direction === 'in'
+                                        ? 'от ' + (t.from_email || '') : 'кому ' + (t.to_emails || ''))}
+                                        · удалено ${this.fmtDate(t.deleted_at)}
+                                        ${t.deleted_by_name ? '· ' + this.esc(t.deleted_by_name) : ''}</div>
+                                </div>
+                                <div class="mrow__date">${this.fmtDate(t.date_at)}</div>
+                                <div class="flex" style="gap:6px">
+                                    <button class="btn btn--outline btn--sm"
+                                            onclick="App.restoreFromTrash(${t.id})">↩ Вернуть</button>
+                                    <button class="btn btn--outline btn--sm btn--danger"
+                                            onclick="App.purgeTrash(${t.id})">🗑 Насовсем</button>
+                                </div>
+                            </div>`).join('')}
+                        ${items.length ? '' : '<div class="mlist__empty">Корзина пуста</div>'}
+                    </div>
+                </div>`;
+        } catch (err) {
+            box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async restoreFromTrash(id) {
+        try {
+            const r = await this.api('mail.php?action=trash_restore', {method: 'POST', body: {id}});
+            this.toast('Письмо вернулось в почту', 'success');
+            if (r.thread_key) location.hash = 'mail/t/' + encodeURIComponent(r.thread_key);
+            else this.pageMailTrash();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /** Без id — вся корзина. Вот это уже насовсем, вместе с файлами. */
+    async purgeTrash(id = 0) {
+        const what = id ? 'Удалить это письмо насовсем? Вернуть его будет нельзя.'
+                        : 'Очистить корзину? Все письма в ней удалятся насовсем, вместе с файлами.';
+        if (!confirm(what)) return;
+        try {
+            const r = await this.api('mail.php?action=trash_purge', {method: 'POST', body: id ? {id} : {}});
+            this.toast(`Удалено насовсем: ${r.purged}`, 'success');
+            this.pageMailTrash();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
      * Архив — та же страница «Письма», а не отдельный экран (по просьбе).
      *
      * Отдельная страница «Архив писем» показывала ВСЕ письма подряд, плоским
@@ -6500,6 +6644,7 @@ const App = {
             </span>
             <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
             <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
+            <a href="#mail/trash" class="btn btn--outline btn--sm">🗑 Корзина</a>
         `);
         const b = this.board || await this.api('boards.php?action=get&sync=0');
         this.board = b;
@@ -7271,10 +7416,20 @@ const App = {
         else this.pageMailBoard();
     },
 
+    /**
+     * Убрать карточку — и, если попросят, удалить насовсем (модуль 039).
+     *
+     * «Убрать» помнит, где карточка стояла, и возвращает её, когда компания
+     * напишет снова. Карточку, за которой не осталось ни одного письма, это
+     * не убирало насовсем — и удалить её было нечем.
+     */
     async boardCardDelete(id) {
         if (!confirm('Убрать карточку с доски? Письма останутся в почте, '
                    + 'а карточка вернётся сама, когда компания напишет снова.')) return;
-        await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
+        const r = await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
+        // Карточка, за которой не осталось ни писем, ни запроса, ни заметки,
+        // удаляется совсем: возвращаться ей неоткуда и незачем
+        if (r.purged) this.toast('Карточка была пустой — удалена совсем', 'success');
         this.pageMailBoard();
     },
 
@@ -7349,7 +7504,7 @@ const App = {
             if (r.thread_empty) {
                 const cp = this.openCompanyId();
                 if (cp) this.loadCompanyThreads(cp);
-                else this.goAfterDelete('mail/inbox');
+                else this.goAfterDelete('mail');
                 return;
             }
             const box = o.thread ? document.getElementById('th_' + this.threadDomId(o.thread)) : null;
@@ -7369,7 +7524,7 @@ const App = {
         try {
             const r = await this.api('mail.php?action=delete_thread', {method: 'POST', body: {thread_key: key}});
             this.toast(r.warning || `Удалено писем: ${r.deleted}`, r.warning ? 'error' : 'success');
-            this.goAfterDelete('mail/inbox');
+            this.goAfterDelete('mail');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -7398,7 +7553,7 @@ const App = {
             this.toast(r.warning || `В архив убрано писем: ${r.archived}`, r.warning ? 'error' : 'success');
             const cp = this.openCompanyId();
             if (cp) this.loadCompanyThreads(cp);
-            else this.goAfterDelete('mail/inbox');
+            else this.goAfterDelete('mail');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 

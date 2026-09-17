@@ -287,7 +287,9 @@ try {
 
         case 'mailbox_sync':
             $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
-            jsonOk(['report' => MailSync::run($id ?: null)]);
+            // Проверка ящика руками из настроек — единственное место, где
+            // выключенный ящик всё-таки опрашивается: так его и проверяют
+            jsonOk(['report' => MailSync::run($id ?: null, ['force' => $id > 0])]);
 
         // ---------- Full archive download ----------
 

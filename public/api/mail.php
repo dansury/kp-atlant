@@ -144,7 +144,11 @@ try {
 
         case 'sync':
             $id = (int)($input['mailbox_id'] ?? $_GET['mailbox_id'] ?? 0);
-            jsonOk(['report' => MailSync::run($id ?: null)]);
+            // Кнопку нажал человек и он ждёт: письма забираются целиком, а на
+            // разбор моделью отводится несколько секунд — остальное дочитает
+            // следующий заход или cron (модуль 039)
+            $budget = max(0, (int)Settings::get('MAIL_SYNC_TRIAGE_BUDGET', 10));
+            jsonOk(['report' => MailSync::run($id ?: null, ['budget' => $budget])]);
 
         case 'send':
             $to = trim((string)($input['to'] ?? ''));
@@ -591,6 +595,27 @@ try {
                          ['manager_id' => (int)$manager['id'], 'failed' => $failed]);
             jsonOk(['done' => $done, 'failed' => $failed, 'errors' => array_slice($errors, 0, 5)]);
         }
+
+        /**
+         * ==== Корзина писем (модуль 039) ====
+         *
+         * Удалить можно любое письмо — и вернуть тоже, пока корзину не
+         * очистили. До сих пор удаление было окончательным: строка исчезала,
+         * файлы стирались с диска.
+         */
+        case 'trash':
+            jsonData(['items' => MailSync::trash((int)($_GET['limit'] ?? 200))]);
+
+        case 'trash_restore':
+            try {
+                jsonOk(MailSync::restoreFromTrash((int)($input['id'] ?? 0)));
+            } catch (Throwable $e) {
+                jsonError($e->getMessage(), 404);
+            }
+
+        case 'trash_purge':
+            $one = (int)($input['id'] ?? 0);
+            jsonOk(['purged' => MailSync::purgeTrash($one ?: null)]);
 
         case 'categories':
             // For the «тип запроса» selector in the reply dialog

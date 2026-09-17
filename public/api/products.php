@@ -52,7 +52,15 @@ switch ($action) {
         $descriptions = RequestItems::catalogDescriptions(array_column($items, 'moysklad_id'));
         foreach ($items as &$it) {
             $it['prices'] = Catalog::decodePrices($it['prices_json'] ?? null);
-            $it['price'] = Catalog::priceFor($it, $counterpartyId);
+            $own = Catalog::priceFor($it, $counterpartyId);
+            // У товара с модификациями своей цены обычно нет: строка семьи
+            // несёт вилку по модификациям, и перетирать её нулём нельзя
+            if (!empty($it['is_group'])) {
+                if ($own > 0) $it['price'] = $own;
+                if ((float)($it['price_max'] ?? 0) < (float)$it['price']) $it['price_max'] = (float)$it['price'];
+            } else {
+                $it['price'] = $own;
+            }
             $it['description'] = $descriptions[(string)$it['moysklad_id']] ?? '';
             unset($it['prices_json']);
         }

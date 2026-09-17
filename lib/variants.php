@@ -357,6 +357,11 @@ final class Variants {
                     if (!isset($byId[$id])) $picked[] = $row;
                 }
                 $out = array_map(fn($v) => self::suggestRow($v, $parent), $picked);
+                // Сам товар — первой строкой семьи и ТОЖЕ выбирается (модуль 039).
+                // «Выбирают размер, а не товар вообще» верно для склада, но не
+                // для КП: предложение на «боковую плиту Бр3» пишут без размера,
+                // с вилкой цен от и до, а размеры уточняют в заказе.
+                if ($parent) array_unshift($out, self::suggestGroupRow($parent, $out));
             }
             // Пустая полка — ниже: собственный остаток товара с модификациями
             // всегда ноль, и сортировка запроса о его размерах ничего не знает
@@ -369,6 +374,41 @@ final class Variants {
             if (count($suggest) >= $max) break;
         }
         return $suggest;
+    }
+
+    /**
+     * Строка подсказки для САМОГО товара с модификациями (модуль 039).
+     *
+     * Цена у такого товара стоит на модификациях и стоит по-разному — поэтому
+     * строка несёт вилку: низ в `price`, верх в `price_max`. Остаток — сумма
+     * по модификациям: столько этого товара на складе, каких бы размеров.
+     */
+    private static function suggestGroupRow(array $parent, array $variants): array {
+        $prices = array_values(array_filter(array_map(
+            fn($v) => (float)($v['price'] ?? 0), $variants), fn($p) => $p > 0));
+        $own = (float)($parent['price'] ?? 0);
+        if ($own > 0) $prices[] = $own;
+
+        return [
+            'moysklad_id'     => (string)($parent['moysklad_id'] ?? ''),
+            'name'            => (string)($parent['name'] ?? ''),
+            'article'         => (string)($parent['article'] ?? ''),
+            'code'            => (string)($parent['code'] ?? ''),
+            'unit'            => (string)($parent['unit'] ?? '') ?: 'шт.',
+            'price'           => $prices ? min($prices) : 0.0,
+            'price_max'       => $prices ? max($prices) : 0.0,
+            'prices_json'     => $parent['prices_json'] ?? null,
+            'parent_id'       => '',
+            'product_type'    => (string)($parent['product_type'] ?? ''),
+            'characteristics' => (string)($parent['characteristics'] ?? ''),
+            'stock'           => (int)array_sum(array_column($variants, 'stock')),
+            'variant_label'   => '',
+            // Заголовком группы подписана и эта строка: она стоит первой и
+            // говорит, что весь товар целиком тоже можно выбрать
+            'group_name'      => (string)($parent['name'] ?? ''),
+            'group_article'   => (string)($parent['article'] ?? ''),
+            'is_group'        => 1,
+        ];
     }
 
     /** Строка подсказки: что встанет в позицию и сколько этого на складе. */
@@ -392,6 +432,8 @@ final class Variants {
             'variant_label'   => $isVariant ? self::label($row) : '',
             'group_name'      => $isVariant ? (string)($parent['name'] ?? '') : '',
             'group_article'   => $isVariant ? (string)($parent['article'] ?? '') : '',
+            'price_max'       => 0.0,
+            'is_group'        => 0,
         ];
     }
 

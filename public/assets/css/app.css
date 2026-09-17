@@ -28,6 +28,10 @@
     --shadow-lg: 0 12px 28px rgba(16,24,40,.14);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* `hidden` — это скрыто, чем бы элемент ни был. Без этого правила любой
+   `display` в классе побеждает атрибут: поле «в КП над нашим названием»
+   висело открытым без галочки «аналог», потому что `.analog` — flex. */
+[hidden] { display: none !important; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
        background: var(--bg); color: var(--text); line-height: 1.5; font-size: 14px;
        -webkit-font-smoothing: antialiased; }
@@ -462,6 +466,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
                   border-bottom: 1px solid var(--border); }
 .suggest__item { padding: 6px 10px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
 .suggest__item--variant { padding-left: 18px; }
+/* Товар целиком — первой строкой семьи: выбирают и его, с вилкой цен */
+.suggest__item--group { font-weight: 600; }
+/* Фотографии позиции в таблице подбора (модуль 039) */
+.match-extra__photos { margin: 6px 0; }
+.match-photos { margin-top: 6px; }
 .suggest__item:last-child { border-bottom: none; }
 .suggest__item:hover { background: var(--surface-2); }
 

@@ -443,8 +443,11 @@ $accepted = Outbox::accept(['name' => '../../Счёт №5/2026.pdf', 'tmp_name'
 ok('имя файла обезврежено', !str_contains($accepted['filename'], '/') && !str_contains($accepted['filename'], '..'),
    $accepted['filename']);
 ok('человеческое имя сохранено', str_contains($accepted['filename'], 'Счёт'), $accepted['filename']);
-$paths = Outbox::resolve([$accepted['name']], $mgr);
+$paths = array_column(Outbox::resolve([$accepted['name']], $mgr), 'path');
 ok('файл находится по своему имени', count($paths) === 1 && is_file($paths[0]));
+ok('а в письмо уходит человеческое имя, без служебной приставки',
+   Outbox::displayName($accepted['name']) === $accepted['filename'],
+   Outbox::displayName($accepted['name']));
 ok('чужой путь не достать', Outbox::resolve(['../../../etc/passwd'], $mgr) === []);
 ok('и файл другого менеджера тоже', Outbox::resolve([$accepted['name']], $mgr + 1) === []);
 array_map('unlink', $paths);

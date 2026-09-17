@@ -13,17 +13,36 @@ require_once __DIR__ . '/mail_text.php';
 require_once __DIR__ . '/bounce.php';
 
 final class MailSync {
-    /** Sync all active mailboxes (or one). Returns a per-mailbox report. */
-    public static function run(?int $mailboxId = null): array {
+
+    /** Сколько раз пробовать разобрать письмо моделью, прежде чем завести его правилами. */
+    private const TRIAGE_TRIES = 3;
+
+    /**
+     * Sync all active mailboxes (or one). Returns a per-mailbox report.
+     *
+     * `$opts['budget']` — сколько секунд отдать разбору писем моделью
+     * (модуль 039). Кнопка «Забрать почту» ждёт человека: письма должны
+     * появиться на доске СРАЗУ, а не после того, как модель прочитает
+     * полсотни писем по тридцать секунд каждое. Что не успели разобрать —
+     * разберёт следующий заход или cron, письмо от этого не теряется.
+     *
+     * Выключенный ящик не опрашивается, даже когда его назвали по номеру:
+     * «отключён» значит отключён, а не «отключён, пока не нажмут кнопку».
+     * `$opts['force']` — для проверки ящика из настроек.
+     */
+    public static function run(?int $mailboxId = null, array $opts = []): array {
         $boxes = $mailboxId ? array_filter([Mailboxes::get($mailboxId)]) : Mailboxes::all(true);
+        if (empty($opts['force'])) {
+            $boxes = array_filter($boxes, fn($b) => (int)($b['is_active'] ?? 1) === 1);
+        }
         $report = [];
         foreach ($boxes as $box) {
-            $report[] = self::syncMailbox($box);
+            $report[] = self::syncMailbox($box, $opts);
         }
         return $report;
     }
 
-    public static function syncMailbox(array $box): array {
+    public static function syncMailbox(array $box, array $opts = []): array {
         $res = ['mailbox_id' => (int)$box['id'], 'name' => $box['name'], 'in' => 0, 'out' => 0,
                 'requests' => 0, 'error' => null, 'sent_error' => null];
         if (!EmailReader::available()) {
@@ -59,7 +78,13 @@ final class MailSync {
         ], 'id=?', [$box['id']]);
 
         if (!empty($box['create_requests'])) {
-            $res['requests'] = self::processInbound((int)$box['id']);
+            $budget = array_key_exists('budget', $opts) ? (float)$opts['budget'] : 0.0;
+            $res['requests'] = self::processInbound((int)$box['id'], $budget);
+            // Сколько писем ждут разбора: «письмо пришло, но ещё не разобрано»
+            // должно быть видно, а не выглядеть как «письма нет»
+            $res['pending'] = (int)Db::val(
+                "SELECT COUNT(*) FROM mail_messages WHERE mailbox_id=? AND direction='in' AND processed_at IS NULL",
+                [(int)$box['id']]);
         }
         return $res;
     }
@@ -191,24 +216,100 @@ final class MailSync {
      * Turn archived inbound mail into requests: parse, resolve the company card,
      * create the request and notify — the pipeline module 001/002 already had.
      */
-    public static function processInbound(int $mailboxId): int {
+    public static function processInbound(int $mailboxId, float $budgetSec = 0.0): int {
         $rows = Db::all(
             "SELECT * FROM mail_messages WHERE mailbox_id=? AND direction='in' AND processed_at IS NULL ORDER BY id LIMIT 50",
             [$mailboxId]
         );
         $count = 0;
+        $started = microtime(true);
         foreach ($rows as $row) {
+            // Время вышло — остальные письма ждут следующего захода. Они уже
+            // в архиве и уже видны: не разобран только их РАЗБОР (модуль 039).
+            if ($budgetSec > 0 && (microtime(true) - $started) >= $budgetSec) break;
             try {
                 if (self::toRequest($row)) $count++;
             } catch (Throwable $e) {
-                Db::update('mail_messages', [
-                    'processed_at' => date('Y-m-d H:i:s'),
-                    'error'        => mb_substr($e->getMessage(), 0, 500),
-                ], 'id=?', [$row['id']]);
-                Logger::exception('mail', $e, ['mail_message_id' => $row['id'], 'subject' => $row['subject']]);
+                self::postpone($row, $e);
             }
         }
         return $count;
+    }
+
+    /**
+     * Разбор упал — письмо НЕ помечается разобранным (модуль 039).
+     *
+     * Модель могла не ответить: у провайдера таймаут, кончились ключи, фильтр
+     * на пути. Раньше такое письмо получало `processed_at` и уходило в тишину
+     * навсегда — запроса по нему не появлялось никогда, и никто об этом не
+     * узнавал. Теперь оно ждёт следующего захода, а после нескольких неудач
+     * заводится запрос БЕЗ модели: по правилам, с категорией «не определено».
+     */
+    private static function postpone(array $row, Throwable $e): void {
+        $tries = (int)($row['triage_attempts'] ?? 0) + 1;
+        Db::update('mail_messages', [
+            'triage_attempts' => $tries,
+            'error'           => mb_substr($e->getMessage(), 0, 500),
+        ], 'id=?', [$row['id']]);
+        Logger::exception('mail', $e, ['mail_message_id' => $row['id'], 'subject' => $row['subject'],
+                                       'attempt' => $tries]);
+        if ($tries < self::TRIAGE_TRIES) return;
+
+        try {
+            self::toRequestWithoutModel($row);
+        } catch (Throwable $inner) {
+            Db::update('mail_messages', ['processed_at' => date('Y-m-d H:i:s')], 'id=?', [$row['id']]);
+            Logger::exception('mail', $inner, ['mail_message_id' => $row['id']]);
+        }
+    }
+
+    /**
+     * Письмо, которое модель так и не разобрала, — всё равно письмо клиента.
+     *
+     * Запрос заводится по правилам: категория «не определено», позиции ищет
+     * `RequestItems::ensure()` разбором текста. Менеджер видит карточку и
+     * работает с ней руками — это несравнимо лучше, чем молчание.
+     */
+    private static function toRequestWithoutModel(array $row): void {
+        $senderEmail = (string)($row['from_email'] ?? '');
+        if (Crm::isOurAddress($senderEmail)) $senderEmail = '';
+        $counterpartyId = !empty($row['counterparty_id']) ? (int)$row['counterparty_id'] : Crm::resolveCounterparty([
+            'email' => $senderEmail,
+            'contact_person' => $row['from_name'] ?: null,
+            'text'  => (string)$row['body_text'],
+        ]);
+
+        $requestId = (int)Db::insert('requests', [
+            'source'           => 'email',
+            'raw_text'         => $row['body_text'],
+            'counterparty_id'  => $counterpartyId ?: null,
+            'status'           => 'new',
+            'type'             => 'kp_request',
+            'type_source'      => 'rules',
+            'category'         => 'other',
+            'category_reason'  => 'Нейросеть не ответила — письмо разобрано правилами',
+            'category_source'  => 'rules',
+            'email_from'       => $senderEmail,
+            'email_subject'    => $row['subject'],
+            'email_message_id' => $row['message_id'],
+        ]);
+        $corrId = Crm::logEvent($counterpartyId, 'in', (string)$row['body_text'], [
+            'request_id' => $requestId, 'subject' => $row['subject'], 'email_from' => $senderEmail,
+        ]);
+        Db::update('mail_messages', [
+            'processed_at'      => date('Y-m-d H:i:s'),
+            'category'          => 'other',
+            'triage_reason'     => 'Нейросеть недоступна — разобрано правилами',
+            'request_id'        => $requestId,
+            'counterparty_id'   => $counterpartyId,
+            'correspondence_id' => $corrId,
+        ], 'id=?', [$row['id']]);
+        RequestItems::ensure($requestId);
+
+        Notifier::notify('new_request', 'Письмо без разбора: ' . ($senderEmail ?: (string)$row['from_email']),
+            (string)$row['subject'], 'request', $requestId, null, '/#mail/msg/' . (int)$row['id']);
+        Logger::warning('mail', 'Письмо заведено без модели: нейросеть не ответила',
+                        ['mail_message_id' => (int)$row['id'], 'request_id' => $requestId]);
     }
 
     /**
@@ -801,7 +902,13 @@ final class MailSync {
             'server_state' => $serverState,
         ]);
 
-        self::dropAttachments($mailMessageId);
+        // Письмо уходит В КОРЗИНУ, а не в никуда (модуль 039): строка целиком
+        // и список её файлов лежат в `mail_trash`, файлы с диска не стираются.
+        // Пока корзину не очистили, письмо можно вернуть — любое.
+        self::toTrash($row, $managerId, $serverState);
+        // Строки вложений уходят вместе с письмом, а ФАЙЛЫ остаются на диске:
+        // из корзины письмо возвращается со своими файлами
+        Db::q("DELETE FROM attachments WHERE mail_message_id=?", [$mailMessageId]);
         // The cards go first: `mail_message_id` is ON DELETE SET NULL, so once the
         // row is gone there is nothing left to recognise the card by. A card built
         // around this one letter goes with it; a company card only loses the
@@ -824,6 +931,94 @@ final class MailSync {
             'server_state' => $serverState,
             'server_error' => $serverError,
         ];
+    }
+
+    /**
+     * ==== Корзина писем (модуль 039) ====
+     *
+     * Удалить можно любое письмо, и любое можно вернуть. Здесь письмо
+     * складывается целиком: строка архива и список её файлов. Файлы с диска
+     * не стираются — иначе возвращать было бы нечего.
+     */
+    private static function toTrash(array $row, ?int $managerId, string $serverState): void {
+        $files = Db::all("SELECT * FROM attachments WHERE mail_message_id=?", [(int)$row['id']]);
+        Db::insert('mail_trash', [
+            'thread_key'   => $row['thread_key'] ?? null,
+            'subject'      => $row['subject'] ?? null,
+            'from_email'   => $row['from_email'] ?? null,
+            'to_emails'    => $row['to_emails'] ?? null,
+            'direction'    => $row['direction'] ?? null,
+            'date_at'      => $row['date_at'] ?? null,
+            'deleted_at'   => date('Y-m-d H:i:s'),
+            'deleted_by'   => $managerId,
+            'server_state' => $serverState,
+            'payload_json' => json_encode($row, JSON_UNESCAPED_UNICODE),
+            'files_json'   => $files ? json_encode($files, JSON_UNESCAPED_UNICODE) : null,
+        ]);
+    }
+
+    /** Что лежит в корзине — с самого свежего. */
+    public static function trash(int $limit = 200): array {
+        return Db::all("SELECT id, thread_key, subject, from_email, to_emails, direction, date_at,
+                               deleted_at, server_state,
+                               (SELECT name FROM managers WHERE id = deleted_by) AS deleted_by_name
+                        FROM mail_trash ORDER BY deleted_at DESC, id DESC LIMIT ?", [$limit]);
+    }
+
+    /**
+     * Письмо из корзины — обратно в архив.
+     *
+     * Надгробие снимается: иначе следующая синхронизация увидит «это письмо
+     * удалено» и не скачает его обратно, а мы его только что вернули.
+     */
+    public static function restoreFromTrash(int $trashId): array {
+        $row = Db::one("SELECT * FROM mail_trash WHERE id=?", [$trashId]);
+        if (!$row) throw new RuntimeException('В корзине такого письма нет');
+        $msg = json_decode((string)$row['payload_json'], true);
+        if (!is_array($msg) || !$msg) throw new RuntimeException('Письмо в корзине повреждено');
+
+        $oldId = (int)($msg['id'] ?? 0);
+        unset($msg['id']);
+        // Ящик мог быть удалён вместе с письмом — тогда письмо возвращается
+        // «ничьим»: читать его это не мешает, а внешний ключ не пускает
+        if (!empty($msg['mailbox_id']) && !Db::val("SELECT 1 FROM mailboxes WHERE id=?", [(int)$msg['mailbox_id']])) {
+            $msg['mailbox_id'] = null;
+        }
+        $newId = (int)Db::insert('mail_messages', $msg);
+
+        foreach (json_decode((string)($row['files_json'] ?? '[]'), true) ?: [] as $file) {
+            unset($file['id']);
+            $file['mail_message_id'] = $newId;
+            try { Db::insert('attachments', $file); }
+            catch (Throwable $e) { Logger::exception('mail', $e, ['stage' => 'restore_attachment']); }
+        }
+
+        if (!empty($msg['mailbox_id'])) {
+            Db::q("DELETE FROM mail_deleted WHERE mailbox_id=? AND folder=? AND uid=?",
+                  [(int)$msg['mailbox_id'], (string)($msg['folder'] ?? ''), (int)($msg['uid'] ?? 0)]);
+        }
+        Db::q("DELETE FROM mail_trash WHERE id=?", [$trashId]);
+        Logger::info('mail', "Письмо возвращено из корзины (было #$oldId, стало #$newId)",
+                     ['mail_message_id' => $newId]);
+        return ['restored' => 1, 'mail_message_id' => $newId, 'thread_key' => $msg['thread_key'] ?? null];
+    }
+
+    /** Очистить корзину — вот теперь насовсем, вместе с файлами. */
+    public static function purgeTrash(?int $trashId = null): int {
+        $rows = $trashId
+            ? array_filter([Db::one("SELECT * FROM mail_trash WHERE id=?", [$trashId])])
+            : Db::all("SELECT * FROM mail_trash");
+        $purged = 0;
+        foreach ($rows as $row) {
+            foreach (json_decode((string)($row['files_json'] ?? '[]'), true) ?: [] as $file) {
+                $path = ROOT . '/' . ltrim((string)($file['path'] ?? ''), '/');
+                if (!empty($file['path']) && is_file($path)) @unlink($path);
+            }
+            Db::q("DELETE FROM mail_trash WHERE id=?", [(int)$row['id']]);
+            $purged++;
+        }
+        if ($purged) Logger::info('mail', "Корзина очищена: писем $purged");
+        return $purged;
     }
 
     /**
