@@ -90,8 +90,9 @@ final class Support {
         ]);
 
         $kept = 0;
-        foreach (Outbox::resolve($files, $managerId) as $path) {
-            try { self::keepFile($ticketId, $path); $kept++; }
+        // `resolve()` отдаёт пару «путь на диске + имя для человека» (модуль 040)
+        foreach (Outbox::resolve($files, $managerId) as $file) {
+            try { self::keepFile($ticketId, (string)$file['path'], (string)$file['name']); $kept++; }
             catch (Throwable $e) { Logger::exception('support', $e, ['ticket' => $ticketId]); }
         }
 
@@ -111,8 +112,8 @@ final class Support {
     }
 
     /** Копия файла рядом с обращением — в `storage/`, чтобы пережить деплой. */
-    private static function keepFile(int $ticketId, string $path): void {
-        $name = Outbox::safeName(preg_replace('/^[0-9a-f]{16}__/', '', basename($path)) ?: basename($path));
+    private static function keepFile(int $ticketId, string $path, string $filename = ''): void {
+        $name = Outbox::safeName($filename !== '' ? $filename : Outbox::displayName($path));
         $ext  = mb_strtolower(pathinfo($name, PATHINFO_EXTENSION));
         if ($ext !== '' && !in_array($ext, self::ALLOWED_EXT, true)) {
             throw new RuntimeException('Такой файл поддержка не принимает: ' . $name);

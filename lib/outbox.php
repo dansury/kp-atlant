@@ -95,9 +95,18 @@ final class Outbox {
             $name = basename(trim($name));
             if ($name === '' || $name === '.' || $name === '..') continue;
             $path = $dir . '/' . $name;
-            if (is_file($path)) $out[] = $path;
+            // Имя НА ДИСКЕ и имя В ПИСЬМЕ — разные вещи (модуль 040). Клиент
+            // получал «14eeebfbc5257884__Счет_на_турникеты.pdf»: приставка
+            // существует, чтобы два «Счёт.pdf» не затирали друг друга на
+            // сервере, и в письме ей делать нечего.
+            if (is_file($path)) $out[] = ['path' => $path, 'name' => self::displayName($name)];
         }
         return $out;
+    }
+
+    /** Человеческое имя файла: без служебной приставки, которой он лежит на диске. */
+    public static function displayName(string $stored): string {
+        return (string)preg_replace('/^[0-9a-f]{16}__/', '', basename($stored));
     }
 
     /** Убрать то, что приложили и не отправили. */

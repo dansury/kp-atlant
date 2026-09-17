@@ -173,6 +173,49 @@ switch ($action) {
         $rebuilt = KpSet::syncWaitFromRequest($id);
         jsonData(['items' => $items, 'delivery' => $delivery, 'kp_rebuilt' => $rebuilt]);
 
+    /**
+     * Фотографии позиции подбора (модуль 040).
+     *
+     * Картинки выбирают там же, где определились с товаром, — в таблице
+     * подбора, а не в уже собранном КП. Выбор едет в документ вместе с
+     * позицией. `null` в `selected` — «выбор не делали»: печатаются все.
+     */
+    case 'item_images': {
+        requireAuth();
+        $itemId = (int)($_GET['item_id'] ?? 0);
+        $item = Db::one("SELECT id, moysklad_product_id, selected_images FROM request_items WHERE id=?", [$itemId]);
+        if (!$item) jsonError('Позиция не найдена', 404);
+        require_once ROOT . '/lib/kp_content.php';
+
+        $msId = trim((string)($item['moysklad_product_id'] ?? ''));
+        $available = $msId === '' ? [] : array_map(fn($img) => [
+            'key' => $img['key'],
+            'url' => '/api/products.php?action=image&id=' . rawurlencode($msId) . '&key=' . rawurlencode($img['key']),
+        ], KpContent::productImageList($msId));
+
+        $selected = json_decode((string)($item['selected_images'] ?? ''), true);
+        jsonData(['available' => $available, 'selected' => is_array($selected) ? $selected : null]);
+    }
+
+    case 'item_images_save': {
+        requireAuth();
+        $itemId = (int)($_GET['item_id'] ?? 0);
+        if (!Db::one("SELECT id FROM request_items WHERE id=?", [$itemId])) jsonError('Позиция не найдена', 404);
+        $input = getInput();
+        $keys = $input['selected'] ?? null;
+        Db::update('request_items', [
+            'selected_images' => is_array($keys)
+                ? json_encode(array_values(array_map('strval', $keys)), JSON_UNESCAPED_UNICODE) : null,
+        ], 'id=?', [$itemId]);
+        // Уже собранные КП этого запроса печатают тот же выбор
+        $moved = (int)Db::q("UPDATE proposal_items SET selected_images=(
+                     SELECT selected_images FROM request_items WHERE id=?)
+                 WHERE request_item_id=? AND proposal_id IN (
+                     SELECT id FROM proposals WHERE status NOT IN ('sent','order_created'))",
+                 [$itemId, $itemId])->rowCount();
+        jsonOk(['kp_items' => $moved]);
+    }
+
     case 'items_choose':
         // The manager answered «какая из равнозначных» — the line stops asking
         requireAuth();

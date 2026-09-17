@@ -604,6 +604,14 @@ class LLM {
 
         $lastErr = null;
         foreach ($chain as $provider) {
+            // Провайдер, который только что отваливался по таймауту, не
+            // спрашивается снова ближайшие минуты (модуль 040). Тридцать
+            // секунд ожидания на КАЖДОМ письме — это почта, которая не
+            // забирается, и кнопка, которая не возвращается.
+            if (self::isCoolingDown($provider)) {
+                $lastErr = new LLMException(self::coolDownMessage($provider));
+                continue;
+            }
             try {
                 return match ($provider) {
                     'openrouter' => self::callOpenRouter($system, $user, $temp, $jsonMode),
@@ -613,12 +621,56 @@ class LLM {
             } catch (LLMException $e) {
                 $lastErr = $e;
                 Logger::warning('llm', "Провайдер $provider не ответил: " . $e->getMessage(), ['provider' => $provider]);
+                self::noteFailure($provider, $e->getMessage());
                 // Continue to next provider
             }
         }
         $message = 'All LLM providers failed: ' . ($lastErr ? $lastErr->getMessage() : 'none configured');
         Logger::error('llm', $message, ['providers' => $chain]);
         throw new LLMException($message);
+    }
+
+    /**
+     * ==== Провайдер на паузе (модуль 040) ====
+     *
+     * Сеть до провайдера не доходит — фильтр по дороге, отвалившийся прокси,
+     * просто таймаут. Каждое следующее письмо честно ждало свои тридцать
+     * секунд, и разбор почты превращался в минуты ожидания на ровном месте.
+     *
+     * Подряд идущие СЕТЕВЫЕ неудачи ставят провайдера на паузу: ключ, квота и
+     * отказ модели сюда не попадают — это ответы, а не молчание, и повторять
+     * их незачем. Пауза короткая: провайдер должен вернуться сам, без правки
+     * настроек.
+     */
+    private const COOLDOWN_AFTER = 2;
+    private const COOLDOWN_SEC   = 180;
+
+    private static array $failures = [];
+    private static array $pausedUntil = [];
+
+    private static function isCoolingDown(string $provider): bool {
+        $until = self::$pausedUntil[$provider] ?? 0;
+        if ($until <= time()) return false;
+        return true;
+    }
+
+    private static function coolDownMessage(string $provider): string {
+        $left = max(1, (int)ceil(((self::$pausedUntil[$provider] ?? 0) - time()) / 60));
+        return "$provider: не отвечал подряд, пропущен на ~$left мин. — сеть до него не доходит";
+    }
+
+    private static function noteFailure(string $provider, string $message): void {
+        // Отказ с ответом — это ответ: ключ, квота, неизвестная модель
+        if (!preg_match('/(timed out|timeout|could not resolve|connection|cURL|сеть|не доходит)/iu', $message)) {
+            self::$failures[$provider] = 0;
+            return;
+        }
+        $n = (self::$failures[$provider] ?? 0) + 1;
+        self::$failures[$provider] = $n;
+        if ($n < self::COOLDOWN_AFTER) return;
+        self::$pausedUntil[$provider] = time() + self::COOLDOWN_SEC;
+        Logger::warning('llm', "Провайдер $provider пропускается " . (self::COOLDOWN_SEC / 60)
+            . " мин.: подряд не отвечает", ['provider' => $provider]);
     }
 
     /** Base address of the OpenRouter API — a mirror can be put here instead. */

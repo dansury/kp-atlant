@@ -416,11 +416,13 @@ const App = {
                     // вторым почтовым клиентом рядом с доской — со своим
                     // поиском, своими вкладками и всеми письмами подряд.
                     // Старая закладка открывает доску с включённым архивом.
-                    if (seg === 'inbox') {
-                        this.boardFilters = Object.assign(this.boardFilters || {}, {archived: 1});
-                        location.replace('#mail');
-                        return;
-                    }
+                    // Старая закладка открывает доску В РАБОТЕ, а не архив
+                    // (модуль 040): архив включался здесь сам, и после удаления
+                    // или архивации письма экран уезжал в «Письма · архив» —
+                    // человек нажимал «в архив», а попадал в чужую комнату.
+                    if (seg === 'inbox') { location.replace('#mail'); return; }
+                    // Корзина писем (модуль 040): удалённое письмо возвращается
+                    if (seg === 'trash') return this.pageMailTrash();
                     if (seg === 't') return this.pageMailThread(decodeURIComponent(params[1] || ''));
                     if (seg === 'msg') return this.pageMailMessage(params[1]);
                     // Отдельного списка запросов больше нет: всё открывается с
@@ -487,7 +489,7 @@ const App = {
         // Архив — это та же доска, открытая ссылкой «Архив», отсюда и заголовок:
         // «Письма · архив», а не отдельный раздел «Архив писем»
         const titles = {board: (this.boardFilters || {}).archived ? 'Письма · архив' : 'Письма',
-                        requests: 'Запросы', companies: 'Компании'};
+                        trash: 'Письма · корзина', requests: 'Запросы', companies: 'Компании'};
         return `
             <div class="flex flex--between flex--wrap" style="margin-bottom:10px;gap:10px">
                 <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
@@ -1955,6 +1957,12 @@ const App = {
                     </label>
                     ${i.wait_note ? `<span class="muted">${this.esc(i.wait_note)}</span>` : ''}
                 </div>
+                <div class="match-extra__photos">
+                    <!-- Фото выбираются здесь, сразу после товара (модуль 040) -->
+                    <button class="btn btn--outline btn--sm" ${i.id ? '' : 'disabled title="Сначала сохраните строку"'}
+                            onclick="App.toggleMatchPhotos(this, ${i.id || 0})">🖼 Фото в КП</button>
+                    <div class="match-photos" data-match-photos hidden></div>
+                </div>
                 <textarea data-field="comment_text" rows="4" class="match-extra__comment"
                           data-from-catalog="${i.comment_from_catalog ? 1 : 0}" oninput="this.dataset.fromCatalog = 0"
                           placeholder="Описание товара — печатается в карточке КП. Подставлено из МойСклад, правьте как нужно"
@@ -2188,18 +2196,23 @@ const App = {
                             p.group_article ? ' · ' + this.esc(p.group_article) : ''}</div>`;
                     }
                     group = p.group_name || null;
-                    const meta = [p.article || p.code || '', this.fmtMoney(p.price),
+                    // Товар целиком: цена — вилка по модификациям, остаток — их сумма
+                    const range = Number(p.price_max) > Number(p.price)
+                        ? `${this.fmtMoney(p.price)} — ${this.fmtMoney(p.price_max)}` : this.fmtMoney(p.price);
+                    const meta = [p.article || p.code || '', range,
                                   this.stockPlain(p.stock)].filter(Boolean).join(' · ');
                     return head + `
-                    <div class="suggest__item ${p.variant_label ? 'suggest__item--variant' : ''}"
+                    <div class="suggest__item ${p.variant_label ? 'suggest__item--variant' : ''} ${p.is_group ? 'suggest__item--group' : ''}"
                          onmousedown="App.pickSuggest(this, '${this.jsStr(JSON.stringify({
                         moysklad_id: p.moysklad_id, name: p.name, article: p.article || p.code || '',
-                        unit: p.unit || 'шт.', price: p.price || 0, stock: p.stock ?? '', prices: p.prices || {},
+                        unit: p.unit || 'шт.', price: p.price || 0, price_max: p.price_max || 0,
+                        stock: p.stock ?? '', prices: p.prices || {},
                         // Описание едет вместе с позицией — иначе поле комментария
                         // остаётся пустым при выборе из подсказки (модуль 032)
                         description: p.description || '',
                     }))}')">
-                        <div>${this.esc(p.variant_label || p.name)}</div>
+                        <div>${this.esc(p.variant_label || p.name)}${
+                            p.is_group ? ' <span class="muted">— весь товар, без размера</span>' : ''}</div>
                         <div class="muted">${this.esc(meta)}</div>
                     </div>`;
                 }).join('');
@@ -2225,7 +2238,15 @@ const App = {
         set('article', p.article);
         set('unit', p.unit);
         set('price', p.price);
+        set('price_max', p.price_max || 0);
         set('stock', p.stock);
+        // Вилка цен рисуется рядом с ценой и обновляется вместе с выбором
+        const range = row.querySelector('.price-cell .price-range');
+        if (range) range.remove();
+        if (Number(p.price_max) > Number(p.price)) {
+            row.querySelector('.price-cell').insertAdjacentHTML('beforeend',
+                this.priceRangeNote({price: p.price, price_max: p.price_max}));
+        }
         // Описание принадлежит товару, а не строке: выбрали другую позицию —
         // в поле её описание. Написанное менеджером не трогаем (модуль 032).
         const comment = row.querySelector('[data-field="comment_text"]');
@@ -2982,6 +3003,63 @@ const App = {
         }
     },
 
+    /**
+     * ==== Фотографии позиции прямо в таблице подбора (модуль 040) ====
+     *
+     * Картинки выбирались только в уже собранном КП — то есть после того, как
+     * документ собран, а не тогда, когда определились с товаром. Теперь выбор
+     * стоит на строке подбора и едет в КП вместе с позицией; уже собранные
+     * неотправленные КП этого запроса подхватывают его сразу.
+     */
+    async toggleMatchPhotos(btn, itemId) {
+        const box = btn.parentElement.querySelector('[data-match-photos]');
+        if (!box || !itemId) return;
+        if (!box.hidden) { box.hidden = true; return; }
+        box.hidden = false;
+        box.innerHTML = '<div class="loading">Загружаем фотографии...</div>';
+        try {
+            const d = await this.api(`requests.php?action=item_images&item_id=${itemId}`);
+            if (!d.available.length) {
+                box.innerHTML = '<div class="muted">Фотографий у позиции нет. Их приносит синхронизация '
+                              + 'с МойСклад или импорт каталога из Excel.</div>';
+                return;
+            }
+            // «Выбор не делали» — это все фотографии, как было до выбора
+            const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
+            box.innerHTML = `
+                <div class="muted">В КП пойдут отмеченные (${chosen.length} из ${d.available.length}):</div>
+                <div class="photos">
+                    ${d.available.map(a => `
+                        <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
+                            <input type="checkbox" data-photo-key="${this.esc(a.key)}"
+                                   ${chosen.includes(a.key) ? 'checked' : ''}
+                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked);
+                                             App.saveMatchPhotos(this, ${itemId})">
+                            <img src="${this.esc(a.url)}" alt="" loading="lazy">
+                        </label>`).join('')}
+                </div>
+                <div class="muted" data-photo-saved></div>`;
+        } catch (err) {
+            box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
+        }
+    },
+
+    /** Галочка на фотографии сохраняется сама — «Сохранить» для неё не нужно. */
+    async saveMatchPhotos(input, itemId) {
+        const box = input.closest('[data-match-photos]');
+        const selected = [...box.querySelectorAll('[data-photo-key]')]
+            .filter(b => b.checked).map(b => b.dataset.photoKey);
+        const note = box.querySelector('[data-photo-saved]');
+        try {
+            const r = await this.api(`requests.php?action=item_images_save&item_id=${itemId}`,
+                                     {method: 'POST', body: {selected}});
+            if (note) note.textContent = `выбрано ${selected.length}`
+                + (r.kp_items ? ` · в КП обновлено позиций: ${r.kp_items}` : '');
+        } catch (err) {
+            if (note) note.textContent = 'не сохранилось: ' + err.message;
+        }
+    },
+
     // One upsell row in the editor
     addonRow(a, i) {
         return `
@@ -3464,7 +3542,7 @@ const App = {
         this.companyOpenThread = key;
         if (box.dataset.loaded) {
             this.mountBodies(box);
-            this.setCompanyItems(box.dataset.requestId || '');
+            this.setCompanyItems(box.dataset.requestId || '', key);
             return;
         }
         box.innerHTML = '<div class="loading">Загрузка писем...</div>';
@@ -3478,7 +3556,8 @@ const App = {
             box.dataset.loaded = '1';
             box.dataset.requestId = reply.request_id || '';
             this.restoreComposerDraft(key);
-            this.setCompanyItems(reply.request_id || '');
+            this.fillSignatureNote(box);
+            this.setCompanyItems(reply.request_id || '', key);
             // Сервер уже снял отметку вместе с загрузкой — строке остаётся
             // только перестать кричать
             if (markRead) this.markThreadRead(key, box, true);
@@ -3493,7 +3572,7 @@ const App = {
      * `null` — переписку свернули: панель говорит, что выбрать нечего, а не
      * показывает позиции закрытого письма.
      */
-    setCompanyItems(requestId) {
+    setCompanyItems(requestId, threadKey = '') {
         const side = document.getElementById('cpItems');
         if (!side) return;
         if (requestId === null) {
@@ -3504,7 +3583,7 @@ const App = {
         }
         // Хост подбора ищется как `[data-thread-items]` внутри переданного узла
         if (requestId) this.loadThreadItems(side.parentElement, Number(requestId));
-        else this.noThreadItems(side.parentElement);
+        else this.noThreadItems(side.parentElement, threadKey);
         // Лента справа и счета под письмом смотрят на тот же запрос (модуль 029)
         this.companyRequestId = requestId ? String(requestId) : '';
         this.markChatScope();
@@ -3534,16 +3613,55 @@ const App = {
      * is the one the КП is built from.
      */
     /**
-     * Переписка, из которой не завели запрос: подбирать нечего, и блок говорит
-     * это вслух. Молча пропущенная таблица читается как «подбор товаров пропал».
+     * Переписка, из которой не завели запрос (модуль 039).
+     *
+     * Здесь стоял тупик: «запрос не заведён — подбирать по каталогу нечего».
+     * Сервис живёт составлением КП, и отказать в подборе он не вправе ни по
+     * какому письму: классификатор мог ошибиться, а запрос на бронеплиты
+     * «от бр2 до бр5» — самый настоящий. Теперь это кнопка: подбор заводится
+     * по этой переписке, письмо перечитывается и позиции ищутся в каталоге.
      */
-    noThreadItems(box) {
+    noThreadItems(box, threadKey = '') {
         const host = box.querySelector('[data-thread-items]');
         if (!host) return;
         host.className = 'card card--items';
         host.innerHTML = `<div class="card__title">Подходящие позиции${this.hint('match')}</div>
-            <p class="muted">По этой переписке запрос не заведён — подбирать по каталогу нечего.
-               Позиции появляются, когда письмо разобрано как запрос КП или заказ.</p>`;
+            <p class="muted">По этой переписке подбор ещё не заводили. Нажмите — письмо перечитается,
+               позиции найдутся в каталоге, и отсюда же соберётся КП.</p>
+            ${threadKey ? `<button class="btn btn--primary" data-make-request
+                    onclick="App.makeThreadRequest('${this.jsStr(threadKey)}', this)">Подобрать товар</button>`
+                : '<p class="muted">Раскройте переписку слева.</p>'}`;
+    },
+
+    /**
+     * «Подобрать товар» по переписке без запроса (модуль 039).
+     *
+     * Один вызов модели — его просят, а не тратят на каждое входящее письмо.
+     * Модель промолчала — таблица откроется пустой, и позицию в неё впишут
+     * руками: подобрать товар можно ВСЕГДА.
+     */
+    async makeThreadRequest(key, btn) {
+        btn.disabled = true;
+        btn.textContent = 'Читаем письмо...';
+        try {
+            const r = await this.api('mail.php?action=make_request', {method: 'POST', body: {key}});
+            // Панель рисуется там же, где стояла кнопка: у письма своей страницей
+            // и у переписки в карточке компании это разные узлы
+            const panel = btn.closest('[data-thread-items]');
+            const thread = document.getElementById('th_' + this.threadDomId(key));
+            if (thread) thread.dataset.requestId = r.request_id;
+            if (panel && panel.parentElement) this.loadThreadItems(panel.parentElement, r.request_id);
+            this.companyRequestId = String(r.request_id);
+            this.markChatScope();
+            this.loadInvoiceDock();
+            this.toast(r.items
+                ? `Подбор заведён · позиций: ${r.items}`
+                : 'Подбор заведён — позиций в письме не нашлось, впишите их сами', r.items ? 'success' : 'info');
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Подобрать товар';
+        }
     },
 
     async loadThreadItems(box, requestId) {
@@ -3583,6 +3701,13 @@ const App = {
                     <select data-cmp-box title="Из какого ящика отправить">
                         ${(mailboxes || []).map(b => `<option value="${b.id}" ${reply.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
                     </select>
+                    <!-- Подпись (модуль 039): видно, чем письмо закончится, ещё
+                         до отправки — и её можно снять одной галочкой -->
+                    <label class="muted composer__sign" title="Ваша подпись допишется в конец письма">
+                        <input type="checkbox" data-cmp-sign checked
+                               onchange="App.toggleSignatureNote(this)"> подпись
+                        <span data-cmp-sign-text></span>
+                    </label>
                 </div>
                 <!-- У первого письма адресата ещё нет — его пишут здесь же, и
                      он попадает и в черновик, и в карточку (модуль 033) -->
@@ -3769,6 +3894,34 @@ const App = {
             .replace(/<li[^>]*>/gi, '— ');
         const text = (tmp.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
         return {html, text};
+    },
+
+    /**
+     * ==== Подпись в письме (модуль 039) ====
+     *
+     * Подпись дописывает сервер — она одна и та же во всех письмах менеджера,
+     * и держать её в поле ввода значит однажды её оттуда стереть. Но увидеть
+     * её надо ДО отправки, поэтому она стоит строкой рядом с галочкой.
+     */
+    async mailSignature() {
+        if (this._mailSign === undefined) {
+            try { this._mailSign = (await this.api('settings.php?action=mail_signature')).effective || ''; }
+            catch { this._mailSign = ''; }
+        }
+        return this._mailSign;
+    },
+
+    async fillSignatureNote(c) {
+        const box = c && c.querySelector('[data-cmp-sign-text]');
+        if (!box) return;
+        const sign = await this.mailSignature();
+        box.textContent = sign ? '· ' + sign.split('\n').join(' · ') : '· не заведена';
+        box.title = sign || 'Подпись не заведена — «Настройки → Моя подпись»';
+    },
+
+    toggleSignatureNote(input) {
+        const box = input.closest('.composer__sign');
+        if (box) box.classList.toggle('composer__sign--off', !input.checked);
     },
 
     /**
@@ -4071,6 +4224,8 @@ const App = {
                 thread_key:  key || null,
                 draft_id:    Number((c.querySelector('[data-cmp-draft-id]') || {}).value) || null,
                 files:       this.composerFiles(c),
+                // Галочка «подпись» снята — письмо уходит ровно как набрано
+                signature:   (c.querySelector('[data-cmp-sign]') || {checked: true}).checked ? 1 : 0,
             }});
             // «Отправлено» is only half the news when the copy never reached the
             // server's «Отправленные» — the manager hears it now, not in a month
@@ -4661,9 +4816,11 @@ const App = {
         'kp-exclude':   ['Свернуть позицию', 'Позиции, которой нет в наличии, в таблице КП не будет — но в документе она останется: КП назовёт её словами клиента и скажет, что мы по ней уточняем. Молча выкинуть строку нельзя.'],
         // Настройки
         'kp-settings':  ['Оформление КП', 'Тексты и значения по умолчанию для каждого нового КП: условия поставки, сроки, подписи под фотографиями. В самом КП их можно переписать — здесь стоит то, с чего КП начинается, и сюда же приезжает последняя правка условий из любого КП.'],
+        'mail-signature': ['Подпись в письмах', 'Дописывается в конец каждого письма, которое вы отправляете из сервиса, и в конец черновика нейросети. Второй раз не приписывается — если подпись в письме уже стоит, она остаётся одна. Пусто — берётся общая подпись компании из настроек почты.'],
         'signature':    ['Моя подпись', 'КП подписывает тот, кто его отправляет. Загрузите картинку своей подписи и напишите расшифровку — они встанут под вашими КП. Пусто — печатается подписант организации.'],
         'knowledge':    ['База знаний', 'Вики компании из репозитория GitHub. В промпт она попадает не целиком, а теми разделами, которые относятся к тексту письма. Это ЗНАНИЯ О ТОВАРЕ — инструкции про кнопки сюда класть нельзя, они мешают модели отвечать.'],
         'knowledge-check': ['Проверка подбора', 'Вставьте текст письма — увидите, какие разделы вики попадут в промпт и что сервис на это ответит. Ответ можно тут же забраковать кнопкой 👎 и написать, как он должен был звучать: эта правка уйдёт в обучение.'],
+        'rethink':      ['Переосмыслить правки', 'Модель читает последние правки менеджеров и отправленные письма и собирает из них короткий свод правил. Свод сам никуда не уходит: его читают, правят и одной кнопкой подмешивают в выбранный промпт — отдельным блоком «ИЗ ПРАВОК МЕНЕДЖЕРОВ». Модель для этой работы выбирается здесь же: читать сотню писем лучше моделью поумнее.'],
         'prompts':      ['Промпты', 'Инструкции, по которым нейросеть пишет каждый ответ и каждое письмо. Правится текстом; у каждого промпта есть история и кнопка «Вернуть встроенный». Ко всем добавляется общий блок дисциплины — его отдельно дублировать не надо.'],
         'tov':          ['Tone of Voice', 'Как мы разговариваем с клиентом: обращение, длина фраз, что обещаем и чего не обещаем. Подмешивается в каждый ответ. Это НЕ база знаний: факты о товаре живут в вики, здесь — только манера речи.'],
         'stores':       ['Склады для остатков', 'Отметьте склады, с которых вы реально отгружаете. Остаток считается только по ним: остаток витрины или брака, попавший в КП, превращается в обещание, которого не выполнить. Ничего не отмечено — считаем по всем складам.'],
@@ -5676,6 +5833,7 @@ const App = {
         if (!card) return;
         try {
             const d = await this.api('admin.php?action=signature');
+            const mail = await this.api('settings.php?action=mail_signature');
             card.innerHTML = `
                 <div class="card__title">Моя подпись${this.hint('signature')}</div>
                 <p class="muted">Ставится под теми КП, которые отправляете вы. Пусто — печатается подписант
@@ -5697,7 +5855,24 @@ const App = {
                     ${d.has_image ? '<button class="btn btn--outline btn--danger" onclick="App.resetSignature()">Убрать картинку</button>' : ''}
                 </div>
                 <p class="muted" style="margin-top:6px">PNG или JPG, лучше на прозрачном или белом фоне, высотой около 200 px.</p>
-                <div id="sigOut" style="margin-top:8px"></div>`;
+                <div id="sigOut" style="margin-top:8px"></div>
+
+                <!-- Подпись в письмах (модуль 039): письмо заканчивается именем
+                     того, кто его отправил, а не обрывается на полуслове -->
+                <div class="card__title" style="margin-top:18px">Подпись в письмах${this.hint('mail-signature')}</div>
+                <p class="muted">Дописывается к каждому вашему письму — и к черновику, который пишет нейросеть.
+                   ${mail.source === 'manager' ? 'Сейчас стоит ваша.'
+                     : mail.source === 'company' ? 'Своей нет — подписывается общей подписью компании.'
+                     : 'Своей нет и общей нет — подпись собирается из вашего имени и телефона.'}</p>
+                <div class="form-group">
+                    <textarea id="mailSig" rows="4"
+                        placeholder="${this.esc(mail.fallback || 'С уважением,\nЯна, менеджер по оптовым заказам\n+7 977 508-45-85')}">${this.esc(mail.signature || '')}</textarea>
+                </div>
+                <p class="muted">Уйдёт с письмом:</p>
+                <pre class="sig-preview">${this.esc(mail.effective || '')}</pre>
+                <div class="flex flex--wrap">
+                    <button class="btn btn--primary" onclick="App.saveMailSignature(this)">Сохранить подпись в письмах</button>
+                </div>`;
         } catch (err) {
             card.innerHTML = `<div class="card__title">Моя подпись</div><p class="no">${this.esc(err.message)}</p>`;
         }
@@ -5709,6 +5884,19 @@ const App = {
             await this.api('settings.php?action=signatory_name', {method: 'POST',
                 body: {signatory_name: document.getElementById('sigName').value}});
             this.toast('Расшифровка сохранена', 'success');
+            this.loadSignature();
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
+    },
+
+    /** Подпись в письмах — своя у каждого (модуль 039). */
+    async saveMailSignature(btn) {
+        btn.disabled = true;
+        try {
+            await this.api('settings.php?action=mail_signature', {method: 'POST',
+                body: {signature: document.getElementById('mailSig').value}});
+            this._mailSign = undefined;   // строка у поля ответа покажет новую
+            this.toast('Подпись в письмах сохранена', 'success');
             this.loadSignature();
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
@@ -6095,12 +6283,13 @@ const App = {
         this.mountBodies(document.getElementById('app'));
         this.loadThreadPlacement(key);
         this.restoreComposerDraft(key);
+        this.fillSignatureNote(document.getElementById('app'));
         this.loadThreadFacts(t, lastIn, d.moysklad);
         // Панель подбора есть у КАЖДОГО письма: у письма без запроса она честно
         // говорит, почему пуста, а не исчезает вовсе
         const host = document.getElementById('app');
         if (reply.request_id) this.loadThreadItems(host, reply.request_id);
-        else this.noThreadItems(host);
+        else this.noThreadItems(host, key);
         // Счета этого запроса — под полем ответа (модуль 029)
         this.companyRequestId = reply.request_id ? String(reply.request_id) : '';
         this.loadInvoiceDock();
@@ -6399,7 +6588,7 @@ const App = {
                     ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
                     ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
                     ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
-                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail/inbox'}')">🗑 Удалить</button>
+                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail'}')">🗑 Удалить</button>
                 </div>
             </div>
             <div class="card">
@@ -6455,6 +6644,7 @@ const App = {
             <a href="#mail/new" class="btn btn--outline btn--sm"
                title="Запрос пришёл в мессенджер или по телефону — вставьте текст и файлы">+ Запрос</a>
             <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn()">+ Колонка</button>
+            <a href="#mail/trash" class="btn btn--outline btn--sm" title="Удалённые письма — их можно вернуть">🗑 Корзина</a>
         `);
         // action=get syncs first: the intake is not a button somebody remembers
         // to press, it is what opening the board means
@@ -6476,6 +6666,71 @@ const App = {
     },
 
     /**
+     * ==== Корзина писем (модуль 040) ====
+     *
+     * Удалить можно любое письмо, и любое можно вернуть: до сих пор удаление
+     * было окончательным, и «удалить» приходилось выбирать как приговор.
+     * Здесь письмо лежит целиком, со своими файлами, пока корзину не очистят.
+     */
+    async pageMailTrash() {
+        document.getElementById('app').innerHTML = this.mailShellHtml('trash', `
+            <button class="btn btn--outline btn--sm btn--danger" onclick="App.purgeTrash()">
+                Очистить корзину</button>`);
+        const box = document.getElementById('mailBody');
+        box.innerHTML = '<div class="loading">Загрузка корзины...</div>';
+        try {
+            const d = await this.api('mail.php?action=trash');
+            const items = d.items || [];
+            box.innerHTML = `
+                <div class="card card--flush">
+                    <div class="mlist">
+                        ${items.map(t => `
+                            <div class="mrow">
+                                <div class="mrow__main">
+                                    <div class="mrow__subject">${this.esc(t.subject) || '<em>без темы</em>'}</div>
+                                    <div class="mrow__meta">${this.esc(t.direction === 'in'
+                                        ? 'от ' + (t.from_email || '') : 'кому ' + (t.to_emails || ''))}
+                                        · удалено ${this.fmtDate(t.deleted_at)}
+                                        ${t.deleted_by_name ? '· ' + this.esc(t.deleted_by_name) : ''}</div>
+                                </div>
+                                <div class="mrow__date">${this.fmtDate(t.date_at)}</div>
+                                <div class="flex" style="gap:6px">
+                                    <button class="btn btn--outline btn--sm"
+                                            onclick="App.restoreFromTrash(${t.id})">↩ Вернуть</button>
+                                    <button class="btn btn--outline btn--sm btn--danger"
+                                            onclick="App.purgeTrash(${t.id})">🗑 Насовсем</button>
+                                </div>
+                            </div>`).join('')}
+                        ${items.length ? '' : '<div class="mlist__empty">Корзина пуста</div>'}
+                    </div>
+                </div>`;
+        } catch (err) {
+            box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async restoreFromTrash(id) {
+        try {
+            const r = await this.api('mail.php?action=trash_restore', {method: 'POST', body: {id}});
+            this.toast('Письмо вернулось в почту', 'success');
+            if (r.thread_key) location.hash = 'mail/t/' + encodeURIComponent(r.thread_key);
+            else this.pageMailTrash();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /** Без id — вся корзина. Вот это уже насовсем, вместе с файлами. */
+    async purgeTrash(id = 0) {
+        const what = id ? 'Удалить это письмо насовсем? Вернуть его будет нельзя.'
+                        : 'Очистить корзину? Все письма в ней удалятся насовсем, вместе с файлами.';
+        if (!confirm(what)) return;
+        try {
+            const r = await this.api('mail.php?action=trash_purge', {method: 'POST', body: id ? {id} : {}});
+            this.toast(`Удалено насовсем: ${r.purged}`, 'success');
+            this.pageMailTrash();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
      * Архив — та же страница «Письма», а не отдельный экран (по просьбе).
      *
      * Отдельная страница «Архив писем» показывала ВСЕ письма подряд, плоским
@@ -6494,6 +6749,7 @@ const App = {
             </span>
             <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
             <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
+            <a href="#mail/trash" class="btn btn--outline btn--sm">🗑 Корзина</a>
         `);
         const b = this.board || await this.api('boards.php?action=get&sync=0');
         this.board = b;
@@ -7268,10 +7524,20 @@ const App = {
         else this.pageMailBoard();
     },
 
+    /**
+     * Убрать карточку — и, если попросят, удалить насовсем (модуль 040).
+     *
+     * «Убрать» помнит, где карточка стояла, и возвращает её, когда компания
+     * напишет снова. Карточку, за которой не осталось ни одного письма, это
+     * не убирало насовсем — и удалить её было нечем.
+     */
     async boardCardDelete(id) {
         if (!confirm('Убрать карточку с доски? Письма останутся в почте, '
                    + 'а карточка вернётся сама, когда компания напишет снова.')) return;
-        await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
+        const r = await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
+        // Карточка, за которой не осталось ни писем, ни запроса, ни заметки,
+        // удаляется совсем: возвращаться ей неоткуда и незачем
+        if (r.purged) this.toast('Карточка была пустой — удалена совсем', 'success');
         this.pageMailBoard();
     },
 
@@ -7346,7 +7612,7 @@ const App = {
             if (r.thread_empty) {
                 const cp = this.openCompanyId();
                 if (cp) this.loadCompanyThreads(cp);
-                else this.goAfterDelete('mail/inbox');
+                else this.goAfterDelete('mail');
                 return;
             }
             const box = o.thread ? document.getElementById('th_' + this.threadDomId(o.thread)) : null;
@@ -7366,7 +7632,7 @@ const App = {
         try {
             const r = await this.api('mail.php?action=delete_thread', {method: 'POST', body: {thread_key: key}});
             this.toast(r.warning || `Удалено писем: ${r.deleted}`, r.warning ? 'error' : 'success');
-            this.goAfterDelete('mail/inbox');
+            this.goAfterDelete('mail');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -7395,7 +7661,7 @@ const App = {
             this.toast(r.warning || `В архив убрано писем: ${r.archived}`, r.warning ? 'error' : 'success');
             const cp = this.openCompanyId();
             if (cp) this.loadCompanyThreads(cp);
-            else this.goAfterDelete('mail/inbox');
+            else this.goAfterDelete('mail');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -7850,6 +8116,26 @@ const App = {
         } catch (err) { this.testOut(this.esc(err.message), 'no'); }
     },
 
+    /**
+     * Список организаций МойСклад в поле настройки (модуль 041).
+     *
+     * Поле требовало «ID организации» — 36 знаков, которые брали из адресной
+     * строки МойСклад и переписывали руками. Теперь это список имён с ИНН;
+     * МойСклад недоступен — поле остаётся с тем, что в нём стоит, и его
+     * по-прежнему можно вписать.
+     */
+    async loadOrganizations(selectId, current) {
+        try {
+            const d = await this.api('admin.php?action=moysklad_organizations');
+            const sel = document.getElementById(selectId);
+            if (!sel || !(d.items || []).length) return;
+            sel.innerHTML = `<option value="">(первая организация аккаунта)</option>`
+                + d.items.map(o => `<option value="${this.esc(o.id)}" ${o.id === current ? 'selected' : ''}>
+                        ${this.esc(o.name)}${o.inn ? ' · ИНН ' + this.esc(o.inn) : ''}</option>`).join('');
+            sel.value = current || '';
+        } catch { /* нет связи с МойСклад — остаётся то, что уже выбрано */ }
+    },
+
     async testLlm(provider) {
         this.testOut('Спрашиваем модель...', 'muted');
         try {
@@ -8122,6 +8408,14 @@ const App = {
                         <select id="${id}"><option value="${this.esc(it.value)}">${this.esc(it.value) || '(без звука)'}</option></select>
                         <button type="button" class="btn btn--outline btn--sm" onclick="App.playSoundPreview('${id}')">▶ Послушать</button>
                     </span>`;
+                }
+                // Организация выбирается из списка МойСклад, а не переписывается
+                // идентификатором из адресной строки (модуль 041)
+                if (it.type === 'organization') {
+                    this.loadOrganizations(id, String(it.value));
+                    return `<select id="${id}">
+                        <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первая организация аккаунта)'}</option>
+                    </select>`;
                 }
                 // Списки синонимов и текст блока дисциплины — многострочные
                 if (it.type === 'textarea') return `<textarea id="${id}" rows="6">${this.esc(it.value)}</textarea>`;
@@ -9492,10 +9786,13 @@ const App = {
     async adminPrompts() {
         try {
             const d = await this.api('admin.php?action=prompts');
+            const llm = await this.loadLlmModels();
+            this.promptKeys = (d.items || []).map(p => ({key: p.key, title: p.title}));
             document.getElementById('adminBody').innerHTML = `
                 <div class="card"><div class="card__title">Промпты${this.hint('prompts')}</div>
                    <p>Системные промпты, с которыми сервис обращается к нейросети.
                    Пустое поле вернёт встроенный текст. Плейсхолдеры <code>{{...}}</code> подставляются кодом — не удаляйте их.</p></div>
+                ${this.rethinkCard(llm)}
                 ${d.items.map(p => `
                     <div class="card">
                         <div class="flex flex--between">
@@ -9510,10 +9807,83 @@ const App = {
                             <button class="btn btn--primary btn--sm" onclick="App.savePrompt('${p.key}')">Сохранить</button>
                             ${p.is_custom ? `<button class="btn btn--outline btn--sm" onclick="App.resetPrompt('${p.key}')">Вернуть встроенный</button>` : ''}
                             ${p.history ? `<button class="btn btn--outline btn--sm" onclick="App.promptHistory('${p.key}')">История (${p.history})</button>` : ''}
+                            ${p.content.includes('ИЗ ПРАВОК МЕНЕДЖЕРОВ')
+                                ? '<span class="badge badge--confirmed">есть блок из правок</span>' : ''}
                         </div>
                     </div>`).join('')}
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    /**
+     * ==== Промпты учатся на правках (модуль 041) ====
+     *
+     * Правок набирается сотня, и читать их подряд некому. Модель — её выбирают
+     * здесь же, можно взять поумнее — читает их и пишет короткий свод правил.
+     * Свод не уходит в промпт сам: его читает человек и подмешивает кнопкой,
+     * в тот промпт, который сам и выберет. Неудачно — откат из истории.
+     */
+    rethinkCard(llm) {
+        return `
+            <div class="card">
+                <div class="card__title">Переосмыслить правки нейросетью${this.hint('rethink')}</div>
+                <p class="muted">Модель прочитает последние правки и отправленные письма и напишет
+                   короткий свод правил — его можно подмешать в любой промпт одной кнопкой.</p>
+                <div class="flex flex--wrap" style="gap:8px">
+                    <select id="rethinkKind" title="По каким правкам учиться">
+                        <option value="sent">Отправленные письма</option>
+                        <option value="reply">Правки ответов</option>
+                        <option value="category">Правки классификации</option>
+                        <option value="answer">Правки подбора</option>
+                        <option value="kp">Правки текста КП</option>
+                    </select>
+                    <select id="rethinkLimit" title="Сколько последних правок прочитать">
+                        <option value="20">20 последних</option>
+                        <option value="40" selected>40 последних</option>
+                        <option value="80">80 последних</option>
+                    </select>
+                    ${this.replyModelSelect(llm).replace('id="cmpModel"', 'id="rethinkModel"')}
+                    <button class="btn btn--primary btn--sm" onclick="App.rethinkLearning(this)">Переосмыслить</button>
+                </div>
+                <div id="rethinkOut" style="margin-top:10px"></div>
+            </div>`;
+    },
+
+    async rethinkLearning(btn) {
+        const out = document.getElementById('rethinkOut');
+        btn.disabled = true;
+        out.innerHTML = '<div class="loading">Модель читает правки — это занимает до минуты...</div>';
+        try {
+            const r = await this.api('admin.php?action=learning_rethink', {method: 'POST', body: {
+                kind:  document.getElementById('rethinkKind').value,
+                limit: Number(document.getElementById('rethinkLimit').value) || 40,
+                model: (document.getElementById('rethinkModel') || {}).value || '',
+            }});
+            out.innerHTML = `
+                <p class="muted">Прочитано правок: ${r.samples} · модель ${this.esc(r.model)}</p>
+                <textarea id="rethinkText" rows="10">${this.esc(r.text)}</textarea>
+                <div class="flex flex--wrap" style="margin-top:8px;gap:8px">
+                    <select id="rethinkTarget" title="В какой промпт подмешать">
+                        ${(this.promptKeys || []).map(p =>
+                            `<option value="${this.esc(p.key)}">${this.esc(p.title)}</option>`).join('')}
+                    </select>
+                    <button class="btn btn--primary btn--sm" onclick="App.mergeIntoPrompt(this)">Подмешать в промпт</button>
+                </div>`;
+        } catch (err) {
+            out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        } finally { btn.disabled = false; }
+    },
+
+    async mergeIntoPrompt(btn) {
+        const key = document.getElementById('rethinkTarget').value;
+        const block = document.getElementById('rethinkText').value;
+        if (!confirm('Подмешать этот блок в промпт? Прежний текст останется в истории — откат возможен.')) return;
+        btn.disabled = true;
+        try {
+            await this.api('admin.php?action=prompt_append', {method: 'POST', body: {key, block}});
+            this.toast('Блок подмешан в промпт', 'success');
+            this.adminPrompts();
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
     },
 
     async savePrompt(key) {
@@ -9533,13 +9903,51 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
+    /**
+     * История промпта: видно, ЧЕМ версия отличается от нынешней, и её можно
+     * вернуть (модуль 041). Раньше это был список текстов для чтения: чтобы
+     * откатить неудачную правку, её выделяли и копировали руками.
+     */
     async promptHistory(key) {
         const d = await this.api(`admin.php?action=prompt_history&key=${encodeURIComponent(key)}`);
-        this.modal('История промпта', d.items.map(h => `
+        this.modal('История промпта', (d.items || []).map(h => `
             <div class="card" style="margin-bottom:8px">
-                <div class="muted">${this.fmtDate(h.created_at)} ${h.manager_name ? '· ' + this.esc(h.manager_name) : ''}</div>
-                <pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto">${this.esc(h.content)}</pre>
+                <div class="flex flex--between">
+                    <div class="muted">${this.fmtDate(h.created_at)} ${h.manager_name ? '· ' + this.esc(h.manager_name) : ''}</div>
+                    <button class="btn btn--outline btn--sm"
+                            onclick="App.restorePrompt('${this.jsStr(key)}', ${h.id})">Вернуть эту версию</button>
+                </div>
+                <pre class="diff">${this.diffHtml(h.content || '', d.current || '')}</pre>
             </div>`).join('') || '<p class="muted">Пока пусто</p>');
+    },
+
+    /**
+     * Построчная разница: что было в этой версии и чего нет сейчас — красным,
+     * что появилось с тех пор — зелёным. Сравнение по строкам, а не по словам:
+     * промпт читают абзацами, и строка целиком — правильная единица правки.
+     */
+    diffHtml(oldText, newText) {
+        const was = new Set(String(oldText).split('\n').map(l => l.trim()));
+        const now = new Set(String(newText).split('\n').map(l => l.trim()));
+        return String(oldText).split('\n').map(line => {
+            const t = line.trim();
+            if (t !== '' && !now.has(t)) return `<span class="diff--gone">${this.esc(line)}</span>`;
+            return this.esc(line);
+        }).join('\n') + (
+            String(newText).split('\n').filter(l => l.trim() !== '' && !was.has(l.trim())).length
+                ? `\n<span class="diff--new">— и появилось с тех пор: `
+                  + this.esc(String(newText).split('\n').filter(l => l.trim() !== '' && !was.has(l.trim())).length)
+                  + ` строк(и)</span>` : '');
+    },
+
+    async restorePrompt(key, historyId) {
+        if (!confirm('Вернуть эту версию промпта? Нынешний текст тоже попадёт в историю.')) return;
+        try {
+            await this.api('admin.php?action=prompt_restore', {method: 'POST', body: {key, history_id: historyId}});
+            this.closeModal();
+            this.toast('Версия промпта возвращена', 'success');
+            this.adminPrompts();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // ---- Error log ----

@@ -718,8 +718,10 @@ switch ($action) {
 
         // Файлы, которые менеджер приложил сам: он мог переделать документ
         // руками и прислать свой (модуль 023)
-        foreach (Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']) as $path) {
-            $attachments[] = $path;
+        // `resolve()` отдаёт пару «путь + имя в письме»: приставка, под которой
+        // файл лежит на диске, клиенту не показывается (модуль 040)
+        foreach (Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']) as $file) {
+            $attachments[] = $file;
         }
 
         $subject = $input['subject'] ?? 'Коммерческое предложение от Atlant Armour';

@@ -13,6 +13,7 @@ require_once ROOT . '/lib/attachments.php';
 require_once ROOT . '/lib/outbox.php';
 require_once ROOT . '/lib/drafts.php';
 require_once ROOT . '/lib/forwards.php';
+require_once ROOT . '/lib/mail_signature.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -143,7 +144,11 @@ try {
 
         case 'sync':
             $id = (int)($input['mailbox_id'] ?? $_GET['mailbox_id'] ?? 0);
-            jsonOk(['report' => MailSync::run($id ?: null)]);
+            // Кнопку нажал человек и он ждёт: письма забираются целиком, а на
+            // разбор моделью отводится несколько секунд — остальное дочитает
+            // следующий заход или cron (модуль 040)
+            $budget = max(0, (int)Settings::get('MAIL_SYNC_TRIAGE_BUDGET', 10));
+            jsonOk(['report' => MailSync::run($id ?: null, ['budget' => $budget])]);
 
         case 'send':
             $to = trim((string)($input['to'] ?? ''));
@@ -193,6 +198,15 @@ try {
                 ? MailArchive::sanitizeHtml($html)
                 : '<p>' . nl2br(htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')) . '</p>';
 
+            // Подпись менеджера — до цитаты и до отправки (модуль 039): она
+            // заканчивает НАШЕ письмо, а не процитированное чужое. Второй раз
+            // не приписывается: черновик нейросети уже уходит с ней.
+            if (($input['signature'] ?? 1)) {
+                $sign = MailSignature::forManager((int)$manager['id']);
+                $text = MailSignature::appendText($text, $sign);
+                $html = MailSignature::appendHtml($html, $sign);
+            }
+
             // Ответ несёт письмо, на которое отвечает (модуль 031): клиенту не
             // приходится вспоминать, о каком заказе речь, а нам — пересказывать
             // его же вопрос своими словами.
@@ -228,6 +242,26 @@ try {
                     : $to,
                 'manager_id'      => (int)$manager['id'],
             ]);
+
+            /**
+             * Каждое отправленное письмо — образец для промптов (модуль 041).
+             *
+             * В паре с письмом контрагента и с тем, что предлагала модель:
+             * по этим парам видно, как мы отвечаем на самом деле, и из них
+             * одной кнопкой собираются правила для промпта.
+             */
+            if ($source) {
+                require_once ROOT . '/lib/learning.php';
+                Learning::recordSent([
+                    'subject'        => (string)($source['subject'] ?? ''),
+                    'question'       => (string)($source['body_text'] ?? ''),
+                    'auto_answer'    => (string)($source['model_draft_text'] ?? ''),
+                    'correct_answer' => (string)($input['text'] ?? ''),
+                    'manager_id'     => (int)$manager['id'],
+                    'context'        => ['category' => $source['category'] ?? null,
+                                         'mail_message_id' => (int)$source['id']],
+                ]);
+            }
 
             // The company chat shows the same message, so nothing is invisible there
             if ($counterpartyId) {
@@ -272,6 +306,25 @@ try {
             }
             jsonOk($res + ['addresses' => Forwards::all()]);
 
+        /**
+         * Подбор товара по переписке, из которой запрос не завели (модуль 039).
+         * Кнопка «Подобрать товар» в панели позиций — и таблица подбора
+         * открывается по любому письму, а не только по разобранному.
+         */
+        case 'make_request': {
+            $key = trim((string)($input['key'] ?? $_GET['key'] ?? ''));
+            if ($key === '' && !empty($input['mail_message_id'])) {
+                $key = (string)(Db::val("SELECT thread_key FROM mail_messages WHERE id=?",
+                                        [(int)$input['mail_message_id']]) ?: '');
+            }
+            try {
+                $res = MailSync::requestFromThread($key, (int)$manager['id']);
+            } catch (InvalidArgumentException $e) {
+                jsonError($e->getMessage(), 404);
+            }
+            jsonOk($res);
+        }
+
         case 'draft_reply':
             // «Создать ответ»: the draft is generated here and only here — the mail
             // sync just notifies, it never spends a model call on an unread letter.
@@ -312,6 +365,11 @@ try {
 
             $ctx = [
                 'org_name'        => $msg['counterparty_name'] ?? '',
+                // К кому обращаться: контакт компании, а не адрес ящика (модуль 041)
+                'contact_person'  => $msg['counterparty_id']
+                    ? (string)(Db::val("SELECT contact_person FROM counterparties WHERE id=?",
+                                       [(int)$msg['counterparty_id']]) ?: '')
+                    : '',
                 'attachments'     => $attachText,
                 'thread'          => array_reverse($thread),
                 'counterparty_id' => $msg['counterparty_id'] ?? null,
@@ -365,6 +423,19 @@ try {
                                'id=?', [(int)$msg['request_id']]);
                 }
             }
+
+            // Форма письма одна на все пути черновика — и на готовый черновик
+            // из синхронизации, и на ответ без классификатора (модуль 041)
+            require_once ROOT . '/lib/letter_shape.php';
+            $text = LetterShape::apply($text, (string)($ctx['contact_person'] ?: ($msg['from_name'] ?? '')));
+
+            // Промпты ответа заканчиваются словами «без подписи — её подставит
+            // система». Система подставляет её здесь (модуль 039).
+            $text = MailSignature::appendText($text, MailSignature::forManager((int)$manager['id']));
+
+            // Чем ответила модель — помним: отправленное письмо встанет с этим
+            // в пару и попадёт в «Исправления» (модуль 041)
+            Db::update('mail_messages', ['model_draft_text' => $text], 'id=?', [$id]);
 
             $used = LLM::currentModel();
             Logger::info('mail', "Черновик ответа на письмо #$id создан (" . Triage::label($category) . ')', [
@@ -558,6 +629,27 @@ try {
                          ['manager_id' => (int)$manager['id'], 'failed' => $failed]);
             jsonOk(['done' => $done, 'failed' => $failed, 'errors' => array_slice($errors, 0, 5)]);
         }
+
+        /**
+         * ==== Корзина писем (модуль 040) ====
+         *
+         * Удалить можно любое письмо — и вернуть тоже, пока корзину не
+         * очистили. До сих пор удаление было окончательным: строка исчезала,
+         * файлы стирались с диска.
+         */
+        case 'trash':
+            jsonData(['items' => MailSync::trash((int)($_GET['limit'] ?? 200))]);
+
+        case 'trash_restore':
+            try {
+                jsonOk(MailSync::restoreFromTrash((int)($input['id'] ?? 0)));
+            } catch (Throwable $e) {
+                jsonError($e->getMessage(), 404);
+            }
+
+        case 'trash_purge':
+            $one = (int)($input['id'] ?? 0);
+            jsonOk(['purged' => MailSync::purgeTrash($one ?: null)]);
 
         case 'categories':
             // For the «тип запроса» selector in the reply dialog

@@ -88,6 +88,20 @@ switch ($action) {
                                 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [(int)$manager['id']]);
         jsonOk(Signatures::describe((int)$manager['id']));
 
+    /**
+     * Подпись в письмах (модуль 039): своя у каждого менеджера. Пусто — письмо
+     * подписывается общей подписью компании, а её нет — именем и телефоном из
+     * карточки. GET показывает, чем письмо подпишется на самом деле.
+     */
+    case 'mail_signature':
+        $manager = requireAuth();
+        require_once ROOT . '/lib/mail_signature.php';
+        if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+            jsonData(MailSignature::describe((int)$manager['id']));
+        }
+        MailSignature::save((int)$manager['id'], (string)(getInput()['signature'] ?? ''));
+        jsonOk(MailSignature::describe((int)$manager['id']));
+
     // Старый адрес загрузки логотипа КП. Теперь все три знака — КП, приложение
     // и значок вкладки — живут в `Branding` и грузятся через api/branding.php;
     // здесь оставлена совместимость для сохранённых ссылок (модуль 021).

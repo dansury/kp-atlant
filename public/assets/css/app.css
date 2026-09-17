@@ -28,6 +28,10 @@
     --shadow-lg: 0 12px 28px rgba(16,24,40,.14);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* `hidden` — это скрыто, чем бы элемент ни был. Без этого правила любой
+   `display` в классе побеждает атрибут: поле «в КП над нашим названием»
+   висело открытым без галочки «аналог», потому что `.analog` — flex. */
+[hidden] { display: none !important; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
        background: var(--bg); color: var(--text); line-height: 1.5; font-size: 14px;
        -webkit-font-smoothing: antialiased; }
@@ -462,6 +466,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
                   border-bottom: 1px solid var(--border); }
 .suggest__item { padding: 6px 10px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
 .suggest__item--variant { padding-left: 18px; }
+/* Товар целиком — первой строкой семьи: выбирают и его, с вилкой цен */
+.suggest__item--group { font-weight: 600; }
+/* Фотографии позиции в таблице подбора (модуль 040) */
+.match-extra__photos { margin: 6px 0; }
+.match-photos { margin-top: 6px; }
+/* Разница версий промпта (модуль 041): что ушло и сколько появилось */
+.diff { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflow: auto; }
+.diff--gone { background: #fdeaea; color: var(--danger); text-decoration: line-through; }
+.diff--new { color: var(--text-muted); font-style: italic; }
 .suggest__item:last-child { border-bottom: none; }
 .suggest__item:hover { background: var(--surface-2); }
 
@@ -757,6 +770,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .composer__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .composer__title { font-weight: 650; font-size: 13px; }
 .composer__head select { width: auto; margin-left: auto; font-size: 12px; padding: 5px 8px; }
+
+/* Подпись письма (модуль 039): видно, чем письмо закончится, и это снимается
+   галочкой. Снятая — приглушена, но текст остаётся на экране. */
+.composer__sign { display: flex; align-items: center; gap: 6px; font-size: 12px; width: 100%; }
+.composer__sign [data-cmp-sign-text] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer__sign--off { opacity: .5; text-decoration: line-through; }
+.sig-preview { white-space: pre-wrap; font: inherit; background: var(--surface-2);
+               border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; }
 .composer input[type="text"], .composer input[type="email"] { margin-bottom: 6px; }
 .composer textarea { min-height: 104px; }
 .composer__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }

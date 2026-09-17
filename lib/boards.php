@@ -744,8 +744,32 @@ final class Boards {
      * по колонкам доска сваливалась обратно. Отметка `dismissed_at` держит и
      * снятие, и колонку, в которой карточка стояла.
      */
-    public static function dismissCard(int $cardId): void {
+    public static function dismissCard(int $cardId): bool {
         Db::update('board_cards', ['dismissed_at' => date('Y-m-d H:i:s')], 'id=?', [$cardId]);
+        // Пустую карточку снимать некуда: возвращать её нечему, а на доске она
+        // висела мёртвой ссылкой, и убрать её было нечем (модуль 040)
+        if (!self::cardIsEmpty($cardId)) return false;
+        self::deleteCard($cardId);
+        return true;
+    }
+
+    /** Ни живых писем, ни запроса, ни черновика, ни заметки — карточке нечем жить. */
+    private static function cardIsEmpty(int $cardId): bool {
+        $card = Db::one("SELECT * FROM board_cards WHERE id=?", [$cardId]);
+        if (!$card) return false;
+        if (!empty($card['draft_id']) || !empty($card['request_id'])) return false;
+        if (trim((string)($card['note'] ?? '')) !== '') return false;
+
+        $cpId = (int)($card['counterparty_id'] ?? 0);
+        $key  = trim((string)($card['thread_key'] ?? ''));
+        $live = $cpId
+            ? (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE archived_at IS NULL
+                            AND counterparty_id IN (SELECT id FROM counterparties WHERE id=? OR merged_into_id=?)",
+                           [$cpId, $cpId])
+            : ($key !== ''
+                ? (int)Db::val("SELECT COUNT(*) FROM mail_messages WHERE archived_at IS NULL AND thread_key=?", [$key])
+                : 0);
+        return $live === 0;
     }
 
     /**

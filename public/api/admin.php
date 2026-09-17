@@ -289,7 +289,9 @@ try {
 
         case 'mailbox_sync':
             $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
-            jsonOk(['report' => MailSync::run($id ?: null)]);
+            // Проверка ящика руками из настроек — единственное место, где
+            // выключенный ящик всё-таки опрашивается: так его и проверяют
+            jsonOk(['report' => MailSync::run($id ?: null, ['force' => $id > 0])]);
 
         // ---------- Full archive download ----------
 
@@ -463,8 +465,54 @@ try {
             Prompts::reset((string)($input['key'] ?? $_GET['key'] ?? ''), (int)$admin['id']);
             jsonOk();
 
-        case 'prompt_history':
-            jsonData(['items' => Prompts::history((string)($_GET['key'] ?? ''))]);
+        /**
+         * ==== Промпты учатся на правках (модуль 041) ====
+         *
+         * Правок набирается сотня, читать их подряд некому. Модель — её
+         * выбирают прямо на дашборде промптов, можно поумнее — читает их и
+         * пишет короткий свод правил. Свод не сохраняется сам: его видит
+         * человек и одной кнопкой подмешивает в нужный промпт.
+         */
+        case 'learning_rethink': {
+            require_once ROOT . '/lib/learning.php';
+            try {
+                $res = Learning::rethink(
+                    (string)($input['kind'] ?? 'sent'),
+                    (int)($input['limit'] ?? 40),
+                    (string)($input['model'] ?? '')
+                );
+            } catch (Throwable $e) {
+                jsonError($e->getMessage());
+            }
+            Logger::info('learning', 'Правки переосмыслены моделью',
+                         ['kind' => (string)($input['kind'] ?? 'sent'), 'manager_id' => $admin['id']]);
+            jsonData($res);
+        }
+
+        case 'prompt_append':
+            try {
+                $content = Prompts::append((string)($input['key'] ?? ''), (string)($input['block'] ?? ''),
+                                           (int)$admin['id']);
+            } catch (Throwable $e) {
+                jsonError($e->getMessage());
+            }
+            jsonOk(['content' => $content]);
+
+        case 'prompt_restore':
+            try {
+                $content = Prompts::restore((string)($input['key'] ?? ''), (int)($input['history_id'] ?? 0),
+                                            (int)$admin['id']);
+            } catch (Throwable $e) {
+                jsonError($e->getMessage());
+            }
+            jsonOk(['content' => $content]);
+
+        case 'prompt_history': {
+            $key = (string)($_GET['key'] ?? '');
+            // Нынешний текст едет вместе с историей: панель подсвечивает,
+            // ЧЕМ версия отличается от того, что стоит сейчас (модуль 041)
+            jsonData(['items' => Prompts::history($key), 'current' => Prompts::text($key)]);
+        }
 
         // ---------- Knowledge base (module 005) ----------
 
@@ -638,6 +686,20 @@ try {
                 jsonError('Склады не получены: ' . $e->getMessage());
             }
             jsonData(['items' => $stores, 'selected' => MoySklad::selectedStores()]);
+
+        /**
+         * Организации МойСклад (модуль 041): их выбирают из списка, а не
+         * переписывают идентификатор руками из адресной строки МойСклад.
+         */
+        case 'moysklad_organizations':
+            require_once ROOT . '/lib/moysklad.php';
+            MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+            try {
+                $orgs = MoySklad::getOrganizations();
+            } catch (Throwable $e) {
+                jsonError('Организации не получены: ' . $e->getMessage());
+            }
+            jsonData(['items' => $orgs, 'selected' => (string)Settings::get('MOYSKLAD_ORG_ID', '')]);
 
         case 'moysklad_stock_refresh':
             require_once ROOT . '/lib/moysklad.php';

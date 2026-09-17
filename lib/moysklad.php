@@ -138,7 +138,12 @@ class MoySklad {
                         name=excluded.name, name_normalized=excluded.name_normalized,
                         article=excluded.article, code=excluded.code, price=excluded.price,
                         prices_json=excluded.prices_json,
-                        stock=excluded.stock, reserved=excluded.reserved,
+                        -- Остаток здесь НЕ трогается. `/entity/product` его не
+                        -- отдаёт, `mapProduct()` ставит ноль-заглушку, и запись
+                        -- этого нуля переводила весь каталог в «под заказ»
+                        -- до следующего удачного отчёта — а если у токена нет
+                        -- прав на отчёт, то навсегда (модуль 040). Остаток
+                        -- пишет только `refreshStock()`.
                         unit=excluded.unit, description=excluded.description,
                         category=excluded.category, is_addon=excluded.is_addon,
                         vat=COALESCE(excluded.vat, products_cache.vat),
@@ -262,6 +267,19 @@ class MoySklad {
             }
         }
 
+        // Отчёт ответил, но про МОДИФИКАЦИИ в нём ни строчки, а в каталоге они
+        // есть: у части аккаунтов «Остатки» отдают только товары, и все размеры
+        // оставались с нулём, хотя лежат на полке. Спрашиваем ассортимент —
+        // он знает и модификации — и дополняем им отчёт, а не заменяем его.
+        if ($totals && self::hasVariants() && !self::touchesVariants($totals)) {
+            try {
+                $rows += self::readAssortmentStock($totals);
+                $usedFallback = true;
+            } catch (Throwable $e) {
+                $errors[] = 'ассортимент (модификации): ' . $e->getMessage();
+            }
+        }
+
         $updated = 0;
         foreach ($totals as $id => $pair) {
             $updated += Db::q(
@@ -277,6 +295,11 @@ class MoySklad {
             'fallback' => $usedFallback,
             'error'    => $errors ? implode('; ', array_unique($errors)) : null,
         ];
+
+        // Когда остатки читались в последний раз — это видно в карточке
+        // каталога: «всё под заказ» из-за молча упавшего отчёта не должно
+        // выглядеть как пустой склад (модуль 040)
+        if ($updated > 0) Settings::set('catalog_stock_synced_at', date('Y-m-d H:i:s'));
 
         // Отчёт, который не нашёл НИ ОДНОЙ нашей позиции, — это поломка, а не
         // пустой склад: пусть она видна в логе и в ответе кнопки, а не только
@@ -351,6 +374,20 @@ class MoySklad {
         } while (count($data['rows']) === $limit);
 
         return $rows;
+    }
+
+    /** Есть ли в каталоге модификации вообще — иначе их нечего и искать. */
+    private static function hasVariants(): bool {
+        return (int)Db::val("SELECT COUNT(*) FROM products_cache WHERE product_type='variant'") > 0;
+    }
+
+    /** Попала ли в накопитель хоть одна модификация. */
+    private static function touchesVariants(array $totals): bool {
+        $ids = array_slice(array_keys($totals), 0, 900);
+        if (!$ids) return false;
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        return (int)Db::val("SELECT COUNT(*) FROM products_cache
+                             WHERE product_type='variant' AND moysklad_id IN ($ph)", $ids) > 0;
     }
 
     /** Остаток одной позиции, сложенный по всем прочитанным складам. */

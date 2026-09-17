@@ -545,6 +545,11 @@ final class MailArchive {
             'to_emails'   => $o['to'] ?? ($o['to_emails'] ?? ''),
             'date_at'     => date('Y-m-d H:i:s'),
         ]);
+        // Ответили — значит, прочитали: жирное выделение снимается со всей
+        // переписки, а счётчик перестаёт считать разобранное (модуль 040)
+        if ($thread) {
+            Db::q("UPDATE mail_messages SET is_read=1 WHERE thread_key=? AND direction='in' AND is_read=0", [$thread]);
+        }
         return Db::insert('mail_messages', [
             'mailbox_id'      => $o['mailbox_id'] ?? null,
             'thread_key'      => $thread,
@@ -563,7 +568,8 @@ final class MailArchive {
             'body_text'       => $o['text'] ?? '',
             'body_html'       => $o['html'] ?? '',
             'has_attachment'  => empty($o['attachments']) ? 0 : 1,
-            'attachments_json'=> !empty($o['attachments']) ? json_encode(array_map('basename', $o['attachments']), JSON_UNESCAPED_UNICODE) : null,
+            'attachments_json'=> !empty($o['attachments'])
+                ? json_encode(array_map([self::class, 'attachmentName'], $o['attachments']), JSON_UNESCAPED_UNICODE) : null,
             'counterparty_id' => $o['counterparty_id'] ?? null,
             'request_id'      => $o['request_id'] ?? null,
             'manager_id'      => $o['manager_id'] ?? null,
@@ -571,6 +577,49 @@ final class MailArchive {
             'processed_at'    => date('Y-m-d H:i:s'),
             'date_at'         => date('Y-m-d H:i:s'),
         ]);
+    }
+
+    /** Имя вложения в письме: `['path'=>…,'name'=>…]` или просто путь. */
+    public static function attachmentName(array|string $a): string {
+        if (is_array($a)) return (string)($a['name'] ?? basename((string)($a['path'] ?? '')));
+        require_once __DIR__ . '/outbox.php';
+        return Outbox::displayName($a);
+    }
+
+    /** Путь вложения на диске, какой бы формой его ни передали. */
+    public static function attachmentPath(array|string $a): string {
+        return is_array($a) ? (string)($a['path'] ?? '') : (string)$a;
+    }
+
+    /**
+     * Файлы отправленного письма — в архив, как у входящего (модуль 040).
+     *
+     * Раньше от них оставался только список имён в `attachments_json`: в
+     * переписке под нашим письмом не было ни одного вложения, и скачать
+     * отправленное было неоткуда. Теперь файл копируется в хранилище и
+     * становится обычной строкой `attachments` — той же, что у входящих.
+     */
+    public static function storeOutgoingFiles(int $mailMessageId, array $attachments, array $o = []): void {
+        if (!$attachments) return;
+        require_once __DIR__ . '/attachments.php';
+        foreach ($attachments as $a) {
+            $path = self::attachmentPath($a);
+            if ($path === '' || !is_file($path)) continue;
+            try {
+                $content = (string)@file_get_contents($path);
+                if ($content === '') continue;
+                Attachments::store(
+                    ['filename' => self::attachmentName($a), 'content' => $content],
+                    ['mail_message_id' => $mailMessageId,
+                     'counterparty_id' => $o['counterparty_id'] ?? null,
+                     'request_id'      => $o['request_id'] ?? null],
+                    // Наш же файл: распознавать в нём нечего, мы его и составили
+                    ['ocr' => false]
+                );
+            } catch (Throwable $e) {
+                Logger::warning('mail', 'Вложение отправленного письма не сохранилось: ' . $e->getMessage());
+            }
+        }
     }
 
     /**
@@ -969,8 +1018,9 @@ final class MailArchive {
         return [
             'items'  => Db::all($sql, [...$params, $limit, $offset]),
             'total'  => (int)Db::val("SELECT COUNT(*) FROM mail_messages m WHERE " . implode(' AND ', $where), $params),
-            'unread' => (int)Db::val("SELECT COUNT(*) FROM mail_messages
-                                      WHERE direction='in' AND is_read=0 AND archived_at IS NULL"),
+            // Один и тот же счёт по всему сервису: отвеченное письмо
+            // непрочитанным не считается (модуль 040)
+            'unread' => MailThreads::unreadCount(),
         ];
     }
 
@@ -1223,6 +1273,10 @@ final class Mailer {
             'manager_id'      => $o['manager_id'] ?? null,
             'in_reply_to'     => $o['in_reply_to'] ?? null,
         ]);
+
+        // Приложенные файлы видны и в отправленном письме — их можно открыть
+        // и переслать, а не гадать, что именно ушло (модуль 040)
+        MailArchive::storeOutgoingFiles((int)$archiveId, (array)($o['attachments'] ?? []), $o);
 
         Logger::info('mail', "Письмо отправлено: $to", ['subject' => $subject, 'mailbox_id' => $box['id'] ?? null,
             'archive_id' => $archiveId, 'sent_folder' => $sent['folder'], 'sent_state' => $sent['state']]);

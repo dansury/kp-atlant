@@ -515,6 +515,9 @@ final class RequestItems {
                 'wait_discount'       => isset($row['wait_discount']) && $row['wait_discount'] !== '' ? max(0.0, min(100.0, (float)$row['wait_discount'])) : null,
                 'wait_prepay'         => isset($row['wait_prepay']) && $row['wait_prepay'] !== '' ? max(0, min(100, (int)$row['wait_prepay'])) : null,
                 'stock'               => isset($row['stock']) && $row['stock'] !== '' ? (int)$row['stock'] : null,
+                // Выбранные фотографии: строка JSON с ключами, `null` —
+                // «выбор не делали», и в КП идут все найденные (модуль 040)
+                'selected_images'     => self::imageChoice($row),
                 'is_confirmed'        => !empty($row['is_confirmed']) ? 1 : 0,
                 // A row the manager saved is answered: the choice prompt goes away
                 'needs_choice'        => (!empty($row['is_confirmed']) || $prodName !== '') ? 0 : (int)($row['needs_choice'] ?? 0),
@@ -579,6 +582,24 @@ final class RequestItems {
     }
 
     /** Сохранить строку доставки. Пришло null — строку убрали крестиком. */
+    /**
+     * Выбор фотографий строки: массив ключей → JSON, пусто → NULL.
+     *
+     * NULL и пустой массив — разные вещи: первое значит «не выбирали, печатать
+     * все», второе — «выбрали ни одной, фотографий в КП не будет».
+     */
+    private static function imageChoice(array $row): ?string {
+        if (!array_key_exists('selected_images', $row)) return null;
+        $v = $row['selected_images'];
+        if ($v === null || $v === '') return null;
+        if (is_string($v)) {
+            $decoded = json_decode($v, true);
+            $v = is_array($decoded) ? $decoded : null;
+        }
+        if (!is_array($v)) return null;
+        return json_encode(array_values(array_map('strval', $v)), JSON_UNESCAPED_UNICODE);
+    }
+
     public static function saveDelivery(int $requestId, ?array $d): array {
         Db::update('requests', [
             'delivery_on'    => $d === null ? 0 : 1,
@@ -623,6 +644,9 @@ final class RequestItems {
                 'variants'     => $row['variants'] ?? [],
                 'is_alternative' => (int)($row['is_alternative'] ?? 0) === 1,
                 'alt_of'         => $row['alt_of'] ?? null,
+                // Фотографии, выбранные в таблице подбора, едут в КП вместе с
+                // позицией: заново их там не выбирают (модуль 040)
+                'selected_images' => $row['selected_images'] ?? null,
                 'alt_specs'      => $row['alternative'] ?? null,
                 'match'        => $hasProduct ? [
                     'moysklad_id' => $row['moysklad_product_id'] ?? null,

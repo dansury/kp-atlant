@@ -1702,6 +1702,55 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '36')");
         $current = 36;
     }
+
+    // v37 — модули 039–041: подбор по любой переписке и подпись менеджера,
+    // фотографии в таблице подбора, корзина писем и обучение промптов.
+    if ($current < 37) {
+        // Подпись в письмах — своя у каждого. Пусто — общая подпись компании
+        // из настроек, а её нет — имя и телефон из карточки менеджера.
+        Db::ensureColumn('managers', 'email_signature', 'TEXT');
+
+        // Выбор фотографий переехал в таблицу подбора (модуль 040): картинки
+        // выбирают сразу после того, как определились с товаром, и КП уносит
+        // этот выбор с собой. NULL — «выбор не делали», в КП идут все фото.
+        Db::ensureColumn('request_items', 'selected_images', 'TEXT');
+
+        // Сколько раз модель не смогла разобрать письмо: после трёх неудач
+        // запрос заводится правилами, а не теряется молча (модуль 040)
+        Db::ensureColumn('mail_messages', 'triage_attempts', 'INTEGER', '0');
+
+        /**
+         * Корзина писем (модуль 040).
+         *
+         * Удаление было безвозвратным: строка письма исчезала, файлы стирались
+         * с диска. Удалить можно ЛЮБОЕ письмо — и вернуть его тоже, пока
+         * корзину не очистили. Письмо лежит здесь целиком, вместе со списком
+         * своих файлов: восстановление — это та же строка обратно в архив.
+         */
+        Db::q("
+        CREATE TABLE IF NOT EXISTS mail_trash (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_key   TEXT,
+            subject      TEXT,
+            from_email   TEXT,
+            to_emails    TEXT,
+            direction    TEXT,
+            date_at      TEXT,
+            deleted_at   TEXT NOT NULL,
+            deleted_by   INTEGER,
+            server_state TEXT,
+            payload_json TEXT NOT NULL,
+            files_json   TEXT
+        )");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_mail_trash_deleted ON mail_trash(deleted_at)");
+
+        // Чем ответила модель на это письмо: отправленное письмо встаёт с этим
+        // в пару в «Исправлениях» и кормит промпты (модуль 041)
+        Db::ensureColumn('mail_messages', 'model_draft_text', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '37')");
+        $current = 37;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
