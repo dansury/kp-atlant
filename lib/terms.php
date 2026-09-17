@@ -63,6 +63,60 @@ final class Terms {
         return (int)Settings::get('KP_WAIT_AUTO', 0) === 1;
     }
 
+    // ------------------------------------------- общие условия КП (модуль 036)
+
+    /**
+     * Цены и условия, выбранные ОДИН РАЗ на всё КП, — и запомненные.
+     *
+     * Тип цены и скидка выставлялись в каждой строке по отдельности, и каждое
+     * следующее КП начиналось с той же работы заново: розница, скидка, «под
+     * заказ» — сорок раз подряд. Теперь это один выбор над таблицей подбора, и
+     * он живёт за МЕНЕДЖЕРОМ: следующее КП открывается тем, чем закрылось
+     * предыдущее. Поменял скидку — с этого места запомнена новая, и все
+     * следующие КП идут по ней.
+     *
+     * За менеджером, а не в настройках сервиса: двое за одной доской работают
+     * с разными покупателями, и «розница» одного не должна молча становиться
+     * условием другого. Не выбрано ничего — отвечают настройки, как и раньше.
+     *
+     * @return array{price_type:string,discount:float,wait_on:int,wait_months:int,wait_discount:float,wait_prepay:int}
+     */
+    public static function conditions(?int $managerId = null): array {
+        $d = self::defaults();
+        $saved = [];
+        if ($managerId && Db::hasColumn('managers', 'kp_terms_json')) {
+            $json = (string)(Db::val("SELECT kp_terms_json FROM managers WHERE id=?", [$managerId]) ?: '');
+            $saved = $json !== '' ? (json_decode($json, true) ?: []) : [];
+        }
+        return [
+            'price_type'    => (string)($saved['price_type'] ?? Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '')),
+            'discount'      => self::clampPercent((float)($saved['discount'] ?? 0)),
+            'wait_on'       => (int)($saved['wait_on'] ?? (self::auto() ? 1 : 0)) === 1 ? 1 : 0,
+            'wait_months'   => max(0, (int)($saved['wait_months'] ?? $d['months'])),
+            'wait_discount' => self::clampPercent((float)($saved['wait_discount'] ?? $d['discount'])),
+            'wait_prepay'   => (int)self::clampPercent((float)($saved['wait_prepay'] ?? $d['prepay'])),
+        ];
+    }
+
+    /** Запомнить выбор за менеджером. Приходит то же, что отдаёт `conditions()`. */
+    public static function remember(?int $managerId, array $c): array {
+        $clean = self::conditions($managerId);
+        foreach (array_keys($clean) as $key) {
+            if (!array_key_exists($key, $c)) continue;
+            $clean[$key] = match ($key) {
+                'price_type'    => trim((string)$c[$key]),
+                'discount', 'wait_discount' => self::clampPercent((float)$c[$key]),
+                'wait_on'       => !empty($c[$key]) ? 1 : 0,
+                'wait_months'   => max(0, (int)$c[$key]),
+                'wait_prepay'   => (int)self::clampPercent((float)$c[$key]),
+            };
+        }
+        if ($managerId && Db::hasColumn('managers', 'kp_terms_json')) {
+            Db::update('managers', ['kp_terms_json' => json_encode($clean, JSON_UNESCAPED_UNICODE)], 'id=?', [$managerId]);
+        }
+        return $clean;
+    }
+
     /**
      * Свободный остаток позиции: сколько можем отгрузить прямо сейчас.
      *
@@ -114,6 +168,20 @@ final class Terms {
         if ($wait) $price *= 1 - $wait['discount'] / 100;
 
         return round($price, 2);
+    }
+
+    /**
+     * Верх вилки цен, посчитанный теми же скидками, что и низ (модуль 036).
+     *
+     * Вилка берётся у товара, цена которого проставлена только на
+     * модификациях: «от 1 200 до 1 800». Ноль — вилки нет, и документ печатает
+     * одну цену. Скидка действует на оба конца: иначе «от» падало на 10%, а
+     * «до» оставалось прежним, и вилка врала шире, чем она есть.
+     */
+    public static function priceTop(array $item): float {
+        $max = (float)($item['price_max'] ?? 0);
+        if ($max <= (float)($item['price'] ?? 0)) return 0.0;
+        return self::price(['price' => $max] + $item);
     }
 
     /** Сколько скидки в итоге получилось, в процентах от базовой цены. */

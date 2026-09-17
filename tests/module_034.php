@@ -193,7 +193,11 @@ ok('файл .docx собрался', is_file($path) && filesize($path) > 0);
 $zip = new ZipArchive();
 $zip->open($path);
 $docXml = (string)$zip->getFromName('word/document.xml');
+$zipStyles = (string)$zip->getFromName('word/styles.xml');
+$zipFonts = (string)$zip->getFromName('word/fontTable.xml');
 $zip->close();
+ok('в пакете есть таблица шрифтов', str_contains($zipFonts, '<w:fonts'));
+ok('и document.xml — правильный XML', simplexml_load_string($docXml) !== false);
 ok('в документе есть разрыв страницы перед приложением', str_contains($docXml, '<w:br w:type="page"/>'));
 ok('имя файла .docx есть чем назвать', DocxGenerator::filename($proposalId) !== '');
 
@@ -215,8 +219,19 @@ ok('подпись в Word — подпись, а не картинка на п�
    $signW > 0 && $signW <= 170 && $signH <= 60, $signW . '×' . $signH . ' px');
 
 // В PDF подпись ограничена стилем — он должен остаться на месте
-ok('и в PDF она тоже ограничена',
-   str_contains(file_get_contents(ROOT . '/templates/kp.html'), 'max-height: 50px; max-width: 160px;'));
+$css = file_get_contents(ROOT . '/templates/kp.html');
+ok('и в PDF она тоже ограничена', str_contains($css, '.signature img.sign-img { max-height: 46px; max-width: 115px;'));
+
+// Шрифт и обтекание — то, чем документ отличался от образца (модуль 035)
+ok('документ набран шрифтом из настроек',
+   str_contains((string)$zipStyles, 'Microsoft Sans Serif'), Html2Docx::font());
+ok('кегль основного текста — 10 пт', Html2Docx::bodyHalfPoints() === 20);
+ok('знак стоит слева, текст обтекает его',
+   (bool)preg_match('/<wp:align>left<\/wp:align>.*?<wp:wrapSquare/su', $docXml));
+ok('подпись лежит поверх строки, не раздвигая текст',
+   str_contains($docXml, '<wp:wrapNone/>') && str_contains($docXml, 'behindDoc="1"'));
+ok('картинок «в строке» в документе не осталось', !str_contains($docXml, '<wp:inline'));
+ok('фотография в PDF обтекается текстом', str_contains($css, '.card .gallery { float: right;'));
 
 echo "\n7. Ответ модели разбирается, даже если оборвался\n";
 
@@ -269,7 +284,32 @@ ok('ИНН ищется по переписке', str_contains($js, 'App.msFindI
 ok('скачивание проверяет ответ сервера', str_contains($js, 'if (!res.ok) throw new Error(await this.errorTextOf(res))'));
 ok('«собрать КП в файл» раскрывает предпросмотр', str_contains($js, 'this.openKpUnderLetter(proposalId, btn)'));
 
-echo "\n11. Старые условия переписываются, подписанные — нет\n";
+echo "\n11. Имя и номер документа\n";
+
+ok('имя файла — информативное',
+   (bool)preg_match('/^КП_Атлант_Армор_для_ООО_Воевода_от_\d{2}\.\d{2}\.\d{4}\.docx$/u',
+                    DocxGenerator::filename($proposalId)), DocxGenerator::filename($proposalId));
+ok('и латиницей для заголовка — тоже',
+   (bool)preg_match('/^KP_Atlant_Armor_dlya_OOO_Voevoda_ot_\d{2}\.\d{2}\.\d{4}\.docx$/', PdfGenerator::asciiFileName($proposalId, 'docx')),
+   PdfGenerator::asciiFileName($proposalId, 'docx'));
+
+// Номер не должен повторяться: убрали КП — следующее не берёт его номер
+$firstNumber = (string)Db::val("SELECT number FROM proposals WHERE id=?", [$proposalId]);
+$extra = KpSet::create($requestId, null);
+PdfGenerator::generate($extra);
+$extraNumber = (string)Db::val("SELECT number FROM proposals WHERE id=?", [$extra]);
+ok('у второго КП свой номер', $extraNumber !== '' && $extraNumber !== $firstNumber,
+   $firstNumber . ' / ' . $extraNumber);
+KpSet::delete($extra);
+$third = KpSet::create($requestId, null);
+PdfGenerator::generate($third);
+$thirdNumber = (string)Db::val("SELECT number FROM proposals WHERE id=?", [$third]);
+ok('убранное КП не отдаёт свой номер следующему',
+   $thirdNumber !== $extraNumber && $thirdNumber !== $firstNumber,
+   $firstNumber . ' / ' . $extraNumber . ' / ' . $thirdNumber);
+KpSet::delete($third);
+
+echo "\n12. Старые условия переписываются, подписанные — нет\n";
 
 // Ровно тот текст, который лежит в живых базах с модуля 026
 $oldTerms = "Стоимость включает расходы на упаковку, маркировку, хранение, погрузку, "

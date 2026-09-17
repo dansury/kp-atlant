@@ -107,6 +107,9 @@ final class KpSet {
             'unit'                => $match['unit'] ?? 'шт.',
             'quantity'            => $m['quantity'],
             'price'               => $match['price'] ?? 0,
+            // Вилка цен: цена стоит только на модификациях и они стоят по-разному
+            // (модуль 036). Равен цене или ноль — вилки нет, печатается одна цена.
+            'price_max'           => (float)($match['price_max'] ?? 0),
             'stock_available'     => $match['stock'] ?? null,
             'stock_reserved'      => $match['reserved'] ?? null,
             'match_confidence'    => $match['score'] ?? null,
@@ -123,6 +126,10 @@ final class KpSet {
             'wait_discount'       => $m['wait_discount'] ?? null,
             'wait_prepay'         => $m['wait_prepay'] ?? null,
             'is_alternative'      => !empty($m['is_alternative']) ? 1 : 0,
+            // Слова КЛИЕНТА про то, вместо чего стоит наша позиция: КП печатает
+            // их над её названием. Менеджер их правит, поэтому это не
+            // `requested_name`, а своё поле (модуль 036)
+            'alt_of'              => trim((string)($m['alt_of'] ?? '')) ?: ($m['raw_name'] ?? null),
             'alt_reason'          => $m['alt_specs']['reason'] ?? null,
             'alt_specs_json'      => !empty($m['alt_specs'])
                 ? json_encode($m['alt_specs'], JSON_UNESCAPED_UNICODE) : null,
@@ -349,7 +356,7 @@ final class KpSet {
     }
 
     /**
-     * Условия ожидания из таблицы подбора — в КП этого запроса (модуль 035).
+     * Условия ожидания из таблицы подбора — в КП этого запроса (модуль 037).
      *
      * Срок ожидания ставится в подборе, а печатается в КП дважды: строкой «под
      * заказ, срок ожидания 6 месяцев» и сроком исполнения в условиях. Пока их
