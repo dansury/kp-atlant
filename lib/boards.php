@@ -747,7 +747,7 @@ final class Boards {
     public static function dismissCard(int $cardId): bool {
         Db::update('board_cards', ['dismissed_at' => date('Y-m-d H:i:s')], 'id=?', [$cardId]);
         // Пустую карточку снимать некуда: возвращать её нечему, а на доске она
-        // висела мёртвой ссылкой, и убрать её было нечем (модуль 039)
+        // висела мёртвой ссылкой, и убрать её было нечем (модуль 040)
         if (!self::cardIsEmpty($cardId)) return false;
         self::deleteCard($cardId);
         return true;
@@ -1021,14 +1021,17 @@ final class Boards {
         // слитой в неё — иначе слитая карточка никогда бы не убиралась
         $rootId = $counterpartyId ? Crm::rootId($counterpartyId) : null;
         $cards = $rootId
-            ? Db::all("SELECT id, counterparty_id, draft_id FROM board_cards WHERE counterparty_id=?", [$rootId])
-            : Db::all("SELECT id, counterparty_id, draft_id FROM board_cards WHERE counterparty_id IS NOT NULL");
+            ? Db::all("SELECT id, counterparty_id, draft_id, request_id FROM board_cards WHERE counterparty_id=?", [$rootId])
+            : Db::all("SELECT id, counterparty_id, draft_id, request_id FROM board_cards WHERE counterparty_id IS NOT NULL");
 
         $removed = 0;
         foreach ($cards as $card) {
             // Письмо, которое ей пишут прямо сейчас, — это живая работа, даже
             // когда писем в архиве ещё ноль (модуль 033)
             if (!empty($card['draft_id'])) continue;
+            // Запрос, заведённый руками, — тоже живая работа, и писем у него
+            // может не быть вовсе: он пришёл из мессенджера (модуль 038)
+            if (!empty($card['request_id'])) continue;
             $cpId = (int)$card['counterparty_id'];
             // Слитая карточка держит письма под своим прежним id — считаем семью
             $live = (int)Db::val(

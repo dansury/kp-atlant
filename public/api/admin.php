@@ -9,6 +9,8 @@ require_once ROOT . '/lib/managers.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/mailsync.php';
 require_once ROOT . '/lib/branding.php';
+require_once ROOT . '/lib/support.php';
+require_once ROOT . '/lib/setup_wizard.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -464,7 +466,7 @@ try {
             jsonOk();
 
         /**
-         * ==== Промпты учатся на правках (модуль 040) ====
+         * ==== Промпты учатся на правках (модуль 041) ====
          *
          * Правок набирается сотня, читать их подряд некому. Модель — её
          * выбирают прямо на дашборде промптов, можно поумнее — читает их и
@@ -508,7 +510,7 @@ try {
         case 'prompt_history': {
             $key = (string)($_GET['key'] ?? '');
             // Нынешний текст едет вместе с историей: панель подсвечивает,
-            // ЧЕМ версия отличается от того, что стоит сейчас (модуль 040)
+            // ЧЕМ версия отличается от того, что стоит сейчас (модуль 041)
             jsonData(['items' => Prompts::history($key), 'current' => Prompts::text($key)]);
         }
 
@@ -686,7 +688,7 @@ try {
             jsonData(['items' => $stores, 'selected' => MoySklad::selectedStores()]);
 
         /**
-         * Организации МойСклад (модуль 040): их выбирают из списка, а не
+         * Организации МойСклад (модуль 041): их выбирают из списка, а не
          * переписывают идентификатор руками из адресной строки МойСклад.
          */
         case 'moysklad_organizations':
@@ -779,6 +781,10 @@ try {
                 ],
                 // Логотип КП: «загружен» и «печатается» — не одно и то же
                 'logo'       => ['warning' => Branding::documentWarning('kp')],
+                // Чего не хватает для запуска и что просят менеджеры (модуль 038)
+                'setup'      => setupSummary(),
+                'support'    => ['pending' => Support::pending(), 'repo' => Support::repo(),
+                                 'token_set' => Support::token() !== ''],
             ]);
 
         default:
@@ -789,6 +795,17 @@ try {
 } catch (Throwable $e) {
     Logger::exception('admin', $e, ['action' => $action]);
     jsonError($e->getMessage(), 500);
+}
+
+/** Мастер настройки на «Обзоре»: сколько шагов закрыто и на каком встали. */
+function setupSummary(): array {
+    $p = SetupWizard::progress();
+    $waiting = [];
+    foreach ($p['steps'] as $step) {
+        if (empty($step['optional']) && ($step['state']['status'] ?? '') !== 'ok') $waiting[] = (string)$step['title'];
+    }
+    return ['done' => $p['done'], 'total' => $p['total'], 'next' => $p['next'],
+            'waiting' => $waiting, 'finished' => !empty($p['state']['done_at'])];
 }
 
 /** Options for the deploy check: the switch from the panel, the creds from pull-config.php. */

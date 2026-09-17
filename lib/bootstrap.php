@@ -1657,24 +1657,70 @@ SQL);
         $current = 35;
     }
 
-    // v36 — модуль 038: подбор товара заводится по любой переписке, а письмо
-    // уходит с подписью того менеджера, который его отправляет.
+    // v36 — модуль 038: обращение в поддержку с файлами, мастер настройки и
+    // проверочный запрос, по которому оценивают качество КП и письма.
     if ($current < 36) {
+        // Жалоба менеджера. В GitHub она уходит только после ревью админа,
+        // поэтому у строки есть и своё состояние, и номер заведённого issue.
+        Db::pdo()->exec("
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER REFERENCES managers(id),
+            kind TEXT NOT NULL DEFAULT 'bug',
+            title TEXT NOT NULL,
+            body TEXT,
+            page TEXT,
+            rating TEXT,
+            model TEXT,
+            status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','approved','declined')),
+            reviewed_by INTEGER REFERENCES managers(id),
+            reviewed_at TEXT,
+            review_note TEXT,
+            issue_number INTEGER,
+            issue_url TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_support_status ON support_tickets(status, id);
+
+        CREATE TABLE IF NOT EXISTS support_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id INTEGER NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            path TEXT NOT NULL,
+            mime TEXT,
+            size INTEGER,
+            remote_url TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_support_files ON support_files(ticket_id);
+        ");
+
+        // Проверочный запрос мастера. Отметка нужна, чтобы «Ромашка» из примера
+        // не выглядела клиентом, которому забыли ответить.
+        Db::ensureColumn('requests', 'is_trial', 'INTEGER', '0');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '36')");
+        $current = 36;
+    }
+
+    // v37 — модули 039–041: подбор по любой переписке и подпись менеджера,
+    // фотографии в таблице подбора, корзина писем и обучение промптов.
+    if ($current < 37) {
         // Подпись в письмах — своя у каждого. Пусто — общая подпись компании
         // из настроек, а её нет — имя и телефон из карточки менеджера.
         Db::ensureColumn('managers', 'email_signature', 'TEXT');
 
-        // Выбор фотографий переехал в таблицу подбора (модуль 039): картинки
+        // Выбор фотографий переехал в таблицу подбора (модуль 040): картинки
         // выбирают сразу после того, как определились с товаром, и КП уносит
         // этот выбор с собой. NULL — «выбор не делали», в КП идут все фото.
         Db::ensureColumn('request_items', 'selected_images', 'TEXT');
 
         // Сколько раз модель не смогла разобрать письмо: после трёх неудач
-        // запрос заводится правилами, а не теряется молча (модуль 039)
+        // запрос заводится правилами, а не теряется молча (модуль 040)
         Db::ensureColumn('mail_messages', 'triage_attempts', 'INTEGER', '0');
 
         /**
-         * Корзина писем (модуль 039).
+         * Корзина писем (модуль 040).
          *
          * Удаление было безвозвратным: строка письма исчезала, файлы стирались
          * с диска. Удалить можно ЛЮБОЕ письмо — и вернуть его тоже, пока
@@ -1699,11 +1745,11 @@ SQL);
         Db::q("CREATE INDEX IF NOT EXISTS idx_mail_trash_deleted ON mail_trash(deleted_at)");
 
         // Чем ответила модель на это письмо: отправленное письмо встаёт с этим
-        // в пару в «Исправлениях» и кормит промпты (модуль 040)
+        // в пару в «Исправлениях» и кормит промпты (модуль 041)
         Db::ensureColumn('mail_messages', 'model_draft_text', 'TEXT');
 
-        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '36')");
-        $current = 36;
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '37')");
+        $current = 37;
     }
 }
 

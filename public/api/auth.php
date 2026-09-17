@@ -47,6 +47,13 @@ switch ($action) {
     case 'me':
         $m = currentManager();
         if (!$m) jsonError('Unauthorized', 401);
+        // Мастер настройки, который ни разу не доводили до конца, встречает
+        // администратора сам (модуль 038): иначе установка с нуля так и
+        // остаётся устной традицией
+        if (!empty($m['is_admin'])) {
+            require_once ROOT . '/lib/setup_wizard.php';
+            $m['setup_pending'] = SetupWizard::needed();
+        }
         jsonData($m);
 
     default:

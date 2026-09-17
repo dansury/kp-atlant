@@ -349,7 +349,7 @@ final class Triage {
             ? Knowledge::augment($promptKey, $vars, $query)
             : Prompts::render($promptKey, $vars);
         // Форма письма одна на все промпты ответа и держится сервисом, а не
-        // моделью: обращение по имени и отчеству, дальше суть (модуль 040)
+        // моделью: обращение по имени и отчеству, дальше суть (модуль 041)
         $system .= LetterShape::instruction();
 
         $text = LLM::chatText($system, self::userMessage($message, $ctx), 0.4);

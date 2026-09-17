@@ -546,7 +546,7 @@ final class MailArchive {
             'date_at'     => date('Y-m-d H:i:s'),
         ]);
         // Ответили — значит, прочитали: жирное выделение снимается со всей
-        // переписки, а счётчик перестаёт считать разобранное (модуль 039)
+        // переписки, а счётчик перестаёт считать разобранное (модуль 040)
         if ($thread) {
             Db::q("UPDATE mail_messages SET is_read=1 WHERE thread_key=? AND direction='in' AND is_read=0", [$thread]);
         }
@@ -592,7 +592,7 @@ final class MailArchive {
     }
 
     /**
-     * Файлы отправленного письма — в архив, как у входящего (модуль 039).
+     * Файлы отправленного письма — в архив, как у входящего (модуль 040).
      *
      * Раньше от них оставался только список имён в `attachments_json`: в
      * переписке под нашим письмом не было ни одного вложения, и скачать
@@ -1019,7 +1019,7 @@ final class MailArchive {
             'items'  => Db::all($sql, [...$params, $limit, $offset]),
             'total'  => (int)Db::val("SELECT COUNT(*) FROM mail_messages m WHERE " . implode(' AND ', $where), $params),
             // Один и тот же счёт по всему сервису: отвеченное письмо
-            // непрочитанным не считается (модуль 039)
+            // непрочитанным не считается (модуль 040)
             'unread' => MailThreads::unreadCount(),
         ];
     }
@@ -1275,7 +1275,7 @@ final class Mailer {
         ]);
 
         // Приложенные файлы видны и в отправленном письме — их можно открыть
-        // и переслать, а не гадать, что именно ушло (модуль 039)
+        // и переслать, а не гадать, что именно ушло (модуль 040)
         MailArchive::storeOutgoingFiles((int)$archiveId, (array)($o['attachments'] ?? []), $o);
 
         Logger::info('mail', "Письмо отправлено: $to", ['subject' => $subject, 'mailbox_id' => $box['id'] ?? null,

@@ -468,10 +468,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .suggest__item--variant { padding-left: 18px; }
 /* Товар целиком — первой строкой семьи: выбирают и его, с вилкой цен */
 .suggest__item--group { font-weight: 600; }
-/* Фотографии позиции в таблице подбора (модуль 039) */
+/* Фотографии позиции в таблице подбора (модуль 040) */
 .match-extra__photos { margin: 6px 0; }
 .match-photos { margin-top: 6px; }
-/* Разница версий промпта (модуль 040): что ушло и сколько появилось */
+/* Разница версий промпта (модуль 041): что ушло и сколько появилось */
 .diff { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflow: auto; }
 .diff--gone { background: #fdeaea; color: var(--danger); text-decoration: line-through; }
 .diff--new { color: var(--text-muted); font-style: italic; }
@@ -771,7 +771,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .composer__title { font-weight: 650; font-size: 13px; }
 .composer__head select { width: auto; margin-left: auto; font-size: 12px; padding: 5px 8px; }
 
-/* Подпись письма (модуль 038): видно, чем письмо закончится, и это снимается
+/* Подпись письма (модуль 039): видно, чем письмо закончится, и это снимается
    галочкой. Снятая — приглушена, но текст остаётся на экране. */
 .composer__sign { display: flex; align-items: center; gap: 6px; font-size: 12px; width: 100%; }
 .composer__sign [data-cmp-sign-text] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1072,3 +1072,30 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
                 width: 26px; height: 26px; border: none; background: none; cursor: pointer;
                 color: var(--text-muted); font-size: 18px; line-height: 1; padding: 0; }
 .searchbox__x:hover { color: var(--accent-ink); }
+
+/* ==== Мастер настройки, обратная связь, проверочный запрос (модуль 038) ==== */
+
+/* Ссылка «запрос не из почты» стоит НАД карточками «Входящих»: запрос из
+   мессенджера приходит туда же, куда почта, и искать для него отдельный экран
+   в меню менеджеру незачем */
+.bcol__new { display: block; margin: 0 0 6px; padding: 6px; border-radius: var(--radius);
+             border: 1px dashed var(--border-strong); color: var(--text-muted);
+             font-size: 12px; text-align: center; cursor: pointer; }
+.bcol__new:hover { background: var(--surface-3); color: var(--accent-ink); border-color: var(--primary); }
+
+/* Полоска пройденного: одна цифра «6 из 8» не показывает, много ли осталось */
+.setup-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin: 10px 0 6px; }
+.setup-bar > span { display: block; height: 100%; background: var(--primary); transition: width .3s; }
+
+/* Пройденный шаг гасится: на экране должно быть видно то, что ещё не сделано */
+.setup-step__body { margin-top: 10px; }
+.setup-step--ok .card__title { color: var(--text-muted); }
+.setup-step .setting { grid-template-columns: minmax(0, 1fr) 320px; }
+.setup-step .setting__label { min-width: 0; }
+
+/* Ответ проверки связи — под кнопкой, а не тостом: его читают и сравнивают */
+.test-out:not(:empty) { margin-top: 10px; font-size: 13px; }
+
+@media (max-width: 720px) {
+    .setup-step .setting { grid-template-columns: minmax(0, 1fr); }
+}

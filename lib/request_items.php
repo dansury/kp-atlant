@@ -516,7 +516,7 @@ final class RequestItems {
                 'wait_prepay'         => isset($row['wait_prepay']) && $row['wait_prepay'] !== '' ? max(0, min(100, (int)$row['wait_prepay'])) : null,
                 'stock'               => isset($row['stock']) && $row['stock'] !== '' ? (int)$row['stock'] : null,
                 // Выбранные фотографии: строка JSON с ключами, `null` —
-                // «выбор не делали», и в КП идут все найденные (модуль 039)
+                // «выбор не делали», и в КП идут все найденные (модуль 040)
                 'selected_images'     => self::imageChoice($row),
                 'is_confirmed'        => !empty($row['is_confirmed']) ? 1 : 0,
                 // A row the manager saved is answered: the choice prompt goes away
@@ -645,7 +645,7 @@ final class RequestItems {
                 'is_alternative' => (int)($row['is_alternative'] ?? 0) === 1,
                 'alt_of'         => $row['alt_of'] ?? null,
                 // Фотографии, выбранные в таблице подбора, едут в КП вместе с
-                // позицией: заново их там не выбирают (модуль 039)
+                // позицией: заново их там не выбирают (модуль 040)
                 'selected_images' => $row['selected_images'] ?? null,
                 'alt_specs'      => $row['alternative'] ?? null,
                 'match'        => $hasProduct ? [

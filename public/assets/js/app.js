@@ -230,6 +230,9 @@ const App = {
             this.loadUiPrefs();
             this.startPolling();
             this.startMailPolling();
+            // Первый заход администратора на ненастроенный сервис — в мастер,
+            // а не на пустую доску (модуль 038). Открытую закладку не трогаем.
+            if (this.manager.setup_pending && !location.hash) location.hash = 'settings/setup';
             this.route();
         } catch {
             let needsSetup = false;
@@ -263,6 +266,7 @@ const App = {
             <a href="#notifications" data-page="notifications">Уведомления<span id="notifBadge"></span></a>
         `;
         document.getElementById('userBlock').innerHTML = `
+            <a onclick="App.supportModal()" title="Написать в поддержку: что сломалось на этом экране">Поддержка</a>
             ${this.manager.name} <a onclick="App.logout()">Выход</a>
         `;
     },
@@ -413,11 +417,11 @@ const App = {
                     // поиском, своими вкладками и всеми письмами подряд.
                     // Старая закладка открывает доску с включённым архивом.
                     // Старая закладка открывает доску В РАБОТЕ, а не архив
-                    // (модуль 039): архив включался здесь сам, и после удаления
+                    // (модуль 040): архив включался здесь сам, и после удаления
                     // или архивации письма экран уезжал в «Письма · архив» —
                     // человек нажимал «в архив», а попадал в чужую комнату.
                     if (seg === 'inbox') { location.replace('#mail'); return; }
-                    // Корзина писем (модуль 039): удалённое письмо возвращается
+                    // Корзина писем (модуль 040): удалённое письмо возвращается
                     if (seg === 'trash') return this.pageMailTrash();
                     if (seg === 't') return this.pageMailThread(decodeURIComponent(params[1] || ''));
                     if (seg === 'msg') return this.pageMailMessage(params[1]);
@@ -425,7 +429,9 @@ const App = {
                     // доски, чтобы один и тот же запрос не жил на двух экранах
                     // с разной вёрсткой (модуль 023)
                     if (seg === 'requests') { location.replace('#mail'); return; }
-                    if (seg === 'new') return this.pageNewRequest();
+                    // «#mail/new/trial» — проверочный запрос мастера настройки (модуль 038)
+                    if (seg === 'new') return this.pageNewRequest(params[1] === 'trial'
+                        ? {trial: true, text: this.trialText || ''} : {});
                     if (seg === 'request') return this.pageRequest(params[1]);
                     if (seg === 'proposal') return this.pageProposal(params[1]);
                     if (seg === 'companies') return this.pageCounterparties();
@@ -455,6 +461,8 @@ const App = {
         // Whatever the page throws, the user sees the reason and a retry button —
         // never a spinner that spins forever
         Promise.resolve().then(open)
+            // Карточка проверочного запроса: полоска с оценкой качества (модуль 038)
+            .then(() => this.trialStrip(hash))
             // Первый заход на экран — гайд по его подсказкам, по очереди
             .then(() => setTimeout(() => this.startTour(hash.split('/').slice(0, 2).join('/')), 600))
             .catch(err => this.pageFail(err));
@@ -540,44 +548,130 @@ const App = {
         `;
     },
 
-    // New request (manual paste, US2)
-    pageNewRequest() {
+    /**
+     * Запрос, который пришёл мимо почты (модуль 038).
+     *
+     * Ссылка на этот экран стоит НАД «Входящими» на доске: запрос из мессенджера,
+     * с телефона или файлом на почту коллеге приходит чаще, чем кажется, и до
+     * сих пор его перепечатывали руками, теряя вложение.
+     *
+     * Поле принимает и текст, и файлы — спецификацию, фотографию переписки,
+     * скан. Созданный запрос кладётся карточкой в «В работе» и открывается
+     * сразу: разбирать его всё равно сейчас.
+     */
+    pageNewRequest(opts = {}) {
+        this.newReqFiles = [];
         document.getElementById('app').innerHTML = `
             <div class="flex" style="margin-bottom:16px;gap:10px">
                 <a href="#mail" class="btn btn--outline btn--sm">← К доске</a>
                 <h2 style="margin:0">Новый запрос</h2>
             </div>
+            ${opts.trial ? `
+            <div class="card card--alert">
+                <div class="card__title">Проверочный запрос</div>
+                <p>Текст ниже — пример. Создайте по нему КП и письмо и вернитесь
+                   в <a href="#settings/setup">мастер настройки</a>, чтобы оценить качество.</p>
+            </div>` : ''}
             <div class="card">
                 <form id="newRequestForm">
                     <div class="form-group">
                         <label>Текст запроса</label>
-                        <textarea id="reqText" rows="8" placeholder="Вставьте текст запроса из мессенджера, email или заметок..."></textarea>
+                        <textarea id="reqText" rows="8" placeholder="Вставьте текст запроса из мессенджера, email или заметок…"
+                                  onpaste="App.newRequestPaste(event)">${this.esc(opts.text || '')}</textarea>
+                        <div class="muted">Скриншот можно вставить прямо сюда — Ctrl+V.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Файлы</label>
+                        <input type="file" id="reqFiles" multiple onchange="App.newRequestAttach(this)">
+                        <div class="flex flex--wrap" id="reqFileList" style="gap:6px;margin-top:6px"></div>
+                        <div class="muted">Спецификация, фотография переписки, скан — текст из них уходит в подбор позиций.</div>
                     </div>
                     <div class="form-group">
                         <label>Контрагент (название организации)</label>
                         <input type="text" id="reqCounterparty" placeholder="ООО Ромашка (необязательно — система определит из текста)">
                     </div>
-                    <button type="submit" class="btn btn--primary btn--block">Создать запрос и сформировать КП</button>
+                    <input type="hidden" id="reqTrial" value="${opts.trial ? '1' : ''}">
+                    <button type="submit" class="btn btn--primary btn--block">Создать карточку в «В работе»</button>
                 </form>
             </div>
         `;
-        document.getElementById('newRequestForm').onsubmit = async (e) => {
-            e.preventDefault();
-            const text = document.getElementById('reqText').value.trim();
-            if (!text) return App.toast('Введите текст запроса', 'error');
-            const btn = e.target.querySelector('button');
-            btn.disabled = true; btn.textContent = 'Обработка...';
-            try {
-                const r = await App.api('requests.php?action=create', {method:'POST', body: {
-                    text, counterparty_name: document.getElementById('reqCounterparty').value.trim()
-                }});
-                App.toast('Запрос создан', 'success');
-                location.hash = `mail/request/${r.id}`;
-            } catch (err) {
-                App.toast(err.message, 'error');
-                btn.disabled = false; btn.textContent = 'Создать запрос и сформировать КП';
-            }
-        };
+        document.getElementById('newRequestForm').onsubmit = (e) => { e.preventDefault(); this.submitNewRequest(e.target); };
+        // Проверочный текст открыли по закладке, мимо мастера — спросим его у сервера
+        if (opts.trial && !(opts.text || '').trim()) this.fillTrialText();
+    },
+
+    async fillTrialText() {
+        try {
+            const d = await this.api('setup.php?action=state');
+            const box = document.getElementById('reqText');
+            if (box && !box.value.trim()) box.value = d.trial_text || '';
+        } catch { /* мастер админский — менеджер напишет свой текст */ }
+    },
+
+    async submitNewRequest(form) {
+        const text = document.getElementById('reqText').value.trim();
+        const files = this.newReqFiles || [];
+        if (!text && !files.length) return this.toast('Вставьте текст запроса или приложите файл', 'error');
+        const trial = document.getElementById('reqTrial').value === '1';
+        const btn = form.querySelector('button[type=submit]');
+        btn.disabled = true; btn.textContent = 'Обработка…';
+        try {
+            const r = await this.api('requests.php?action=create', {method: 'POST', body: {
+                text,
+                counterparty_name: document.getElementById('reqCounterparty').value.trim(),
+                files: files.map(f => f.name),
+                trial,
+            }});
+            this.toast('Карточка в «В работе» создана', 'success');
+            // Проверочный запрос ведёт назад в мастер — за оценкой
+            if (trial) this.trialWatch(r.hash);
+            location.hash = r.hash || ('mail/request/' + r.id);
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false; btn.textContent = 'Создать карточку в «В работе»';
+        }
+    },
+
+    /** Файлы формы живут там же, где вложения письма, — в папке менеджера. */
+    async newRequestAttach(input) {
+        for (const file of [...(input.files || [])]) await this.newRequestUpload(file);
+        input.value = '';
+    },
+
+    /** Скриншот из буфера — обычный файл, просто без имени. */
+    newRequestPaste(ev) {
+        const items = [...((ev.clipboardData || {}).items || [])].filter(i => i.kind === 'file');
+        if (!items.length) return;
+        ev.preventDefault();
+        items.forEach(i => {
+            const file = i.getAsFile();
+            if (file) this.newRequestUpload(file);
+        });
+    },
+
+    async newRequestUpload(file) {
+        const fd = new FormData();
+        fd.append('file', file, file.name || ('снимок-' + Date.now() + '.png'));
+        try {
+            const res = await fetch('/api/mail.php?action=upload', {method: 'POST', body: fd, credentials: 'same-origin'});
+            const d = await res.json();
+            if (!res.ok || d.error) throw new Error(d.error || 'Файл не загрузился');
+            (this.newReqFiles = this.newReqFiles || []).push(d.file);
+            this.drawNewRequestFiles();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    drawNewRequestFiles() {
+        const box = document.getElementById('reqFileList');
+        if (!box) return;
+        box.innerHTML = (this.newReqFiles || []).map((f, i) => `
+            <span class="chip">📎 ${this.esc(f.filename)}
+                <a onclick="App.newRequestDrop(${i})" title="Убрать">×</a></span>`).join('');
+    },
+
+    newRequestDrop(i) {
+        (this.newReqFiles || []).splice(i, 1);
+        this.drawNewRequestFiles();
     },
 
     // Single request view
@@ -1864,7 +1958,7 @@ const App = {
                     ${i.wait_note ? `<span class="muted">${this.esc(i.wait_note)}</span>` : ''}
                 </div>
                 <div class="match-extra__photos">
-                    <!-- Фото выбираются здесь, сразу после товара (модуль 039) -->
+                    <!-- Фото выбираются здесь, сразу после товара (модуль 040) -->
                     <button class="btn btn--outline btn--sm" ${i.id ? '' : 'disabled title="Сначала сохраните строку"'}
                             onclick="App.toggleMatchPhotos(this, ${i.id || 0})">🖼 Фото в КП</button>
                     <div class="match-photos" data-match-photos hidden></div>
@@ -2910,7 +3004,7 @@ const App = {
     },
 
     /**
-     * ==== Фотографии позиции прямо в таблице подбора (модуль 039) ====
+     * ==== Фотографии позиции прямо в таблице подбора (модуль 040) ====
      *
      * Картинки выбирались только в уже собранном КП — то есть после того, как
      * документ собран, а не тогда, когда определились с товаром. Теперь выбор
@@ -3519,7 +3613,7 @@ const App = {
      * is the one the КП is built from.
      */
     /**
-     * Переписка, из которой не завели запрос (модуль 038).
+     * Переписка, из которой не завели запрос (модуль 039).
      *
      * Здесь стоял тупик: «запрос не заведён — подбирать по каталогу нечего».
      * Сервис живёт составлением КП, и отказать в подборе он не вправе ни по
@@ -3540,7 +3634,7 @@ const App = {
     },
 
     /**
-     * «Подобрать товар» по переписке без запроса (модуль 038).
+     * «Подобрать товар» по переписке без запроса (модуль 039).
      *
      * Один вызов модели — его просят, а не тратят на каждое входящее письмо.
      * Модель промолчала — таблица откроется пустой, и позицию в неё впишут
@@ -3607,7 +3701,7 @@ const App = {
                     <select data-cmp-box title="Из какого ящика отправить">
                         ${(mailboxes || []).map(b => `<option value="${b.id}" ${reply.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
                     </select>
-                    <!-- Подпись (модуль 038): видно, чем письмо закончится, ещё
+                    <!-- Подпись (модуль 039): видно, чем письмо закончится, ещё
                          до отправки — и её можно снять одной галочкой -->
                     <label class="muted composer__sign" title="Ваша подпись допишется в конец письма">
                         <input type="checkbox" data-cmp-sign checked
@@ -3803,7 +3897,7 @@ const App = {
     },
 
     /**
-     * ==== Подпись в письме (модуль 038) ====
+     * ==== Подпись в письме (модуль 039) ====
      *
      * Подпись дописывает сервер — она одна и та же во всех письмах менеджера,
      * и держать её в поле ввода значит однажды её оттуда стереть. Но увидеть
@@ -4734,6 +4828,8 @@ const App = {
         'learning-export': ['Выгрузка правок', 'Архив со всеми новыми правками уходит файлом в репозиторий вики. После удачной выгрузки они помечаются выгруженными, и следующий архив собирается только из новых — повторов не будет.'],
         'logo':         ['Логотипы', 'Три разных знака: в шапке КП, иконка приложения на телефоне и значок вкладки браузера. Файлы лежат вне репозитория, поэтому обновление кода их не стирает. Для КП лучше PNG без прозрачного фона — прозрачность на некоторых серверах не печатается.'],
         'catalog':      ['Каталог товаров', 'Копия номенклатуры МойСклад: названия, артикулы, цены, остатки и модификации. Из неё собираются КП — чтобы документ не зависел от того, отвечает ли сейчас МойСклад. Если API недоступен, каталог можно загрузить из Excel-выгрузки.'],
+        'support':      ['Обратная связь', 'Что-то сломалось или мешает — опишите прямо с того экрана, где это увидели, и приложите скриншот, документ или видео. Обращение уходит АДМИНИСТРАТОРУ на ревью, а не сразу в публичный трекер; с его подтверждения оно становится issue в репозитории, и вы увидите ссылку. Отклонённое обращение возвращается с причиной.'],
+        'setup':        ['Мастер настройки', 'Всё, что нужно сервису для старта с нуля, по одному делу за раз: ключи МойСклад и нейросетей, почтовый ящик, логотип, люди. У каждого шага стоит прямая ссылка, где взять ключ, и какие права ему нужны. Шаг считается пройденным, только когда он РАБОТАЕТ: каталог синхронизирован, провайдер отвечает, ящик включён. Мастер можно пройти заново на работающем сервисе — настройки при этом не стираются.'],
     },
 
     /**
@@ -4909,6 +5005,10 @@ const App = {
             ['prompts',    'Промпты',         false],
             ['learning',   'Правки и обучение', true],
             ['managers',   'Менеджеры',       true],
+            // Мастер настройки и обратная связь (модуль 038): мастер — админский,
+            // жалоба — общая, жалуется тот, кто увидел поломку
+            ['setup',      'Мастер настройки', true],
+            ['support',    'Обратная связь',  false],
             ['device',     'Это устройство',  false],
             ['all',        'Все параметры',   true],
             ['logs',       'Логи',            true],
@@ -4947,6 +5047,8 @@ const App = {
             tov:        () => this.settingsTov(),
             learning:   () => this.adminLearning(),
             managers:   () => this.adminManagers(),
+            setup:      () => this.settingsSetup(),
+            support:    () => this.settingsSupport(),
             prompts:    () => this.adminPrompts(),
             device:     () => this.settingsDevice(),
             all:        () => this.adminSettings(),
@@ -5755,7 +5857,7 @@ const App = {
                 <p class="muted" style="margin-top:6px">PNG или JPG, лучше на прозрачном или белом фоне, высотой около 200 px.</p>
                 <div id="sigOut" style="margin-top:8px"></div>
 
-                <!-- Подпись в письмах (модуль 038): письмо заканчивается именем
+                <!-- Подпись в письмах (модуль 039): письмо заканчивается именем
                      того, кто его отправил, а не обрывается на полуслове -->
                 <div class="card__title" style="margin-top:18px">Подпись в письмах${this.hint('mail-signature')}</div>
                 <p class="muted">Дописывается к каждому вашему письму — и к черновику, который пишет нейросеть.
@@ -5787,7 +5889,7 @@ const App = {
         finally { btn.disabled = false; }
     },
 
-    /** Подпись в письмах — своя у каждого (модуль 038). */
+    /** Подпись в письмах — своя у каждого (модуль 039). */
     async saveMailSignature(btn) {
         btn.disabled = true;
         try {
@@ -6539,6 +6641,8 @@ const App = {
             </span>
             <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
             <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
+            <a href="#mail/new" class="btn btn--outline btn--sm"
+               title="Запрос пришёл в мессенджер или по телефону — вставьте текст и файлы">+ Запрос</a>
             <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn()">+ Колонка</button>
             <a href="#mail/trash" class="btn btn--outline btn--sm" title="Удалённые письма — их можно вернуть">🗑 Корзина</a>
         `);
@@ -6562,7 +6666,7 @@ const App = {
     },
 
     /**
-     * ==== Корзина писем (модуль 039) ====
+     * ==== Корзина писем (модуль 040) ====
      *
      * Удалить можно любое письмо, и любое можно вернуть: до сих пор удаление
      * было окончательным, и «удалить» приходилось выбирать как приговор.
@@ -7002,6 +7106,9 @@ const App = {
                     <span class="bcol__count">${c.cards.length}</span>
                     <button class="bcol__x" title="Удалить колонку" onclick="App.boardDeleteColumn(${c.id})">×</button>
                 </div>
+                ${c.kind === 'inbox' ? `
+                    <a class="bcol__new" href="#mail/new"
+                       title="Запрос принесли не почтой: мессенджер, звонок, файл">+ Запрос не из почты</a>` : ''}
                 <div class="bcol__cards" data-drop="${c.id}">
                     ${c.cards.map(card => this.boardCard(card)).join('')}
                 </div>
@@ -7418,7 +7525,7 @@ const App = {
     },
 
     /**
-     * Убрать карточку — и, если попросят, удалить насовсем (модуль 039).
+     * Убрать карточку — и, если попросят, удалить насовсем (модуль 040).
      *
      * «Убрать» помнит, где карточка стояла, и возвращает её, когда компания
      * напишет снова. Карточку, за которой не осталось ни одного письма, это
@@ -7919,6 +8026,7 @@ const App = {
                         <a href="#settings/llm" class="btn btn--outline btn--sm">Настроить</a>
                     </div>
                 </div>
+                ${this.setupCard(d)}
                 ${this.changesCard(d)}
                 <div class="card">
                     <div class="card__title">База знаний (вики)${this.hint('knowledge')}</div>
@@ -8009,7 +8117,7 @@ const App = {
     },
 
     /**
-     * Список организаций МойСклад в поле настройки (модуль 040).
+     * Список организаций МойСклад в поле настройки (модуль 041).
      *
      * Поле требовало «ID организации» — 36 знаков, которые брали из адресной
      * строки МойСклад и переписывали руками. Теперь это список имён с ИНН;
@@ -8302,7 +8410,7 @@ const App = {
                     </span>`;
                 }
                 // Организация выбирается из списка МойСклад, а не переписывается
-                // идентификатором из адресной строки (модуль 040)
+                // идентификатором из адресной строки (модуль 041)
                 if (it.type === 'organization') {
                     this.loadOrganizations(id, String(it.value));
                     return `<select id="${id}">
@@ -9708,7 +9816,7 @@ const App = {
     },
 
     /**
-     * ==== Промпты учатся на правках (модуль 040) ====
+     * ==== Промпты учатся на правках (модуль 041) ====
      *
      * Правок набирается сотня, и читать их подряд некому. Модель — её выбирают
      * здесь же, можно взять поумнее — читает их и пишет короткий свод правил.
@@ -9797,7 +9905,7 @@ const App = {
 
     /**
      * История промпта: видно, ЧЕМ версия отличается от нынешней, и её можно
-     * вернуть (модуль 040). Раньше это был список текстов для чтения: чтобы
+     * вернуть (модуль 041). Раньше это был список текстов для чтения: чтобы
      * откатить неудачную правку, её выделяли и копировали руками.
      */
     async promptHistory(key) {
@@ -10253,6 +10361,540 @@ Object.assign(App, {
         try { await this.deferredInstall.userChoice; } catch { /* */ }
         this.deferredInstall = null;
         this.renderInstallCard();
+    },
+});
+
+// ==== Мастер настройки, обратная связь и проверочное КП (модуль 038) ====
+//
+// Три просьбы из одного обращения: чтобы менеджер мог пожаловаться прямо с
+// экрана, чтобы запуск с нуля не был устной традицией и чтобы после настройки
+// сервис проверили на живом запросе, а не на первом письме клиента.
+Object.assign(App, {
+
+    // ---- Обратная связь ----
+
+    /**
+     * Жалоба пишется ТАМ, где её увидели: модал открывается с любого экрана и
+     * сам запоминает адрес страницы. Уходит она не в GitHub, а администратору
+     * на ревью — публичный трекер не место для «у меня всё пропало».
+     */
+    supportModal(kind = 'bug') {
+        this.supportFiles = [];
+        this.modal('Написать в поддержку', `
+            <div class="form-group">
+                <label>О чём</label>
+                <select id="supKind">
+                    ${Object.entries({bug: 'Не работает', idea: 'Предложение', question: 'Вопрос'}).map(
+                        ([k, l]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Коротко</label>
+                <input type="text" id="supTitle" placeholder="Например: не отправляется КП из карточки">
+            </div>
+            <div class="form-group">
+                <label>Что случилось</label>
+                <textarea id="supBody" rows="6" onpaste="App.supportPaste(event)"
+                          placeholder="Что делали, что ожидали увидеть и что увидели. Скриншот можно вставить сюда — Ctrl+V"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Файлы</label>
+                <input type="file" id="supFiles" multiple onchange="App.supportAttach(this)">
+                <div class="flex flex--wrap" id="supFileList" style="gap:6px;margin-top:6px"></div>
+                <div class="muted">Картинки, документы, видео — всё, что можно приложить к issue.</div>
+            </div>
+            <p class="muted">Экран: <code>${this.esc(location.hash || '#mail')}</code> — уйдёт вместе с обращением.
+               Администратор посмотрит и заведёт issue в репозитории.</p>
+            <div class="flex flex--end" style="gap:8px">
+                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
+                <button class="btn btn--primary" onclick="App.supportSend(this)">Отправить</button>
+            </div>`);
+    },
+
+    async supportAttach(input) {
+        for (const file of [...(input.files || [])]) await this.supportUpload(file);
+        input.value = '';
+    },
+
+    supportPaste(ev) {
+        const items = [...((ev.clipboardData || {}).items || [])].filter(i => i.kind === 'file');
+        if (!items.length) return;
+        ev.preventDefault();
+        items.forEach(i => {
+            const file = i.getAsFile();
+            if (file) this.supportUpload(file);
+        });
+    },
+
+    async supportUpload(file) {
+        const fd = new FormData();
+        fd.append('file', file, file.name || ('снимок-' + Date.now() + '.png'));
+        try {
+            const res = await fetch('/api/support.php?action=upload', {method: 'POST', body: fd, credentials: 'same-origin'});
+            const d = await res.json();
+            if (!res.ok || d.error) throw new Error(d.error || 'Файл не загрузился');
+            (this.supportFiles = this.supportFiles || []).push(d.file);
+            const box = document.getElementById('supFileList');
+            if (box) box.innerHTML = (this.supportFiles || []).map((f, i) => `
+                <span class="chip">📎 ${this.esc(f.filename)}
+                    <a onclick="App.supportDrop(${i})" title="Убрать">×</a></span>`).join('');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    supportDrop(i) {
+        (this.supportFiles || []).splice(i, 1);
+        const box = document.getElementById('supFileList');
+        if (box) box.innerHTML = (this.supportFiles || []).map((f, n) => `
+            <span class="chip">📎 ${this.esc(f.filename)}
+                <a onclick="App.supportDrop(${n})" title="Убрать">×</a></span>`).join('');
+    },
+
+    async supportSend(btn) {
+        const title = document.getElementById('supTitle').value.trim();
+        const body  = document.getElementById('supBody').value.trim();
+        if (!title && !body) return this.toast('Опишите, что случилось', 'error');
+        btn.disabled = true;
+        try {
+            await this.api('support.php?action=submit', {method: 'POST', body: {
+                kind:  document.getElementById('supKind').value,
+                title, body,
+                page:  location.hash || '#mail',
+                files: (this.supportFiles || []).map(f => f.name),
+            }});
+            this.closeModal();
+            this.toast('Отправили администратору — ответ придёт в уведомления', 'success');
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+
+    /** Список обращений: менеджер видит свои, администратор — все и с кнопками. */
+    async settingsSupport() {
+        try {
+            const d = await this.api('support.php?action=list');
+            this.supportData = d;
+            const admin = !!d.is_admin;
+            const warn = [];
+            if (!d.enabled) warn.push('Обратная связь выключена в «Настройках → Все параметры» (SUPPORT_ENABLED).');
+            if (admin && !d.repo) warn.push('Не указан репозиторий (SUPPORT_REPO) — обращения останутся в панели.');
+            if (admin && !d.token_set) warn.push('Нет токена GitHub с правом Issues: Write — issue завести не получится.');
+
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="card__title">Обратная связь${this.hint('support')}</div>
+                    <p>Что-то сломалось или мешает — напишите отсюда или кнопкой «Поддержка» в шапке.
+                       Обращение уходит администратору${admin ? '' : ' и вернётся ответом в уведомления'}.</p>
+                    ${warn.map(w => `<p class="no">${this.esc(w)}</p>`).join('')}
+                    <div class="flex flex--wrap" style="gap:8px">
+                        <button class="btn btn--primary" onclick="App.supportModal('bug')">Написать в поддержку</button>
+                        <button class="btn btn--outline" onclick="App.supportModal('idea')">Предложить улучшение</button>
+                    </div>
+                </div>
+                ${(d.items || []).length ? (d.items || []).map(t => this.supportRow(t, admin)).join('')
+                    : '<div class="card"><p class="muted">Обращений пока нет.</p></div>'}
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    supportRow(t, admin) {
+        const badge = {new: 'badge--new', approved: 'badge--sent', declined: 'badge--draft'}[t.status] || 'badge--new';
+        const label = {new: 'на ревью', approved: 'в GitHub', declined: 'отклонено'}[t.status] || t.status;
+        const kinds = (this.supportData || {}).kinds || {};
+        return `
+            <div class="card" data-ticket="${t.id}">
+                <div class="flex flex--between flex--wrap" style="gap:8px">
+                    <div class="card__title" style="margin:0">${this.esc(t.title)}</div>
+                    <div><span class="badge ${badge}">${label}</span>
+                         <span class="badge badge--draft">${this.esc(kinds[t.kind] || t.kind)}</span></div>
+                </div>
+                <div class="muted">${this.esc(t.manager_name || 'менеджер')} · ${this.fmtDate(t.created_at)}
+                    ${t.page ? ' · экран <code>' + this.esc(t.page) + '</code>' : ''}
+                    ${t.model ? ' · модель <code>' + this.esc(t.model) + '</code>' : ''}
+                    ${t.rating ? ' · ' + (t.rating === 'up' ? '👍' : '👎') : ''}</div>
+                ${t.body ? `<p style="white-space:pre-wrap;margin-top:8px">${this.esc(t.body)}</p>` : ''}
+                ${(t.files || []).length ? `<div class="flex flex--wrap" style="gap:8px;margin-top:8px">
+                    ${(t.files || []).map(f => (f.mime || '').startsWith('image/')
+                        ? `<a href="/api/support.php?action=file&id=${f.id}" target="_blank" rel="noopener">
+                             <img src="/api/support.php?action=file&id=${f.id}" alt="${this.esc(f.filename)}"
+                                  style="max-height:120px;border:1px solid var(--border);border-radius:4px"></a>`
+                        : `<a class="chip" href="/api/support.php?action=file&id=${f.id}" target="_blank" rel="noopener">📎 ${this.esc(f.filename)}</a>`
+                    ).join('')}</div>` : ''}
+                ${t.issue_url ? `<p class="ok" style="margin-top:8px">Issue
+                    <a href="${this.esc(t.issue_url)}" target="_blank" rel="noopener">#${t.issue_number}</a></p>` : ''}
+                ${t.status === 'declined' && t.review_note ? `<p class="muted" style="margin-top:8px">Причина: ${this.esc(t.review_note)}</p>` : ''}
+                ${admin && t.status === 'new' ? `
+                    <div class="flex flex--wrap" style="gap:8px;margin-top:10px">
+                        <button class="btn btn--primary btn--sm" onclick="App.supportApprove(${t.id}, this)">Завести issue</button>
+                        <button class="btn btn--outline btn--sm" onclick="App.supportDecline(${t.id})">Отклонить</button>
+                    </div>` : ''}
+            </div>`;
+    },
+
+    async supportApprove(id, btn) {
+        const t = ((this.supportData || {}).items || []).find(i => i.id === id) || {};
+        const title = prompt('Заголовок issue:', t.title || '');
+        if (title === null) return;
+        btn.disabled = true;
+        try {
+            const r = await this.api('support.php?action=approve', {method: 'POST', body: {id, title}});
+            this.toast('Issue #' + r.number + ' заведён' + (r.failed && r.failed.length
+                ? '; файлы не ушли: ' + r.failed.join('; ') : ''), r.failed && r.failed.length ? 'error' : 'success');
+            this.settingsSupport();
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+
+    async supportDecline(id) {
+        const note = prompt('Почему отклоняем? Автор увидит эту строку:');
+        if (note === null) return;
+        try {
+            await this.api('support.php?action=decline', {method: 'POST', body: {id, note}});
+            this.toast('Отклонено', 'success');
+            this.settingsSupport();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ---- Мастер настройки ----
+
+    /**
+     * Карточка на «Обзоре»: чего не хватает для запуска и кто чего просит.
+     * Пока всё закрыто — одна строка, а не блок на пол-экрана.
+     */
+    setupCard(d) {
+        const s = d.setup || {};
+        const sup = d.support || {};
+        const waiting = (s.waiting || []);
+        if (!waiting.length && !sup.pending) {
+            return `<div class="card">
+                <div class="card__title">Настройка и обратная связь</div>
+                <p class="ok">Всё обязательное настроено${s.finished ? ', мастер пройден' : ''};
+                   обращений на ревью нет.</p>
+                <div class="flex flex--wrap" style="gap:8px">
+                    <a href="#settings/setup" class="btn btn--outline btn--sm">Мастер настройки</a>
+                    <a href="#settings/support" class="btn btn--outline btn--sm">Обращения</a>
+                </div>
+            </div>`;
+        }
+        return `<div class="card card--alert">
+            <div class="card__title">Настройка и обратная связь${this.hint('setup')}</div>
+            ${waiting.length ? `<p class="no">Не настроено: ${this.esc(waiting.join(', '))}
+                <span class="muted">· пройдено ${s.done} из ${s.total}</span></p>` : ''}
+            ${sup.pending ? `<p>Обращений ждут ревью: <strong>${sup.pending}</strong>
+                ${sup.repo ? '' : '<span class="muted">· репозиторий для issue не указан</span>'}</p>` : ''}
+            <div class="flex flex--wrap" style="gap:8px">
+                ${waiting.length ? '<a href="#settings/setup" class="btn btn--primary btn--sm">Открыть мастер</a>' : ''}
+                ${sup.pending ? '<a href="#settings/support" class="btn btn--outline btn--sm">Разобрать обращения</a>' : ''}
+            </div>
+        </div>`;
+    },
+
+    /**
+     * Мастер спрашивает то же, что «Все параметры», но по одному делу за раз и
+     * со ссылкой, где взять ключ. Состояние шага считает сервер — по факту
+     * (есть ящик, отвечает провайдер, загружен логотип), а не по «поле заполнено».
+     */
+    async settingsSetup() {
+        try {
+            const d = await this.api('setup.php?action=state');
+            this.setupData = d;
+            const bar = Math.round(100 * (d.total ? d.done / d.total : 1));
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="card__title">Мастер настройки${this.hint('setup')}</div>
+                    <p>Всё, что нужно сервису для старта с нуля: ключи, ящик, логотип и люди.
+                       Шаг считается пройденным, только когда он реально работает.</p>
+                    <div class="setup-bar"><span style="width:${bar}%"></span></div>
+                    <p class="muted">Пройдено ${d.done} из ${d.total}${d.state && d.state.done_at
+                        ? ' · мастер завершён ' + this.fmtDate(d.state.done_at) : ''}</p>
+                    <div class="flex flex--wrap" style="gap:8px">
+                        <button class="btn btn--outline btn--sm" onclick="App.setupRestart()">Пройти заново</button>
+                        ${d.ready && !(d.state || {}).done_at
+                            ? '<button class="btn btn--primary btn--sm" onclick="App.setupFinish()">Всё готово</button>' : ''}
+                    </div>
+                </div>
+                ${(d.steps || []).map((s, i) => this.setupStep(s, i, d)).join('')}
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    setupStep(s, i, d) {
+        const ok = (s.state || {}).status === 'ok';
+        const open = !ok && !s.skipped && s.key === d.next;
+        return `
+            <div class="card setup-step ${ok ? 'setup-step--ok' : ''}" id="setupStep_${s.key}">
+                <div class="flex flex--between flex--wrap" style="gap:8px;cursor:pointer"
+                     onclick="App.setupToggle('${s.key}')">
+                    <div class="card__title" style="margin:0">
+                        ${ok ? '✅' : (s.skipped ? '⏭' : '▫️')} ${i + 1}. ${this.esc(s.title)}
+                        ${s.optional ? '<span class="badge badge--draft">по желанию</span>' : ''}
+                    </div>
+                    <div class="muted">${this.esc((s.state || {}).note || '')}</div>
+                </div>
+                <div class="setup-step__body" id="setupBody_${s.key}" ${open ? '' : 'hidden'}>
+                    <p class="muted">${this.esc(s.why)}</p>
+                    ${(s.links || []).map(l => `
+                        <p>${l.url.startsWith('#')
+                            ? `<a href="${this.esc(l.url)}">${this.esc(l.label)}</a>`
+                            : `<a href="${this.esc(l.url)}" target="_blank" rel="noopener">${this.esc(l.label)} ↗</a>`}
+                           ${l.note ? '<br><span class="muted">' + this.esc(l.note) + '</span>' : ''}</p>`).join('')}
+                    ${(s.fields || []).map(f => `
+                        <div class="setting">
+                            <div class="setting__label">
+                                <label for="wz_${f.key}">${this.esc(f.label)}</label>
+                                <div class="muted"><code>${f.key}</code>${f.hint ? ' · ' + this.esc(f.hint) : ''}</div>
+                            </div>
+                            <div class="setting__field">${this.setupField(f)}</div>
+                        </div>`).join('')}
+                    ${s.key === 'trial' ? this.setupTrial(d) : ''}
+                    <div class="flex flex--wrap" style="gap:8px;margin-top:10px">
+                        ${(s.fields || []).length
+                            ? `<button class="btn btn--primary btn--sm" onclick="App.setupSave('${s.key}')">Сохранить</button>` : ''}
+                        ${s.test ? `<button class="btn btn--outline btn--sm" onclick="App.setupTest('${s.test}', this)">Проверить связь</button>` : ''}
+                        ${ok ? '' : `<button class="btn btn--outline btn--sm" onclick="App.setupSkip('${s.key}')">Пропустить пока</button>`}
+                    </div>
+                    <div class="test-out" id="setupOut_${s.key}"></div>
+                </div>
+            </div>`;
+    },
+
+    setupField(f) {
+        const id = 'wz_' + f.key;
+        if (f.secret) return `<input type="password" id="${id}" placeholder="${f.filled
+            ? 'задан ' + this.esc(f.tail) + ' — оставьте пустым, чтобы не менять' : 'не задан'}">`;
+        if (f.type === 'bool') return `<select id="${id}">
+            <option value="1" ${String(f.value) === '1' ? 'selected' : ''}>Да</option>
+            <option value="0" ${String(f.value) !== '1' ? 'selected' : ''}>Нет</option></select>`;
+        if (f.type === 'int') return `<input type="number" id="${id}" value="${this.esc(f.value)}">`;
+        if (f.type === 'textarea') return `<textarea id="${id}" rows="4">${this.esc(f.value)}</textarea>`;
+        return `<input type="text" id="${id}" value="${this.esc(f.value)}">`;
+    },
+
+    setupToggle(key) {
+        const body = document.getElementById('setupBody_' + key);
+        if (body) body.hidden = !body.hidden;
+    },
+
+    async setupSave(key) {
+        const step = ((this.setupData || {}).steps || []).find(s => s.key === key);
+        if (!step) return;
+        const values = {};
+        (step.fields || []).forEach(f => {
+            const el = document.getElementById('wz_' + f.key);
+            if (el) values[f.key] = el.value;
+        });
+        try {
+            await this.api('setup.php?action=save', {method: 'POST', body: {step: key, values}});
+            this.toast('Сохранено', 'success');
+            this.settingsSetup();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async setupSkip(key) {
+        try {
+            await this.api('setup.php?action=skip', {method: 'POST', body: {step: key}});
+            this.settingsSetup();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async setupRestart() {
+        if (!confirm('Пройти мастер заново? Настройки останутся на месте — обнулится только отметка «пройдено».')) return;
+        try {
+            await this.api('setup.php?action=restart', {method: 'POST'});
+            this.toast('Мастер сброшен', 'success');
+            this.settingsSetup();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async setupFinish() {
+        try {
+            await this.api('setup.php?action=finish', {method: 'POST'});
+            this.toast('Настройка завершена', 'success');
+            this.settingsSetup();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
+     * Проверки связи — те же, что на вкладках «МойСклад» и «Нейросети».
+     * Мастер не изобретает вторую проверку: он зовёт ту же ручку и печатает
+     * ответ словами, а не «ok: true».
+     */
+    async setupTest(action, btn) {
+        const key = btn.closest('.setup-step').id.replace('setupStep_', '');
+        const out = document.getElementById('setupOut_' + key);
+        btn.disabled = true;
+        if (out) out.innerHTML = '<div class="loading">Проверяем…</div>';
+        try {
+            if (action === 'test_llm') {
+                const lines = [];
+                for (const p of ['yandex', 'openrouter']) {
+                    try {
+                        const r = await this.api('admin.php?action=test_llm', {method: 'POST', body: {provider: p}});
+                        const d = r.result || {};
+                        lines.push(`<p class="ok">${this.esc(p)} · ${this.esc(d.model || '')} ответил за ${d.ms} мс: «${this.esc(d.answer || '')}»</p>`);
+                    } catch (err) {
+                        lines.push(`<p class="no">${this.esc(p)}: ${this.esc(err.message)}</p>`);
+                    }
+                }
+                if (out) out.innerHTML = lines.join('');
+            } else {
+                const r = await this.api('admin.php?action=' + action, {method: 'POST', body: {}});
+                const perms = r.permissions || {};
+                const names = {products: 'товары', counterparties: 'контрагенты', orders_read: 'заказы (чтение)',
+                               orders_write: 'заказы (запись)', stock: 'остатки', invoices: 'счета', webhooks: 'вебхуки'};
+                const list = Object.entries(perms).map(([k, v]) =>
+                    `${v ? '✅' : '❌'} ${names[k] || k}`).join(' · ');
+                if (out) out.innerHTML = Object.keys(perms).length
+                    ? `<p class="${r.ok_any ? 'ok' : 'no'}">${this.esc(list)}</p>`
+                    : `<p class="ok">${this.esc(r.message || 'Проверка прошла')}</p>`;
+            }
+        } catch (err) {
+            if (out) out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+        btn.disabled = false;
+    },
+
+    // ---- Проверочные КП и письмо ----
+
+    /**
+     * Последний шаг мастера: не «всё заполнено», а «вот КП и письмо, годится?».
+     * Палец вниз — это не просто цифра: он уходит в обращения вместе с моделью,
+     * которой это сделано, и панель тут же предлагает модель подороже.
+     */
+    setupTrial(d) {
+        const st = d.state || {};
+        const votes = st.trial_votes || {};
+        const link = st.trial_counterparty_id
+            ? '#mail/company/' + st.trial_counterparty_id
+            : (st.trial_request_id ? '#mail/request/' + st.trial_request_id : '');
+        return `
+            <div class="note note--choice">
+                ${st.trial_request_id ? `
+                    <p>Проверочный запрос #${st.trial_request_id} создан — он стоит карточкой в «В работе».
+                       <a href="${this.esc(link)}">Открыть карточку</a>: там соберите КП и черновик письма.</p>
+                    ${this.trialVoteHtml(votes)}
+                    <p class="muted" style="margin-top:8px">Нужен ещё один —
+                       <a href="#mail/new/trial" onclick="App.trialAgain()">создать заново</a>.</p>
+                ` : `
+                    <p>Создайте проверочный запрос: сервис разберёт текст, подберёт позиции по каталогу
+                       и даст собрать КП и письмо.</p>
+                    <textarea id="trialText" rows="7">${this.esc(d.trial_text || '')}</textarea>
+                    <button class="btn btn--primary btn--sm" style="margin-top:8px"
+                            onclick="App.trialStart(this)">Создать проверочный запрос</button>
+                `}
+            </div>`;
+    },
+
+    /** Текст примера живёт в ответе сервера — в обработчик его вставлять нечего:
+        перевод строки внутри onclick — это сломанный JS, а не многострочный текст. */
+    trialAgain() {
+        this.trialText = ((this.setupData || {}).trial_text) || '';
+    },
+
+    trialVoteHtml(votes) {
+        const row = (what, label) => {
+            const v = votes[what] || '';
+            return `<div class="flex flex--wrap" style="gap:8px;align-items:center;margin-top:6px">
+                <span>${label}:</span>
+                <button class="btn btn--sm ${v === 'up' ? 'btn--primary' : 'btn--outline'}"
+                        onclick="App.trialVote('${what}','up',this)">👍 хорошо</button>
+                <button class="btn btn--sm ${v === 'down' ? 'btn--primary' : 'btn--outline'}"
+                        onclick="App.trialVote('${what}','down',this)">👎 плохо</button>
+                ${v ? '<span class="muted">оценено</span>' : ''}
+            </div>`;
+        };
+        return `<div id="trialVotes">
+            ${row('kp', 'Качество КП')}
+            ${row('letter', 'Качество письма')}
+            <div id="trialModels"></div>
+        </div>`;
+    },
+
+    async trialStart(btn) {
+        const text = (document.getElementById('trialText') || {}).value || '';
+        btn.disabled = true; btn.textContent = 'Создаём…';
+        try {
+            const r = await this.api('requests.php?action=create', {method: 'POST', body: {text, trial: true}});
+            this.trialWatch(r.hash);
+            location.hash = r.hash || ('mail/request/' + r.id);
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false; btn.textContent = 'Создать проверочный запрос';
+        }
+    },
+
+    /** Карточку проверочного запроса помним до оценки — она переживает перезагрузку. */
+    trialWatch(hash) {
+        try { sessionStorage.setItem('trialCard', hash || ''); } catch { /* приватный режим */ }
+    },
+
+    trialForget() {
+        try { sessionStorage.removeItem('trialCard'); } catch { /* */ }
+    },
+
+    /**
+     * Полоска над карточкой, на которую увёл мастер: человек пришёл сюда
+     * проверять качество, и возвращаться за оценкой ему незачем.
+     */
+    trialStrip(hash) {
+        let want = '';
+        try { want = sessionStorage.getItem('trialCard') || ''; } catch { /* */ }
+        if (!want || want !== hash) return;
+        const app = document.getElementById('app');
+        if (!app || document.getElementById('trialStrip')) return;
+        const box = document.createElement('div');
+        box.id = 'trialStrip';
+        box.className = 'card card--alert';
+        box.innerHTML = `
+            <div class="card__title">Проверка сервиса</div>
+            <p>Соберите здесь КП и черновик письма, а потом скажите, годится ли качество.</p>
+            ${this.trialVoteHtml(((this.setupData || {}).state || {}).trial_votes || {})}
+            <div class="flex flex--wrap" style="gap:8px;margin-top:8px">
+                <a class="btn btn--outline btn--sm" href="#settings/setup">К мастеру настройки</a>
+                <button class="btn btn--outline btn--sm" onclick="App.trialForget();document.getElementById('trialStrip').remove()">Убрать</button>
+            </div>`;
+        app.prepend(box);
+    },
+
+    async trialVote(what, vote, btn) {
+        const comment = vote === 'down'
+            ? (prompt('Что именно не так? Строка уйдёт в обращения поддержки:') || '')
+            : '';
+        if (btn) btn.disabled = true;
+        try {
+            const r = await this.api('setup.php?action=vote', {method: 'POST', body: {what, vote, comment}});
+            this.setupData = Object.assign(this.setupData || {}, r);
+            this.toast(vote === 'up' ? 'Спасибо!' : 'Записали — подберём модель получше', 'success');
+            const box = document.getElementById('trialModels');
+            if (vote === 'down' && box) box.innerHTML = this.trialModelsHtml(r.pricier || [], r.current || {});
+            else if (box) box.innerHTML = '';
+        } catch (err) { this.toast(err.message, 'error'); }
+        if (btn) btn.disabled = false;
+    },
+
+    trialModelsHtml(models, current) {
+        if (!models.length) return `<p class="muted" style="margin-top:8px">Моделей дороже нынешней
+            (<code>${this.esc((current.provider || '') + ':' + (current.model || ''))}</code>) в каталоге нет.
+            Обновите каталог OpenRouter или добавьте ключ второго провайдера в «Настройках → Нейросети».</p>`;
+        return `
+            <div style="margin-top:10px">
+                <p>Сейчас работает <code>${this.esc((current.provider || '') + ':' + (current.model || ''))}</code>.
+                   Возьмите модель подороже — она отвечает лучше:</p>
+                <div class="flex flex--wrap" style="gap:8px">
+                    ${models.map(m => `
+                        <button class="btn btn--outline btn--sm" onclick="App.trialPickModel('${this.jsStr(m.spec)}', this)"
+                                title="${this.esc(m.group || '')}">${this.esc(m.label)}</button>`).join('')}
+                </div>
+                <p class="muted" style="margin-top:6px">Выбранная станет моделью по умолчанию —
+                   её можно поменять в «Настройках → Нейросети».</p>
+            </div>`;
+    },
+
+    async trialPickModel(spec, btn) {
+        btn.disabled = true;
+        try {
+            const r = await this.api('setup.php?action=model', {method: 'POST', body: {spec}});
+            this.toast('Теперь отвечает ' + (r.current || {}).model, 'success');
+            const box = document.getElementById('trialModels');
+            if (box) box.innerHTML = `<p class="ok" style="margin-top:8px">Модель по умолчанию:
+                <code>${this.esc(spec)}</code>. Соберите КП и письмо ещё раз и сравните.</p>`;
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
     },
 });
 

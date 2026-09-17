@@ -1,23 +1,26 @@
 <?php
 /**
- * Модуль 039: подбор перестал врать, почта перестала терять письма.
+ * Модуль 039: подбор заводится по любой переписке, письмо уходит с подписью.
  *
  * Проверяется ровно то, ради чего модуль появился:
- *   — «Бр2» больше не находит «Бр3»: чужой класс защиты не совпадение;
- *   — товар с модификациями выбирается сам, с вилкой цен и суммой остатков;
- *   — обновление каталога не обнуляет остатки, которых оно не знает;
- *   — имя вложения уходит клиенту человеческим, без служебной приставки;
- *   — удалённое письмо лежит в корзине и возвращается оттуда целым;
- *   — отвеченное письмо не считается непрочитанным;
- *   — разбор, упавший на модели, не помечает письмо разобранным.
+ *   — по переписке, из которой запрос не завели, подбор всё равно заводится;
+ *   — позиции письма попадают в таблицу и находятся в каталоге;
+ *   — второй запрос по той же переписке не заводится — таблица одна;
+ *   — запрос виден со ВСЕХ писем цепочки, а не только с последнего;
+ *   — подпись менеджера своя, общая — запасная, а из карточки — последняя;
+ *   — подпись дописывается к письму один раз и не дублируется.
  *
  * Run:  php tests/module_039.php
  *
- * База создаётся в системном временном каталоге — `data/kp.db` не открывается.
+ * База создаётся в системном временном каталоге — `data/kp.db` не открывается,
+ * так что запуск на сервере не может задеть живые данные.
  */
 $tmpDb = sys_get_temp_dir() . '/kp-test-039-' . getmypid() . '.db';
 $configPath = dirname(__DIR__) . '/config.php';
 $hadConfig = file_exists($configPath);
+
+// Порядок слагаемых здесь — это вся безопасность теста: `+` оставляет ключ
+// ЛЕВОГО операнда, поэтому подмена DB_PATH должна идти первой.
 $savedConfig = $hadConfig ? file_get_contents($configPath) : null;
 $existing = $hadConfig ? (array)(require $configPath) : [];
 $effective = ['DB_PATH' => $tmpDb] + $existing;
@@ -32,13 +35,9 @@ register_shutdown_function(function () use ($configPath, $savedConfig, $tmpDb) {
 });
 
 require dirname(__DIR__) . '/lib/bootstrap.php';
-require_once ROOT . '/lib/matcher.php';
-require_once ROOT . '/lib/variants.php';
-require_once ROOT . '/lib/mail.php';
-require_once ROOT . '/lib/mail_threads.php';
 require_once ROOT . '/lib/mailsync.php';
-require_once ROOT . '/lib/outbox.php';
-require_once ROOT . '/lib/boards.php';
+require_once ROOT . '/lib/request_items.php';
+require_once ROOT . '/lib/mail_signature.php';
 
 $fail = 0;
 function ok(string $what, bool $cond, string $extra = '') {
@@ -47,140 +46,124 @@ function ok(string $what, bool $cond, string $extra = '') {
     if (!$cond) $fail++;
 }
 
-Settings::set('VECTOR_ENABLED', '0');
-Settings::set('MATCH_VECTOR_WEIGHT', '0');
-Settings::set('BITRIX_ENABLED', '0');
+// Ни модели, ни сети: ключей нет, и разбор письма падает — ровно тот случай,
+// ради которого подбор обязан открыться всё равно
 Settings::set('REQUISITES_AUTOSYNC', '0');
+Settings::set('VECTOR_ENABLED', '0');
+Settings::set('KNOWLEDGE_ENABLED', '0');
+Settings::set('BITRIX_ENABLED', '0');
 
-echo "\n1. Класс защиты — это другой товар, а не «почти то же самое»\n";
+Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, price, stock, reserved,
+                                   unit, vat, product_type, source, updated_at)
+       VALUES ('p-plate5', 'Бронеплита Бр5', 'бронеплита бр5', 'BP5',
+               18000.0, 12, 0, 'шт.', 22, 'product', 'api', datetime('now'))");
 
-foreach ([['pl-2', 'Боковая плита для бронежилета Бр2', 4200],
-          ['pl-3', 'Боковая плита для бронежилета Бр3', 9000],
-          ['pl-5', 'Боковая плита для бронежилета Бр5', 11500]] as [$id, $name, $price]) {
-    Db::insert('products_cache', [
-        'moysklad_id' => $id, 'name' => $name, 'name_normalized' => mb_strtolower($name),
-        'price' => $price, 'stock' => 3, 'reserved' => 0, 'unit' => 'шт.', 'product_type' => 'product',
-    ]);
-}
-
-$found = ProductMatcher::findCandidates('Боковая плита для бронежилета Бр2', 5);
-ok('нашлась именно Бр2', ($found[0]['moysklad_id'] ?? '') === 'pl-2',
-   json_encode(array_column($found, 'name'), JSON_UNESCAPED_UNICODE));
-ok('и ни одной чужой плиты рядом', count($found) === 1,
-   json_encode(array_column($found, 'name'), JSON_UNESCAPED_UNICODE));
-ok('запрос без класса вообще находит все три',
-   count(ProductMatcher::findCandidates('Боковая плита для бронежилета', 5)) === 3);
-
-echo "\n2. Товар с модификациями выбирается сам — с вилкой цен\n";
-
-Db::insert('products_cache', ['moysklad_id' => 'hl', 'name' => 'Шлем Протон',
-    'name_normalized' => 'шлем протон', 'article' => 'PR', 'price' => 0, 'stock' => 0, 'reserved' => 0,
-    'unit' => 'шт.', 'product_type' => 'product']);
-foreach ([['S', 9000, 4], ['M', 10000, 20], ['L', 11500, 9]] as [$size, $price, $stock]) {
-    Db::insert('products_cache', ['moysklad_id' => 'hl-' . $size, 'name' => 'Шлем Протон (Размер: ' . $size . ')',
-        'name_normalized' => 'шлем протон размер ' . mb_strtolower($size), 'article' => 'PR-' . $size,
-        'price' => $price, 'stock' => $stock, 'reserved' => 0, 'unit' => 'шт.',
-        'product_type' => 'variant', 'parent_id' => 'hl', 'characteristics' => 'Размер: ' . $size]);
-}
-$rows = Db::all("SELECT * FROM products_cache WHERE moysklad_id='hl'");
-$suggest = Variants::expandSuggest($rows);
-$group = array_values(array_filter($suggest, fn($r) => !empty($r['is_group'])))[0] ?? [];
-ok('товар целиком стоит в подсказке', ($group['moysklad_id'] ?? '') === 'hl');
-ok('низ вилки — самая дешёвая модификация', (float)($group['price'] ?? 0) === 9000.0, (string)($group['price'] ?? ''));
-ok('верх вилки — самая дорогая', (float)($group['price_max'] ?? 0) === 11500.0, (string)($group['price_max'] ?? ''));
-ok('остаток — сумма по размерам', (int)($group['stock'] ?? 0) === 33, (string)($group['stock'] ?? ''));
-ok('и размеры никуда не делись', count($suggest) === 4, (string)count($suggest));
-
-echo "\n3. Обновление каталога не обнуляет остатки\n";
-
-Db::q("UPDATE products_cache SET stock=12 WHERE moysklad_id='pl-2'");
-// Ровно тот upsert, которым обновляется каталог: остаток в нём — ноль-заглушка
-Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, price, stock, reserved, unit, product_type, source, updated_at)
-       VALUES ('pl-2', 'Боковая плита для бронежилета Бр2', 'боковая плита для бронежилета бр2', 4300, 0, 0, 'шт.', 'product', 'moysklad', datetime('now'))
-       ON CONFLICT(moysklad_id) DO UPDATE SET name=excluded.name, price=excluded.price,
-            unit=excluded.unit, source='moysklad', updated_at=datetime('now')");
-ok('цена обновилась', (float)Db::val("SELECT price FROM products_cache WHERE moysklad_id='pl-2'") === 4300.0);
-ok('а остаток остался прежним', (int)Db::val("SELECT stock FROM products_cache WHERE moysklad_id='pl-2'") === 12);
-
-echo "\n4. Имя вложения — человеческое\n";
-
-$mgr = (int)Db::insert('managers', ['login' => 'yana', 'password_hash' => 'x', 'name' => 'Яна']);
-$tmp = tempnam(sys_get_temp_dir(), 'kp');
-file_put_contents($tmp, '%PDF-1.4');
-$att = Outbox::accept(['name' => 'Счет_на_турникеты_для_АО_ТИКО_ПЛАСТИК.pdf', 'tmp_name' => $tmp,
-                       'size' => 8, 'error' => UPLOAD_ERR_OK], $mgr);
-ok('на диске имя со служебной приставкой', (bool)preg_match('/^[0-9a-f]{16}__/', $att['name']), $att['name']);
-$resolved = Outbox::resolve([$att['name']], $mgr);
-ok('а в письмо уходит имя без неё',
-   ($resolved[0]['name'] ?? '') === 'Счет_на_турникеты_для_АО_ТИКО_ПЛАСТИК.pdf',
-   (string)($resolved[0]['name'] ?? ''));
-ok('и путь к файлу на месте', is_file($resolved[0]['path'] ?? ''));
-@unlink($resolved[0]['path'] ?? '');
-
-echo "\n5. Корзина: удалённое письмо возвращается\n";
-
-$boxId = (int)Db::insert('mailboxes', ['name' => 'info', 'email' => 'info@atlant-armour.ru', 'is_active' => 1]);
-$mailId = (int)Db::insert('mail_messages', [
-    'mailbox_id' => $boxId, 'direction' => 'in', 'thread_key' => 'th-1', 'message_id' => '<a@b>',
-    'subject' => 'Запрос КП', 'from_email' => 'client@example.ru', 'to_emails' => 'info@atlant-armour.ru',
-    'body_text' => 'Пришлите КП на плиты', 'date_at' => '2026-09-17 10:00:00', 'is_read' => 0,
+$managerId = Db::insert('managers', [
+    'login' => 'yana', 'password_hash' => 'x', 'name' => 'Яна Петрова',
+    'phone' => '+79775084585', 'is_admin' => 0,
 ]);
-MailSync::deleteMessage($mailId, $mgr);
-ok('письмо ушло из архива', !Db::val("SELECT 1 FROM mail_messages WHERE id=?", [$mailId]));
-$trash = MailSync::trash();
-ok('и лежит в корзине', count($trash) === 1 && $trash[0]['subject'] === 'Запрос КП', json_encode(count($trash)));
 
-$restored = MailSync::restoreFromTrash((int)$trash[0]['id']);
-ok('вернулось обратно', $restored['restored'] === 1);
-$back = Db::one("SELECT * FROM mail_messages WHERE id=?", [(int)$restored['mail_message_id']]);
-ok('с темой и текстом', ($back['subject'] ?? '') === 'Запрос КП'
-   && str_contains((string)($back['body_text'] ?? ''), 'КП на плиты'));
-ok('и в той же переписке', ($back['thread_key'] ?? '') === 'th-1');
-ok('корзина опустела', MailSync::trash() === []);
-
-echo "\n6. Отвеченное письмо — не непрочитанное\n";
-
-ok('пока не ответили — одно непрочитанное', MailThreads::unreadCount() === 1,
-   (string)MailThreads::unreadCount());
-Db::insert('mail_messages', [
-    'mailbox_id' => $boxId, 'direction' => 'out', 'thread_key' => 'th-1', 'message_id' => '<our@b>',
-    'subject' => 'Re: Запрос КП', 'from_email' => 'info@atlant-armour.ru', 'to_emails' => 'client@example.ru',
-    'body_text' => 'Направляем КП', 'date_at' => '2026-09-17 11:00:00', 'is_read' => 1,
+$mailboxId = Db::insert('mailboxes', [
+    'name' => 'info@atlant-armour.ru', 'email' => 'info@atlant-armour.ru', 'is_active' => 1,
 ]);
-ok('ответили — счётчик обнулился', MailThreads::unreadCount() === 0, (string)MailThreads::unreadCount());
 
-echo "\n7. Письмо, которое модель не разобрала, не теряется\n";
-
-$hard = (int)Db::insert('mail_messages', [
-    'mailbox_id' => $boxId, 'direction' => 'in', 'thread_key' => 'th-2', 'message_id' => '<c@d>',
-    'subject' => 'Прошу КП', 'from_email' => 'two@example.ru', 'to_emails' => 'info@atlant-armour.ru',
-    'body_text' => "Добрый день!\nПрошу направить КП:\nБоковая плита для бронежилета Бр2 — 10 шт.",
-    'date_at' => '2026-09-17 12:00:00',
+// Письмо, которое классификатор отнёс к «нам предлагают товар»: запроса у него
+// нет, и именно на нём сервис раньше отказывал в подборе
+$threadKey = 'thread-kron-1';
+$first = Db::insert('mail_messages', [
+    'mailbox_id' => $mailboxId, 'direction' => 'in', 'thread_key' => $threadKey,
+    'message_id' => '<kron-1@kronconcern.ru>', 'subject' => 'Коммерческое предложение на приобретение бронепластин.',
+    'from_email' => 'knv@kronconcern.ru', 'from_name' => 'Кузнецов Никита Владимирович',
+    'to_emails' => 'info@atlant-armour.ru', 'body_text' => 'Добрый день! Прошу предоставить КП.',
+    'date_at' => '2026-09-16 16:19:20', 'category' => 'supplier_offer',
+    'processed_at' => '2026-09-16 16:20:00',
 ]);
-// Ключей нет — разбор моделью падает на каждом заходе
-MailSync::processInbound($boxId);
-$row = Db::one("SELECT processed_at, triage_attempts FROM mail_messages WHERE id=?", [$hard]);
-ok('письмо не помечено разобранным', $row['processed_at'] === null, (string)($row['processed_at'] ?? 'null'));
-ok('но попытка засчитана', (int)$row['triage_attempts'] === 1, (string)$row['triage_attempts']);
+$last = Db::insert('mail_messages', [
+    'mailbox_id' => $mailboxId, 'direction' => 'in', 'thread_key' => $threadKey,
+    'message_id' => '<kron-2@kronconcern.ru>', 'subject' => 'Re: Коммерческое предложение на приобретение бронепластин.',
+    'from_email' => 'knv@kronconcern.ru', 'from_name' => 'Кузнецов Никита Владимирович',
+    'to_emails' => 'info@atlant-armour.ru',
+    'body_text' => "Добрый день!\n\nПрошу направить коммерческое предложение:\nБронеплита Бр5 — 40 шт.",
+    'date_at' => '2026-09-17 10:57:39', 'category' => 'supplier_offer',
+    'processed_at' => '2026-09-17 10:58:00',
+]);
 
-MailSync::processInbound($boxId);
-MailSync::processInbound($boxId);
-$row = Db::one("SELECT processed_at, request_id FROM mail_messages WHERE id=?", [$hard]);
-ok('после трёх неудач запрос заведён правилами', !empty($row['request_id']), json_encode($row));
-ok('и письмо наконец разобрано', $row['processed_at'] !== null);
-$items = Db::all("SELECT * FROM request_items WHERE request_id=?", [(int)$row['request_id']]);
-ok('позиция из письма нашла свою плиту',
-   count($items) === 1 && ($items[0]['moysklad_product_id'] ?? '') === 'pl-2',
-   json_encode(array_column($items, 'product_name'), JSON_UNESCAPED_UNICODE));
+echo "\n1. Подбор заводится по переписке, из которой запрос не завели\n";
 
-echo "\n8. Пустая карточка убирается с доски насовсем\n";
+$res = MailSync::requestFromThread($threadKey, (int)$managerId);
+ok('запрос создан', $res['created'] === true && $res['request_id'] > 0, json_encode($res));
 
-$boardId = (int)Boards::singleton()['id'];
-$colId = (int)Db::val("SELECT id FROM board_columns WHERE board_id=? ORDER BY position LIMIT 1", [$boardId]);
-$cpId = (int)Db::insert('counterparties', ['name' => 'ООО «Пусто»']);
-$cardId = (int)Db::insert('board_cards', ['column_id' => $colId, 'position' => 0, 'counterparty_id' => $cpId]);
-ok('карточка без писем убирается совсем', Boards::dismissCard($cardId) === true);
-ok('и строки её больше нет', !Db::val("SELECT 1 FROM board_cards WHERE id=?", [$cardId]));
+$req = Db::one("SELECT * FROM requests WHERE id=?", [(int)$res['request_id']]);
+ok('заведён по последнему входящему письму',
+   str_contains((string)$req['raw_text'], 'Бронеплита Бр5'), (string)$req['raw_text']);
+ok('категория стала рабочей, а не «нам предлагают товар»',
+   $req['category'] === 'kp_request', (string)$req['category']);
+ok('и видно, что решение принял человек',
+   $req['category_source'] === 'manager', (string)$req['category_source']);
+ok('запрос за тем менеджером, который нажал', (int)$req['manager_id'] === (int)$managerId);
+
+echo "\n2. Позиции письма нашлись в каталоге без единого вызова модели\n";
+
+$items = RequestItems::all((int)$res['request_id']);
+ok('строка подбора появилась', count($items) === 1, (string)count($items));
+ok('и нашла нашу бронеплиту',
+   ($items[0]['moysklad_product_id'] ?? '') === 'p-plate5', json_encode($items[0]['product_name'] ?? null, JSON_UNESCAPED_UNICODE));
+ok('с количеством из письма', (int)($items[0]['quantity'] ?? 0) === 40, (string)($items[0]['quantity'] ?? 0));
+
+echo "\n3. Запрос один на всю переписку\n";
+
+ok('первое письмо цепочки тоже смотрит на него',
+   (int)Db::val("SELECT request_id FROM mail_messages WHERE id=?", [$first]) === (int)$res['request_id']);
+$again = MailSync::requestFromThread($threadKey, (int)$managerId);
+ok('второй раз запрос не заводится',
+   $again['created'] === false && $again['request_id'] === $res['request_id'], json_encode($again));
+ok('и запрос в базе по-прежнему один',
+   (int)Db::val("SELECT COUNT(*) FROM requests") === 1);
+
+echo "\n4. Пустая переписка — это ошибка, а не молчаливый пустой запрос\n";
+
+$threw = false;
+try { MailSync::requestFromThread('нет-такой-цепочки', (int)$managerId); }
+catch (InvalidArgumentException $e) { $threw = true; }
+ok('несуществующая переписка отказывает', $threw);
+
+echo "\n5. Подпись: своя, общая, из карточки\n";
+
+ok('своей нет — собирается из имени и телефона',
+   MailSignature::forManager((int)$managerId) === "С уважением,\nЯна Петрова\n+79775084585",
+   MailSignature::forManager((int)$managerId));
+
+Settings::set(MailSignature::SETTING, "С уважением,\nОтдел продаж «Атлант Армор»");
+ok('общая подпись компании берётся раньше карточки',
+   str_contains(MailSignature::forManager((int)$managerId), 'Отдел продаж'),
+   MailSignature::forManager((int)$managerId));
+
+$own = "С уважением, Яна, менеджер по оптовым заказам\n+79775084585";
+MailSignature::save((int)$managerId, $own);
+ok('своя подпись сильнее общей', MailSignature::forManager((int)$managerId) === $own);
+ok('и в базе она лежит у менеджера',
+   (string)Db::val("SELECT email_signature FROM managers WHERE id=?", [$managerId]) === $own);
+
+$d = MailSignature::describe((int)$managerId);
+ok('панель показывает, чья подпись стоит', $d['source'] === 'manager', (string)$d['source']);
+
+echo "\n6. Подпись дописывается один раз\n";
+
+$body = MailSignature::appendText('Добрый день! Направляем КП.', $own);
+ok('подпись дописалась', str_contains($body, 'менеджер по оптовым заказам'), $body);
+ok('текст письма не пострадал', str_starts_with($body, 'Добрый день! Направляем КП.'));
+ok('второй раз не дописывается', MailSignature::appendText($body, $own) === $body);
+ok('письмо с подписью, набранной руками, не задваивает её',
+   MailSignature::appendText("Добрый день!\n\nС уважением, Яна, менеджер по оптовым заказам\n+7 (977) 508-45-85", $own)
+     === "Добрый день!\n\nС уважением, Яна, менеджер по оптовым заказам\n+7 (977) 508-45-85");
+
+$html = MailSignature::appendHtml('<p>Добрый день!</p>', $own);
+ok('в HTML подпись стала абзацем', str_contains($html, '<p>С уважением, Яна'), $html);
+ok('и переносы строк в нём сохранились', str_contains($html, '<br'), $html);
+ok('в HTML второй раз тоже не дописывается', MailSignature::appendHtml($html, $own) === $html);
+
+$empty = MailSignature::appendText('Добрый день!', '');
+ok('пустая подпись ничего не портит', $empty === 'Добрый день!', $empty);
 
 echo "\n" . ($fail ? "ПРОВАЛЕНО: $fail\n" : "Всё сошлось\n");
 exit($fail ? 1 : 0);

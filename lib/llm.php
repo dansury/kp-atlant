@@ -8,6 +8,11 @@ class LLM {
      * Model catalog shown in the admin panel (same idea as NeuroPro AVAILABLE_MODELS).
      * Grouped so the picker can use <optgroup>; a slug can still be typed by hand,
      * and «Обновить каталог OpenRouter» replaces this list with the live one.
+     *
+     * `tier` — 1 дешёвая, 2 рабочая, 3 самая дорогая. Это порядок, по которому
+     * «палец вниз» предлагает модель ПОДОРОЖЕ (модуль 038), когда настоящей
+     * цены нет: у Yandex прайса в API вовсе нет, а каталог OpenRouter мог ни
+     * разу не обновляться. Обновлённый каталог несёт `price` и решает сам.
      */
     public const CATALOG = [
         // Yandex slugs are stored WITHOUT the version segment: the version is
@@ -22,38 +27,38 @@ class LLM {
         // и запоминает в `yandex_models`; непроверенный слаг наружу уходит
         // только после того, как его проверили.
         'yandex' => [
-            ['id' => 'yandexgpt',             'label' => 'YandexGPT Pro',             'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-32k',         'label' => 'YandexGPT Pro 32k',         'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-lite',        'label' => 'YandexGPT Lite — дешевле',  'group' => 'YandexGPT'],
-            ['id' => 'llama',                 'label' => 'Llama 70B',                 'group' => 'Открытые модели'],
-            ['id' => 'llama-lite',            'label' => 'Llama 8B',                  'group' => 'Открытые модели'],
-            ['id' => 'llama-3.3-70b-instruct','label' => 'Llama 3.3 70B Instruct',    'group' => 'Открытые модели'],
-            ['id' => 'deepseek-r1',           'label' => 'DeepSeek R1',               'group' => 'Открытые модели'],
-            ['id' => 'deepseek-v3',           'label' => 'DeepSeek V3',               'group' => 'Открытые модели'],
-            ['id' => 'qwen3-235b-a22b-fp8',   'label' => 'Qwen3 235B',                'group' => 'Открытые модели'],
-            ['id' => 'qwen3-30b-a3b',         'label' => 'Qwen3 30B A3B',             'group' => 'Открытые модели'],
-            ['id' => 'gemma-3-27b-it',        'label' => 'Gemma 3 27B IT',            'group' => 'Открытые модели'],
-            ['id' => 'gemma-3-12b-it',        'label' => 'Gemma 3 12B IT',            'group' => 'Открытые модели'],
+            ['id' => 'yandexgpt',             'label' => 'YandexGPT Pro',             'group' => 'YandexGPT', 'tier' => 2],
+            ['id' => 'yandexgpt-32k',         'label' => 'YandexGPT Pro 32k',         'group' => 'YandexGPT', 'tier' => 2],
+            ['id' => 'yandexgpt-lite',        'label' => 'YandexGPT Lite — дешевле',  'group' => 'YandexGPT', 'tier' => 1],
+            ['id' => 'llama',                 'label' => 'Llama 70B',                 'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'llama-lite',            'label' => 'Llama 8B',                  'group' => 'Открытые модели', 'tier' => 1],
+            ['id' => 'llama-3.3-70b-instruct','label' => 'Llama 3.3 70B Instruct',    'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'deepseek-r1',           'label' => 'DeepSeek R1',               'group' => 'Открытые модели', 'tier' => 3],
+            ['id' => 'deepseek-v3',           'label' => 'DeepSeek V3',               'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'qwen3-235b-a22b-fp8',   'label' => 'Qwen3 235B',                'group' => 'Открытые модели', 'tier' => 3],
+            ['id' => 'qwen3-30b-a3b',         'label' => 'Qwen3 30B A3B',             'group' => 'Открытые модели', 'tier' => 1],
+            ['id' => 'gemma-3-27b-it',        'label' => 'Gemma 3 27B IT',            'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'gemma-3-12b-it',        'label' => 'Gemma 3 12B IT',            'group' => 'Открытые модели', 'tier' => 1],
         ],
         'openrouter' => [
-            ['id' => 'anthropic/claude-sonnet-4.5',       'label' => 'Claude Sonnet 4.5',      'group' => 'Anthropic'],
-            ['id' => 'anthropic/claude-haiku-4.5',        'label' => 'Claude Haiku 4.5',       'group' => 'Anthropic'],
-            ['id' => 'anthropic/claude-opus-4.1',         'label' => 'Claude Opus 4.1',        'group' => 'Anthropic'],
-            ['id' => 'openai/gpt-5',                      'label' => 'GPT-5',                  'group' => 'OpenAI'],
-            ['id' => 'openai/gpt-5-mini',                 'label' => 'GPT-5 mini',             'group' => 'OpenAI'],
-            ['id' => 'openai/gpt-4.1',                    'label' => 'GPT-4.1',                'group' => 'OpenAI'],
-            ['id' => 'openai/gpt-4.1-mini',               'label' => 'GPT-4.1 mini',           'group' => 'OpenAI'],
-            ['id' => 'openai/gpt-4o-mini',                'label' => 'GPT-4o mini',            'group' => 'OpenAI'],
-            ['id' => 'google/gemini-2.5-pro',             'label' => 'Gemini 2.5 Pro',         'group' => 'Google'],
-            ['id' => 'google/gemini-2.5-flash',           'label' => 'Gemini 2.5 Flash',       'group' => 'Google'],
-            ['id' => 'google/gemini-2.5-flash-lite',      'label' => 'Gemini 2.5 Flash Lite',  'group' => 'Google'],
-            ['id' => 'deepseek/deepseek-chat-v3.1',       'label' => 'DeepSeek V3.1',          'group' => 'DeepSeek'],
-            ['id' => 'deepseek/deepseek-r1',              'label' => 'DeepSeek R1',            'group' => 'DeepSeek'],
-            ['id' => 'qwen/qwen3-235b-a22b',              'label' => 'Qwen3 235B',             'group' => 'Qwen'],
-            ['id' => 'qwen/qwen-2.5-72b-instruct',        'label' => 'Qwen 2.5 72B',           'group' => 'Qwen'],
-            ['id' => 'meta-llama/llama-3.3-70b-instruct', 'label' => 'Llama 3.3 70B',          'group' => 'Meta'],
-            ['id' => 'mistralai/mistral-large',           'label' => 'Mistral Large',          'group' => 'Mistral'],
-            ['id' => 'x-ai/grok-4',                       'label' => 'Grok 4',                 'group' => 'xAI'],
+            ['id' => 'anthropic/claude-sonnet-4.5',       'label' => 'Claude Sonnet 4.5',      'group' => 'Anthropic', 'tier' => 3],
+            ['id' => 'anthropic/claude-haiku-4.5',        'label' => 'Claude Haiku 4.5',       'group' => 'Anthropic', 'tier' => 2],
+            ['id' => 'anthropic/claude-opus-4.1',         'label' => 'Claude Opus 4.1',        'group' => 'Anthropic', 'tier' => 3],
+            ['id' => 'openai/gpt-5',                      'label' => 'GPT-5',                  'group' => 'OpenAI', 'tier' => 3],
+            ['id' => 'openai/gpt-5-mini',                 'label' => 'GPT-5 mini',             'group' => 'OpenAI', 'tier' => 2],
+            ['id' => 'openai/gpt-4.1',                    'label' => 'GPT-4.1',                'group' => 'OpenAI', 'tier' => 3],
+            ['id' => 'openai/gpt-4.1-mini',               'label' => 'GPT-4.1 mini',           'group' => 'OpenAI', 'tier' => 2],
+            ['id' => 'openai/gpt-4o-mini',                'label' => 'GPT-4o mini',            'group' => 'OpenAI', 'tier' => 1],
+            ['id' => 'google/gemini-2.5-pro',             'label' => 'Gemini 2.5 Pro',         'group' => 'Google', 'tier' => 3],
+            ['id' => 'google/gemini-2.5-flash',           'label' => 'Gemini 2.5 Flash',       'group' => 'Google', 'tier' => 2],
+            ['id' => 'google/gemini-2.5-flash-lite',      'label' => 'Gemini 2.5 Flash Lite',  'group' => 'Google', 'tier' => 1],
+            ['id' => 'deepseek/deepseek-chat-v3.1',       'label' => 'DeepSeek V3.1',          'group' => 'DeepSeek', 'tier' => 1],
+            ['id' => 'deepseek/deepseek-r1',              'label' => 'DeepSeek R1',            'group' => 'DeepSeek', 'tier' => 2],
+            ['id' => 'qwen/qwen3-235b-a22b',              'label' => 'Qwen3 235B',             'group' => 'Qwen', 'tier' => 2],
+            ['id' => 'qwen/qwen-2.5-72b-instruct',        'label' => 'Qwen 2.5 72B',           'group' => 'Qwen', 'tier' => 1],
+            ['id' => 'meta-llama/llama-3.3-70b-instruct', 'label' => 'Llama 3.3 70B',          'group' => 'Meta', 'tier' => 1],
+            ['id' => 'mistralai/mistral-large',           'label' => 'Mistral Large',          'group' => 'Mistral', 'tier' => 2],
+            ['id' => 'x-ai/grok-4',                       'label' => 'Grok 4',                 'group' => 'xAI', 'tier' => 3],
         ],
     ];
 
@@ -178,6 +183,7 @@ class LLM {
                 'id'    => (string)$m['id'],
                 'label' => (string)($m['label'] ?? $m['id']),
                 'group' => (string)($m['group'] ?? 'OpenRouter'),
+                'price' => isset($m['price']) ? (float)$m['price'] : null,
             ];
         }
         return $rows;
@@ -207,6 +213,9 @@ class LLM {
                 'id'    => $id,
                 'label' => ($name !== '' ? $name : $id) . ($free ? ' — бесплатно' : ''),
                 'group' => $free ? 'OpenRouter · бесплатные' : 'OpenRouter · ' . (explode('/', $id)[0]),
+                // Цена за токен, как её называет сам OpenRouter: по ней «палец
+                // вниз» и находит модель дороже нынешней (модуль 038)
+                'price' => $price,
             ];
         }
         if (!$rows) throw new LLMException('В ответе OpenRouter не нашлось ни одной модели');
@@ -220,6 +229,64 @@ class LLM {
 
     public static function forgetOpenRouterModels(): void {
         Db::q("DELETE FROM settings WHERE key=?", [self::OR_CACHE_KEY]);
+    }
+
+    /**
+     * Модели ДОРОЖЕ нынешней — что предложить, когда качество не устроило
+     * (модуль 038).
+     *
+     * «Возьмите модель получше» без списка — это предложение читать прайсы
+     * двух провайдеров. Порядок считается по настоящей цене там, где она есть
+     * (обновлённый каталог OpenRouter), и по `tier` там, где её нет. Модели
+     * провайдера без ключа в список не попадают: предлагать то, чем нельзя
+     * воспользоваться, — это тупик, а не выбор.
+     *
+     * @param string $spec «provider:slug»; пусто — нынешняя модель цепочки
+     * @return array<int,array{provider:string,model:string,label:string,spec:string,price:?float,tier:int}>
+     */
+    public static function pricier(string $spec = '', int $limit = 8): array {
+        [$provider, $model] = array_pad(explode(':', trim($spec), 2), 2, '');
+        if ($provider === '' || $model === '') {
+            $cur = self::currentModel();
+            [$provider, $model] = [(string)$cur['provider'], (string)$cur['model']];
+        }
+
+        $rank = fn(array $row): array => [$row['price'] ?? null, (int)($row['tier'] ?? 2)];
+        $now  = [null, 2];
+        $rows = [];
+        foreach (array_keys(self::CATALOG) as $p) {
+            if (!self::ready($p)) continue;
+            foreach (self::catalog($p) as $m) {
+                $row = [
+                    'provider' => $p,
+                    'model'    => (string)$m['id'],
+                    'label'    => (string)($m['label'] ?? $m['id']),
+                    'group'    => (string)($m['group'] ?? ''),
+                    'spec'     => $p . ':' . $m['id'],
+                    'price'    => isset($m['price']) ? (float)$m['price'] : null,
+                    'tier'     => (int)($m['tier'] ?? 2),
+                    'state'    => (string)($m['state'] ?? ''),
+                ];
+                if ($p === $provider && $row['model'] === $model) $now = $rank($row);
+                if ($row['state'] === 'missing') continue;   // этого слага в облаке нет
+                $rows[] = $row;
+            }
+        }
+
+        $dearer = array_values(array_filter($rows, function (array $row) use ($rank, $now, $provider, $model) {
+            if ($row['provider'] === $provider && $row['model'] === $model) return false;
+            [$price, $tier] = $rank($row);
+            // Цены сравнимы только между собой; где одной из них нет — решает ступень
+            if ($price !== null && $now[0] !== null) return $price > $now[0];
+            return $tier > $now[1];
+        }));
+
+        usort($dearer, function (array $a, array $b) use ($rank) {
+            [$ap, $at] = $rank($a);
+            [$bp, $bt] = $rank($b);
+            return [$at, $ap ?? 0, $a['label']] <=> [$bt, $bp ?? 0, $b['label']];
+        });
+        return array_slice($dearer, 0, max(1, $limit));
     }
 
     // ---- Каталог Yandex: слаг проверяется у провайдера, а не берётся на веру ----
@@ -538,7 +605,7 @@ class LLM {
         $lastErr = null;
         foreach ($chain as $provider) {
             // Провайдер, который только что отваливался по таймауту, не
-            // спрашивается снова ближайшие минуты (модуль 039). Тридцать
+            // спрашивается снова ближайшие минуты (модуль 040). Тридцать
             // секунд ожидания на КАЖДОМ письме — это почта, которая не
             // забирается, и кнопка, которая не возвращается.
             if (self::isCoolingDown($provider)) {
@@ -564,7 +631,7 @@ class LLM {
     }
 
     /**
-     * ==== Провайдер на паузе (модуль 039) ====
+     * ==== Провайдер на паузе (модуль 040) ====
      *
      * Сеть до провайдера не доходит — фильтр по дороге, отвалившийся прокси,
      * просто таймаут. Каждое следующее письмо честно ждало свои тридцать

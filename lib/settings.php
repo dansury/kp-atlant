@@ -210,6 +210,14 @@ final class Settings {
         'FALLBACK_HOURS'        => ['notify', 'Порог эскалации, часов', 'int', false, 24, ''],
         'NOTIFICATION_POLL_SEC' => ['notify', 'Опрос уведомлений, сек', 'int', false, 30, ''],
 
+        // --- Обратная связь (модуль 038): жалоба из панели → issue репозитория ---
+        'SUPPORT_ENABLED'       => ['support', 'Кнопка «Написать в поддержку»', 'bool', false, 1, 'Менеджер описывает проблему прямо на том экране, где её встретил, и прикладывает файлы. Обращение уходит администратору на ревью, а не сразу в GitHub'],
+        'SUPPORT_REPO'          => ['support', 'Репозиторий для issue', 'text', false, 'dansury/kp-atlant', 'В формате owner/repo. Пусто — обращения живут только в панели'],
+        'SUPPORT_TOKEN'         => ['support', 'Токен GitHub для issue', 'secret', true, '', 'Fine-grained токен с правами Issues: Read and write и Contents: Read and write (файлы обращения). Пусто — берётся общий токен из «Базы знаний»'],
+        'SUPPORT_ASSETS_PATH'   => ['support', 'Папка для файлов обращений', 'text', false, 'support/uploads', 'Путь внутри репозитория. Вложения issue через API не загружаются, поэтому файл коммитится сюда, а в issue печатается ссылка'],
+        'SUPPORT_ASSETS_BRANCH' => ['support', 'Ветка для файлов', 'text', false, '', 'Пусто — ветка репозитория по умолчанию'],
+        'SUPPORT_MAX_MB'        => ['support', 'Файл к обращению, МБ', 'int', false, 25, 'Картинки, документы и видео крупнее не принимаются'],
+
         // --- Auto-deploy (module 014): the active-development checkbox ---
         'AUTOPULL_ENABLED'  => ['deploy', 'Проверять обновления при каждом запуске', 'bool', false, 0, 'На время активной разработки: каждое открытие страницы тихо спрашивает у GitHub head отслеживаемой ссылки, и новый коммит выкладывается через pull.php — страница открывается заново уже на новом коде. Репозиторий, токен и пароль pull.php берутся из pull-config.php в корне сайта'],
         'AUTOPULL_INTERVAL' => ['deploy', 'Проверять не чаще, сек', 'int', false, 0, '0 — при каждом открытии страницы. Каждая проверка — один запрос к API GitHub (лимит 5000 в час с токеном)'],
@@ -236,6 +244,7 @@ final class Settings {
         'push'     => 'Push-уведомления',
         'mail'     => 'Почта (значения по умолчанию)',
         'notify'   => 'Уведомления',
+        'support'  => 'Обратная связь',
         'deploy'   => 'Автообновление кода',
         'log'      => 'Логи',
     ];
