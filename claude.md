@@ -537,6 +537,44 @@ answers with an error, and the next archive is built from the new ones only. The
 with the same correct answer is never stored twice: identical examples crowd the different ones
 out of a prompt.
 
+## Setup, support and the trial request
+A service nobody can INSTALL is a service with one operator (module 038). `SetupWizard` is
+not a second settings screen: it asks the same `Settings::SPEC` keys, renders its fields from
+that spec and writes through `Settings` — it stores no value of its own, only where the
+operator stopped (`settings['setup_wizard']`, no `cfg.` prefix, because state is not a
+setting). A step is closed by a FACT — a mailbox is on, the catalog has rows, a provider
+answers, a logo is uploaded — never by «the field is filled»: that is what lets the wizard be
+re-run on a working service and still say what is missing, and what keeps «Пройти заново»
+from touching a single setting. Every key that has to be fetched from somewhere carries the
+REAL link to the page that issues it and the rights to tick — «go to your account settings»
+is not an instruction. The wizard never writes a second connection test: it calls the same
+`test_moysklad` / `test_llm` the settings tabs call.
+
+A manager who hits a broken screen must be able to say so FROM that screen, with a
+screenshot. `Support` takes the complaint, the files and the screen's own hash, and stops it
+at the ADMINISTRATOR: a public tracker is not the place for «у меня всё пропало», and the
+title strangers will read is written by somebody who knows how to name it. Approval, and only
+a confirmed issue number, marks the ticket sent — same order as the learning export, for the
+same reason. A decline comes back to its author with a reason; silence is how you teach people
+to stop writing. GitHub has no API for issue attachments at all, so a file is committed into
+`SUPPORT_ASSETS_PATH` and printed in the issue body — image as an image, the rest as a link —
+and it goes up BEFORE the issue. The original stays in `storage/support/` and is served by the
+panel: a link into a private repository does not open for a browser that is not signed in.
+
+A request that did not arrive by mail is still a request. The «Новый запрос» screen takes
+TEXT AND FILES, its link stands ABOVE «Входящие» (in the intake column itself, where the mail
+lands), and what it creates goes straight into «В работе» — it is being worked on already,
+since somebody typed it in — and the browser lands ON THAT CARD: the endpoint returns the
+address, not just an id. `requests.is_trial` marks the wizard's own trial request so that
+«Ромашка» из примера never looks like a client waiting for an answer.
+
+Quality is asked about, not assumed: 👍/👎 on the trial КП and the trial letter is a `quality`
+support ticket carrying the model that produced it. A 👎 offers models that COST MORE
+(`LLM::pricier()`) — by the real price where the refreshed OpenRouter catalog has one, by the
+`tier` of the built-in catalog where it does not, and never a model whose provider has no key
+or whose slug the cloud does not serve. The chosen one becomes the provider's default and
+moves that provider to the head of the chain; a choice that lasts one request is not a choice.
+
 ## Configuration
 Never read `config.php` directly. `config.php` holds DEFAULTS only and is optional; the effective value is `Settings::get('KEY')` (DB override → config.php → built-in default), and `$cfg` from bootstrap is already that merged array. A new setting must be declared in `Settings::SPEC` so the admin panel can show and override it. Secrets go through `Crypt` and never reach the browser: the panel shows `Settings::mask()` — the first four characters and the last four — which is enough to tell two tokens apart and useless to steal. An identifier that is not a secret (the МойСклад ID организации, a Folder ID) is shown in full; do not mask it.
 

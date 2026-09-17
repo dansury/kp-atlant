@@ -190,7 +190,7 @@ final class Learning {
                ON CONFLICT(key) DO UPDATE SET value=excluded.value",
               [$now . ' · ' . $archive['name'] . ' · ' . count($rows)]);
 
-        Logger::info('learning', 'Правки выгружены в репозиторий: ' . $name,
+        Logger::info('learning', 'Правки выгружены в репозиторий: ' . $archive['name'],
                      ['count' => count($rows), 'repo' => $target['repo'], 'manager_id' => $managerId]);
 
         return [

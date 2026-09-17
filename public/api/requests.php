@@ -210,11 +210,30 @@ switch ($action) {
         // the same on screen as «нашлось всё» (module 018)
         jsonData(RequestItems::rematchReport($id, $useLlm) + ['delivery' => RequestItems::delivery($id)]);
 
+    /**
+     * Запрос, который принесли мимо почты (модуль 038).
+     *
+     * Клиент написал в мессенджер, позвонил или прислал файл — до сих пор это
+     * значило «перепечатать руками и потерять вложение». Форма принимает текст
+     * И ФАЙЛЫ, а запрос кладётся карточкой в «В работе»: он уже в работе, раз
+     * его завели руками, и ждать, пока кто-то перетащит его из «Входящих», не
+     * должен. Браузер получает адрес этой карточки и уходит на неё.
+     */
     case 'create':
         $manager = requireAuth();
         $input = getInput();
         $text = trim($input['text'] ?? '');
-        if (!$text) jsonError('Text is required');
+        $files = array_values((array)($input['files'] ?? []));
+        if (!$text && !$files) jsonError('Вставьте текст запроса или приложите файл');
+
+        // Текст письма может быть и в файле: спецификация в .xlsx, запрос
+        // сканом. Разбирать нечего, пока вложения не прочитаны.
+        require_once ROOT . '/lib/outbox.php';
+        $staged = [];
+        foreach (Outbox::resolve($files, (int)$manager['id']) as $path) {
+            $staged[] = ['path' => $path, 'name' => preg_replace('/^[0-9a-f]{16}__/', '', basename($path))];
+        }
+        if ($text === '') $text = '(запрос во вложении: ' . implode(', ', array_column($staged, 'name')) . ')';
 
         // Parse via LLM
         $parsed = RequestParser::parse($text);
@@ -235,6 +254,9 @@ switch ($action) {
         }
 
         $type = ($parsed['request_type'] ?? 'kp_request') === 'order' ? 'order' : 'kp_request';
+        // Проверочный запрос заводит мастер настройки, а он админский: иначе
+        // «тихий» запрос без уведомления мог бы создать кто угодно
+        $isTrial = !empty($input['trial']) && !empty($manager['is_admin']);
         $requestId = Db::insert('requests', [
             'source' => 'manual',
             'raw_text' => $text,
@@ -244,7 +266,21 @@ switch ($action) {
             'status' => 'processing',
             'type' => $type,
             'type_source' => 'llm',
+            'is_trial' => $isTrial ? 1 : 0,
         ]);
+
+        // Вложения — на запрос и на компанию: текст из них идёт в подбор
+        // позиций так же, как текст из письма
+        foreach ($staged as $file) {
+            try {
+                Attachments::store(
+                    ['filename' => $file['name'], 'content' => (string)file_get_contents($file['path'])],
+                    ['request_id' => $requestId, 'counterparty_id' => $counterpartyId]
+                );
+            } catch (Throwable $e) {
+                Logger::exception('requests', $e, ['request_id' => $requestId, 'file' => $file['name']]);
+            }
+        }
 
         // Manual paste is still an inbound message in the company feed
         Crm::logEvent($counterpartyId, 'in', $text, [
@@ -256,11 +292,47 @@ switch ($action) {
         // Pre-fill the matched-positions table right away — no model call here
         RequestItems::ensure($requestId);
 
-        // Notify
-        require_once ROOT . '/lib/notifier.php';
-        Notifier::notify('new_request', "Новый запрос на КП" . ($orgName ? " от $orgName" : ''), null, 'request', $requestId);
+        // Карточка сразу в «В работе»: запрос, заведённый руками, уже разбирают
+        require_once ROOT . '/lib/boards.php';
+        $cardId = 0;
+        try {
+            $board = Boards::singleton();
+            $work  = Boards::workColumn((int)$board['id']);
+            if ($work) {
+                $cardId = Boards::addCard((int)$work['id'], [
+                    'counterparty_id' => $counterpartyId,
+                    'request_id'      => $requestId,
+                    'title'           => (string)($orgName ?: 'Запрос #' . $requestId),
+                    'manager_id'      => (int)$manager['id'],
+                ]);
+            }
+        } catch (Throwable $e) {
+            Logger::exception('requests', $e, ['request_id' => $requestId]);
+        }
 
-        jsonData(['id' => $requestId, 'status' => 'processing', 'type' => $type]);
+        // Проверочный запрос мастера настройки — чтобы мастер знал, что оценивать
+        if ($isTrial) {
+            require_once ROOT . '/lib/support.php';
+            require_once ROOT . '/lib/setup_wizard.php';
+            SetupWizard::rememberTrial($requestId, (int)$counterpartyId);
+        }
+
+        // Notify — кроме проверочного: «Ромашка» из примера не клиент
+        if (!$isTrial) {
+            require_once ROOT . '/lib/notifier.php';
+            Notifier::notify('new_request', "Новый запрос на КП" . ($orgName ? " от $orgName" : ''), null, 'request', $requestId);
+        }
+
+        jsonData([
+            'id'     => $requestId,
+            'status' => 'processing',
+            'type'   => $type,
+            'counterparty_id' => $counterpartyId,
+            'card_id' => $cardId,
+            'files'   => count($staged),
+            // Куда уходит браузер: на карточку, которую только что положили на доску
+            'hash'    => $counterpartyId ? 'mail/company/' . $counterpartyId : 'mail/request/' . $requestId,
+        ]);
 
     case 'assign':
         $manager = requireAuth();
