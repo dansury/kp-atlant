@@ -1,6 +1,6 @@
 ## 1 SPEC-driven development
 
-1.1 Lookup file -> spec mapping in spec.md. It is a thin navigation index — read once, then open ONE /spec/<module>.md for the relevant area. Never read the whole /spec/ folder.
+1.1 Lookup file -> spec mapping in spec.md. It is a thin navigation index — read once, then open ONE /specs/<module>.md for the relevant area. Never read the whole /specs/ folder.
 
 1.2 For reference details (signatures, DB schemas, algorithms, flows, SEO contract, email flows, referrals, QR cards): open exactly one /spec/<module>.md that matches the module you are editing. If the detail is missing there, read the source file — do NOT pull another /spec/<module>.md unless needed.
 
