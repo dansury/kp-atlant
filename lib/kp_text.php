@@ -71,14 +71,16 @@ final class KpText {
             if (trim((string)($item['site_url'] ?? '')) !== '') $lines[] = '   ' . (string)$item['site_url'];
         }
 
-        // Доставка отдельной строкой — как и в файле (модуль 026): в цену
-        // товара она не входит, и в письме это должно быть видно цифрой
+        // Доставка — отдельной строкой, либо включена в цену товаров, как и в
+        // файле (issue #60): «Итого» в письме и в документе не расходится
         if ((int)($proposal['delivery_on'] ?? 0) === 1) {
             $deliveryPrice = (float)($proposal['delivery_price'] ?? 0);
             $total += $deliveryPrice;
-            $lines[] = sprintf('%d. %s — %s', $n + 1,
-                trim((string)($proposal['delivery_name'] ?? '')) ?: 'Доставка',
-                self::money($deliveryPrice));
+            if ((string)Settings::get('KP_DELIVERY_MODE', 'included') !== 'included') {
+                $lines[] = sprintf('%d. %s — %s', $n + 1,
+                    trim((string)($proposal['delivery_name'] ?? '')) ?: 'Доставка',
+                    self::money($deliveryPrice));
+            }
         }
 
         $body = [];

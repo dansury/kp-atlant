@@ -150,8 +150,13 @@ $body = Support::issueBody(Support::get((int)$sub['id']) + ['manager_name' => '�
 ok('жалоба напечатана словами автора', str_contains($body, 'Нажимаю «Отправить»'));
 ok('картинка вставлена картинкой', str_contains($body, '![скриншот.png](https://raw.example/shot.png)'));
 ok('файл без ссылки не печатается сломанной ссылкой', !str_contains($body, '(КП №5_2026.pdf)'));
-ok('автор назван', str_contains($body, 'Менеджер'));
-ok('экран назван', str_contains($body, '#mail/company/12'));
+// Кто отправил, когда и с какого экрана — метаданные тикета в панели Атлант,
+// в тело GitHub issue больше не печатаются (issue #60)
+ok('служебный блок «Отправил · Когда · Экран» в issue не идёт',
+   !str_contains($body, 'Отправил:') && !str_contains($body, 'Заведено из панели Атлант'));
+$ticketRow = Support::get((int)$sub['id']);
+ok('автор остался в самом тикете', $ticketRow['manager_name'] === 'Менеджер', (string)$ticketRow['manager_name']);
+ok('экран остался в самом тикете', (string)$ticketRow['page'] === '#mail/company/12', (string)$ticketRow['page']);
 
 $quality = Support::issueBody(['kind' => 'quality', 'rating' => 'down', 'model' => 'yandex:yandexgpt-lite',
                                'body' => 'Письмо получилось сухое', 'files' => []]);

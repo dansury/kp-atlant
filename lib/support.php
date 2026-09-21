@@ -307,11 +307,9 @@ final class Support {
         }
         if ($shown) $out[] = "### Файлы\n\n" . implode("\n\n", $shown);
 
-        $meta = ['Отправил: ' . ((string)($row['manager_name'] ?? '') ?: 'менеджер')];
-        if ((string)($row['created_at'] ?? '') !== '') $meta[] = 'Когда: ' . (string)$row['created_at'];
-        if ((string)($row['page'] ?? '') !== '')       $meta[] = 'Экран: `' . (string)$row['page'] . '`';
-        $meta[] = 'Вид: ' . (self::KINDS[(string)($row['kind'] ?? '')] ?? 'обращение');
-        $out[] = "---\n\n" . implode(' · ', $meta) . "\n\n_Заведено из панели Атлант (модуль 038)._";
+        // Кто, когда и с какого экрана прислал обращение — это метаданные
+        // самого тикета (видны в панели Атлант), в GitHub issue не печатаются
+        // отдельным блоком (issue #60).
 
         return implode("\n\n", $out);
     }

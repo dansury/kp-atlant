@@ -139,8 +139,11 @@ $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
 $terms = KpTerms::forProposal($proposal);
 ok('под заказ — срок в месяцах', str_contains($terms, 'условий договора 3 месяца'), $terms);
 ok('и никаких 30 календарных дней', !str_contains($terms, 'календарных дней'), $terms);
-ok('доставка считается отдельно, а не отдельной строкой',
-   str_contains($terms, 'считается отдельно.') && !str_contains($terms, 'отдельной строкой'), $terms);
+// По умолчанию доставка включена в цену товара — оговорки про отдельную
+// оплату в тексте условий нет вовсе (issue #60)
+ok('доставка по умолчанию в цене товара, а не отдельной строкой',
+   str_contains($terms, 'хранение, доставку, подготовку')
+   && !str_contains($terms, 'не включена') && !str_contains($terms, 'отдельной строкой'), $terms);
 
 Db::update('proposal_items', ['wait_on' => 0], 'proposal_id=?', [$proposalId]);
 $terms = KpTerms::forProposal(Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]));
@@ -154,7 +157,12 @@ $html = PdfGenerator::html($proposalId);
 ok('во вступлении — короткое имя компании',
    str_contains($html, 'По Вашему запросу ООО &quot;АТЛАНТ АРМОР&quot; имеет возможность'),
    substr($html, strpos($html, 'По Вашему запросу') ?: 0, 80));
-ok('доставка стоит строкой таблицы', str_contains($html, 'Доставка до ТК'));
+// По умолчанию (issue #60) доставка распределена по позициям; настройка
+// возвращает прежнее поведение — отдельной строкой таблицы
+Settings::set('KP_DELIVERY_MODE', 'line');
+$htmlLine = PdfGenerator::html($proposalId);
+ok('доставка стоит строкой таблицы', str_contains($htmlLine, 'Доставка до ТК'));
+Settings::forget('KP_DELIVERY_MODE');
 ok('описание товара — в приложении №1', str_contains($html, 'Приложение №1'));
 ok('и на него есть ссылка под таблицей',
    str_contains($html, 'Более подробное описание товаров приведено в приложении №1.'));
@@ -325,11 +333,13 @@ $sentId  = Db::insert('proposals', ['request_id' => $requestId, 'terms_text' => 
 $ownId   = Db::insert('proposals', ['request_id' => $requestId, 'terms_text' => 'Свои условия', 'status' => 'draft']);
 runMigrations();
 
+// Цепочка миграций проводит старый текст через ВСЕ версии подряд — от
+// «отдельной строкой» (v32) через «считается отдельно» (v33) до сегодняшних
+// плейсхолдеров доставки (issue #60, v38) — и останавливается на последней
 $setting = (string)Db::val("SELECT value FROM settings WHERE key='default_terms_text'");
-ok('заготовка для новых КП обновилась',
-   str_contains($setting, 'считается отдельно.') && str_contains($setting, '{execution_term}'), $setting);
-ok('нетронутый черновик обновился',
-   str_contains((string)Db::val("SELECT terms_text FROM proposals WHERE id=?", [$draftId]), 'считается отдельно.'));
+ok('заготовка для новых КП обновилась до сегодняшнего вида', $setting === KpTerms::FACTORY_TEXT, $setting);
+ok('нетронутый черновик обновился так же',
+   (string)Db::val("SELECT terms_text FROM proposals WHERE id=?", [$draftId]) === KpTerms::FACTORY_TEXT);
 ok('отправленное КП осталось как подписывали',
    str_contains((string)Db::val("SELECT terms_text FROM proposals WHERE id=?", [$sentId]), 'отдельной строкой'));
 ok('свой текст менеджера не тронут',
