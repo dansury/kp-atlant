@@ -79,14 +79,23 @@ final class Terms {
      * с разными покупателями, и «розница» одного не должна молча становиться
      * условием другого. Не выбрано ничего — отвечают настройки, как и раньше.
      *
+     * За КОНТРАГЕНТОМ — приоритет выше, чем просто за менеджером (issue #60):
+     * у постоянного покупателя условия свои и не должны сбиваться тем, что
+     * менеджер перед этим считал КП кому-то ещё.
+     *
      * @return array{price_type:string,discount:float,wait_on:int,wait_months:int,wait_discount:float,wait_prepay:int}
      */
-    public static function conditions(?int $managerId = null): array {
+    public static function conditions(?int $managerId = null, ?int $counterpartyId = null): array {
         $d = self::defaults();
         $saved = [];
         if ($managerId && Db::hasColumn('managers', 'kp_terms_json')) {
             $json = (string)(Db::val("SELECT kp_terms_json FROM managers WHERE id=?", [$managerId]) ?: '');
             $saved = $json !== '' ? (json_decode($json, true) ?: []) : [];
+        }
+        if ($counterpartyId && Db::hasColumn('counterparties', 'kp_terms_json')) {
+            $json = (string)(Db::val("SELECT kp_terms_json FROM counterparties WHERE id=?", [$counterpartyId]) ?: '');
+            $cpSaved = $json !== '' ? (json_decode($json, true) ?: []) : [];
+            if ($cpSaved) $saved = $cpSaved + $saved;
         }
         return [
             'price_type'    => (string)($saved['price_type'] ?? Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '')),
@@ -98,9 +107,12 @@ final class Terms {
         ];
     }
 
-    /** Запомнить выбор за менеджером. Приходит то же, что отдаёт `conditions()`. */
-    public static function remember(?int $managerId, array $c): array {
-        $clean = self::conditions($managerId);
+    /**
+     * Запомнить выбор — за менеджером, и за контрагентом, если он известен
+     * (issue #60). Приходит то же, что отдаёт `conditions()`.
+     */
+    public static function remember(?int $managerId, array $c, ?int $counterpartyId = null): array {
+        $clean = self::conditions($managerId, $counterpartyId);
         foreach (array_keys($clean) as $key) {
             if (!array_key_exists($key, $c)) continue;
             $clean[$key] = match ($key) {
@@ -113,6 +125,9 @@ final class Terms {
         }
         if ($managerId && Db::hasColumn('managers', 'kp_terms_json')) {
             Db::update('managers', ['kp_terms_json' => json_encode($clean, JSON_UNESCAPED_UNICODE)], 'id=?', [$managerId]);
+        }
+        if ($counterpartyId && Db::hasColumn('counterparties', 'kp_terms_json')) {
+            Db::update('counterparties', ['kp_terms_json' => json_encode($clean, JSON_UNESCAPED_UNICODE)], 'id=?', [$counterpartyId]);
         }
         return $clean;
     }

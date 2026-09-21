@@ -257,9 +257,9 @@ final class Html2Docx {
                                => ['size' => 18, 'after' => 20] + $style,
                 'swap', 'stock-warning', 'accent'
                                => ['color' => 'C00000'] + $style,
-                // Чем клиент называл позицию: курсив серым над нашим названием
-                // (модуль 036) — в Word теми же словами и тем же начертанием
-                'analog-of'    => ['i' => true, 'color' => '6B6B6B', 'size' => 17] + $style,
+                // Чем клиент называл позицию: жирным серым над нашим названием
+                // (модуль 036, начертание сменено на жирное — issue #60)
+                'analog-of'    => ['b' => true, 'color' => '6B6B6B', 'size' => 17] + $style,
                 'sign-name'    => ['b' => true] + $style,
                 'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'right'] + $style,
                 'appendix__subtitle' => ['b' => true, 'size' => 24, 'align' => 'center'] + $style,
@@ -470,6 +470,17 @@ final class Html2Docx {
         // Фотография товара по умолчанию: справа, описание обтекает её слева
         $spec = ['max_w' => self::px('KP_PHOTO_WIDTH', 225), 'max_h' => 0,
                  'wrap' => 'square', 'align' => 'right', 'behind' => 0, 'offset_v' => 0];
+        // Несколько фото одного товара — обычные `<img>` без класса внутри
+        // `.gallery`, которая целиком уходит в ОДИН абзац (`block()` кладёт
+        // инлайн-детей в один `<w:p>`). Без разного вертикального смещения все
+        // они анкерятся в одну и ту же точку и в Word видно только последнюю —
+        // фотографии буквально ложатся друг на друга (issue #60). Каждое
+        // следующее фото сдвигается вниз на высоту, зарезервированную под
+        // предыдущие (потолок из CSS `.card .gallery img { max-height: 240px }`).
+        if (!$classes || $classes === ['']) {
+            $offset = $this->photoIndex($img) * 240 * self::EMU_PER_PX;
+            if ($offset > 0) $spec['offset_v'] = $offset;
+        }
         foreach ($classes as $class) {
             if ($class === 'logo') {
                 // Знак слева, реквизиты поставщика — справа от него
@@ -477,8 +488,9 @@ final class Html2Docx {
                          'wrap' => 'square', 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
             }
             if ($class === 'qr') {
+                // QR — слева от ссылки на сайт, тем же порядком, что в PDF (issue #60)
                 $spec = ['max_w' => 110, 'max_h' => 110,
-                         'wrap' => 'square', 'align' => 'right', 'behind' => 0, 'offset_v' => 0];
+                         'wrap' => 'square', 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
             }
             if ($class === 'sign-img') {
                 // Подпись ложится ПОВЕРХ строки подписи, не раздвигая текст,
@@ -491,6 +503,18 @@ final class Html2Docx {
             }
         }
         return $spec;
+    }
+
+    /** Который это по счёту «обычное» фото товара среди своих соседей — 0, 1, 2… */
+    private function photoIndex(DOMElement $img): int {
+        $index = 0;
+        for ($node = $img->previousSibling; $node !== null; $node = $node->previousSibling) {
+            if ($node instanceof DOMElement && strtolower($node->tagName) === 'img'
+                && trim((string)$node->getAttribute('class')) === '') {
+                $index++;
+            }
+        }
+        return $index;
     }
 
     /** Размер из настроек в пикселях, с разумными границами. */

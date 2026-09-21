@@ -39,7 +39,7 @@
     .note { font-size: 9pt; color: #666; }
     /* Чем клиент называл позицию, вместо которой стоит наша (модуль 036).
        Серый на белом 4.6:1 — WCAG AA для мелкого текста */
-    .analog-of { font-size: 8.5pt; color: #6b6b6b; font-style: italic; }
+    .analog-of { font-size: 8.5pt; color: #6b6b6b; font-weight: bold; }
     /* Приложение: описания товаров за таблицей цен (модуль 034) */
     .appendix { page-break-before: always; margin-bottom: 10px; }
     .appendix__title { font-size: 13pt; font-weight: bold; text-align: right; }
@@ -93,8 +93,8 @@
     /* The same address as a picture: on paper the link above is not clickable.
        Kept small and beside the text, never a block of its own — the card is
        about the product, and the QR is a convenience on the way out. */
-    /* QR стоит справа, под фотографией, и текст обтекает его — как в образце */
-    .card__qr { float: right; clear: right; margin: 8px 0 4px 12px; text-align: right; }
+    /* QR стоит слева от ссылки на сайт (issue #60) */
+    .card__qr { float: left; clear: left; margin: 8px 12px 4px 0; text-align: left; }
     .card__qr img { vertical-align: middle; }
     .card__qr-note { font-size: 8.5pt; color: #666; }
 
@@ -239,9 +239,9 @@
 <tr>
     <th>№</th>
     <th>Наименование</th>
-    <th>Ед.изм.</th>
-    <th>Кол-во</th>
+    <th>Кол-во, шт</th>
     <th>Цена за ед., <?= htmlspecialchars($vatStatement) ?></th>
+    <th>Со скидкой</th>
     <th>Сумма</th>
 </tr>
 </thead>
@@ -258,7 +258,7 @@
                  наш товар под нашим же именем, и вторая строка — шум. */ ?>
         <?php $analogOf = trim((string)($item['analog_of'] ?? '')); ?>
         <?php if ($analogOf !== ''): ?>
-        <div class="analog-of"><em><?= htmlspecialchars($analogOf) ?></em></div>
+        <div class="analog-of"><?= htmlspecialchars($analogOf) ?></div>
         <?php endif; ?>
         <?= htmlspecialchars($item['product_name']) ?>
         <?php /* Примечание менеджера. Автоматическое «под заказ» сюда не
@@ -274,16 +274,19 @@
         <br><span class="stock-warning"><?= htmlspecialchars($item['wait_note']) ?></span>
         <?php endif; ?>
     </td>
-    <td class="qty"><?= htmlspecialchars($item['unit']) ?></td>
     <td class="qty"><?= !empty($item['qty_from']) ? 'от ' . $item['quantity'] : $item['quantity'] ?></td>
 <?php /* Вилка цен (модуль 036): у общего товара своей цены нет, она стоит на
          модификациях и они стоят по-разному. Совпали — печатается одна цена. */ ?>
-<?php $priceTop = (float)($item['effective_price_max'] ?? 0); ?>
-    <td class="price"><?php if (!empty($item['discount_shown'])): ?><span class="was"><?= number_format($item['price'], 2, ',', ' ') ?> руб. −<?= htmlspecialchars($item['discount_shown']) ?>%</span><br><?php endif;
-        ?><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?><?php
+<?php $priceTop = (float)($item['price_max'] ?? 0); ?>
+<?php $discPriceTop = (float)($item['effective_price_max'] ?? 0); ?>
+    <!-- «Цена за ед.» — всегда исходная цена; фактическая, со скидкой, — в
+         соседнем столбце «Со скидкой» (issue #60): без скидки он пуст -->
+    <td class="price"><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['price'], 2, ',', ' ') ?><?php
         if ($priceTop > 0) echo ' до ' . number_format($priceTop, 2, ',', ' '); ?> руб.</td>
-    <td class="sum"><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?><?php
-        if ($priceTop > 0) echo ' до ' . number_format((float)($item['sum_max'] ?? 0), 2, ',', ' '); ?> руб.</td>
+    <td class="price discount"><?php if (!empty($item['discount_shown'])): ?><?= ($discPriceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?><?php
+        if ($discPriceTop > 0) echo ' до ' . number_format($discPriceTop, 2, ',', ' '); ?> руб.<?php endif; ?></td>
+    <td class="sum"><?= ($discPriceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?><?php
+        if ($discPriceTop > 0) echo ' до ' . number_format((float)($item['sum_max'] ?? 0), 2, ',', ' '); ?> руб.</td>
 </tr>
 <?php endforeach; ?>
 <?php if (!empty($delivery)): ?>
@@ -292,9 +295,9 @@
 <tr>
     <td class="num"><?= count($items) + 1 ?></td>
     <td><?= htmlspecialchars($delivery['name']) ?></td>
-    <td class="qty">усл.</td>
     <td class="qty">1</td>
     <td class="price"><?= number_format($delivery['price'], 2, ',', ' ') ?> руб.</td>
+    <td class="price discount"></td>
     <td class="sum"><?= number_format($delivery['price'], 2, ',', ' ') ?> руб.</td>
 </tr>
 <?php endif; ?>
@@ -506,13 +509,9 @@
     <?php endif; ?>
 
     <?php if (!empty($showSiteLink) && !empty($item['site_url'])): ?>
-    <!-- The product's own page on the shop, verified before it was cached -->
-    <div class="card__link">Подробнее на сайте:
-        <a href="<?= htmlspecialchars($item['site_url']) ?>"><?= htmlspecialchars($item['site_url']) ?></a>
-    </div>
     <?php if (!empty($item['site_qr'])): ?>
-    <!-- The same link for a printed copy. class="qr" is what tells the Word
-         converter this is not a photograph and must stay small. -->
+    <!-- QR — слева от ссылки на сайт (issue #60). class="qr" is what tells the
+         Word converter this is not a photograph and must stay small. -->
     <div class="card__qr">
         <img class="qr" src="<?= $item['site_qr'] ?>"
              width="<?= (int)($qrSize ?? 90) ?>" height="<?= (int)($qrSize ?? 90) ?>"
@@ -522,6 +521,10 @@
         <?php endif; ?>
     </div>
     <?php endif; ?>
+    <!-- The product's own page on the shop, verified before it was cached -->
+    <div class="card__link">Подробнее на сайте:
+        <a href="<?= htmlspecialchars($item['site_url']) ?>"><?= htmlspecialchars($item['site_url']) ?></a>
+    </div>
     <?php endif; ?>
     <?php /* Обтекание фотографии закрывается здесь: без этого следующая
              карточка начиналась бы сбоку от предыдущей (модуль 035) */ ?>

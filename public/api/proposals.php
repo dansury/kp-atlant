@@ -142,6 +142,22 @@ switch ($action) {
         $req = Db::one("SELECT * FROM requests WHERE id=?", [$requestId]);
         if (!$req) jsonError('Request not found', 404);
 
+        // «Сформировать КП» никогда не заводит второй документ на тот же запрос —
+        // это работа отдельной кнопки «+ Ещё одно КП» (issue #60). Повторный клик
+        // (двойной клик, повтор запроса сетью) просто возвращает то, что уже есть.
+        $existingId = (int)(Db::val("SELECT id FROM proposals WHERE request_id=? ORDER BY id DESC LIMIT 1", [$requestId]) ?: 0);
+        if ($existingId) {
+            $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$existingId]);
+            jsonData([
+                'id' => $existingId,
+                'status' => $proposal['status'],
+                'items' => Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$existingId]),
+                'addons' => Db::all("SELECT * FROM proposal_addons WHERE proposal_id=? ORDER BY position", [$existingId]),
+                'cover_letter' => $proposal['cover_letter'],
+                'pdf_preview_url' => "/api/proposals.php?action=preview&id=$existingId",
+            ]);
+        }
+
         // Ensure MoySklad is initialized
         MoySklad::init($cfg['MOYSKLAD_TOKEN'] ?? '');
 

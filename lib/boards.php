@@ -24,7 +24,7 @@ final class Boards {
         ['В работе',      '#e0a53c', 'work'],
         ['КП отправлено', '#4f9e57', null],
         ['Ждём оплату',   '#b45cc0', null],
-        ['Закрыто',       '#8a8f98', null],
+        ['Закрыто',       '#8a8f98', 'closed'],
     ];
 
     /** Letters of these categories never make a card of their own. */
@@ -91,13 +91,20 @@ final class Boards {
              LEFT JOIN managers g ON g.id = d.manager_id
              WHERE c.board_id=? AND d.dismissed_at IS NULL ORDER BY d.position, d.id", [$id]
         );
-        self::decorateAll($cards);
+        // «Закрыто» не читает тело последнего письма каждой карточки — этой
+        // колонке нужны только счётчики, а не превью переписки (issue #60)
+        $closedColumnIds = [];
+        foreach ($columns as $col) if (($col['kind'] ?? null) === 'closed') $closedColumnIds[] = (int)$col['id'];
+        self::decorateAll($cards, $closedColumnIds);
 
         $byColumn = [];
         foreach ($cards as $card) $byColumn[(int)$card['column_id']][] = $card;
         foreach ($columns as &$col) {
             $col['id'] = (int)$col['id'];
-            $col['cards'] = self::sortCards($byColumn[$col['id']] ?? []);
+            $sorted = self::sortCards($byColumn[$col['id']] ?? []);
+            // Лимит карточек на колонку — чтобы не грузить интерфейс лишним (issue #60)
+            if (!empty($col['card_limit'])) $sorted = array_slice($sorted, 0, (int)$col['card_limit']);
+            $col['cards'] = $sorted;
         }
         unset($col);
 
@@ -130,13 +137,21 @@ final class Boards {
      * must not cost two hundred round trips per column.
      *
      * @param array<int,array> $cards passed by reference, decorated in place
+     * @param array<int,int> $closedColumnIds карточки этих колонок не читают тело
+     *        последнего письма — только счётчики (issue #60)
      */
-    private static function decorateAll(array &$cards): void {
+    private static function decorateAll(array &$cards, array $closedColumnIds = []): void {
         $cpIds = [];
-        foreach ($cards as $c) if (!empty($c['counterparty_id'])) $cpIds[] = (int)$c['counterparty_id'];
+        $lightCpIds = [];
+        foreach ($cards as $c) {
+            if (empty($c['counterparty_id'])) continue;
+            $cpIds[] = (int)$c['counterparty_id'];
+            if (in_array((int)$c['column_id'], $closedColumnIds, true)) $lightCpIds[] = (int)$c['counterparty_id'];
+        }
         $cpIds = array_values(array_unique($cpIds));
+        $lightCpIds = array_values(array_unique($lightCpIds));
 
-        $stats = $cpIds ? self::companyStats($cpIds) : [];
+        $stats = $cpIds ? self::companyStats($cpIds, $lightCpIds) : [];
         $drafts = self::draftsOf($cards);
 
         foreach ($cards as &$card) {
@@ -230,7 +245,11 @@ final class Boards {
      * @param int[] $ids
      * @return array<int,array>
      */
-    private static function companyStats(array $ids): array {
+    /**
+     * @param array<int,int> $lightIds these companies skip the per-row subject/preview
+     *        fetch below — used for cards sitting in a «закрыто»-kind column (issue #60)
+     */
+    private static function companyStats(array $ids, array $lightIds = []): array {
         $ids = array_values(array_unique(array_map('intval', $ids)));
         if (!$ids) return [];
         $in = implode(',', array_fill(0, count($ids), '?'));
@@ -297,6 +316,7 @@ final class Boards {
         foreach ($mailIds as $mid) {
             $root = $map[$mid];
             if (!isset($out[$root])) continue;
+            if (in_array($root, $lightIds, true)) continue;
             $last = Db::one("SELECT thread_subject, subject, body_text, date_at FROM mail_messages
                              WHERE counterparty_id=? AND archived_at IS NULL
                              ORDER BY date_at DESC, id DESC LIMIT 1", [$mid]);
@@ -555,28 +575,39 @@ final class Boards {
         Db::q("DELETE FROM boards WHERE id=?", [$id]);
     }
 
-    public static function saveColumn(int $boardId, ?int $columnId, string $title, ?string $color, ?string $kind = null): int {
+    /**
+     * @param ?int $cardLimit сколько карточек показывать в колонке; null — не менять,
+     *                        0 — снять ограничение (issue #60)
+     */
+    public static function saveColumn(
+        int $boardId, ?int $columnId, string $title, ?string $color, ?string $kind = null, ?int $cardLimit = null
+    ): int {
+        // «closed» не обязан быть единственным на доску, в отличие от «inbox»/«work»
+        $exclusive = in_array($kind, ['inbox', 'work'], true);
+        $known = in_array($kind, ['inbox', 'work', 'closed'], true);
         if ($columnId) {
             $data = array_filter(['title' => trim($title) ?: 'Колонка', 'color' => $color], fn($v) => $v !== null);
             // Exactly one intake column per board, or new mail would double up;
             // the same for «В работе», where the drafts land
-            if (in_array($kind, ['inbox', 'work'], true)) {
+            if ($exclusive) {
                 Db::q("UPDATE board_columns SET kind=NULL WHERE board_id=? AND id<>? AND kind=?", [$boardId, $columnId, $kind]);
-                $data['kind'] = $kind;
             }
+            if ($known) $data['kind'] = $kind;
+            if ($cardLimit !== null) $data['card_limit'] = $cardLimit > 0 ? $cardLimit : null;
             Db::update('board_columns', $data, 'id=? AND board_id=?', [$columnId, $boardId]);
             return $columnId;
         }
         $pos = (int)Db::val("SELECT COALESCE(MAX(position), -1) + 1 FROM board_columns WHERE board_id=?", [$boardId]);
-        if (in_array($kind, ['inbox', 'work'], true)) {
+        if ($exclusive) {
             Db::q("UPDATE board_columns SET kind=NULL WHERE board_id=? AND kind=?", [$boardId, $kind]);
         }
         return Db::insert('board_columns', [
-            'board_id' => $boardId,
-            'title'    => trim($title) ?: 'Колонка',
-            'color'    => $color ?: '#8a8f98',
-            'kind'     => in_array($kind, ['inbox', 'work'], true) ? $kind : null,
-            'position' => $pos,
+            'board_id'   => $boardId,
+            'title'      => trim($title) ?: 'Колонка',
+            'color'      => $color ?: '#8a8f98',
+            'kind'       => $known ? $kind : null,
+            'card_limit' => $cardLimit > 0 ? $cardLimit : null,
+            'position'   => $pos,
         ]);
     }
 

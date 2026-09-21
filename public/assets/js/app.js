@@ -114,47 +114,21 @@ const App = {
         const el = document.createElement('div');
         el.className = `toast toast--${type}`;
         const sticky = type === 'error';
-        el.innerHTML = `<span class="toast__text"></span><span class="toast__hint">нажмите, чтобы скопировать</span>`;
+        el.innerHTML = `<span class="toast__text"></span>`;
         el.querySelector('.toast__text').textContent = text;
-        el.title = 'Нажмите — текст скопируется в буфер обмена';
 
         let timer = null;
         const close = () => { clearTimeout(timer); el.remove(); };
         const arm = ms => { clearTimeout(timer); timer = setTimeout(close, ms); };
 
-        // Наведение держит сообщение на экране, уход — снова отпускает таймер.
-        // У ошибки таймера нет вовсе, пока её не прочитали.
+        // Наведение держит сообщение на экране; убрали курсор — оно уходит
+        // (issue #60). У ошибки таймера на появление нет вовсе, пока её не
+        // навели курсором хотя бы раз — не пропустить.
         el.addEventListener('mouseenter', () => { clearTimeout(timer); el.dataset.seen = '1'; });
-        el.addEventListener('mouseleave', () => { if (!sticky) arm(2000); });
-        el.addEventListener('click', async () => {
-            await this.copyText(text);
-            el.classList.add('toast--copied');
-            el.querySelector('.toast__hint').textContent = 'скопировано';
-            arm(700);
-        });
+        el.addEventListener('mouseleave', () => arm(sticky ? 300 : 2000));
 
         document.getElementById('toasts').appendChild(el);
         if (!sticky) arm(4000);
-    },
-
-    /** Текст в буфер обмена. `clipboard` есть не везде — есть и запасной путь. */
-    async copyText(text) {
-        try {
-            if (navigator.clipboard && window.isSecureContext) {
-                await navigator.clipboard.writeText(text);
-                return true;
-            }
-        } catch { /* отказали в доступе — пробуем по-старому */ }
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
-            return true;
-        } catch { return false; }
     },
 
     // Escape untrusted text (email bodies, client names) before injecting into HTML
@@ -846,17 +820,20 @@ const App = {
                         <input type="number" step="0.01" min="0" max="100" data-cond="discount" value="${Number(c.discount) || 0}">%
                     </label>
                     <label title="Условия ниже получат только позиции, которых нет на складе">
-                        <input type="checkbox" data-cond="wait_on" ${Number(c.wait_on) === 1 ? 'checked' : ''}> под заказ
+                        <input type="checkbox" data-cond="wait_on" ${Number(c.wait_on) === 1 ? 'checked' : ''}
+                               onchange="App.toggleWaitFields(this)"> под заказ
                     </label>
-                    <label>ждать
-                        <input type="number" min="0" max="120" data-cond="wait_months" value="${Number(c.wait_months) || 0}"> мес.
-                    </label>
-                    <label>за ожидание −
-                        <input type="number" step="0.01" min="0" max="100" data-cond="wait_discount" value="${Number(c.wait_discount) || 0}">%
-                    </label>
-                    <label>предоплата
-                        <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
-                    </label>
+                    <span class="match-extra__wait" ${Number(c.wait_on) === 1 ? '' : 'hidden'}>
+                        <label>ждать
+                            <input type="number" min="0" max="120" data-cond="wait_months" value="${Number(c.wait_months) || 0}"> мес.
+                        </label>
+                        <label>за ожидание −
+                            <input type="number" step="0.01" min="0" max="100" data-cond="wait_discount" value="${Number(c.wait_discount) || 0}">%
+                        </label>
+                        <label>предоплата
+                            <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
+                        </label>
+                    </span>
                     <button class="btn btn--outline btn--sm" onclick="App.applyConditions(this)"
                             title="Проставить выбранное всем позициям и запомнить для следующих КП">Применить ко всем</button>
                 </div>
@@ -888,6 +865,11 @@ const App = {
         const requestId = Number(host.dataset.requestId);
         btn.disabled = true;
         try {
+            // Та же защита, что и у смены «не наша номенклатура» — «применить ко
+            // всем» тоже перерисовывает таблицу целиком (issue #60)
+            await this.api(`requests.php?action=items_save&id=${requestId}`, {
+                method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
+            });
             const r = await this.api(`requests.php?action=items_conditions&id=${requestId}`,
                                      {method: 'POST', body: {conditions, apply: 1}});
             host.dataset.conditions = JSON.stringify(r.conditions || conditions);
@@ -1766,7 +1748,7 @@ const App = {
             ...(i.moysklad_product_id ? [{
                 moysklad_id: i.moysklad_product_id, name: i.product_name, article: i.article,
                 unit: i.unit, price: i.price, stock: i.stock, score: i.match_confidence,
-                variant_stock: i.variant_stock, source: i.match_source,
+                variant_stock: i.variant_stock, source: i.match_source, description: i.comment_text || '',
             }] : []),
             ...(i.variants || []),
         ];
@@ -1775,7 +1757,8 @@ const App = {
             <div class="choice">
                 <div class="choice__title">Равнозначные варианты — выберите один</div>
                 ${options.map(v => `
-                    <button type="button" class="choice__opt" onclick="App.chooseMatch(${i.id || 0}, '${this.jsStr(v.moysklad_id)}', this)">
+                    <button type="button" class="choice__opt" data-description="${this.esc(v.description || '')}"
+                            onclick="App.chooseMatch(${i.id || 0}, '${this.jsStr(v.moysklad_id)}', this)">
                         <span class="choice__name">${this.esc(v.name)}</span>
                         <span class="muted">${this.fmtMoney(v.price)}${this.stockLabel(v) ? ' · ' + this.stockLabel(v) : ''}
                             ${v.score ? ` · ${Math.round(v.score * 100)}%` : ''}
@@ -1870,6 +1853,7 @@ const App = {
                 <input type="hidden" data-field="needs_choice" value="${i.needs_choice ? 1 : 0}">
                 <input type="hidden" data-field="is_out_of_scope" value="${i.is_out_of_scope ? 1 : 0}">
                 <input type="hidden" data-field="price_max" value="${i.price_max ?? 0}">
+                <input type="hidden" data-field="price_is_manual" value="${i.price_is_manual ? 1 : 0}">
                 <div class="match-row__name">
                     ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}</div>` : ''}
                     ${this.variantNote(i)}
@@ -1883,12 +1867,16 @@ const App = {
                     ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted">ещё похожие:
                         ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
                 </div>
-                <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
-                       placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal(this)">
+                <span class="qty-cell">
+                    <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
+                           placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal(this); App.toggleQtyWarning(this)">
+                    ${this.qtyWarning(i)}
+                </span>
                 <input type="text" data-field="unit" value="${this.esc(i.unit || 'шт.')}" placeholder="Ед." title="Единица измерения">
                 <span class="price-cell">
                     <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
-                           placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal(this)">
+                           placeholder="Цена" title="Цена за единицу"
+                           oninput="App.updateMatchTotal(this); App.markPriceManual(this)">
                     ${this.priceRangeNote(i)}
                 </span>
                 <span class="price-opts-slot">${this.priceOptsSelect(i.price_options || {})}</span>
@@ -1928,6 +1916,8 @@ const App = {
      */
     matchRowExtra(i = {}) {
         const backorder = Number(i.is_backorder) === 1 || (i.stock !== null && i.stock !== undefined && Number(i.stock) <= 0);
+        // Товара нет — «под заказ» встаёт сама, без ручной галочки (issue #60)
+        const waitOn = i.wait_on ? 1 : (backorder ? 1 : 0);
         return `
             <div class="match-extra">
                 <div class="match-extra__money">
@@ -1935,26 +1925,25 @@ const App = {
                         <input type="number" step="0.01" min="0" max="100" data-field="discount_percent"
                                value="${i.discount_percent ?? 0}" oninput="App.updateMatchTotal(this)">%
                     </label>
-                    <label title="Цену поставил человек: повторный подбор её не перетрёт">
-                        <input type="checkbox" data-field="price_is_manual" ${i.price_is_manual ? 'checked' : ''}> цена вручную
-                    </label>
                     <label class="${backorder ? '' : 'muted'}" title="Товара нет на складе: срок ожидания, скидка за ожидание и предоплата">
-                        <input type="checkbox" data-field="wait_on" ${i.wait_on ? 'checked' : ''}
-                               onchange="App.updateMatchTotal(this)"> под заказ
+                        <input type="checkbox" data-field="wait_on" ${waitOn ? 'checked' : ''}
+                               onchange="App.updateMatchTotal(this); App.toggleWaitFields(this)"> под заказ
                     </label>
-                    <label>ждать
-                        <input type="number" min="0" max="120" data-field="wait_months" value="${i.wait_months ?? ''}"
-                               placeholder="3" title="Срок ожидания, месяцев"> мес.
-                    </label>
-                    <label>за ожидание −
-                        <input type="number" step="0.01" min="0" max="100" data-field="wait_discount"
-                               value="${i.wait_discount ?? ''}" placeholder="10"
-                               title="Скидка за ожидание, %" oninput="App.updateMatchTotal(this)">%
-                    </label>
-                    <label>предоплата
-                        <input type="number" min="0" max="100" data-field="wait_prepay" value="${i.wait_prepay ?? ''}"
-                               placeholder="100" title="Доля предоплаты, %">%
-                    </label>
+                    <span class="match-extra__wait" ${waitOn ? '' : 'hidden'}>
+                        <label>ждать
+                            <input type="number" min="0" max="120" data-field="wait_months" value="${i.wait_months ?? ''}"
+                                   placeholder="3" title="Срок ожидания, месяцев"> мес.
+                        </label>
+                        <label>за ожидание −
+                            <input type="number" step="0.01" min="0" max="100" data-field="wait_discount"
+                                   value="${i.wait_discount ?? ''}" placeholder="10"
+                                   title="Скидка за ожидание, %" oninput="App.updateMatchTotal(this)">%
+                        </label>
+                        <label>предоплата
+                            <input type="number" min="0" max="100" data-field="wait_prepay" value="${i.wait_prepay ?? ''}"
+                                   placeholder="100" title="Доля предоплаты, %">%
+                        </label>
+                    </span>
                     ${i.wait_note ? `<span class="muted">${this.esc(i.wait_note)}</span>` : ''}
                 </div>
                 <div class="match-extra__photos">
@@ -2096,6 +2085,12 @@ const App = {
         if (!itemId) { this.toast('Сначала сохраните строку', 'error'); return; }
         btn.disabled = true;
         try {
+            // Сохранить то, что менеджер уже набрал в ДРУГИХ строках, — иначе
+            // перерисовка ниже вернёт их к тому, что лежит в базе, и незасохранённый
+            // выбор товара пропадёт (issue #60)
+            await this.api(`requests.php?action=items_save&id=${requestId}`, {
+                method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
+            });
             const res = await this.api(`requests.php?action=items_scope&id=${requestId}`, {
                 method: 'POST', body: {item_id: itemId, out_of_scope: !!outOfScope},
             });
@@ -2121,7 +2116,56 @@ const App = {
         if (!sel.value) return;
         const row = sel.closest('[data-match-row]');
         const price = row && row.querySelector('[data-field="price"]');
-        if (price) { price.value = sel.value; this.updateMatchTotal(sel); }
+        if (price) {
+            price.value = sel.value;
+            // Выбор из списка — это снова цена «по умолчанию», а не то, что
+            // менеджер вписал руками: следующий выбор из списка должен её
+            // перетереть (issue #60, вместо убранной галочки «цена вручную»)
+            const manual = row.querySelector('[data-field="price_is_manual"]');
+            if (manual) manual.value = 0;
+            this.updateMatchTotal(sel);
+        }
+    },
+
+    // Ручной ввод в поле «Цена» помечает её как выставленную человеком — так
+    // повторный подбор и общие условия КП её не перетрут (issue #60, замена
+    // убранной галочки «цена вручную»)
+    markPriceManual(input) {
+        const row = input.closest('[data-match-row]');
+        const manual = row && row.querySelector('[data-field="price_is_manual"]');
+        if (manual) manual.value = 1;
+    },
+
+    // «Ждать»/«за ожидание»/«предоплата» видны только когда включено «под заказ»
+    toggleWaitFields(checkbox) {
+        const wrap = checkbox.closest('.match-extra__money') || checkbox.closest('.conditions__row');
+        const fields = wrap && wrap.querySelector('.match-extra__wait');
+        if (fields) fields.hidden = !checkbox.checked;
+    },
+
+    // Красный «!» у количества: товар есть, но меньше, чем просит клиент
+    qtyWarning(i) {
+        const stock = Number(i.stock);
+        const qty = Number(i.quantity ?? 1);
+        if (!(stock > 0) || !(qty > stock)) return '';
+        return `<span class="qty-warn" title="На складе ${stock}, запрошено ${qty} — товара меньше, чем нужно">!</span>`;
+    },
+
+    toggleQtyWarning(input) {
+        const cell = input.closest('.qty-cell');
+        if (!cell) return;
+        const warn = cell.querySelector('.qty-warn');
+        const row = input.closest('[data-match-row]');
+        const stock = Number(row && row.querySelector('[data-field="stock"]') && row.querySelector('[data-field="stock"]').value);
+        const short = stock > 0 && Number(input.value) > stock;
+        if (short && !warn) {
+            cell.insertAdjacentHTML('beforeend',
+                `<span class="qty-warn" title="На складе ${stock}, запрошено ${input.value} — товара меньше, чем нужно">!</span>`);
+        } else if (!short && warn) {
+            warn.remove();
+        } else if (short && warn) {
+            warn.title = `На складе ${stock}, запрошено ${input.value} — товара меньше, чем нужно`;
+        }
     },
 
     // The manager answered the «равнозначные» question — the line stops asking
@@ -2136,6 +2180,12 @@ const App = {
             set('moysklad_product_id', moyskladId);
             set('needs_choice', 0);
             row.querySelector('[data-field="is_confirmed"]').checked = true;
+            // Описание принадлежит товару и должно подставляться сразу — а не
+            // только когда его подобрала нейросеть (issue #60)
+            const comment = row.querySelector('[data-field="comment_text"]');
+            if (comment && comment.dataset.fromCatalog === '1' && btn.dataset.description) {
+                comment.value = btn.dataset.description;
+            }
             row.classList.remove('match-row--choice');
             btn.closest('.choice').remove();
             this.updateMatchTotal(host);
@@ -2143,6 +2193,11 @@ const App = {
         }
         const requestId = Number(host && host.dataset.requestId);
         try {
+            // Сохранить незасохранённые правки других строк перед перерисовкой
+            // всей таблицы (issue #60, та же защита, что и у смены области/условий)
+            await this.api(`requests.php?action=items_save&id=${requestId}`, {
+                method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
+            });
             const res = await this.api(`requests.php?action=items_choose&id=${requestId}`, {
                 method: 'POST', body: {item_id: itemId, moysklad_id: moyskladId},
             });
@@ -3355,7 +3410,6 @@ const App = {
         this.loadCompanyThreads(cp.id);
         this.loadCardPlacement(cp.id);
         this.loadChat(cp.id);
-        this.loadCounterpartyPriceTypes(cp);
 
         // Returning from the MoySklad tab refreshes the card (FR-030)
         this.onTabVisible = () => {
@@ -4294,29 +4348,6 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    // Which price type this counterparty gets by default (module: price defaults)
-    async loadCounterpartyPriceTypes(cp) {
-        const sel = document.getElementById('cpPriceType');
-        if (!sel) return;
-        try {
-            const d = await this.api('products.php?action=price_types');
-            (d.items || []).forEach(name => {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                if (name === cp.default_price_type) opt.selected = true;
-                sel.appendChild(opt);
-            });
-        } catch { /* каталог ещё не синхронизирован — список типов пуст, это не ошибка */ }
-    },
-
-    async setCounterpartyPriceType(id, value) {
-        try {
-            await this.api(`counterparties.php?action=update&id=${id}`, {method: 'POST', body: {default_price_type: value}});
-            this.toast('Сохранено', 'success');
-        } catch (err) { this.toast(err.message, 'error'); }
-    },
-
     /**
      * Правая колонка карточки (модуль 029).
      *
@@ -4361,12 +4392,6 @@ const App = {
                             onclick="App.splitContact(${cp.id}, '${this.jsStr(c.email)}')">Отделить</button>
                     </div>`).join('') : '<p class="muted">Контактов пока нет</p>'}
 
-                <div class="form-group" style="margin-top:12px">
-                    <label>Цена по умолчанию для этого контрагента</label>
-                    <select id="cpPriceType" onchange="App.setCounterpartyPriceType(${cp.id}, this.value)">
-                        <option value="">как в настройках каталога</option>
-                    </select>
-                </div>
             </div>
 
             <div class="card">
@@ -7103,7 +7128,9 @@ const App = {
                     <span class="bcol__title" onclick="App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')">${this.esc(c.title)}</span>
                     ${c.kind === 'inbox' ? '<span class="bcol__kind" title="Сюда сами падают новые письма">авто</span>' : ''}
                     ${c.kind === 'work' ? '<span class="bcol__kind" title="Сюда сама встаёт карточка письма, которое пишут">черновики</span>' : ''}
-                    <span class="bcol__count">${c.cards.length}</span>
+                    ${c.kind === 'closed' ? '<span class="bcol__kind" title="Переписка карточек этой колонки не читается — только счётчики">закрыто</span>' : ''}
+                    <span class="bcol__count" title="Показано карточек в колонке${c.card_limit ? ' (лимит ' + c.card_limit + ')' : ''}"
+                          onclick="App.boardSetColumnLimit(${c.id}, ${c.card_limit || 0})">${c.cards.length}${c.card_limit ? '/⚙' : ''}</span>
                     <button class="bcol__x" title="Удалить колонку" onclick="App.boardDeleteColumn(${c.id})">×</button>
                 </div>
                 ${c.kind === 'inbox' ? `
@@ -7486,6 +7513,15 @@ const App = {
         const title = prompt('Название колонки', current);
         if (title === null) return;
         await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, id, title}});
+        this.pageMailBoard();
+    },
+
+    // Сколько карточек показывать в колонке — не грузить интерфейс лишним (issue #60)
+    async boardSetColumnLimit(id, current) {
+        const raw = prompt('Сколько карточек показывать в колонке? Пусто или 0 — без ограничения', current || '');
+        if (raw === null) return;
+        const card_limit = parseInt(raw, 10) || 0;
+        await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, id, card_limit}});
         this.pageMailBoard();
     },
 
