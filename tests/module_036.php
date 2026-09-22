@@ -295,8 +295,8 @@ $row = Db::one("SELECT * FROM proposal_items WHERE proposal_id=?", [$kp2]);
 ok('слова клиента доехали до КП', (string)$row['alt_of'] === 'Костюм летний полевой, обр. 2020');
 
 $html2 = PdfGenerator::html($kp2);
-ok('и печатаются курсивом серым над нашим названием',
-   str_contains($html2, '<div class="analog-of"><em>Костюм летний полевой, обр. 2020</em></div>'));
+ok('и печатаются жирным серым над нашим названием (issue #60)',
+   str_contains($html2, '<div class="analog-of">Костюм летний полевой, обр. 2020</div>'));
 ok('именно над названием, а не после него',
    strpos($html2, 'Костюм летний полевой, обр. 2020') < strpos($html2, 'Костюм тактический Ратник'));
 

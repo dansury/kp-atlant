@@ -1751,6 +1751,57 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '37')");
         $current = 37;
     }
+
+    // v38 — issue #60: доска не грузит письма закрытых карточек, лимит карточек
+    // на колонку, условия подбора запоминаются и за контрагентом.
+    if ($current < 38) {
+        // «Закрыто» — такая же названная колонка, как «Входящие»/«В работе»:
+        // по ней узнают колонку, чьи карточки не стоит грузить целиком.
+        Db::ensureColumn('board_columns', 'kind', 'TEXT');
+        Db::q("UPDATE board_columns SET kind='closed' WHERE kind IS NULL AND title='Закрыто'");
+
+        // Сколько карточек показывать в колонке — не грузить лишнее, если
+        // менеджеру нужны только последние N (issue #60)
+        Db::ensureColumn('board_columns', 'card_limit', 'INTEGER');
+
+        // «Цены и условия — на все позиции» запоминаются и за контрагентом —
+        // это приоритет перед просто последними условиями менеджера (issue #60)
+        Db::ensureColumn('counterparties', 'kp_terms_json', 'TEXT');
+
+        // Доставка по умолчанию включается в цену товара, а не печатается
+        // отдельной строкой — заводской текст условий переписывается тем же
+        // способом, что и в v33: только там, где его никто не трогал руками.
+        // Отправленный документ не переписывается ни при каких условиях.
+        $oldTerms37 = "Стоимость включает расходы на упаковку, маркировку, хранение, погрузку, "
+                    . "подготовку и передачу документов. Доставка в стоимость не включена и считается отдельно.\n"
+                    . "Сроки выполнения условий договора {execution_term} с момента получения предоплаты.\n"
+                    . "Предлагаемая цена продукции является твёрдой и не подлежит изменению в течение "
+                    . "{validity_days} дней с даты настоящего предложения.";
+        Db::q("UPDATE settings SET value=? WHERE key='default_terms_text' AND value=?",
+              [KpTerms::FACTORY_TEXT, $oldTerms37]);
+        Db::q("UPDATE proposals SET terms_text=? WHERE terms_text=? AND status NOT IN ('sent','order_created')",
+              [KpTerms::FACTORY_TEXT, $oldTerms37]);
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '38')");
+        $current = 38;
+    }
+
+    // v39 — module 043: a webhook event that failed is kept and repeated.
+    // MoySklad delivers each event once; one lost to a rate limit used to leave
+    // the order unsynced until someone opened the card by hand.
+    if ($current < 39) {
+        Db::ensureColumn('webhook_log', 'status', 'TEXT', "'ok'");
+        Db::ensureColumn('webhook_log', 'attempts', 'INTEGER', '1');
+        // The one event, apart from the whole delivered body: that is what a
+        // repeat needs — a body can carry several events at once
+        Db::ensureColumn('webhook_log', 'event_json', 'TEXT');
+        // Rows written before this migration have nothing to repeat — count them done
+        Db::q("UPDATE webhook_log SET status='ok' WHERE status IS NULL");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_webhook_retry ON webhook_log(status, id)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '39')");
+        $current = 39;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

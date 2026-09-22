@@ -1,23 +1,27 @@
-## Как работать с ТЗ
+## 1 SPEC-driven development
 
-Правила, о которых просил заказчик:
+1.1 Lookup file -> spec mapping in spec.md. It is a thin navigation index — read once, then open ONE /specs/<module>.md for the relevant area. Never read the whole /specs/ folder.
 
-- **Читать ТЗ целиком и до конца, каждый пункт.** Пункт, упомянутый вскользь,
-  — такое же требование, как выделенный жирным. Пропущенный пункт приходится
-  исправлять вторым заходом, и это дороже, чем прочитать внимательно сразу.
-- **Сверяться с ТЗ перед сдачей**: пройти по списку требований и для каждого
-  назвать, где именно оно выполнено. Не выполнено — сказать об этом прямо, а
-  не промолчать.
-- **Требование про интерфейс проверять глазами на разметке**, а не только в
-  коде: «поле скрыто» значит, что его не видно на экране, а `hidden` в HTML
-  ещё может быть побеждён любым `display` в CSS.
+1.2 For reference details (signatures, DB schemas, algorithms, flows, SEO contract, email flows, referrals, QR cards): open exactly one /spec/<module>.md that matches the module you are editing. If the detail is missing there, read the source file — do NOT pull another /spec/<module>.md unless needed.
 
-## graphify
+1.3 Spec-driven workflow — for any new feature or non-trivial change:
+Read the relevant /spec/<module>.md.
+Update that spec to describe the planned change (signatures, tables, flows, configs) — before writing any code.
+Implement code to match the updated spec.
+Specs describe actual functionality only — never changelogs or version history. For pure bug fixes that require no design decisions, step 2 may be skipped; update the spec after the fix if its content was inaccurate.
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+1.4
+All spec and code in English, interface - in the user's language. If you meet spec in russian, translate it to English.
 
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+## 2 How to work with TK
+- **Read the TOR in its entirety, every paragraph.** An item mentioned in passing,
+  — the same requirement as highlighted in bold. The missed point has to be
+  correcting it with a second pass is more expensive than reading it carefully right away.
+- **Check the TOR before submitting**: go through the list of requirements and for each
+  name exactly where it was completed. It hasn’t been completed — say so directly, don’t keep quiet.
+- **Check the interface requirement visually in the markup**, not just in the code: “the field is hidden” means it’s not visible on the screen, and `hidden` in HTML can still be overridden by any `display` in CSS.
+
+## 3 Assess the complexity of the task.
+If you don’t have time to complete some tasks during this pass, write them down in TODO.md.
+Before reading the spec, check TODO.md and complete those tasks first.
+After passing the feature test, remove the completed tasks from TODO.md; leave the uncompleted ones.

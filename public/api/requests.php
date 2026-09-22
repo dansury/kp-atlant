@@ -119,8 +119,9 @@ switch ($action) {
         // Доставка — такая же строка подбора, как позиция (модуль 034)
         $req['delivery'] = RequestItems::delivery($id);
         // Цены и условия, которыми менеджер закрыл прошлое КП: панель над
-        // таблицей подбора открывается ими, а не пустым выбором (модуль 036)
-        $req['conditions']  = Terms::conditions((int)$manager['id']);
+        // таблицей подбора открывается ими, а не пустым выбором (модуль 036).
+        // У постоянного контрагента — свои условия, и они в приоритете (issue #60)
+        $req['conditions']  = Terms::conditions((int)$manager['id'], $req['counterparty_id'] ? (int)$req['counterparty_id'] : null);
         $req['price_types'] = Catalog::priceTypes();
         jsonData($req);
 
@@ -129,13 +130,16 @@ switch ($action) {
     case 'items': {
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
-        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $reqRow = Db::one("SELECT counterparty_id FROM requests WHERE id=?", [$id]);
+        if (!$reqRow) jsonError('Not found', 404);
+        $cpId = $reqRow['counterparty_id'] ? (int)$reqRow['counterparty_id'] : null;
         jsonData([
             'items'      => RequestItems::ensure($id),
             'delivery'   => RequestItems::delivery($id),
             // Цены и условия, которыми менеджер закрыл прошлое КП: следующее
-            // открывается ими же, а не пустым выбором заново (модуль 036)
-            'conditions' => Terms::conditions((int)$manager['id']),
+            // открывается ими же, а не пустым выбором заново (модуль 036).
+            // Условия контрагента — в приоритете, если он у запроса есть (issue #60)
+            'conditions' => Terms::conditions((int)$manager['id'], $cpId),
             'price_types'=> Catalog::priceTypes(),
         ]);
     }
@@ -148,9 +152,11 @@ switch ($action) {
     case 'items_conditions': {
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
-        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $reqRow = Db::one("SELECT counterparty_id FROM requests WHERE id=?", [$id]);
+        if (!$reqRow) jsonError('Not found', 404);
+        $cpId = $reqRow['counterparty_id'] ? (int)$reqRow['counterparty_id'] : null;
         $input = getInput();
-        $conditions = Terms::remember((int)$manager['id'], (array)($input['conditions'] ?? []));
+        $conditions = Terms::remember((int)$manager['id'], (array)($input['conditions'] ?? []), $cpId);
         $items = !empty($input['apply']) ? RequestItems::applyConditions($id, $conditions) : RequestItems::all($id);
         // Тот же срок ожидания — в уже собранные КП запроса (модуль 037)
         if (!empty($input['apply'])) KpSet::syncWaitFromRequest($id);

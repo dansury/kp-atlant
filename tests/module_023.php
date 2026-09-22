@@ -313,7 +313,9 @@ Terms::prepareProposal($kpId);
 Db::q("UPDATE proposal_items SET wait_on=1 WHERE proposal_id=?", [$kpId]);
 $waited = PdfGenerator::html($kpId);
 ok('в таблице появились условия ожидания', str_contains($waited, 'скидка за ожидание 10%'));
-ok('и цена «до» зачёркнута рядом', str_contains($waited, 'class="was"'));
+// Исходная цена и цена со скидкой теперь в двух разных колонках, а не
+// зачёркиванием в одной (issue #60)
+ok('цена со скидкой — в своей колонке', str_contains($waited, 'class="price discount">90,00 руб.'));
 ok('позиция на 100 руб. напечатана по 90', str_contains($waited, '90,00 руб.'), 'см. таблицу позиций');
 
 // Лимит фотографий — на самом КП, а не только в настройках

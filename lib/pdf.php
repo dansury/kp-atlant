@@ -127,10 +127,12 @@ class PdfGenerator {
         // подписывали; сегодняшние изменения в МойСклад его не переписывают.
         $requisites = Requisites::forProposal($proposalId);
 
-        // Таблица соответствия: запрос клиента слева, наш ответ справа.
-        // Появляется, когда запрос пришёл таблицей, — решение принято по письму.
-        $showMatchTable = KpContent::showMatchTable($proposal);
-        $matchTable = $showMatchTable ? KpContent::matchTableRows($proposalId) : [];
+        // Таблица соответствия запросу в документе больше не печатается — её
+        // заменило курсивное (теперь жирное) название под нашей позицией
+        // (issue #60). Настройка и данные для неё остаются в базе нетронутыми,
+        // печать просто больше её не запрашивает.
+        $showMatchTable = false;
+        $matchTable = [];
         $matchTableNote = (string)($proposal['match_table_note'] ?? '');
 
         // Позиции запроса, на которые каталог не ответил (module 018). Печатаются
@@ -215,7 +217,9 @@ class PdfGenerator {
         $hasAppendix = false;
         foreach ($items as $row) { if (!empty($row['has_card'])) { $hasAppendix = true; break; } }
 
-        // Доставка отдельной строкой: она не входит в цену товара
+        // Доставка — отдельной строкой (не входит в цену товара) либо
+        // распределена по позициям (issue #60). Настройка решает, что печатать;
+        // «Итого» в обоих случаях одно и то же.
         $delivery = null;
         if ((int)($proposal['delivery_on'] ?? 0) === 1) {
             $delivery = [
@@ -223,6 +227,29 @@ class PdfGenerator {
                 'price' => (float)($proposal['delivery_price'] ?? 0),
             ];
             $total += $delivery['price'];
+
+            if ((string)Settings::get('KP_DELIVERY_MODE', 'included') === 'included' && $items) {
+                $subtotal = 0.0;
+                foreach ($items as $row) $subtotal += (float)$row['sum'];
+                if ($subtotal > 0) {
+                    // Пропорционально сумме позиции; последняя забирает остаток
+                    // копеек, чтобы распределённое не разошлось с ценой доставки
+                    $remaining = $delivery['price'];
+                    $n = count($items);
+                    $i = 0;
+                    foreach ($items as &$row) {
+                        $i++;
+                        $share = $i === $n ? $remaining
+                            : round($delivery['price'] * ((float)$row['sum'] / $subtotal), 2);
+                        $row['sum'] += $share;
+                        if ($row['sum_max'] > 0) $row['sum_max'] += $share;
+                        $remaining -= $share;
+                    }
+                    unset($row);
+                }
+                // Учтена в позициях — отдельной строкой таблицы не печатается
+                $delivery = null;
+            }
         }
 
         // The rate is МойСклад's answer, not a house default: the организация

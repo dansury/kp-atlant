@@ -26,6 +26,7 @@ return [
     // --- LLM ---
     'LLM_PROVIDER_PRIORITY' => 'yandex',
     'LLM_TIMEOUT_SEC'       => 30,
+    'LLM_MAX_TOKENS'        => 4096,   // предел длины ответа Yandex
     'OPENROUTER_API_KEY'    => '',
     'OPENROUTER_MODEL'      => 'google/gemini-2.5-flash',
     // Свой адрес API — если основной недоступен с этого хостинга

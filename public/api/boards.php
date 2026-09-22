@@ -57,7 +57,8 @@ try {
             if (!$boardId) jsonError('Не указана доска');
             $id = Boards::saveColumn($boardId, (int)($input['id'] ?? 0) ?: null,
                                      (string)($input['title'] ?? ''), $input['color'] ?? null,
-                                     !empty($input['kind']) ? (string)$input['kind'] : null);
+                                     !empty($input['kind']) ? (string)$input['kind'] : null,
+                                     array_key_exists('card_limit', $input) ? (int)$input['card_limit'] : null);
             jsonOk(['id' => $id]);
         }
 
