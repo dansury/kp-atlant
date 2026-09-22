@@ -153,7 +153,7 @@ final class KpText {
     }
 
     private static function money(float $v): string {
-        return number_format($v, 2, ',', ' ') . ' руб.';
+        return KpContent::rub($v) . ' руб.';
     }
 
     /** 3.0 → «3», 2.5 → «2,5»: количество в письме читает человек. */

@@ -13,6 +13,29 @@ require_once __DIR__ . '/variants.php';
 
 class KpContent {
 
+    /** Рубли для КП: целые — без «,00», иначе две цифры (issue #67). */
+    public static function rub(float $v): string {
+        $v = round($v, 2);
+        return number_format($v, abs($v - round($v)) < 0.005 ? 0 : 2, ',', ' ');
+    }
+
+    /**
+     * Описание товара по приоритету `KP_DESCRIPTION_SOURCE` (issue #67):
+     * первый источник пуст — берётся второй. МойСклад, затем сайт — по умолчанию.
+     */
+    public static function pickDescription(string $moysklad, string $site): string {
+        $moysklad = trim($moysklad);
+        $site = trim($site);
+        return (string)Settings::get('KP_DESCRIPTION_SOURCE', 'moysklad_first') === 'bitrix_first'
+            ? ($site !== '' ? $site : $moysklad)
+            : ($moysklad !== '' ? $moysklad : $site);
+    }
+
+    /** Вилка цен есть, только когда модификации стоят по-разному (issue #67). */
+    public static function hasRange(float $low, float $high): bool {
+        return $high - $low >= 0.01;
+    }
+
     // Fill description / specs / kit / photos for every item of a proposal.
     // Existing manager-edited text is never overwritten.
     /**
@@ -81,11 +104,18 @@ class KpContent {
             $product = Db::one("SELECT * FROM products_cache WHERE moysklad_id=?", [$msId]);
             if (!$product) continue;
             // Same for the card text: a variant inherits the product's description
-            if (trim((string)($product['description'] ?? '')) === '' && !empty($product['parent_id'])) {
-                $parent = Db::one("SELECT description, specs_text, included_text FROM products_cache WHERE moysklad_id=?",
+            if (!empty($product['parent_id'])) {
+                $parent = Db::one("SELECT description, site_description, specs_text, included_text FROM products_cache WHERE moysklad_id=?",
                                   [$product['parent_id']]);
-                if ($parent) $product = array_merge($product, array_filter($parent, fn($v) => (string)$v !== ''));
+                if ($parent) {
+                    foreach ($parent as $k => $v) {
+                        if (trim((string)($product[$k] ?? '')) === '' && (string)$v !== '') $product[$k] = $v;
+                    }
+                }
             }
+            // МойСклад или сайт — по настройке; пустой источник подменяется другим
+            $product['description'] = self::pickDescription((string)($product['description'] ?? ''),
+                                                            (string)($product['site_description'] ?? ''));
 
             $upd = [];
 
@@ -638,25 +668,62 @@ class KpContent {
     }
 
     /**
-     * «Не наша номенклатура» for the КП table (module 045, issue #60).
+     * «Не наша номенклатура» for the КП table (modules 045, 046).
      *
-     * The client's own wording of lines marked out of scope. Printed in the
-     * request's FIRST КП only — a request split into two КП must not list the
-     * same refusal twice. `KP_SHOW_OUT_OF_SCOPE = 0` prints none.
+     * The client's own wording of lines marked out of scope, with their
+     * position in the match table. Printed when the КП's own toggle
+     * «Показать в КП отсутствующую номенклатуру» (`proposals.show_out_of_scope`)
+     * is on; unset — `KP_SHOW_OUT_OF_SCOPE`, and then only in the request's
+     * FIRST КП, so a split request does not list the same refusal twice.
      *
-     * @return list<array{requested:string,quantity:mixed,unit:string}>
+     * @return list<array{requested:string,quantity:mixed,unit:string,position:int}>
      */
     public static function outOfScopeRows(array $proposal): array {
-        if ((int)Settings::get('KP_SHOW_OUT_OF_SCOPE', 1) !== 1) return [];
         $requestId = (int)($proposal['request_id'] ?? 0);
         if (!$requestId) return [];
-        $first = (int)Db::val("SELECT MIN(id) FROM proposals WHERE request_id=?", [$requestId]);
-        if ($first !== (int)$proposal['id']) return [];
+        $own = $proposal['show_out_of_scope'] ?? null;
+        if ($own === null || $own === '') {
+            if ((int)Settings::get('KP_SHOW_OUT_OF_SCOPE', 0) !== 1) return [];
+            $first = (int)Db::val("SELECT MIN(id) FROM proposals WHERE request_id=?", [$requestId]);
+            if ($first !== (int)$proposal['id']) return [];
+        } elseif ((int)$own !== 1) {
+            return [];
+        }
         require_once __DIR__ . '/request_items.php';
         return array_map(fn($r) => [
             'requested' => $r['requested'],
             'quantity'  => $r['quantity'],
             'unit'      => $r['unit'],
+            'position'  => (int)$r['position'],
         ], RequestItems::outOfScope($requestId));
+    }
+
+    /**
+     * КП lines and out-of-scope rows in the match table's order (issue #67).
+     * A line is placed by the position of its request row; lines without one
+     * keep their place after the previous line.
+     *
+     * @return list<array{kind:string,row:array}> kind = item | out
+     */
+    public static function interleave(array $items, array $outOfScope): array {
+        $pos = [];
+        $ids = array_filter(array_map(fn($i) => (int)($i['request_item_id'] ?? 0), $items));
+        if ($ids && $outOfScope) {
+            $in = implode(',', array_map('intval', $ids));
+            foreach (Db::all("SELECT id, position FROM request_items WHERE id IN ($in)") as $r) {
+                $pos[(int)$r['id']] = (int)$r['position'];
+            }
+        }
+        usort($outOfScope, fn($a, $b) => $a['position'] <=> $b['position']);
+        $out = [];
+        foreach ($items as $item) {
+            $p = $pos[(int)($item['request_item_id'] ?? 0)] ?? null;
+            while ($p !== null && $outOfScope && $outOfScope[0]['position'] < $p) {
+                $out[] = ['kind' => 'out', 'row' => array_shift($outOfScope)];
+            }
+            $out[] = ['kind' => 'item', 'row' => $item];
+        }
+        foreach ($outOfScope as $r) $out[] = ['kind' => 'out', 'row' => $r];
+        return $out;
     }
 }

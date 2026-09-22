@@ -262,6 +262,18 @@ class PdfGenerator {
                 }
             }
         }
+        // Вилка печатается, только когда модификации стоят по-разному: max ==
+        // price — это один товар, «от 600 до 600» (issue #67)
+        foreach ($items as &$row) {
+            $row['price_top'] = KpContent::hasRange((float)$row['price'], (float)($row['price_max'] ?? 0))
+                ? (float)$row['price_max'] : 0.0;
+            if (!KpContent::hasRange((float)$row['effective_price'], (float)$row['effective_price_max'])) {
+                $row['effective_price_max'] = 0.0;
+            }
+        }
+        unset($row);
+        $discountColumn = self::discountColumn($items);
+
         $total = 0.0;
         foreach ($items as $row) $total += (float)$row['sum'];
         if ($delivery) $total += $delivery['price'];
@@ -269,6 +281,7 @@ class PdfGenerator {
         // «Не наша номенклатура» (issue #60): строка клиента печатается в
         // таблице серым жирным, с прочерками — видно, что её прочитали
         $outOfScope = KpContent::outOfScopeRows($proposal);
+        $tableRows = KpContent::interleave($items, $outOfScope);
 
         // The rate is МойСклад's answer, not a house default: the организация
         // says whether we charge VAT at all, and the catalog says at what rate.
@@ -281,10 +294,7 @@ class PdfGenerator {
         // Default intro
         // Короткое имя, а не «ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ …»: так
         // названа компания в шапке документа и в образце КП (модуль 034)
-        $introText = $proposal['intro_text'] ?: sprintf(
-            'По Вашему запросу %s имеет возможность поставить следующее вещевое имущество:',
-            trim((string)($legal['short_name'] ?? '')) ?: (string)$legal['full_name']
-        );
+        $introText = $proposal['intro_text'] ?: self::defaultIntro($requisites, $legal);
 
         // Условия поставки — один правимый блок (модуль 026). КП, собранное до
         // него, печатает те же четыре абзаца, что и печатало: документ,
@@ -340,6 +350,8 @@ class PdfGenerator {
             'preTableText' => $proposal['pre_table_text'] ?? '',
             'postTableText' => $proposal['post_table_text'] ?? '',
             'items' => $items,
+            'tableRows' => $tableRows,
+            'discountColumn' => $discountColumn,
             'total' => $total,
             // Подпись колонки цены и строки под таблицей — одним куском оттуда,
             // где налог посчитан: документ не складывает его во второй раз
@@ -378,6 +390,34 @@ class PdfGenerator {
         ob_start();
         include ROOT . '/templates/kp.html';
         return (string)ob_get_clean();
+    }
+
+    /**
+     * Столбец «Со скидкой» (issue #67): печатается, только если скидка есть;
+     * одна на все строки — процент в заголовке, разные — в каждой ячейке.
+     * @return array{show:bool,uniform:string}
+     */
+    public static function discountColumn(array $items): array {
+        $found = [];
+        foreach ($items as $row) {
+            $d = (string)($row['discount_shown'] ?? '');
+            if ($d !== '') $found[$d] = true;
+        }
+        return ['show' => (bool)$found, 'uniform' => count($found) === 1 ? (string)array_key_first($found) : ''];
+    }
+
+    /**
+     * «{Продавец} по запросу {покупатель} имеет возможность…» (issue #67):
+     * продавец — из снимка МойСклад, покупатель — юрлицо клиента из него же.
+     */
+    public static function defaultIntro(array $requisites, array $legal): string {
+        $seller = $requisites['seller'] ?? [];
+        $sellerName = trim((string)(($seller['short_name'] ?? '') ?: ($legal['short_name'] ?? '')))
+            ?: trim((string)(($seller['full_name'] ?? '') ?: ($legal['full_name'] ?? '')));
+        $buyer = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? '')));
+        return $buyer !== ''
+            ? sprintf('%s по запросу %s имеет возможность поставить следующее вещевое имущество:', $sellerName, $buyer)
+            : sprintf('%s по Вашему запросу имеет возможность поставить следующее вещевое имущество:', $sellerName);
     }
 
     /**

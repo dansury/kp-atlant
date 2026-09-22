@@ -235,7 +235,10 @@ final class Requisites {
             Db::all("SELECT DISTINCT p.vat AS vat
                      FROM proposal_items i JOIN products_cache p ON p.moysklad_id = i.moysklad_product_id
                      WHERE i.proposal_id=?", [$proposalId])
-        ), fn($r) => $r !== null));
+        // 0 у плательщика НДС — «на товаре ставка не задана» (МойСклад
+        // `vatEnabled: false`), а не «без НДС»: тогда работает настройка, и
+        // колонка не пишет «без НДС» при цене «в т.ч. НДС» (issue #67)
+        ), fn($r) => $r !== null && $r > 0));
 
         if (count($rates) === 1) {
             $rate = $rates[0];

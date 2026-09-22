@@ -155,8 +155,9 @@ echo "\n5. Документ собран как образец\n";
 Db::update('proposals', ['intro_text' => null], 'id=?', [$proposalId]);
 $html = PdfGenerator::html($proposalId);
 ok('во вступлении — короткое имя компании',
-   str_contains($html, 'По Вашему запросу ООО &quot;АТЛАНТ АРМОР&quot; имеет возможность'),
-   substr($html, strpos($html, 'По Вашему запросу') ?: 0, 80));
+   str_contains($html, 'ООО &quot;АТЛАНТ АРМОР&quot; по Вашему запросу имеет возможность')
+   || str_contains($html, 'ООО &quot;АТЛАНТ АРМОР&quot; по запросу '),
+   substr($html, strpos($html, 'имеет возможность') ?: 0, 80));
 // По умолчанию (issue #60) доставка распределена по позициям; настройка
 // возвращает прежнее поведение — отдельной строкой таблицы
 Settings::set('KP_DELIVERY_MODE', 'line');
@@ -234,11 +235,12 @@ ok('и в PDF она тоже ограничена', str_contains($css, '.signat
 ok('документ набран шрифтом из настроек',
    str_contains((string)$zipStyles, 'Microsoft Sans Serif'), Html2Docx::font());
 ok('кегль основного текста — 10 пт', Html2Docx::bodyHalfPoints() === 20);
-ok('знак стоит слева, текст обтекает его',
-   (bool)preg_match('/<wp:align>left<\/wp:align>.*?<wp:wrapSquare/su', $docXml));
+// Знак — в левой ячейке шапки-раскладки, реквизиты — в правой (модуль 046)
+ok('знак стоит слева, в своей ячейке шапки',
+   (bool)preg_match('/<w:tbl>.*?<wp:inline.*?<\/w:tc><w:tc>.*?ИНН/su', $docXml));
 ok('подпись лежит поверх строки, не раздвигая текст',
    str_contains($docXml, '<wp:wrapNone/>') && str_contains($docXml, 'behindDoc="1"'));
-ok('картинок «в строке» в документе не осталось', !str_contains($docXml, '<wp:inline'));
+ok('фотографии товара не «в строке» — плавают', substr_count($docXml, '<wp:inline') <= 2);
 ok('фотография в PDF обтекается текстом', str_contains($css, '.card .gallery { float: right;'));
 
 echo "\n7. Ответ модели разбирается, даже если оборвался\n";

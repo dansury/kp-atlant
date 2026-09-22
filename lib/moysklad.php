@@ -521,8 +521,7 @@ class MoySklad {
             'unit'            => (string)($product['uom']['name'] ?? 'шт.'),
             'description'     => (string)($v['description'] ?? $product['description'] ?? ''),
             'category'        => (string)($product['productFolder']['name'] ?? ''),
-            'vat'             => array_key_exists('vat', $product)
-                                    ? ((($product['vatEnabled'] ?? true)) ? (int)$product['vat'] : 0) : null,
+            'vat'             => self::vatOf($product),
             'parent_id'       => $parentId ?: null,
             'characteristics' => $characteristics,
             'archived'        => !empty($v['archived']) ? 1 : 0,
@@ -1364,10 +1363,20 @@ class MoySklad {
             'category' => $p['productFolder']['name'] ?? '',
             // The VAT of a КП line is the product's own, not a house default —
             // `vatEnabled: false` is «без НДС» and is not the same as a 0% rate
-            'vat' => array_key_exists('vat', $p)
-                ? (($p['vatEnabled'] ?? true) ? (int)$p['vat'] : 0)
-                : null,
+            'vat' => self::vatOf($p),
         ];
+    }
+
+    /**
+     * Ставка НДС товара. `effectiveVat` — ставка с учётом группы товара
+     * (`useParentVat`), её МойСклад присылает рядом с собственной (модуль 046).
+     */
+    public static function vatOf(array $p): ?int {
+        if (array_key_exists('effectiveVat', $p)) {
+            return ($p['effectiveVatEnabled'] ?? true) ? (int)$p['effectiveVat'] : 0;
+        }
+        if (!array_key_exists('vat', $p)) return null;
+        return ($p['vatEnabled'] ?? true) ? (int)$p['vat'] : 0;
     }
 
     private static function extractId(string $idOrHref): string {

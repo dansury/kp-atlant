@@ -196,6 +196,7 @@ final class Html2Docx {
             'b', 'strong' => $this->inlineChildren($n, $style + ['b' => true]),
             'i', 'em'     => $this->inlineChildren($n, $style + ['i' => true]),
             'u'           => $this->inlineChildren($n, $style + ['u' => true]),
+            's', 'del', 'strike' => $this->inlineChildren($n, $style + ['strike' => true]),
             'a'           => $this->inlineChildren($n, ['color' => 'C00000'] + $style),
             default       => $this->inlineChildren($n, $style),
         };
@@ -217,6 +218,7 @@ final class Html2Docx {
         $p = '';
         if (!empty($s['b'])) $p .= '<w:b/>';
         if (!empty($s['i'])) $p .= '<w:i/>';
+        if (!empty($s['strike'])) $p .= '<w:strike/>';
         if (!empty($s['color'])) $p .= '<w:color w:val="' . $s['color'] . '"/>';
         if (!empty($s['size'])) $p .= '<w:sz w:val="' . (int)$s['size'] . '"/><w:szCs w:val="' . (int)$s['size'] . '"/>';
         if (!empty($s['u'])) $p .= '<w:u w:val="single"/>';
@@ -242,7 +244,7 @@ final class Html2Docx {
      */
     private function styleOf(DOMElement $n, array $inherited): array {
         $style = $inherited;
-        unset($style['b'], $style['i'], $style['u']);   // emphasis is per-element
+        unset($style['b'], $style['i'], $style['u'], $style['strike']);   // emphasis is per-element
         $classes = preg_split('/\s+/', (string)$n->getAttribute('class')) ?: [];
         foreach ($classes as $class) {
             $style = match ($class) {
@@ -265,7 +267,11 @@ final class Html2Docx {
                 'sign-name'    => ['b' => true] + $style,
                 // «Не наша номенклатура»: серым, название жирным (модуль 045)
                 'out-of-scope' => ['color' => '8A8A8A'] + $style,
-                'out-of-scope__name' => ['b' => true, 'color' => '8A8A8A'] + $style,
+                'out-of-scope__name' => ['i' => true, 'color' => '8A8A8A'] + $style,
+                // Скидка (issue #67): старая цена зачёркнута, процент серым
+                'was'          => ['strike' => true, 'color' => '777777'] + $style,
+                'disc'         => ['color' => '8A8A8A'] + $style,
+                'card__qr-note' => ['size' => 17, 'color' => '666666'] + $style,
                 // Выравнивание текста — слева (issue #60)
                 'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'left'] + $style,
                 'appendix__subtitle' => ['b' => true, 'size' => 24, 'align' => 'center'] + $style,
@@ -299,11 +305,21 @@ final class Html2Docx {
         $widths = $this->columnWidths($rows, $cols);
         $width = (int)floor(self::CONTENT_TWIPS / $cols);
 
+        // Таблица-раскладка (шапка, QR рядом со ссылкой — модуль 046) рамок не
+        // печатает: это вёрстка, а не данные. У шапки остаётся нижняя черта.
+        $classes = ' ' . (string)$table->getAttribute('class') . ' ';
+        $layout = str_contains($classes, ' layout ');
+        $border = fn(string $side, bool $on) => '<w:' . $side . ($on
+            ? ' w:val="single" w:sz="4" w:color="BBBBBB"/>' : ' w:val="nil"/>');
+        $borders = $layout
+            ? $border('top', false) . $border('left', false)
+              . (str_contains($classes, ' header-grid ')
+                  ? '<w:bottom w:val="single" w:sz="12" w:color="333333"/>' : $border('bottom', false))
+              . $border('right', false) . $border('insideH', false) . $border('insideV', false)
+            : $border('top', true) . $border('left', true) . $border('bottom', true)
+              . $border('right', true) . $border('insideH', true) . $border('insideV', true);
         $xml = '<w:tbl><w:tblPr><w:tblW w:w="' . self::CONTENT_TWIPS . '" w:type="dxa"/>'
-             . '<w:tblBorders>'
-             . '<w:top w:val="single" w:sz="4" w:color="BBBBBB"/><w:left w:val="single" w:sz="4" w:color="BBBBBB"/>'
-             . '<w:bottom w:val="single" w:sz="4" w:color="BBBBBB"/><w:right w:val="single" w:sz="4" w:color="BBBBBB"/>'
-             . '<w:insideH w:val="single" w:sz="4" w:color="BBBBBB"/><w:insideV w:val="single" w:sz="4" w:color="BBBBBB"/>'
+             . '<w:tblBorders>' . $borders
              . '</w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>';
         foreach ($widths as $w) $xml .= '<w:gridCol w:w="' . $w . '"/>';
         $xml .= '</w:tblGrid>';
@@ -378,6 +394,11 @@ final class Html2Docx {
         foreach ($classes as $class) {
             $w = match ($class) {
                 'num', 'unit' => 0.8,
+                // Раскладки: знак | реквизиты, QR | ссылка (модуль 046)
+                'header-grid__logo' => 1.3,
+                'header'      => 3.0,
+                'site-line__qr' => 0.9,
+                'site-line__link' => 5.0,
                 'qty'         => 1.0,
                 'price', 'sum', 'state' => 1.8,
                 default       => 0.0,
@@ -492,13 +513,15 @@ final class Html2Docx {
         foreach ($classes as $class) {
             if ($class === 'logo') {
                 // Знак слева, реквизиты поставщика — справа от него
+                // Знак стоит в своей ячейке шапки (модуль 046) — в строке
                 $spec = ['max_w' => self::px('KP_LOGO_WIDTH', 160), 'max_h' => 0,
-                         'wrap' => 'square', 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
+                         'wrap' => null, 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
             }
             if ($class === 'qr') {
                 // QR — слева от ссылки на сайт, тем же порядком, что в PDF (issue #60)
+                // В своей ячейке слева от ссылки (модуль 046) — в строке
                 $spec = ['max_w' => 110, 'max_h' => 110,
-                         'wrap' => 'square', 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
+                         'wrap' => null, 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
             }
             if ($class === 'sign-img') {
                 // Подпись ложится ПОВЕРХ строки подписи, не раздвигая текст,
