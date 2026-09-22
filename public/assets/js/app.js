@@ -8623,6 +8623,9 @@ const App = {
                             <input type="number" id="set_LLM_TIMEOUT_SEC" value="${this.esc(val('LLM_TIMEOUT_SEC'))}"></div>
                         <div class="form-group"><label>Температура по умолчанию</label>
                             <input type="text" id="set_LLM_TEMPERATURE" value="${this.esc(val('LLM_TEMPERATURE'))}"></div>
+                        <div class="form-group"><label>Предел длины ответа, токенов</label>
+                            <input type="number" id="set_LLM_MAX_TOKENS" value="${this.esc(val('LLM_MAX_TOKENS'))}"
+                                   title="Ограничивает ответ Yandex. Если в журнале «ответ оборвался по пределу длины» — увеличьте"></div>
                         <div class="form-group"><label>Выбор модели в окне ответа</label>
                             <select id="set_LLM_MODEL_PICKER">
                                 <option value="1" ${val('LLM_MODEL_PICKER') === '1' ? 'selected' : ''}>Показывать</option>
@@ -8683,10 +8686,13 @@ const App = {
                     <p class="muted">Открытые модели (Llama, DeepSeek, Qwen, Gemma) включены не в каждом облаке:
                        слаг, которого у провайдера нет, отвечает «unknown model». Проверка прогоняет весь список
                        по одному короткому запросу и вычёркивает то, чего в вашем Folder ID не оказалось —
-                       дальше такой слаг в запрос не уходит, вместо него отвечает YandexGPT.</p>
+                       дальше такой слаг в запрос не уходит, вместо него отвечает YandexGPT.
+                       Заодно запоминается маршрут: открытые модели отвечают не на общем адресе, а на
+                       OpenAI-совместимом, и запросы к ним уходят туда сами.</p>
                     <p class="muted">${yx.synced_at
                         ? `Проверено ${this.fmtDate(yx.synced_at)}: отвечает <strong class="ok">${yx.ok}</strong>,
-                           нет в облаке <strong class="${yx.missing ? 'no' : ''}">${yx.missing}</strong> из ${yx.total}.`
+                           нет в облаке <strong class="${yx.missing ? 'no' : ''}">${yx.missing}</strong> из ${yx.total}${
+                           yx.openai ? `; по OpenAI-совместимому API — <strong>${yx.openai}</strong>` : ''}.`
                         : 'Каталог ещё не проверялся — список ниже показывает кандидатов, а не факт.'}</p>
                     <div class="flex flex--wrap">
                         <button class="btn btn--outline" onclick="App.verifyYandexModels()">Проверить каталог Yandex</button>
@@ -8751,6 +8757,8 @@ const App = {
             const r = await this.api('admin.php?action=yandex_models_verify', {method: 'POST', body: {}});
             out.innerHTML = `
                 <p class="ok">Отвечает: ${(r.ok || []).join(', ') || '— ни одна'}</p>
+                ${(r.openai || []).length ? `<p class="muted">Только по OpenAI-совместимому API
+                    (запросы уходят туда сами): ${this.esc(r.openai.join(', '))}</p>` : ''}
                 ${(r.missing || []).length ? `<p class="no">Нет в этом облаке: ${this.esc(r.missing.join(', '))}</p>` : ''}
                 ${(r.unclear || []).length ? `<p class="muted">Не удалось выяснить (ответ не про модель):<br>
                     ${r.unclear.map(x => this.esc(x)).join('<br>')}</p>` : ''}`;

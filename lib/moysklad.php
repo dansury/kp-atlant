@@ -23,29 +23,29 @@ class MoySklad {
         self::$diag = [];
 
         // Products — required
-        $r = self::get('/entity/product?limit=1');
+        $r = self::tryGet('/entity/product?limit=1');
         $perms['products'] = ($r !== null);
         self::$diag['products'] = self::$lastHttp;
 
         // Counterparties — required
-        $r = self::get('/entity/counterparty?limit=1');
+        $r = self::tryGet('/entity/counterparty?limit=1');
         $perms['counterparties'] = ($r !== null);
         self::$diag['counterparties'] = self::$lastHttp;
 
         // Orders read
-        $r = self::get('/entity/customerorder?limit=1');
+        $r = self::tryGet('/entity/customerorder?limit=1');
         $perms['orders_read'] = ($r !== null);
 
         // Stock
-        $r = self::get('/report/stock/all?limit=1');
+        $r = self::tryGet('/report/stock/all?limit=1');
         $perms['stock'] = ($r !== null);
 
         // Invoices read (module 002)
-        $r = self::get('/entity/invoiceout?limit=1');
+        $r = self::tryGet('/entity/invoiceout?limit=1');
         $perms['invoices'] = ($r !== null);
 
         // Webhooks (module 002) — read access implies the scope is granted
-        $r = self::get('/entity/webhook?limit=1');
+        $r = self::tryGet('/entity/webhook?limit=1');
         $perms['webhooks'] = ($r !== null);
 
         // Orders write — try with dry check (HEAD or tiny POST would fail gracefully)
@@ -1126,6 +1126,19 @@ class MoySklad {
         return self::request('GET', $path);
     }
 
+    /**
+     * A probe, not a request: «did not answer» is an answer here. The permission
+     * check reads the codes itself and explains them better than the exception
+     * would (module 043 made an unreachable API throw instead of returning null).
+     */
+    private static function tryGet(string $path): ?array {
+        try {
+            return self::get($path);
+        } catch (MoySkladException $e) {
+            return null;
+        }
+    }
+
     private static function post(string $path, array $body): array {
         $resp = self::request('POST', $path, $body);
         if ($resp === null) throw new MoySkladException('POST failed: ' . $path . self::lastErrorSuffix());
@@ -1204,17 +1217,41 @@ class MoySklad {
         return [$code, (string)$raw, $headers];
     }
 
-    private static function request(string $method, string $path, ?array $body = null): ?array {
-        $maxRetries = 3;
-        $delay = 1;
+    /**
+     * One API request with retries.
+     *
+     * MoySklad allows 45 requests per 3 seconds per token, and a webhook burst
+     * (one event per order) spends them in a moment. The refusal carries its own
+     * `X-RateLimit-Retry-After` — before module 043 it was never read, and three
+     * attempts with a 1-2-4 s backoff all landed inside the same window.
+     */
+    private const RETRIES = 5;
+    /**
+     * Wall clock the whole retry loop may take. A rate limit answers instantly,
+     * so five attempts fit easily; a host that hangs eats the budget on timeouts
+     * and stops after two or three — a page must not wait minutes either way.
+     */
+    private const RETRY_BUDGET_SEC = 45.0;
 
-        for ($i = 0; $i < $maxRetries; $i++) {
+    private static function request(string $method, string $path, ?array $body = null): ?array {
+        $delay = 1.0;
+        $started = microtime(true);
+        $attempt = 0;
+
+        for ($i = 1; $i <= self::RETRIES; $i++) {
+            $attempt = $i;
+            $headers = [];
             $ch = curl_init(self::$base . $path);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT => 15,
                 CURLOPT_ENCODING => 'gzip',
                 CURLOPT_HTTPHEADER => self::headers($body !== null),
+                CURLOPT_HEADERFUNCTION => function ($ch, $line) use (&$headers) {
+                    $parts = explode(':', $line, 2);
+                    if (count($parts) === 2) $headers[strtolower(trim($parts[0]))] = trim($parts[1]);
+                    return strlen($line);
+                },
             ]);
             if ($method !== 'GET') {
                 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
@@ -1226,6 +1263,7 @@ class MoySklad {
             $resp = curl_exec($ch);
             $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $curlErr = curl_error($ch);
+            curl_close($ch);
 
             // Keep the last response for diagnostics
             self::$lastHttp = [
@@ -1237,15 +1275,36 @@ class MoySklad {
             if ($code === 401) return null; // invalid or revoked token
             if ($code === 403) return null; // permission denied — not an error to retry
             if ($code === 404) return null;
-            if ($code >= 200 && $code < 300) return json_decode($resp, true);
-            if ($code === 429 || $code >= 500) {
-                sleep($delay);
-                $delay *= 2;
-                continue;
-            }
-            return null;
+            if ($code >= 200 && $code < 300) return json_decode((string)$resp, true);
+            // Code 0 is «never connected»: a timeout or a dropped connection is
+            // worth repeating, and it used to be indistinguishable from «no such
+            // document» — the caller got null and the order counted as unlinked.
+            if (!($code === 0 || $code === 429 || $code >= 500)) return null;
+
+            $pause = self::retryPause($headers, $delay);
+            $spent = microtime(true) - $started;
+            if ($i === self::RETRIES || $spent + $pause >= self::RETRY_BUDGET_SEC) break;
+            usleep((int)round($pause * 1_000_000));
+            $delay = min(8.0, $delay * 2);
         }
-        throw new MoySkladException("MoySklad request failed after $maxRetries retries: $method $path");
+        throw new MoySkladException("MoySklad request failed after $attempt attempts: $method $path"
+                                    . self::lastErrorSuffix());
+    }
+
+    /**
+     * How long to wait before the next attempt. MoySklad names it itself in
+     * `X-RateLimit-Retry-After` (milliseconds); `Retry-After` (seconds) is the
+     * standard fallback. Without either — exponential backoff with jitter, so
+     * parallel webhook handlers do not come back all at once.
+     *
+     * Public because it is pure and the test checks it without a network.
+     */
+    public static function retryPause(array $headers, float $delay): float {
+        $ms = (float)($headers['x-ratelimit-retry-after'] ?? 0);
+        if ($ms > 0) return min(10.0, $ms / 1000);
+        $sec = (float)($headers['retry-after'] ?? 0);
+        if ($sec > 0) return min(10.0, $sec);
+        return $delay + random_int(0, 250) / 1000;
     }
 
     private static function mapProduct(array $p): array {
