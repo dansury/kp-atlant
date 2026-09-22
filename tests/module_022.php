@@ -302,10 +302,12 @@ foreach ($matched as $i => $m) {
 }
 Requisites::freeze($proposalId);
 
+// Строки печатаются по галочке КП «Показать в КП отсутствующую номенклатуру» (модуль 046)
+Settings::set('KP_SHOW_OUT_OF_SCOPE', 1);
 $html = PdfGenerator::html($proposalId);
 ok('шлем в документе есть', str_contains($html, 'Протон СВМПЭ'));
 // «Не наша номенклатура» печатается только строкой с прочерками, серым
-// жирным названием клиента (issue #60, модуль 045) — не позицией и не
+// курсивом названием клиента (issue #60, #67) — не позицией и не
 // «нужно уточнение»
 preg_match_all('#<tr class="out-of-scope">.*?</tr>#s', $html, $scopeRows);
 $scopeHtml = implode('', $scopeRows[0]);

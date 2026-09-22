@@ -89,7 +89,8 @@ final class Catalog
             $filter,
             false,
             ['nOffset' => max(0, $offset), 'nTopCount' => $limit],
-            array_merge(self::SELECT, ['PROPERTY_' . (trim(Config::get('ARTICLE_PROP')) ?: 'CML2_ARTICLE')])
+            array_merge(self::SELECT, ['DETAIL_TEXT', 'PREVIEW_TEXT'],
+                        ['PROPERTY_' . (trim(Config::get('ARTICLE_PROP')) ?: 'CML2_ARTICLE')])
         );
 
         $items = [];
@@ -161,6 +162,12 @@ final class Catalog
         $article = $row['PROPERTY_' . $prop . '_VALUE'] ?? '';
         if (is_array($article)) $article = reset($article);
 
+        // Описание товара на сайте (issue #67): сервис берёт его, когда в
+        // МойСклад описания нет. У предложения своего обычно нет — берём товара
+        $description = self::text($row, 'DETAIL_TEXT') !== ''
+            ? self::text($row, 'DETAIL_TEXT') : self::text($row, 'PREVIEW_TEXT');
+        if ($description === '' && $parent !== null) $description = self::parentText((int)($row['ID'] ?? 0), $iblockId);
+
         return [
             'ID'              => (int)($row['ID'] ?? 0),
             'IBLOCK_ID'       => $iblockId,
@@ -170,7 +177,43 @@ final class Catalog
             'ARTICLE'         => trim((string)$article),
             'DETAIL_PAGE_URL' => self::absolute($url),
             'url'             => self::absolute($url),
+            'DESCRIPTION'     => $description,
         ];
+    }
+
+    /** Описание товара, которому принадлежит предложение. */
+    private static function parentText(int $id, int $iblockId): string
+    {
+        if (!class_exists(CCatalogSKU::class)) return '';
+        $info = CCatalogSKU::GetProductInfo($id, $iblockId);
+        if (!is_array($info) || empty($info['ID'])) return '';
+        $res = CIBlockElement::GetList([], ['ID' => (int)$info['ID']], false,
+                                       ['nTopCount' => 1], ['ID', 'DETAIL_TEXT', 'PREVIEW_TEXT']);
+        $row = $res->GetNext(true, false);
+        if (!$row) return '';
+        return self::text($row, 'DETAIL_TEXT') !== '' ? self::text($row, 'DETAIL_TEXT') : self::text($row, 'PREVIEW_TEXT');
+    }
+
+    /**
+     * Текст элемента без экранирования: `~ПОЛЕ`, когда GetNext отдал «тильду»,
+     * иначе само поле (HTML-описание приходит как есть, текстовое — экранированным).
+     */
+    public static function text(array $row, string $field): string
+    {
+        if (isset($row['~' . $field])) return (string)$row['~' . $field];
+        $v = (string)($row[$field] ?? '');
+        return ($row[$field . '_TYPE'] ?? 'html') === 'text' ? htmlspecialchars_decode($v, ENT_QUOTES) : $v;
+    }
+
+    /** Инфоблоки каталога — для выгрузки в Excel (`Export`). */
+    public static function catalogIblocks(): array
+    {
+        return self::iblocks();
+    }
+
+    public static function absoluteUrl(string $url): string
+    {
+        return self::absolute($url);
     }
 
     /** The product page behind an offer, or null when this is a product. */

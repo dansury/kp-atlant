@@ -33,6 +33,18 @@ $fields = [
     'EXPORT_LIMIT'   => ['type' => 'text', 'size' => 8],
 ];
 
+// Выгрузка каталога в Excel (issue #67) — прямо со страницы настроек
+if ($request->get('export_xlsx') === 'Y' && $rights >= 'R' && check_bitrix_sessid()) {
+    $APPLICATION->RestartBuffer();
+    try {
+        \Atlant\KpSync\Export::download();
+    } catch (\Throwable $e) {
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo Loc::getMessage('ATLANT_KPSYNC_EXPORT_FAIL') . ' ' . $e->getMessage();
+    }
+    die();
+}
+
 if ($request->isPost() && $request->getPost('Update') && $rights === 'W' && check_bitrix_sessid()) {
     foreach ($fields as $name => $meta) {
         $value = (string)$request->getPost($name);
@@ -62,6 +74,14 @@ $tabControl->Begin();
     <tr>
         <td width="40%"><?= Loc::getMessage('ATLANT_KPSYNC_OPT_ENDPOINT') ?></td>
         <td><input type="text" size="70" readonly value="<?= htmlspecialcharsbx($endpoint) ?>"></td>
+    </tr>
+    <tr>
+        <td width="40%"><?= Loc::getMessage('ATLANT_KPSYNC_EXPORT') ?></td>
+        <td>
+            <a class="adm-btn" href="<?= $APPLICATION->GetCurPage() ?>?mid=<?= urlencode($module_id) ?>&amp;lang=<?= LANGUAGE_ID ?>&amp;export_xlsx=Y&amp;<?= bitrix_sessid_get() ?>"
+               ><?= Loc::getMessage('ATLANT_KPSYNC_EXPORT_BTN') ?></a>
+            <div style="color:#888;font-size:11px"><?= Loc::getMessage('ATLANT_KPSYNC_EXPORT_HINT') ?></div>
+        </td>
     </tr>
     <tr class="heading"><td colspan="2"><?= Loc::getMessage('ATLANT_KPSYNC_OPT_SECTION') ?></td></tr>
 

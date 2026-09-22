@@ -14,6 +14,7 @@ require_once ROOT . '/lib/kp_text.php';
 require_once ROOT . '/lib/outbox.php';
 require_once ROOT . '/lib/docx.php';
 require_once ROOT . '/lib/kp_content.php';
+require_once ROOT . '/lib/kp_requirements.php';
 require_once ROOT . '/lib/markup.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/notifier.php';
@@ -192,6 +193,10 @@ switch ($action) {
             Db::insert('proposal_items', KpSet::itemRow($m, $i + 1) + ['proposal_id' => $proposalId]);
         }
 
+        // Клиент просил указать что-то в самом КП — абзац документа на это
+        // (модуль 046). Сбой модели КП не отменяет: абзаца просто не будет
+        KpRequirements::apply($proposalId);
+
         // Generate cover letter
         $tov = Tov::read();
         $corrections = Db::all(
@@ -287,8 +292,14 @@ switch ($action) {
                   // Условия одним блоком и доставка отдельной строкой (модуль 026)
                   'terms_text', 'delivery_on', 'delivery_name', 'delivery_price',
                   // Сколько фото печатать в ЭТОМ КП; пусто — общая настройка
-                  'photos_per_item'] as $f) {
+                  'photos_per_item',
+                  // «Показать в КП отсутствующую номенклатуру» (модуль 046)
+                  'show_out_of_scope'] as $f) {
             if (array_key_exists($f, $input)) $fields[$f] = $input[$f];
+        }
+        if (array_key_exists('show_out_of_scope', $fields)) {
+            $v = $fields['show_out_of_scope'];
+            $fields['show_out_of_scope'] = $v === null || $v === '' ? null : ((int)$v === 1 ? 1 : 0);
         }
         if (array_key_exists('cover_letter_final', $input)) {
             $fields['cover_letter_final'] = $input['cover_letter_final'];
@@ -515,7 +526,7 @@ switch ($action) {
     case 'html': {
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
-        $p = Db::one("SELECT id, status, html_override_at FROM proposals WHERE id=?", [$id]);
+        $p = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
         if (!$p) jsonError('КП не найдено', 404);
         try {
             $page = KpEditor::page($id);
@@ -528,6 +539,16 @@ switch ($action) {
             'html'        => $page,
             'editable'    => KpEditor::editable($p),
             'override_at' => $p['html_override_at'],
+            // Галочка «Показать в КП отсутствующую номенклатуру» (модуль 046):
+            // есть ли такие строки у запроса и печатаются ли они в этом КП
+            // Что клиент просил указать в КП — менеджер сверяет с листом (модуль 046)
+            'requirements' => KpRequirements::of((int)$p['request_id']),
+            'out_of_scope' => [
+                'count' => $p['request_id']
+                    ? (int)Db::val("SELECT COUNT(*) FROM request_items WHERE request_id=? AND COALESCE(is_out_of_scope,0)=1",
+                                   [$p['request_id']]) : 0,
+                'shown' => (bool)KpContent::outOfScopeRows($p),
+            ],
         ]);
     }
 

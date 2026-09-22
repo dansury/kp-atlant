@@ -1869,6 +1869,17 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '41')");
         $current = 41;
     }
+
+    // v42 — модуль 046 (issue #67): «Показать в КП отсутствующую номенклатуру»
+    // у каждого КП; NULL — как в настройке KP_SHOW_OUT_OF_SCOPE
+    if ($current < 42) {
+        Db::ensureColumn('proposals', 'show_out_of_scope', 'INTEGER');
+        // Описание товара с сайта — запасной источник к МойСклад (issue #67)
+        Db::ensureColumn('products_cache', 'site_description', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '42')");
+        $current = 42;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

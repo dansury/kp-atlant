@@ -84,14 +84,14 @@ ok('колонка говорит «в т.ч. НДС 5%»', $t['column'] === 'в
 
 $html = PdfGenerator::html($proposalId);
 ok('в шапке колонки — «в т.ч. НДС 5%»', str_contains($html, 'Цена за ед., в т.ч. НДС 5%'));
-ok('итог в документе', str_contains($html, 'Итого: 2 500,00 руб.'));
+ok('итог в документе', str_contains($html, 'Итого: 2 500 руб.'));
 // Раньше эта строка печаталась только по галочке `show_vat_total`, и КП
 // уходило клиенту вообще без суммы налога — ради этого модуль и заведён
 ok('НДС под итогом напечатан без всяких галочек',
    str_contains($html, 'в т.ч. НДС 5%: 119,05 руб.'));
 
 $text = KpText::render($proposalId)['text'];
-ok('в письме тот же итог', str_contains($text, 'Итого: 2 500,00 руб.'));
+ok('в письме тот же итог', str_contains($text, 'Итого: 2 500 руб.'));
 ok('и тот же налог', str_contains($text, 'в т.ч. НДС 5%: 119,05 руб.'));
 
 echo "\n3. Цена + НДС: налог прибавляется к итогу\n";
@@ -105,14 +105,14 @@ ok('и клиент платит больше', abs($t['total'] - 2625.0) < 0.00
 $html = PdfGenerator::html($proposalId);
 ok('в шапке колонки — «без НДС»', str_contains($html, 'Цена за ед., без НДС'));
 ok('«в т.ч. НДС» из документа ушло', !str_contains($html, 'в т.ч. НДС'));
-ok('итог без налога', str_contains($html, 'Итого без НДС: 2 500,00 руб.'));
-ok('сам налог', str_contains($html, 'НДС 5%: 125,00 руб.'));
-ok('и итог с налогом', str_contains($html, 'Итого с НДС: 2 625,00 руб.'));
-ok('цена позиции не переписана', str_contains($html, '1 000,00 руб.'));
+ok('итог без налога', str_contains($html, 'Итого без НДС: 2 500 руб.'));
+ok('сам налог', str_contains($html, 'НДС 5%: 125 руб.'));
+ok('и итог с налогом', str_contains($html, 'Итого с НДС: 2 625 руб.'));
+ok('цена позиции не переписана', str_contains($html, '1 000 руб.'));
 
 $text = KpText::render($proposalId)['text'];
-ok('письмо повторяет документ', str_contains($text, 'Итого без НДС: 2 500,00 руб.')
-   && str_contains($text, 'НДС 5%: 125,00 руб.') && str_contains($text, 'Итого с НДС: 2 625,00 руб.'));
+ok('письмо повторяет документ', str_contains($text, 'Итого без НДС: 2 500 руб.')
+   && str_contains($text, 'НДС 5%: 125 руб.') && str_contains($text, 'Итого с НДС: 2 625 руб.'));
 
 echo "\n4. Word говорит то же самое (модуль 016)\n";
 $docxPath = DocxGenerator::generate($proposalId);
@@ -123,7 +123,7 @@ $zip->close();
 @unlink($docxPath);
 $plain = preg_replace('/<[^>]+>/', '', (string)$xml);
 ok('итог с НДС попал в Word', str_contains((string)$plain, 'Итого с НДС'));
-ok('и сам налог отдельной строкой', str_contains((string)$plain, 'НДС 5%: 125,00 руб.'));
+ok('и сам налог отдельной строкой', str_contains((string)$plain, 'НДС 5%: 125 руб.'));
 
 echo "\n5. У отдельного КП может быть свой вид цены\n";
 Db::update('proposals', ['vat_mode' => 'included'], 'id=?', [$proposalId]);

@@ -256,27 +256,25 @@ final class RequestItems {
         if (!$ids) return [];
 
         $ph = implode(',', array_fill(0, count($ids), '?'));
-        $rows = Db::all("SELECT moysklad_id, description, parent_id FROM products_cache WHERE moysklad_id IN ($ph)", $ids);
+        $rows = Db::all("SELECT moysklad_id, description, site_description, parent_id FROM products_cache WHERE moysklad_id IN ($ph)", $ids);
 
-        $out = [];
-        $orphans = [];   // модификация без своего описания → id родителя
-        foreach ($rows as $r) {
-            $id = (string)$r['moysklad_id'];
-            $text = trim((string)($r['description'] ?? ''));
-            if ($text !== '') { $out[$id] = $text; continue; }
-            if (trim((string)($r['parent_id'] ?? '')) !== '') $orphans[$id] = (string)$r['parent_id'];
-        }
-
-        if ($orphans) {
-            $parentIds = array_values(array_unique($orphans));
+        // Модификация без своего описания берёт описание товара — и из
+        // МойСклад, и с сайта; какое из двух идёт, решает настройка (issue #67)
+        $parentIds = array_values(array_unique(array_filter(array_map(fn($r) => (string)($r['parent_id'] ?? ''), $rows))));
+        $byParent = [];
+        if ($parentIds) {
             $ph = implode(',', array_fill(0, count($parentIds), '?'));
-            $byParent = [];
-            foreach (Db::all("SELECT moysklad_id, description FROM products_cache WHERE moysklad_id IN ($ph)", $parentIds) as $r) {
-                $byParent[(string)$r['moysklad_id']] = trim((string)($r['description'] ?? ''));
+            foreach (Db::all("SELECT moysklad_id, description, site_description FROM products_cache WHERE moysklad_id IN ($ph)", $parentIds) as $r) {
+                $byParent[(string)$r['moysklad_id']] = $r;
             }
-            foreach ($orphans as $id => $parentId) {
-                if (trim((string)($byParent[$parentId] ?? '')) !== '') $out[$id] = $byParent[$parentId];
-            }
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            $parent = $byParent[(string)($r['parent_id'] ?? '')] ?? [];
+            $ms   = trim((string)($r['description'] ?? '')) ?: trim((string)($parent['description'] ?? ''));
+            $site = trim((string)($r['site_description'] ?? '')) ?: trim((string)($parent['site_description'] ?? ''));
+            $text = KpContent::pickDescription($ms, $site);
+            if ($text !== '') $out[(string)$r['moysklad_id']] = $text;
         }
 
         foreach ($out as $id => $text) {

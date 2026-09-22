@@ -195,6 +195,7 @@ const App = {
     // Init app
     async init() {
         this.registerServiceWorker();
+        this.watchBlocks();
         this.watchInstallPrompt();
         try {
             this.manager = await this.api('auth.php?action=me');
@@ -754,6 +755,7 @@ const App = {
         host = host || document.getElementById('matchCard');
         if (!host) return;
         host.dataset.matchHost = '1';
+        host.dataset.block = 'items';
         host.dataset.requestId = requestId;
         // Доставка живёт на блоке подбора: перерисовка строк её не теряет
         if (opts.delivery) host.dataset.delivery = JSON.stringify(opts.delivery);
@@ -804,6 +806,96 @@ const App = {
         this.loadKpBoard(requestId, host);
     },
 
+    /**
+     * ==== Блоки письма (issue #67) ====
+     *
+     * Переписка, подбор, информация, заметки и счета МойСклад сворачиваются
+     * кнопкой в заголовке. Положение запоминается у КАЖДОГО письма
+     * (`localStorage['kp.fold.<ключ переписки>']`); «Информация» на телефоне
+     * свёрнута всегда. У каждого блока свой оттенок — `[data-block]` в CSS.
+     * Подбор сворачивается своим механизмом (`toggleMatchFold`), здесь только
+     * запоминается.
+     */
+    FOLDABLE: ['thread', 'info', 'events', 'ms'],
+
+    isPhone() {
+        return window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
+    },
+
+    foldStore() {
+        try { return JSON.parse(localStorage.getItem('kp.fold.' + (this.foldKey || '')) || '{}') || {}; }
+        catch { return {}; }
+    },
+
+    /** true — свёрнут, false — раскрыт, null — у этого письма не трогали. */
+    foldGet(name) {
+        if (name === 'info' && this.isPhone()) return true;
+        const st = this.foldStore();
+        return name in st ? !!st[name] : null;
+    },
+
+    foldSet(name, folded) {
+        if (!this.foldKey) return;
+        const st = this.foldStore();
+        st[name] = folded ? 1 : 0;
+        try { localStorage.setItem('kp.fold.' + this.foldKey, JSON.stringify(st)); } catch { /* не запомним */ }
+    },
+
+    /** Письмо, чьё положение блоков сейчас на экране; сменилось — блоки перечитываются. */
+    setFoldKey(key) {
+        this.foldKey = key || '';
+        this.bindBlocks(document, true);
+    },
+
+    /** Кнопка свернуть в заголовке каждого блока; $reapply — выставить сохранённое заново. */
+    bindBlocks(root = document, reapply = false) {
+        root.querySelectorAll('[data-block]').forEach(el => {
+            const name = el.dataset.block;
+            if (!this.FOLDABLE.includes(name)) return;
+            const head = el.querySelector(':scope > [data-block-head], :scope > .card__title');
+            if (!head) return;
+            if (!head.querySelector(':scope > .block-fold')) {
+                head.classList.add('block-head');
+                head.insertAdjacentHTML('beforeend',
+                    '<button type="button" class="block-fold" onclick="App.toggleBlock(this)"></button>');
+            } else if (!reapply && el.dataset.foldBound === '1') {
+                return;
+            }
+            el.dataset.foldBound = '1';
+            this.applyBlockFold(el, !!this.foldGet(name));
+        });
+    },
+
+    applyBlockFold(el, folded) {
+        el.classList.toggle('is-folded', folded);
+        const btn = el.querySelector(':scope > .block-head > .block-fold');
+        if (btn) {
+            btn.textContent = folded ? '▸' : '▾';
+            btn.title = folded ? 'Развернуть' : 'Свернуть';
+            btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+        }
+    },
+
+    toggleBlock(btn) {
+        const el = btn.closest('[data-block]');
+        if (!el) return;
+        const folded = !el.classList.contains('is-folded');
+        this.applyBlockFold(el, folded);
+        this.foldSet(el.dataset.block, folded);
+    },
+
+    /** Блоки появляются в разметке в разное время — привязываем их по мере появления. */
+    watchBlocks() {
+        if (this._blockObserver || !('MutationObserver' in window)) return;
+        let queued = false;
+        this._blockObserver = new MutationObserver(() => {
+            if (queued) return;
+            queued = true;
+            requestAnimationFrame(() => { queued = false; this.bindBlocks(); });
+        });
+        this._blockObserver.observe(document.body, {childList: true, subtree: true});
+    },
+
     /** Свернуть/развернуть подбор — строки остаются в DOM, автосохранение живо. */
     toggleMatchFold(btn) {
         const host = this.matchHost(btn);
@@ -811,6 +903,7 @@ const App = {
         const folded = host.dataset.folded !== '1';
         host.dataset.folded = folded ? '1' : '0';
         host.classList.toggle('card--folded', folded);
+        this.foldSet('items', folded);
         const rows = host.querySelectorAll('[data-match-row]').length;
         btn.textContent = folded ? `▸ Развернуть (позиций: ${rows})` : '▾ Свернуть';
     },
@@ -1460,7 +1553,10 @@ const App = {
         // видимого экрана — до него надо было домотать, и то, что КП вообще
         // открылось, было не видно.
         const host = this.matchHost(btn);
-        const slot = this.kpSlot()
+        // На телефоне КП раскрывается прямо под блоком, где нажали «Открыть»
+        // (issue #67): до поля письма внизу страницы пришлось бы листать
+        const slot = (this.isPhone() && host && host.querySelector('[data-kp-slot]'))
+            || this.kpSlot()
             || (host && (host.querySelector('[data-kp-slot]')
                 || host.appendChild(this.dataDiv('kpSlot'))));
         // Карточки под рукой нет (страница редактора КП) — только тогда переход
@@ -1474,7 +1570,7 @@ const App = {
         slot.dataset.open = String(id);
         const height = Number(localStorage.getItem('kpHeight')) || 60;
         slot.innerHTML = `
-            <div class="card card--inline kp-open" style="margin-top:10px">
+            <div class="card card--inline kp-open" data-block="kp" style="margin-top:10px">
                 <div class="flex flex--between flex--wrap">
                     <strong>КП #${id}</strong>
                     <span class="flex flex--wrap">
@@ -1506,6 +1602,13 @@ const App = {
                             onclick="App.kpMode(this, 'page', ${id})">📝 Страница A4</button>
                     <button class="btn btn--sm btn--outline" data-kp-mode="pdf"
                             onclick="App.kpMode(this, 'pdf', ${id})">PDF</button>
+                    <!-- Масштаб листа: пальцами, Ctrl + колесо / щипок тачпада, кнопками -->
+                    <span class="kp-zoom" data-kp-zoom title="Масштаб: Ctrl + колесо мыши, щипок пальцами или тачпадом">
+                        <button class="btn btn--sm btn--outline" onclick="App.kpZoomStep(this, -1)" aria-label="Уменьшить">−</button>
+                        <button class="btn btn--sm btn--outline" data-kp-zoom-label onclick="App.kpZoomStep(this, 0)"
+                                title="По ширине окна / 100%">100%</button>
+                        <button class="btn btn--sm btn--outline" onclick="App.kpZoomStep(this, 1)" aria-label="Увеличить">+</button>
+                    </span>
                 </div>
                 <div data-kp-pagewrap>
                     <div data-kp-page-bar></div>
@@ -1534,6 +1637,8 @@ const App = {
             b.classList.toggle('btn--outline', b.dataset.kpMode !== mode);
         });
         card.querySelector('[data-kp-pagewrap]').hidden = mode !== 'page';
+        const zoom = card.querySelector('[data-kp-zoom]');
+        if (zoom) zoom.hidden = mode !== 'page';
         const pdf = card.querySelector('[data-kp-pdf]');
         pdf.hidden = mode !== 'pdf';
         if (mode === 'pdf') {
@@ -1583,6 +1688,7 @@ const App = {
                     doc.designMode = 'on';
                     doc.addEventListener('input', () => { card.dataset.dirty = '1'; this.kpPageDirty(card, true); });
                 }
+                this.kpBindZoom(frame, card);
             };
             frame.srcdoc = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, sheet + '</head>') : sheet + html;
             frame.style.display = '';
@@ -1595,12 +1701,95 @@ const App = {
         }
     },
 
+    /**
+     * ==== Масштаб листа A4 ====
+     *
+     * Масштаб — CSS `zoom` корня документа в рамке: сам документ не меняется,
+     * и в сохранённую правку он не попадает (`style[data-kp-editor]` вырезается,
+     * а zoom стоит на элементе и снимается перед сохранением). 30–300 %.
+     * Колесо без Ctrl остаётся прокруткой листа — иначе документ не прочитать.
+     */
+    KP_ZOOM_MIN: 0.3,
+    KP_ZOOM_MAX: 3,
+
+    /** Масштаб «по ширине»: лист A4 целиком в ширину рамки, но не крупнее 100 %. */
+    kpFitZoom(frame) {
+        const w = frame.clientWidth || 800;
+        return Math.min(1, Math.max(this.KP_ZOOM_MIN, (w - 16) / 818));   // 210 мм ≈ 794 px + поля
+    },
+
+    kpZoomSet(card, z) {
+        const frame = card && card.querySelector('.kp-page');
+        const doc = frame && frame.contentDocument;
+        if (!doc || !doc.documentElement) return;
+        z = Math.min(this.KP_ZOOM_MAX, Math.max(this.KP_ZOOM_MIN, Math.round(z * 100) / 100));
+        card._kpZoom = z;
+        doc.documentElement.style.zoom = String(z);
+        const label = card.querySelector('[data-kp-zoom-label]');
+        if (label) label.textContent = Math.round(z * 100) + '%';
+        try { localStorage.setItem('kpZoom', String(z)); } catch { /* не запомним */ }
+    },
+
+    /** −/+ — шаг 10 %; средняя кнопка — «по ширине» ⇄ 100 %. */
+    kpZoomStep(btn, dir) {
+        const card = btn.closest('.kp-open');
+        const frame = card && card.querySelector('.kp-page');
+        if (!frame) return;
+        const z = card._kpZoom || 1;
+        if (dir === 0) {
+            const fit = this.kpFitZoom(frame);
+            this.kpZoomSet(card, Math.abs(z - 1) < 0.01 ? fit : 1);
+        } else {
+            this.kpZoomSet(card, z + dir * 0.1);
+        }
+    },
+
+    /** Колесо с Ctrl (и щипок тачпада — это то же событие), щипок двумя пальцами, жест Safari. */
+    kpBindZoom(frame, card) {
+        const doc = frame.contentDocument;
+        if (!doc) return;
+        let saved = NaN;
+        try { saved = parseFloat(localStorage.getItem('kpZoom')); } catch { /* нет хранилища */ }
+        this.kpZoomSet(card, Number.isFinite(saved) ? saved : this.kpFitZoom(frame));
+
+        doc.addEventListener('wheel', e => {
+            if (!e.ctrlKey && !e.metaKey) return;
+            e.preventDefault();
+            const z = card._kpZoom || 1;
+            this.kpZoomSet(card, z * Math.exp(-e.deltaY * 0.0025));
+        }, {passive: false});
+
+        let pinch = null;
+        const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+        doc.addEventListener('touchstart', e => {
+            if (e.touches.length === 2) pinch = {d: dist(e.touches), z: card._kpZoom || 1};
+        }, {passive: true});
+        doc.addEventListener('touchmove', e => {
+            if (!pinch || e.touches.length !== 2) return;
+            e.preventDefault();
+            this.kpZoomSet(card, pinch.z * dist(e.touches) / (pinch.d || 1));
+        }, {passive: false});
+        doc.addEventListener('touchend', e => { if (e.touches.length < 2) pinch = null; });
+
+        // Safari на Mac шлёт щипок тачпада жестом, а не колесом
+        let gz = 1;
+        doc.addEventListener('gesturestart', e => { e.preventDefault(); gz = card._kpZoom || 1; });
+        doc.addEventListener('gesturechange', e => { e.preventDefault(); this.kpZoomSet(card, gz * e.scale); });
+    },
+
     kpPageBar(id, d) {
         if (!d.editable) {
             return '<div class="muted kp-page-note">КП отправлено клиенту — документ показан как отправлен, править его нельзя.</div>';
         }
+        const oos = d.out_of_scope || {};
+        const asks = d.requirements || [];
         return `
+            ${asks.length ? `<div class="note kp-asks">Клиент просил указать в КП: ${asks.map(a => this.esc(a)).join('; ')}.
+                Абзац на это собран под таблицей — проверьте его на листе.</div>` : ''}
             <div class="kp-page-note flex flex--wrap">
+                ${oos.count ? `<label class="kp-oos" title="Строки «не наша номенклатура» — на своих местах, серым курсивом, с прочерками">
+                    <input type="checkbox" ${oos.shown ? 'checked' : ''}
+                           onchange="App.kpToggleOutOfScope(${id}, this)"> Показать в КП отсутствующую номенклатуру (${oos.count})</label>` : ''}
                 <span class="muted" data-kp-page-status>${d.override_at
                     ? `Документ поправлен руками ${this.esc(d.override_at)}. Изменения подбора в него не попадут, пока не вернёте автоматическую сборку.`
                     : 'Щёлкните по тексту на листе и правьте. Сохранённая правка уйдёт в PDF и Word.'}</span>
@@ -1610,6 +1799,25 @@ const App = {
                         title="Собрать документ из подбора и настроек заново — ручные правки листа пропадут"
                         onclick="App.kpPageReset(${id}, this)">↺ Вернуть автоматическую сборку</button>` : ''}
             </div>`;
+    },
+
+    /** Галочка КП «Показать отсутствующую номенклатуру»: сохранить и пересобрать лист. */
+    async kpToggleOutOfScope(id, input) {
+        const card = input.closest('.kp-open');
+        if (card && card.dataset.dirty === '1'
+            && !confirm('На листе есть несохранённые правки — документ соберётся заново и они пропадут. Продолжить?')) {
+            input.checked = !input.checked;
+            return;
+        }
+        input.disabled = true;
+        try {
+            await this.api(`proposals.php?action=update&id=${id}`, {method: 'POST',
+                body: {show_out_of_scope: input.checked ? 1 : 0}});
+            if (card) this.fillKpPage(card.parentElement, id);
+        } catch (err) {
+            input.checked = !input.checked;
+            this.toast(err.message, 'error');
+        } finally { input.disabled = false; }
     },
 
     kpPageDirty(card, dirty) {
@@ -1627,6 +1835,8 @@ const App = {
         try {
             const root = doc.documentElement.cloneNode(true);
             root.querySelectorAll('style[data-kp-editor]').forEach(el => el.remove());
+            root.style.removeProperty('zoom');
+            if (!root.getAttribute('style')) root.removeAttribute('style');
             const html = '<!DOCTYPE html>\n' + root.outerHTML;
             const r = await this.api(`proposals.php?action=html_save&id=${id}`, {method: 'POST', body: {html}});
             card.dataset.dirty = '';
@@ -3345,13 +3555,18 @@ const App = {
             // No stored choice means «все, что нашлись» — the behaviour before the picker
             const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
             box.innerHTML = `
-                <div class="muted">Фото в этом КП (${chosen.length} из ${d.available.length}):</div>
+                <div class="photos__head">
+                    <span class="muted">Фото в этом КП (<span data-photo-count>${chosen.length}</span> из ${d.available.length}):</span>
+                    <button type="button" class="btn btn--outline btn--sm" data-photo-reset
+                            ${chosen.length ? '' : 'disabled'}
+                            onclick="App.resetPhotos(this, 0)">Сбросить выбор</button>
+                </div>
                 <div class="photos">
                     ${d.available.map(a => `
                         <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
                             <input type="checkbox" data-photo-key="${this.esc(a.key)}"
                                    ${chosen.includes(a.key) ? 'checked' : ''}
-                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked)">
+                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked); App.photoCount(this)">
                             <img src="${this.esc(a.url)}" alt="" loading="lazy">
                         </label>`).join('')}
                 </div>`;
@@ -3422,14 +3637,20 @@ const App = {
             // «Выбор не делали» — это все фотографии, как было до выбора
             const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
             box.innerHTML = `
-                <div class="muted">В КП пойдут отмеченные (${chosen.length} из ${d.available.length}):</div>
+                <div class="photos__head">
+                    <span class="muted">В КП пойдут отмеченные (<span data-photo-count>${chosen.length}</span> из ${d.available.length}):</span>
+                    <!-- Сбросить всё и отметить только нужное (issue #67) -->
+                    <button type="button" class="btn btn--outline btn--sm" data-photo-reset
+                            ${chosen.length ? '' : 'disabled'}
+                            onclick="App.resetPhotos(this, ${itemId})">Сбросить выбор</button>
+                </div>
                 <div class="photos">
                     ${d.available.map(a => `
                         <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
                             <input type="checkbox" data-photo-key="${this.esc(a.key)}"
                                    ${chosen.includes(a.key) ? 'checked' : ''}
                                    onchange="this.closest('.photo').classList.toggle('photo--on', this.checked);
-                                             App.saveMatchPhotos(this, ${itemId})">
+                                             App.photoCount(this); App.saveMatchPhotos(this, ${itemId})">
                             <img data-src="${this.esc(a.url)}" alt="" loading="lazy">
                         </label>`).join('')}
                 </div>
@@ -3486,6 +3707,31 @@ const App = {
         if (!host) return;
         clearTimeout(host._autosaveTimer);
         host._autosaveTimer = setTimeout(() => this.autosaveMatch(host), 400);
+    },
+
+    /** Счётчик «отмечено N» и доступность «Сбросить выбор» у полосы фото. */
+    photoCount(el) {
+        const strip = el.closest('[data-match-photos], [data-photos]');
+        if (!strip) return;
+        const n = strip.querySelectorAll('[data-photo-key]:checked').length;
+        const count = strip.querySelector('[data-photo-count]');
+        if (count) count.textContent = n;
+        const reset = strip.querySelector('[data-photo-reset]');
+        if (reset) reset.disabled = n === 0;
+    },
+
+    /**
+     * «Сбросить выбор» (issue #67): снять все галочки разом, чтобы отметить
+     * только нужные. Пустой выбор — это решение «без фото», оно сохраняется.
+     * $itemId = 0 — полоса редактора КП: там выбор уходит с «Сохранить».
+     */
+    resetPhotos(btn, itemId) {
+        const strip = btn.closest('[data-match-photos], [data-photos]');
+        if (!strip) return;
+        const boxes = [...strip.querySelectorAll('[data-photo-key]')];
+        boxes.forEach(b => { b.checked = false; b.closest('.photo').classList.remove('photo--on'); });
+        this.photoCount(btn);
+        if (itemId && boxes.length) this.saveMatchPhotos(boxes[0], itemId);
     },
 
     /** Галочка на фотографии сохраняется сама — «Сохранить» для неё не нужно. */
@@ -3750,6 +3996,7 @@ const App = {
         document.getElementById('app').innerHTML = `<div class="loading">Загрузка...</div>`;
         const cp = await this.api(`counterparties.php?action=get&id=${id}`);
         this.company = cp;
+        this.foldKey = 'cp:' + id;
         document.getElementById('app').innerHTML = `
             <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
                 <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
@@ -3993,6 +4240,8 @@ const App = {
         const own = box.closest('.conv');
         if (own) own.classList.add('conv--open');
         this.companyOpenThread = key;
+        // Блоки карточки помнят положение у своей переписки
+        this.setFoldKey(key);
         if (box.dataset.loaded) {
             this.mountBodies(box);
             this.setCompanyItems(box.dataset.requestId || '', key);
@@ -4145,6 +4394,9 @@ const App = {
                     host.dataset.foldFor = String(requestId);
                     const sent = (req.proposals || []).some(p => ['sent', 'order_created'].includes(p.status));
                     host.dataset.folded = sent ? '1' : '0';
+                    // Свёрнутый или раскрытый руками — так и остаётся у этого письма (issue #67)
+                    const own = this.foldGet('items');
+                    if (own !== null) host.dataset.folded = own ? '1' : '0';
                 }
                 this.renderMatchedItems(requestId, req.items || [], host,
                     {kp, delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
@@ -4167,7 +4419,7 @@ const App = {
         // Письмо, которое ещё никому не отвечает: ни цепочки, ни письма-исходника
         const fresh = !key && !reply.reply_to_id;
         return `
-            <div class="composer" data-composer="${this.esc(id)}">
+            <div class="composer" data-block="composer" data-composer="${this.esc(id)}">
                 <div class="composer__head">
                     <span class="composer__title">${fresh ? 'Новое письмо' : 'Ответ'}${this.hint('composer')}</span>
                     ${fresh ? '' : `<span class="muted" data-cmp-target>кому: ${this.esc(reply.to || '')}</span>`}
@@ -4270,8 +4522,8 @@ const App = {
         if (!dock) return;
         if (!items.length) { dock.innerHTML = ''; return; }
         dock.innerHTML = `
-            <div class="invdock">
-                <div class="invdock__title">Счета по этому запросу (${items.length})</div>
+            <div class="invdock" data-block="ms">
+                <div class="invdock__title" data-block-head>Счета МойСклад по этому запросу (${items.length})</div>
                 ${items.map(i => `
                     <div class="invdock__row" data-invoice="${i.id}">
                         <div class="invdock__head">
@@ -4862,7 +5114,7 @@ const App = {
         const contacts = cp.contacts || [];
         const orgs = cp.orgs || [];
         return `
-            <div class="card">
+            <div class="card" data-block="info">
                 <div class="card__title">Информация</div>
                 <p><strong>ИНН:</strong> ${this.esc(cp.inn) || '—'}</p>
                 <p><strong>Домен:</strong> ${this.esc(cp.email_domain) || '—'}</p>
@@ -4894,8 +5146,8 @@ const App = {
 
             </div>
 
-            <div class="card">
-                <div class="card__title">Заметки и события</div>
+            <div class="card" data-block="events">
+                <div class="card__title">Заметки, заказы и счета</div>
                 <div class="note" style="margin-bottom:8px">Заметки для коллег, вехи сделки, заказы и счета —
                     одной лентой со ссылками в МойСклад. То, что не относится к открытой переписке, приглушено.
                     Письма — слева, в «Переписке»: там на них можно ответить.</div>
@@ -6792,6 +7044,7 @@ const App = {
         // Открыть переписку отдельной страницей — само по себе явное действие:
         // здесь отметка «прочитано» ставится сразу (модуль 020)
         const d = await this.api('mail.php?action=thread&read=1&key=' + encodeURIComponent(key));
+        this.foldKey = key;
         const t = d.thread;
         const reply = d.reply || {};
         // Кто написал: последнее входящее письмо цепочки — то, на что отвечают
@@ -6883,7 +7136,8 @@ const App = {
         add('Категория', this.esc(this.categoryLabels[lastIn.category] || lastIn.category || ''));
         add('Вложений', (lastIn.attachments || []).length || '');
         box.className = 'card';
-        box.innerHTML = `<div class="card__title">О письме</div>
+        box.dataset.block = 'info';
+        box.innerHTML = `<div class="card__title">Информация</div>
             <div class="facts">${rows.join('') || '<p class="muted">Ничего, кроме самого письма.</p>'}</div>
             ${ms && !ms.linked ? this.msCreateLink(ms, t.thread_key) : ''}`;
     },
@@ -7084,9 +7338,13 @@ const App = {
      * в одной не доезжала до другой. Теперь обе зовут это.
      */
     threadHtml(messages, key) {
-        return `<div class="thread">
-            ${(messages || []).map((m, i) => this.threadMessage(m, i === messages.length - 1, key)).join('')}
-        </div>`;
+        const n = (messages || []).length;
+        return `<section class="lblock" data-block="thread">
+            <div class="lblock__head" data-block-head>Письма <span class="muted">· ${n}</span></div>
+            <div class="thread">
+                ${(messages || []).map((m, i) => this.threadMessage(m, i === messages.length - 1, key)).join('')}
+            </div>
+        </section>`;
     },
 
     /**

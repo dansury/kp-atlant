@@ -1149,3 +1149,50 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 @media (max-width: 720px) {
     .setup-step .setting { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ==== Блоки письма: свой оттенок, сворачиваются, на телефоне по порядку (модуль 046, issue #67) ====
+   Оттенок — полоса слева и чуть тонированный заголовок: блок узнаётся по
+   цвету, не читая названия. Цвета спокойные, текст на них остаётся --text. */
+:root {
+    --tint-thread: #3b82f6; --tint-items: #16a34a; --tint-composer: #d97706;
+    --tint-kp: #7c3aed; --tint-info: #0891b2; --tint-events: #64748b; --tint-ms: #db2777;
+}
+[data-block="thread"]   { --tint: var(--tint-thread); }
+[data-block="items"]    { --tint: var(--tint-items); }
+[data-block="composer"] { --tint: var(--tint-composer); }
+[data-block="kp"]       { --tint: var(--tint-kp); }
+[data-block="info"]     { --tint: var(--tint-info); }
+[data-block="events"]   { --tint: var(--tint-events); }
+[data-block="ms"]       { --tint: var(--tint-ms); }
+[data-block] { border-left: 4px solid var(--tint) !important; }
+[data-block].card > .card__title, [data-block] > .lblock__head, [data-block] > .invdock__title,
+[data-block] > .composer__head {
+    background: color-mix(in srgb, var(--tint) 9%, transparent);
+}
+[data-block].card > .card__title { padding: 6px 10px; border-radius: var(--radius-sm); }
+.lblock { margin-bottom: 12px; border-radius: var(--radius); }
+.lblock__head, .invdock__title { padding: 8px 12px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+                                 font-weight: 650; font-size: 14px; margin-bottom: 8px; }
+.invdock[data-block] { padding-left: 8px; }
+.block-head { display: flex; align-items: center; gap: 6px; }
+.block-fold { margin-left: auto; border: 1px solid var(--border-strong); background: var(--surface);
+              border-radius: var(--radius-sm); width: 30px; height: 28px; cursor: pointer;
+              color: var(--text-muted); font-size: 14px; line-height: 1; flex: 0 0 auto; }
+.block-fold:hover { color: var(--text); border-color: var(--text-muted); }
+/* Свёрнутый блок — один заголовок */
+[data-block].is-folded > :not(.block-head) { display: none !important; }
+[data-block].is-folded > .block-head { margin-bottom: 0; }
+[data-block].card.is-folded { padding-top: 10px; padding-bottom: 10px; }
+
+/* Полоса фото: «Сбросить выбор» рядом со счётчиком */
+.photos__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.kp-oos { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+
+@media (max-width: 640px) {
+    /* Телефон: переписка → подбор → письмо → КП → информация; «Этап» — в самом
+       низу страницы (issue #67) */
+    #app:has(> .letter) { display: flex; flex-direction: column; }
+    #app:has(> .letter) > #threadPlacement, #app:has(> .letter) > #cardPlacement { order: 10; margin-top: 12px; }
+}
+.kp-zoom { display: inline-flex; gap: 2px; margin-left: auto; align-items: center; }
+.kp-zoom [data-kp-zoom-label] { min-width: 58px; }

@@ -283,15 +283,15 @@ Db::update('proposals', ['delivery_on' => 1, 'delivery_name' => 'Доставк�
 $html = PdfGenerator::html($proposalId);
 ok('по умолчанию отдельной строки нет — доставка в ценах позиций',
    !str_contains($html, 'Доставка до склада'));
-ok('и вошла в «Итого»', str_contains($html, 'Итого: 73 500,00 руб.'),
+ok('и вошла в «Итого»', str_contains($html, 'Итого: 73 500 руб.'),
    (string)(preg_match('/Итого: [^<]+/u', $html, $m) ? $m[0] : ''));
 
 Settings::set('KP_DELIVERY_MODE', 'line');
 $html = PdfGenerator::html($proposalId);
 ok('настройка «отдельной строкой» печатает её как раньше', str_contains($html, 'Доставка до склада'));
-ok('со своей ценой', str_contains($html, '3 500,00 руб.'));
+ok('со своей ценой', str_contains($html, '3 500 руб.'));
 // 2 × 5000 + 5 × 12000 + 3500
-ok('и «Итого» то же самое', str_contains($html, 'Итого: 73 500,00 руб.'),
+ok('и «Итого» то же самое', str_contains($html, 'Итого: 73 500 руб.'),
    (string)(preg_match('/Итого: [^<]+/u', $html, $m) ? $m[0] : ''));
 Settings::forget('KP_DELIVERY_MODE');
 

@@ -10,4 +10,6 @@ Loader::registerAutoLoadClasses('atlant.kpsync', [
     'Atlant\\KpSync\\Config'   => 'lib/config.php',
     'Atlant\\KpSync\\Catalog'  => 'lib/catalog.php',
     'Atlant\\KpSync\\Response' => 'lib/response.php',
+    'Atlant\\KpSync\\Xlsx'     => 'lib/xlsx.php',
+    'Atlant\\KpSync\\Export'   => 'lib/export.php',
 ]);

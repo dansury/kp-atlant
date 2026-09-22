@@ -34,6 +34,19 @@ not have.
   `cron/check_mail.php`. Worth saying so in `DEPLOY.md` once someone sets it
   up on the live host.
 
+## Issue #67 (module 046) — needs a live system
+- Open a КП in real Word: the header is now a borderless table (logo | requisites)
+  and the QR sits in a table cell left of the link — check both look right.
+  LibreOffice in the build container does not start, so the .docx was checked
+  by its XML only.
+- Bitrix module 1.1.0 on the live site: press «Экспорт товаров в Excel» and
+  check the modifications column (offer properties differ per shop); reinstall
+  the module if `kp.php?action=export_xlsx` is needed. Descriptions from the
+  site arrive with the next «sync from site» run.
+- `kp_requirements`: the parse prompt asks for it, but a prompt already
+  overridden in «Админ → Промпты» keeps the old text — re-save it from the
+  default there. Check one real letter with «укажите в КП …» end to end.
+
 ## Open
 - `php tests/module_026.php` has one failing check («новое письмо поднимает
   карточку обратно») that predates module 042 — still not investigated.

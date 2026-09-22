@@ -127,12 +127,13 @@ Db::insert('proposal_items', ['proposal_id' => $proposalId, 'position' => 2, 'pr
                               'discount_percent' => 10]);
 Requisites::freeze($proposalId);
 
+Db::update('proposals', ['show_out_of_scope' => 1], 'id=?', [$proposalId]);
 $html = PdfGenerator::html($proposalId);
 // 2×1000 + 1800 = 3800; доля А: 300·2000/3800/2 = 78,95 за шт → 1 078,95; остаток Б: 300−157,90 = 142,10
 ok('цена за единицу включает долю доставки', str_contains($html, '1 078,95'), 'А');
 ok('сумма строки = цена × количество', str_contains($html, '2 157,90'));
 ok('строка со скидкой: «Со скидкой» с долей', str_contains($html, '1 942,10'));
-ok('«Итого» — товары и доставка', str_contains($html, 'Итого: 4 100,00'));
+ok('«Итого» — товары и доставка', str_contains($html, 'Итого: 4 100 руб.'));
 ok('строка «не наша номенклатура» напечатана', (bool)preg_match('#<tr class="out-of-scope">.*Топор пожарный.*</tr>#s', $html));
 preg_match('#<tr class="out-of-scope">.*?</tr>#s', $html, $row);
 ok('в ней прочерки', substr_count($row[0] ?? '', '>—<') === 5, (string)substr_count($row[0] ?? '', '>—<'));

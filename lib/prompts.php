@@ -24,6 +24,10 @@ Return JSON with fields:
 - contact_email: email if present (string or null)
 - contact_phone: phone if present (string or null)
 - delivery_terms: delivery conditions if mentioned (string or null)
+- kp_requirements: array of short Russian phrases — what the client asks to be STATED in
+  the КП itself («страна производства», «гарантийный срок», «срок поставки до 01.11»,
+  «сертификаты соответствия», «доставка до склада в Казани»). Only explicit asks about the
+  document's content; not the positions. Empty array when there are none.
 - items: array of {name: string, qty: int, raw_text: string}
 
 Classification rules:
@@ -71,6 +75,10 @@ Fields:
 - request_type: "order" | "kp_request"
 - org_name, inn (digits only), contact_person, contact_email, contact_phone,
   delivery_terms — string or null
+- kp_requirements: array of short Russian phrases — what the client asks to be STATED in
+  the КП itself («страна производства», «гарантийный срок», «срок поставки до 01.11»,
+  «сертификаты соответствия», «доставка до склада в Казани»). Only explicit asks about the
+  document's content; not the positions. Empty array when there are none.
 - items: array of {name, qty, raw_text} — everything the client asks for
 - order_numbers: array of order numbers the letter quotes («7150», «6764»), digits only
 - edo: {operator: "Диадок"|"СБИС"|"Такском"|null, id: participant identifier or null,
@@ -634,6 +642,26 @@ PROMPT,
 Если в сообщении есть блок «Не нашли в каталоге» — назови эти позиции отдельной фразой
 словами клиента и напиши, что уточняем по ним наличие и цену. Не молчи о них и не
 заменяй их другими товарами.{{few_shot}}
+PROMPT,
+            ],
+
+            'kp_requirements' => [
+                'Текст КП по требованиям клиента',
+                'Системный промпт (модуль 046): клиент просил указать в КП что-то конкретное — абзац документа, который на это отвечает. {{knowledge}} — выдержки из вики компании.',
+                ['knowledge'],
+                <<<'PROMPT'
+Ты пишешь один блок текста коммерческого предложения Atlant Armour. Клиент попросил,
+чтобы в КП было указано определённое — список его требований во входных данных.
+Там же — условия КП, позиции и факты о компании.
+
+{{knowledge}}
+
+Правила:
+- На каждое требование — одно короткое предложение с фактом ИЗ ВХОДНЫХ ДАННЫХ или базы знаний.
+- Факта нет — так и напиши: «<требование> — уточним и сообщим дополнительно». Ничего не выдумывай:
+  страну, гарантию, сертификаты, сроки и цены — только из источников.
+- Деловой тон, без приветствия и подписи, без markdown. Каждое предложение с новой строки.
+Верни JSON: {"text": "..."}
 PROMPT,
             ],
 

@@ -217,12 +217,12 @@ ok('совпавшие концы вилкой не считаются',
    Terms::priceTop(['price' => 12000, 'price_max' => 12000]) === 0.0);
 
 $html = PdfGenerator::html($proposalId);
-ok('документ печатает вилку', str_contains($html, 'от 12 000,00 до 15 000,00 руб.'),
+ok('документ печатает вилку', str_contains($html, 'от 12 000 до 15 000 руб.'),
    (string)(strstr($html, 'от 12 000,00') ? 'нашлось' : 'нет'));
-ok('и «Итого» при этом называется «от»', str_contains($html, 'Итого') && str_contains($html, 'от 120 000,00'));
+ok('и «Итого» при этом называется «от»', str_contains($html, 'Итого') && str_contains($html, 'от 120 000'));
 
 $letter = KpText::render($proposalId)['text'];
-ok('письмо называет ту же вилку', str_contains($letter, 'от 12 000,00 руб. до 15 000,00 руб.'), $letter);
+ok('письмо называет ту же вилку', str_contains($letter, 'от 12 000 руб. до 15 000 руб.'), $letter);
 ok('и тот же итог «от»', str_contains($letter, ': от '), $letter);
 
 echo "\n5. Общие условия КП: один выбор на все позиции, и он запоминается\n";
