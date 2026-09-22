@@ -46,6 +46,7 @@ class RequestParser {
                                                array $corrections = [], array $substitutions = [],
                                                array $pastSubstitutions = [], array $unmatched = []): string {
         ['positions' => $itemList, 'unmatched' => $unmatchedList] = self::coverLetterLists($items, $unmatched);
+        require_once __DIR__ . '/mail_text.php';
 
         $fewShot = '';
         if ($corrections) {
@@ -84,7 +85,10 @@ class RequestParser {
         $system = Knowledge::augment('cover_letter', ['tov' => $tov, 'few_shot' => $fewShot], "$orgName\n$itemList");
 
         $user = "Контрагент: $orgName\n"
-              . "Позиции КП (названия ДОСЛОВНО такие, как в таблице КП — другими их не называй):\n"
+              . "Позиции КП (названия ДОСЛОВНО такие, как в таблице КП — другими их не называй).\n"
+              . "Скидки, срок ожидания и предоплату, если они указаны, назови в письме так же. "
+              . "Строку «" . MailText::SITE_LINK_LABEL . ": адрес» ставь под позицией дословно. "
+              . "Остаток на складе числом не называй:\n"
               . $itemList;
         if ($unmatchedList !== '') {
             $user .= "\n\nНе нашли в каталоге (слова клиента, назови их в письме и напиши, "
@@ -108,11 +112,30 @@ class RequestParser {
         $positions = array_filter($items, fn($i) => trim((string)($i['product_name'] ?? '')) !== ''
                                                  && !isset($holes[(int)($i['position'] ?? 0)]));
         return [
-            'positions' => implode("\n", array_map(
-                fn($i) => "- {$i['product_name']} ({$i['quantity']} {$i['unit']})", $positions)),
+            'positions' => implode("\n", array_map(fn($i) => self::coverLetterLine($i), $positions)),
             'unmatched' => implode("\n", array_map(
                 fn($u) => "- {$u['requested']} ({$u['quantity']} {$u['unit']})", $unmatched)),
         ];
+    }
+
+    /**
+     * One position of the cover letter (module 045, issue #60): what the КП
+     * says about it besides the name — the discount, the wait terms, the link
+     * to the product page. Stock is never a number here.
+     */
+    public static function coverLetterLine(array $i): string {
+        require_once __DIR__ . '/terms.php';
+        require_once __DIR__ . '/mail_text.php';
+        $line = "- {$i['product_name']} ({$i['quantity']} {$i['unit']})";
+        $extra = [];
+        $discount = (float)($i['discount_percent'] ?? 0);
+        if ($discount > 0) $extra[] = 'скидка ' . rtrim(rtrim(number_format($discount, 2, ',', ''), '0'), ',') . '%';
+        $wait = Terms::note($i);
+        if ($wait !== '') $extra[] = $wait;
+        if ($extra) $line .= ' — ' . implode('; ', $extra);
+        $url = trim((string)($i['site_url'] ?? ''));
+        if ($url !== '') $line .= "\n  " . MailText::SITE_LINK_LABEL . ': ' . $url;
+        return $line;
     }
 
     // Normalize product names for fuzzy matching

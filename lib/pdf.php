@@ -9,6 +9,7 @@ require_once __DIR__ . '/requisites.php';
 require_once __DIR__ . '/signatures.php';
 require_once __DIR__ . '/terms.php';
 require_once __DIR__ . '/kp_terms.php';
+require_once __DIR__ . '/delivery_share.php';
 
 class PdfGenerator {
 
@@ -115,6 +116,13 @@ class PdfGenerator {
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
         if (!$proposal) throw new RuntimeException("Proposal $proposalId not found");
 
+        // КП, поправленное руками в предпросмотре (модуль 045): PDF и Word
+        // собираются из него, пока менеджер не вернёт автоматическую сборку
+        if (trim((string)($proposal['html_override'] ?? '')) !== '') {
+            require_once __DIR__ . '/kp_editor.php';
+            return KpEditor::internalize((string)$proposal['html_override']);
+        }
+
         // Свёрнутые позиции в документ не печатаются: ни строкой таблицы, ни
         // карточкой, ни рублём в «Итого». Названы они отдельным блоком —
         // `KpContent::unmatchedRows()` забирает их себе (модуль 020).
@@ -218,39 +226,49 @@ class PdfGenerator {
         foreach ($items as $row) { if (!empty($row['has_card'])) { $hasAppendix = true; break; } }
 
         // Доставка — отдельной строкой (не входит в цену товара) либо
-        // распределена по позициям (issue #60). Настройка решает, что печатать;
-        // «Итого» в обоих случаях одно и то же.
+        // распределена по позициям (issue #60). Включённая в стоимость, она
+        // входит в ЦЕНУ за единицу, а не только в сумму строки: «цена × кол-во»
+        // в таблице обязана сходиться с «Суммой» (модуль 045). Те же доли
+        // получают текст КП в письме и счёт — `DeliveryShare`.
         $delivery = null;
         if ((int)($proposal['delivery_on'] ?? 0) === 1) {
             $delivery = [
                 'name'  => trim((string)($proposal['delivery_name'] ?? '')) ?: 'Доставка',
                 'price' => (float)($proposal['delivery_price'] ?? 0),
             ];
-            $total += $delivery['price'];
-
-            if ((string)Settings::get('KP_DELIVERY_MODE', 'included') === 'included' && $items) {
-                $subtotal = 0.0;
-                foreach ($items as $row) $subtotal += (float)$row['sum'];
-                if ($subtotal > 0) {
-                    // Пропорционально сумме позиции; последняя забирает остаток
-                    // копеек, чтобы распределённое не разошлось с ценой доставки
-                    $remaining = $delivery['price'];
-                    $n = count($items);
-                    $i = 0;
-                    foreach ($items as &$row) {
-                        $i++;
-                        $share = $i === $n ? $remaining
-                            : round($delivery['price'] * ((float)$row['sum'] / $subtotal), 2);
-                        $row['sum'] += $share;
-                        if ($row['sum_max'] > 0) $row['sum_max'] += $share;
-                        $remaining -= $share;
+            if (DeliveryShare::included($proposal) && $items) {
+                $items = array_values($items);
+                $shares = DeliveryShare::perUnit(array_map(
+                    fn($r) => ['unit' => (float)$r['effective_price'], 'qty' => (float)$r['quantity']], $items),
+                    $delivery['price']);
+                if (array_sum($shares) > 0) {
+                    foreach ($items as $k => &$row) {
+                        if ($shares[$k] <= 0) continue;
+                        $keep = 1 - Terms::totalDiscount($row) / 100;
+                        $row['effective_price'] = round($row['effective_price'] + $shares[$k], 2);
+                        $row['price'] = $keep > 0 && $keep < 1
+                            ? round($row['effective_price'] / $keep, 2) : $row['effective_price'];
+                        if ($row['effective_price_max'] > 0) {
+                            $row['effective_price_max'] = round($row['effective_price_max'] + $shares[$k], 2);
+                            $row['price_max'] = $keep > 0 && $keep < 1
+                                ? round($row['effective_price_max'] / $keep, 2) : $row['effective_price_max'];
+                        }
+                        $row['sum'] = $row['effective_price'] * (float)$row['quantity'];
+                        $row['sum_max'] = $row['effective_price_max'] * (float)$row['quantity'];
                     }
                     unset($row);
+                    // Учтена в позициях — отдельной строкой таблицы не печатается
+                    $delivery = null;
                 }
-                // Учтена в позициях — отдельной строкой таблицы не печатается
-                $delivery = null;
             }
         }
+        $total = 0.0;
+        foreach ($items as $row) $total += (float)$row['sum'];
+        if ($delivery) $total += $delivery['price'];
+
+        // «Не наша номенклатура» (issue #60): строка клиента печатается в
+        // таблице серым жирным, с прочерками — видно, что её прочитали
+        $outOfScope = KpContent::outOfScopeRows($proposal);
 
         // The rate is МойСклад's answer, not a house default: the организация
         // says whether we charge VAT at all, and the catalog says at what rate.
@@ -334,6 +352,7 @@ class PdfGenerator {
             'matchTable' => $matchTable,
             'matchTableNote' => $matchTableNote,
             'unmatched' => $unmatched,
+            'outOfScope' => $outOfScope,
             'unmatchedNote' => (string)Settings::get('KP_UNMATCHED_NOTE',
                 'По этим позициям запроса мы уточняем наличие, сроки и цену и вернёмся с ответом отдельно.'),
             'showSiteLink' => $showSiteLink,

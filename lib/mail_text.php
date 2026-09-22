@@ -197,6 +197,32 @@ final class MailText {
             : $body;
     }
 
+    /** Подпись ссылки на товар в письме (issue #60): клиент видит слова, а не адрес. */
+    public const SITE_LINK_LABEL = 'см. на сайте';
+
+    /**
+     * Текст письма → HTML (модуль 045).
+     *
+     * Абзацы и переносы — как в тексте. «см. на сайте: https://…» становится
+     * ссылкой со словами «см. на сайте», остальные адреса — просто ссылками.
+     */
+    public static function textToHtml(string $text): string {
+        $esc = htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $label = preg_quote(self::SITE_LINK_LABEL, '/');
+        $esc = (string)preg_replace_callback(
+            '/(' . $label . ')\s*:?\s*(https?:\/\/[^\s<>"\']+)|(https?:\/\/[^\s<>"\']+)/u',
+            function (array $m): string {
+                $url = ($m[2] ?? '') !== '' ? $m[2] : $m[3];
+                $url = rtrim($url, '.,;)');
+                $tail = substr(($m[2] ?? '') !== '' ? $m[2] : $m[3], strlen($url));
+                $text = ($m[1] ?? '') !== '' ? $m[1] : $url;
+                return '<a href="' . $url . '">' . $text . '</a>' . $tail;
+            },
+            $esc);
+        $paras = preg_split('/\R{2,}/u', trim($esc)) ?: [];
+        return implode('', array_map(fn($p) => '<p>' . nl2br($p, false) . '</p>', $paras));
+    }
+
     /** Цитата для текстовой части письма: каждая строка под знаком «>». */
     public static function quoteText(array $src): string {
         $body = self::quoteBody($src);

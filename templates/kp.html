@@ -31,6 +31,8 @@
     .conditions p { margin: 5px 0; }
     /* Дата, подпись и расшифровка — ОДНОЙ строкой, как в образце: картинка
        подписи стоит поверх линии, а не отдельным абзацем (модуль 035) */
+    .out-of-scope td { color: #8a8a8a; }
+    .out-of-scope__name { color: #8a8a8a; font-weight: bold; }
     .signature { margin-top: 36px; font-size: 10pt; }
     .signature__date { margin-right: 6px; }
     .signature__line { letter-spacing: 0; }
@@ -311,6 +313,18 @@
     <td class="sum"><?= number_format($delivery['price'], 2, ',', ' ') ?> руб.</td>
 </tr>
 <?php endif; ?>
+<?php /* «Не наша номенклатура» (issue #60): название клиента серым жирным,
+         в остальных ячейках прочерк. В «Итого» строка не входит. */ ?>
+<?php foreach (($outOfScope ?? []) as $row): ?>
+<tr class="out-of-scope">
+    <td class="num">—</td>
+    <td><strong class="out-of-scope__name"><?= htmlspecialchars((string)$row['requested']) ?></strong></td>
+    <td class="qty">—</td>
+    <td class="price">—</td>
+    <td class="price discount">—</td>
+    <td class="sum">—</td>
+</tr>
+<?php endforeach; ?>
 </tbody>
 </table>
 
