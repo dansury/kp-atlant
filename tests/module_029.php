@@ -234,22 +234,22 @@ echo "\n== 7. Модель Yandex, которой у провайдера нет
 
 require_once ROOT . '/lib/llm.php';
 LLM::forgetYandexModels();
-LLM::init(['YANDEX_API_KEY' => 'k', 'YANDEX_FOLDER_ID' => 'b1g', 'YANDEX_MODEL' => 'deepseek-r1',
+LLM::init(['YANDEX_API_KEY' => 'k', 'YANDEX_FOLDER_ID' => 'b1g', 'YANDEX_MODEL' => 'gemma-3-4b-it',
            'LLM_PROVIDER_PRIORITY' => 'yandex']);
 
-ok('непроверенный слаг не объявляется несуществующим', LLM::isKnown('yandex', 'deepseek-r1'));
+ok('непроверенный слаг не объявляется несуществующим', LLM::isKnown('yandex', 'gemma-3-4b-it'));
 
 $catalog = LLM::catalog('yandex');
 $states = array_column($catalog, 'state', 'id');
-ok('каталог говорит, что слаги не проверены', ($states['deepseek-r1'] ?? '') === 'unknown',
-   (string)($states['deepseek-r1'] ?? ''));
+ok('каталог говорит, что слаги не проверены', ($states['gemma-3-4b-it'] ?? '') === 'unknown',
+   (string)($states['gemma-3-4b-it'] ?? ''));
 
 // Провайдер ответил «unknown model» — слаг вычёркивается, и больше не уходит
 $mark = new ReflectionMethod(LLM::class, 'markYandexMissing');
 $mark->setAccessible(true);
-$mark->invoke(null, 'deepseek-r1');
+$mark->invoke(null, 'gemma-3-4b-it');
 
-ok('вычеркнутый слаг известен как отсутствующий', !LLM::isKnown('yandex', 'deepseek-r1'));
+ok('вычеркнутый слаг известен как отсутствующий', !LLM::isKnown('yandex', 'gemma-3-4b-it'));
 
 $slug = new ReflectionMethod(LLM::class, 'yandexSlug');
 $slug->setAccessible(true);
@@ -257,7 +257,7 @@ ok('в запрос уходит рабочая модель, а не 404', $slu
    (string)$slug->invoke(null));
 
 $catalog = LLM::catalog('yandex');
-$row = array_column($catalog, null, 'id')['deepseek-r1'];
+$row = array_column($catalog, null, 'id')['gemma-3-4b-it'];
 ok('в списке он помечен', $row['state'] === 'missing', $row['state']);
 ok('и подписан по-человечески', str_contains($row['label'], 'нет в этом облаке'), $row['label']);
 
@@ -274,7 +274,7 @@ ok('нетронутый слаг уходит как есть', $slug->invoke(n
 
 // «Забыть проверку» возвращает список к исходному
 LLM::forgetYandexModels();
-ok('после «забыть» слаг снова не осуждён', LLM::isKnown('yandex', 'deepseek-r1'));
+ok('после «забыть» слаг снова не осуждён', LLM::isKnown('yandex', 'gemma-3-4b-it'));
 
 echo "\n" . ($fail ? "ПРОВАЛОВ: $fail\n" : "ВСЁ ЗЕЛЁНОЕ\n");
 exit($fail ? 1 : 0);

@@ -150,14 +150,19 @@ wrong within a week»), а `model_selection.is_known()` не отдаёт сло
 которой в его каталоге нет: `resolve()` откатывается на значение по умолчанию.
 Выбор, которого у провайдера нет, до запроса не доходит.
 
-То же самое здесь. Открытого списка моделей у Yandex нет — зато есть ответ на
-короткий запрос, и роль каталога играет **проба**:
+То же самое здесь. Список моделей Yandex отдаёт сам — Models API
+(`GET /foundationModels/v1/models?folderId=…`, документация советует узнавать
+точный состав каталога именно так), — и каталогом служит он; проба по одному
+запросу осталась запасным путём:
 
 ```
-verifyYandexModels()   кнопка «Проверить каталог Yandex»: по одному короткому
-                       запросу на слаг → settings.yandex_models {checked, synced_at}
-                       ok | missing; прочие ответы (нет ключа, прокси, 429)
-                       слаг не судят — одна сетевая неудача не вычёркивает каталог
+verifyYandexModels()   кнопка «Проверить каталог Yandex»: список от облака →
+                       settings.yandex_models {checked, models, routes, synced_at}
+                       ok | missing; модели, которых нет в списке кандидатов,
+                       ложатся в `models` и попадают в выбор
+                       Models API не ответил → по одному короткому запросу на
+                       слаг; прочие ответы (нет ключа, прокси, 429) слаг не
+                       судят — одна сетевая неудача не вычёркивает каталог
 isKnown(provider,slug) непроверенный слаг ≠ отсутствующий: проба могла не
                        запускаться, и запрещать из-за этого работу нельзя
 yandexSlug()           что реально уходит в запрос: вычеркнутый заменяется
@@ -190,9 +195,9 @@ callYandex(...)        404 «unknown model» вычёркивает слаг и 
 | Организации в счёте | `invoices.php?action=create_from_proposal&org_id=`, `lib/sync.php` |
 | Всплывающие сообщения, КП под письмом | `App.toast`, `App.kpSlot`, `App.kpResize` |
 | Ошибки в уведомления | `Logger::alertAdmins`, `Notifier::PUSH_KINDS`, `NOTIFY_ERRORS` |
-| Каталог Yandex | `lib/llm.php`, `admin.php?action=yandex_models_verify` |
+| Каталог Yandex | `lib/llm.php` (`fetchYandexCatalog`, `yandexSlugsFrom`), `admin.php?action=yandex_models_verify` |
 | Схема v29 | `lib/bootstrap.php` |
 
 ## Тест
 
-`php tests/module_029.php`
+`php tests/module_029.php`, `php tests/yandex_catalog.php`

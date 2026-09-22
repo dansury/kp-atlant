@@ -165,8 +165,9 @@ try {
             LLM::forgetOpenRouterModels();
             jsonOk();
 
-        // Каталог Yandex: слаги прогоняются по одному коротким запросом, и
-        // те, которых в этом облаке нет, вычёркиваются из списка (модуль 029)
+        // Каталог Yandex: список моделей берётся у облака (Models API), а если
+        // тот не ответил — слаги прогоняются по одному коротким запросом; те,
+        // которых в этом облаке нет, вычёркиваются из списка (модуль 029)
         case 'yandex_models_verify':
             try {
                 $payload = LLM::verifyYandexModels();
@@ -178,6 +179,7 @@ try {
                 'ok'        => $payload['ok'],
                 'missing'   => $payload['missing'],
                 'unclear'   => $payload['unclear'],
+                'source'    => $payload['source'] ?? 'probe',
                 // Слаги, которые отвечают только по OpenAI-совместимому маршруту
                 'openai'    => $payload['openai'] ?? [],
                 'synced_at' => $payload['synced_at'],
@@ -885,7 +887,7 @@ function mailboxFromInput(array $input): array {
     return $box;
 }
 
-/** Сколько слагов Yandex проба подтвердила, а сколько вычеркнула (модуль 029). */
+/** Сколько слагов Yandex каталог подтвердил, а сколько вычеркнул (модуль 029). */
 function yandexCatalogStats(): array {
     $cache   = LLM::yandexCache();
     $checked = (array)($cache['checked'] ?? []);
@@ -893,7 +895,8 @@ function yandexCatalogStats(): array {
         'ok'        => count(array_filter($checked, fn($v) => $v === 'ok')),
         'missing'   => count(array_filter($checked, fn($v) => $v === 'missing')),
         'openai'    => count(array_filter((array)($cache['routes'] ?? []), fn($v) => $v === 'openai')),
-        'total'     => count(LLM::CATALOG['yandex'] ?? []),
+        // Кандидаты из кода плюс модели, которые облако назвало само.
+        'total'     => count(LLM::catalog('yandex')),
         'synced_at' => $cache['synced_at'] ?? null,
     ];
 }

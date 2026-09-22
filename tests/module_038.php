@@ -316,14 +316,14 @@ ok('нынешней модели в списке нет',
 ok('дешёвая ступень идёт первой', (int)$dearer[0]['tier'] <= (int)$dearer[count($dearer) - 1]['tier']);
 ok('провайдер без ключа в список не попал',
    count(array_filter($dearer, fn($m) => $m['provider'] === 'openrouter')) === 0);
-ok('у самой дорогой предлагать уже нечего', LLM::pricier('yandex:deepseek-r1') === []);
+ok('у самой дорогой предлагать уже нечего', LLM::pricier('yandex:qwen3-235b-a22b-fp8') === []);
 
 // Слаг, которого в облаке нет, не предлагается: проба его уже забраковала
 Db::q("INSERT INTO settings (key, value) VALUES ('yandex_models', ?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-      [json_encode(['checked' => ['deepseek-r1' => 'missing', 'yandexgpt' => 'ok']])]);
+      [json_encode(['checked' => ['qwen3.6-35b-a3b' => 'missing', 'yandexgpt' => 'ok']])]);
 ok('непроверенный слаг не предлагается',
-   !in_array('yandex:deepseek-r1', array_column(LLM::pricier('yandex:yandexgpt-lite'), 'spec'), true));
+   !in_array('yandex:qwen3.6-35b-a3b', array_column(LLM::pricier('yandex:yandexgpt-lite'), 'spec'), true));
 
 // Живой каталог с ценами решает сам, а не ступени
 Settings::set('OPENROUTER_API_KEY', 'or-key');
