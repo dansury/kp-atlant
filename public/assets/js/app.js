@@ -240,7 +240,10 @@ const App = {
             <a href="#notifications" data-page="notifications">Уведомления<span id="notifBadge"></span></a>
         `;
         document.getElementById('userBlock').innerHTML = `
-            <a onclick="App.supportModal()" title="Написать в поддержку: что сломалось на этом экране">Поддержка</a>
+            <!-- Всегда на виду, справа вверху шапки (issue #60) -->
+            <button class="btn btn--outline btn--sm header__support" onclick="App.supportModal()"
+                    title="Написать в поддержку: что сломалось или чего не хватает на этом экране"
+                    >✉<span class="header__support-text"> Написать в поддержку</span></button>
             ${this.manager.name} <a onclick="App.logout()">Выход</a>
         `;
     },
@@ -760,9 +763,13 @@ const App = {
         if (opts.conditions) host.dataset.conditions = JSON.stringify(opts.conditions);
         if (opts.price_types) host.dataset.priceTypes = JSON.stringify(opts.price_types);
         const open = items.filter(i => i.needs_choice).length;
+        host.classList.toggle('card--folded', host.dataset.folded === '1');
         host.innerHTML = `
             <div class="card__title">Подходящие позиции ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}
-                ${this.hint('match')}</div>
+                ${this.hint('match')}
+                <button class="btn btn--outline btn--sm card__fold" onclick="App.toggleMatchFold(this)"
+                        title="Свернуть или развернуть подбор">${host.dataset.folded === '1'
+                            ? `▸ Развернуть (позиций: ${items.length})` : '▾ Свернуть'}</button></div>
             <p class="muted">Подбираются сами при открытии карточки. Начните печатать название —
                подскажет локальная база товаров.</p>
             ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
@@ -795,6 +802,17 @@ const App = {
         this.bindMatchAutosave(host);
         this.watchMatchPhotos(host);
         this.loadKpBoard(requestId, host);
+    },
+
+    /** Свернуть/развернуть подбор — строки остаются в DOM, автосохранение живо. */
+    toggleMatchFold(btn) {
+        const host = this.matchHost(btn);
+        if (!host) return;
+        const folded = host.dataset.folded !== '1';
+        host.dataset.folded = folded ? '1' : '0';
+        host.classList.toggle('card--folded', folded);
+        const rows = host.querySelectorAll('[data-match-row]').length;
+        btn.textContent = folded ? `▸ Развернуть (позиций: ${rows})` : '▾ Свернуть';
     },
 
     /**
@@ -912,7 +930,9 @@ const App = {
         }
         return `<div class="match-row match-row--delivery" data-delivery-row>
             <div class="match-row__name">
-                <div class="muted">Отдельная строка КП — не входит в цену товара</div>
+                <div class="muted">${(this.ui || {}).delivery_mode === 'line'
+                    ? 'Отдельная строка КП — не входит в цену товара'
+                    : 'Включена в стоимость товаров — распределится по позициям КП и счёта'}</div>
                 <input type="text" data-delivery-name value="${this.esc(d.name || 'Доставка')}"
                        placeholder="Доставка">
             </div>
@@ -1442,7 +1462,7 @@ const App = {
         const host = this.matchHost(btn);
         const slot = this.kpSlot()
             || (host && (host.querySelector('[data-kp-slot]')
-                || host.appendChild(Object.assign(document.createElement('div'), {dataset: {kpSlot: '1'}}))));
+                || host.appendChild(this.dataDiv('kpSlot'))));
         // Карточки под рукой нет (страница редактора КП) — только тогда переход
         if (!slot) { location.hash = '#mail/proposal/' + id; return; }
         if (slot.dataset.open === String(id)) {
@@ -1465,10 +1485,11 @@ const App = {
                                    oninput="App.kpResize(this)"><span data-kp-size>${height}vh</span>
                         </label>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.saveAs('/api/proposals.php?action=docx&id=${id}')">⬇ Word</button>
+                                onclick="App.kpDownload(${id}, 'docx', this)">⬇ Word</button>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.saveAs('/api/proposals.php?action=preview&id=${id}')">⬇ PDF</button>
-                        <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)">✎ Править текст</button>
+                                onclick="App.kpDownload(${id}, 'pdf', this)">⬇ PDF</button>
+                        <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)"
+                                title="Текст документа по полям: вступление, названия, условия">✎ Текст по полям</button>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
                         <button class="btn btn--primary btn--sm" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
@@ -1478,14 +1499,172 @@ const App = {
                     </span>
                 </div>
                 <div data-kp-edit></div>
-                <!-- Пока документ собирается, в рамке был белый прямоугольник, и
-                     было не отличить «ещё считает» от «не открылось» (модуль 035) -->
-                <div data-kp-state class="loading">Собираем документ...</div>
-                <iframe class="kp-preview" style="height:${height}vh;display:none"
-                        title="Предпросмотр КП #${id}"></iframe>
+                <!-- Документ открывается страницей A4, которую можно править прямо
+                     здесь (issue #60); PDF — второй вид того же документа -->
+                <div class="kp-modes">
+                    <button class="btn btn--sm btn--primary" data-kp-mode="page"
+                            onclick="App.kpMode(this, 'page', ${id})">📝 Страница A4</button>
+                    <button class="btn btn--sm btn--outline" data-kp-mode="pdf"
+                            onclick="App.kpMode(this, 'pdf', ${id})">PDF</button>
+                </div>
+                <div data-kp-pagewrap>
+                    <div data-kp-page-bar></div>
+                    <div data-kp-page-state class="loading">Собираем документ...</div>
+                    <iframe class="kp-page" style="height:${height}vh;display:none" sandbox="allow-same-origin"
+                            title="КП #${id} — страница A4"></iframe>
+                </div>
+                <div data-kp-pdf hidden>
+                    <!-- Пока документ собирается, в рамке был белый прямоугольник, и
+                         было не отличить «ещё считает» от «не открылось» (модуль 035) -->
+                    <div data-kp-state class="loading">Собираем документ...</div>
+                    <iframe class="kp-preview" style="height:${height}vh;display:none"
+                            title="Предпросмотр КП #${id}"></iframe>
+                </div>
             </div>`;
         slot.scrollIntoView({behavior: 'smooth', block: 'start'});
-        this.fillKpPreview(slot, id);
+        this.fillKpPage(slot, id);
+    },
+
+    /** Страница A4 или PDF — два вида одного документа. PDF грузится при первом показе. */
+    kpMode(btn, mode, id) {
+        const card = btn.closest('.kp-open');
+        if (!card) return;
+        card.querySelectorAll('[data-kp-mode]').forEach(b => {
+            b.classList.toggle('btn--primary', b.dataset.kpMode === mode);
+            b.classList.toggle('btn--outline', b.dataset.kpMode !== mode);
+        });
+        card.querySelector('[data-kp-pagewrap]').hidden = mode !== 'page';
+        const pdf = card.querySelector('[data-kp-pdf]');
+        pdf.hidden = mode !== 'pdf';
+        if (mode === 'pdf') {
+            const run = () => {
+                const frame = card.querySelector('.kp-preview');
+                if (frame && !frame.getAttribute('src')) this.fillKpPreview(card.parentElement, id);
+                else if (frame) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            };
+            // Несохранённая правка страницы сначала сохраняется — PDF собирается из неё
+            if (card.dataset.dirty === '1') this.kpPageSave(id, card).then(ok => ok && run());
+            else run();
+        }
+    },
+
+    /**
+     * ==== КП страницей A4 (модуль 045, issue #60) ====
+     *
+     * Документ — тот же HTML, из которого собираются PDF и Word, в рамке без
+     * скриптов (`sandbox`), с `designMode`: текст правится прямо на листе.
+     * «Сохранить правки» кладёт страницу в КП — из неё соберутся PDF и Word.
+     */
+    async fillKpPage(slot, id) {
+        const state = slot.querySelector('[data-kp-page-state]');
+        const frame = slot.querySelector('.kp-page');
+        const bar = slot.querySelector('[data-kp-page-bar]');
+        const card = slot.querySelector('.kp-open');
+        if (!state || !frame || !card) return;
+        state.hidden = false;
+        state.className = 'loading';
+        state.textContent = 'Собираем документ...';
+        try {
+            const d = await this.api(`proposals.php?action=html&id=${id}`);
+            if (!slot.isConnected || slot.dataset.open !== String(id)) return;
+            card.dataset.dirty = '';
+            bar.innerHTML = this.kpPageBar(id, d);
+            // Лист A4 на сером поле — только в редакторе; перед сохранением
+            // этот стиль убирается (и сервер его вырезает тоже)
+            const sheet = `<style data-kp-editor>html{background:#e9e9e9}
+                body{width:210mm;min-height:297mm;margin:12px auto!important;padding:10mm 15mm!important;
+                box-sizing:border-box;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+                ${d.editable ? 'body:focus,body *:focus{outline:1px dashed #b0b0b0}' : ''}</style>`;
+            const html = String(d.html || '');
+            frame.onload = () => {
+                const doc = frame.contentDocument;
+                if (!doc) return;
+                if (d.editable) {
+                    doc.designMode = 'on';
+                    doc.addEventListener('input', () => { card.dataset.dirty = '1'; this.kpPageDirty(card, true); });
+                }
+            };
+            frame.srcdoc = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, sheet + '</head>') : sheet + html;
+            frame.style.display = '';
+            state.hidden = true;
+        } catch (err) {
+            state.className = 'no';
+            state.innerHTML = `<strong>КП не открылось.</strong> ${this.esc(err.message)}
+                <button class="btn btn--outline btn--sm" style="margin-left:8px"
+                        onclick="App.fillKpPage(this.closest('.kp-open').parentElement, ${id})">Повторить</button>`;
+        }
+    },
+
+    kpPageBar(id, d) {
+        if (!d.editable) {
+            return '<div class="muted kp-page-note">КП отправлено клиенту — документ показан как отправлен, править его нельзя.</div>';
+        }
+        return `
+            <div class="kp-page-note flex flex--wrap">
+                <span class="muted" data-kp-page-status>${d.override_at
+                    ? `Документ поправлен руками ${this.esc(d.override_at)}. Изменения подбора в него не попадут, пока не вернёте автоматическую сборку.`
+                    : 'Щёлкните по тексту на листе и правьте. Сохранённая правка уйдёт в PDF и Word.'}</span>
+                <button class="btn btn--primary btn--sm" data-kp-page-save
+                        onclick="App.kpPageSave(${id}, this.closest('.kp-open'))">💾 Сохранить правки</button>
+                ${d.override_at ? `<button class="btn btn--outline btn--sm"
+                        title="Собрать документ из подбора и настроек заново — ручные правки листа пропадут"
+                        onclick="App.kpPageReset(${id}, this)">↺ Вернуть автоматическую сборку</button>` : ''}
+            </div>`;
+    },
+
+    kpPageDirty(card, dirty) {
+        const status = card.querySelector('[data-kp-page-status]');
+        if (status && dirty) status.textContent = 'Есть несохранённые правки.';
+    },
+
+    /** Сохранить лист. Возвращает true, когда сервер принял правку и собрал PDF. */
+    async kpPageSave(id, card) {
+        const frame = card && card.querySelector('.kp-page');
+        const doc = frame && frame.contentDocument;
+        if (!doc || !doc.documentElement) return false;
+        const btn = card.querySelector('[data-kp-page-save]');
+        if (btn) { btn.disabled = true; btn.textContent = 'Сохраняем...'; }
+        try {
+            const root = doc.documentElement.cloneNode(true);
+            root.querySelectorAll('style[data-kp-editor]').forEach(el => el.remove());
+            const html = '<!DOCTYPE html>\n' + root.outerHTML;
+            const r = await this.api(`proposals.php?action=html_save&id=${id}`, {method: 'POST', body: {html}});
+            card.dataset.dirty = '';
+            const bar = card.querySelector('[data-kp-page-bar]');
+            if (bar) bar.innerHTML = this.kpPageBar(id, {editable: true, override_at: r.override_at});
+            // PDF, если его уже смотрели, — свежий
+            const pdf = card.querySelector('.kp-preview');
+            if (pdf && pdf.getAttribute('src')) pdf.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            this.toast('Правки сохранены — PDF и Word соберутся из этой страницы', 'success');
+            return true;
+        } catch (err) {
+            this.toast(err.message, 'error');
+            return false;
+        } finally {
+            const b = card.querySelector('[data-kp-page-save]');
+            if (b) { b.disabled = false; b.textContent = '💾 Сохранить правки'; }
+        }
+    },
+
+    async kpPageReset(id, btn) {
+        if (!confirm('Вернуть автоматическую сборку? Ручные правки листа пропадут.')) return;
+        const card = btn.closest('.kp-open');
+        btn.disabled = true;
+        try {
+            await this.api(`proposals.php?action=html_reset&id=${id}`, {method: 'POST', body: {}});
+            this.toast('Документ собран заново из подбора', 'success');
+            const pdf = card.querySelector('.kp-preview');
+            if (pdf && pdf.getAttribute('src')) pdf.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            this.fillKpPage(card.parentElement, id);
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+
+    /** ⬇ Word / ⬇ PDF: несохранённая правка листа сначала сохраняется. */
+    async kpDownload(id, kind, btn) {
+        const card = btn.closest('.kp-open');
+        if (card && card.dataset.dirty === '1' && !(await this.kpPageSave(id, card))) return;
+        this.saveAs(kind === 'docx' ? `/api/proposals.php?action=docx&id=${id}`
+                                    : `/api/proposals.php?action=preview&id=${id}`);
     },
 
     /**
@@ -1528,12 +1707,19 @@ const App = {
      * Куда раскрывать КП: под поле ответа в левой колонке, если оно на экране
      * есть, и в старый блок под карточкой, если нет (страница КП, экран запроса).
      */
+    /** Пустой <div data-…="1">. `Object.assign(el, {dataset})` падал: dataset только для чтения. */
+    dataDiv(key) {
+        const el = document.createElement('div');
+        el.dataset[key] = '1';
+        return el;
+    },
+
     kpSlot() {
         const composer = document.querySelector('[data-composer]');
         if (composer && composer.parentElement) {
             return composer.parentElement.querySelector('[data-kp-under-letter]')
                 || composer.insertAdjacentElement('afterend',
-                       Object.assign(document.createElement('div'), {dataset: {kpUnderLetter: '1'}}));
+                       this.dataDiv('kpUnderLetter'));
         }
         return document.getElementById('kpWide');
     },
@@ -1541,10 +1727,10 @@ const App = {
     /** Ползунок высоты окна КП. Значение живёт в этом браузере. */
     kpResize(input) {
         const card = input.closest('.kp-open');
-        const frame = card && card.querySelector('.kp-preview');
+        const frames = card ? card.querySelectorAll('.kp-preview, .kp-page') : [];
         const label = card && card.querySelector('[data-kp-size]');
-        if (!frame) return;
-        frame.style.height = input.value + 'vh';
+        if (!frames.length) return;
+        frames.forEach(f => { f.style.height = input.value + 'vh'; });
         if (label) label.textContent = input.value + 'vh';
         try { localStorage.setItem('kpHeight', input.value); } catch { /* приватный режим — просто не запомним */ }
     },
@@ -1619,15 +1805,16 @@ const App = {
                        'success');
             if (card) {
                 const out = card.querySelector('[data-kp-invoice]')
-                    || card.insertBefore(Object.assign(document.createElement('div'), {dataset: {kpInvoice: '1'}}),
+                    || card.insertBefore(this.dataDiv('kpInvoice'),
                                          card.querySelector('.kp-preview'));
                 out.innerHTML = this.kpInvoiceNote(r);
-            } else if (r.order_error || (r.order_missing || []).length || (r.skipped || []).length) {
+            } else if (r.order_error || (r.order_missing || []).length || (r.skipped || []).length || r.delivery_missing) {
                 // Кнопке в колонке некуда положить оговорки — говорим их вслух
                 this.toast([
                     r.order_error ? 'Заказ не создан: ' + r.order_error : '',
                     (r.order_missing || []).length ? 'В МойСклад не нашлось: ' + r.order_missing.join('; ') : '',
                     (r.skipped || []).length ? 'В счёт не вошли: ' + r.skipped.join('; ') : '',
+                    r.delivery_missing ? 'Доставка в счёт не вошла: укажите услугу доставки в настройках МойСклад' : '',
                 ].filter(Boolean).join('. '), 'error');
             }
             // Счёт встаёт под своим КП на доске предложений (модуль 027) и
@@ -1685,6 +1872,8 @@ const App = {
                          счёт выставлен сам по себе.</div>`}
                 ${(r.order_missing || []).length
                     ? `<div class="muted">В МойСклад не нашлось: ${this.esc(r.order_missing.join('; '))}</div>` : ''}
+                ${r.delivery_missing
+                    ? '<div class="no">Доставка в счёт не вошла: укажите услугу доставки (MS_DELIVERY_SERVICE_ID) в настройках</div>' : ''}
                 ${(r.skipped || []).length
                     ? `<div class="muted">В счёт не вошли (нет цены или карточки МойСклад):
                        ${this.esc(r.skipped.join('; '))}</div>` : ''}
@@ -1734,7 +1923,9 @@ const App = {
             this.toast(r.changed ? `Документ пересобран, правок: ${r.changed}` : 'Правок не было', r.changed ? 'success' : 'info');
             // Предпросмотр показывает свежий файл, а не тот, что браузер закэшировал
             const frame = card.querySelector('.kp-preview');
-            if (frame) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            if (frame && frame.getAttribute('src')) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            // Правка по полям собирает документ заново — лист тоже
+            if (r.changed && card.querySelector('.kp-page')) this.fillKpPage(card.parentElement, id);
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = label; }
     },
@@ -1870,14 +2061,26 @@ const App = {
                 <input type="hidden" data-field="price_max" value="${i.price_max ?? 0}">
                 <input type="hidden" data-field="price_is_manual" value="${i.price_is_manual ? 1 : 0}">
                 <div class="match-row__name">
-                    ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}</div>` : ''}
+                    <!-- «Не наша номенклатура» — справа от строки «из письма…» (issue #60) -->
+                    <div class="match-row__src">
+                        <span class="muted">${i.raw_name ? `из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}` : 'добавлено вручную'}</span>
+                        <button class="btn btn--outline btn--sm ${i.is_out_of_scope ? 'btn--primary' : ''}"
+                                title="${i.is_out_of_scope ? 'Вернуть строку в работу' : 'Мы этим не занимаемся: в КП строка встанет серым с прочерками, в ответ клиенту не попадёт'}"
+                                onclick="App.setItemScope(this, ${i.id || 0}, ${i.is_out_of_scope ? 0 : 1})">${i.is_out_of_scope ? '↩' : '🚫'}</button>
+                        ${index === 0 && !i.is_out_of_scope ? this.hint('match-scope') : ''}
+                    </div>
                     ${this.variantNote(i)}
                     ${this.stockNote(i)}
                     ${this.scopeNote(i)}
                     ${this.altNote(i)}
-                    <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
-                           value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
-                    <div class="suggest" hidden></div>
+                    <!-- «×» — справа от поля названия (issue #60) -->
+                    <div class="match-row__nameline">
+                        <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
+                               value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
+                        <button class="btn btn--outline btn--sm" title="Убрать строку"
+                                onclick="const h=App.matchHost(this); this.closest('[data-match-row]').remove(); App.updateMatchTotal(h)">×</button>
+                        <div class="suggest" hidden></div>
+                    </div>
                     ${this.analogField(i)}
                     ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted">ещё похожие:
                         ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
@@ -1904,18 +2107,13 @@ const App = {
                            onchange="App.toggleAnalog(this)"> аналог
                 </label>
                 ${index === 0 ? this.hint('match-analog') : ''}
-                <div class="match-row__tools">
+                ${this.matchRowExtra(i)}
+                <!-- Порядок строк — внизу карточки позиции (issue #60) -->
+                <div class="match-row__tools match-row__tools--bottom">
                     <span class="match-row__grip" draggable="true" title="Перетащить строку мышью">⠿</span>
                     <button class="btn btn--outline btn--sm" title="Выше" onclick="App.moveMatchRow(this, -1)">↑</button>
                     <button class="btn btn--outline btn--sm" title="Ниже" onclick="App.moveMatchRow(this, 1)">↓</button>
-                    <button class="btn btn--outline btn--sm ${i.is_out_of_scope ? 'btn--primary' : ''}"
-                            title="${i.is_out_of_scope ? 'Вернуть строку в работу' : 'Мы этим не занимаемся: строка не попадёт ни в КП, ни в ответ клиенту'}"
-                            onclick="App.setItemScope(this, ${i.id || 0}, ${i.is_out_of_scope ? 0 : 1})">${i.is_out_of_scope ? '↩' : '🚫'}</button>
-                    ${index === 0 && !i.is_out_of_scope ? this.hint('match-scope') : ''}
-                    <button class="btn btn--outline btn--sm" title="Убрать строку"
-                            onclick="const h=App.matchHost(this); this.closest('[data-match-row]').remove(); App.updateMatchTotal(h)">×</button>
                 </div>
-                ${this.matchRowExtra(i)}
             </div>`;
     },
 
@@ -2049,7 +2247,7 @@ const App = {
         if (!i.is_out_of_scope) return '';
         // Подсказка про «не наш профиль» — у строки, которую отбросили
         return `<div class="note note--out">
-            <strong>Не наша номенклатура.</strong> В КП и в ответ клиенту эта позиция не уйдёт.
+            <strong>Не наша номенклатура.</strong> В КП встанет серой строкой с прочерками, в ответ клиенту не уйдёт.
             ${i.out_of_scope_reason ? `<span class="muted">Правило: «${this.esc(i.out_of_scope_reason)}»</span>` : ''}
             ${this.hint('match-scope')}
         </div>`;
@@ -3589,7 +3787,9 @@ const App = {
                     </div>
                 </div>
                 <aside class="letter__side">
-                    <!-- Подбор открытой переписки живёт здесь и только здесь -->
+                    <!-- Подбор открытой переписки — один на карточку. Пока
+                         переписка раскрыта, он стоит в ней над полем письма
+                         (issue #60), свёрнута — ждёт здесь -->
                     <div id="cpItems" data-thread-items></div>
                     <div id="companySide">${this.companySide(cp)}</div>
                 </aside>
@@ -3618,6 +3818,8 @@ const App = {
     async loadCompanyThreads(id) {
         const box = document.getElementById('cpThreads');
         if (!box) return;
+        // Панель подбора может стоять внутри переписки — не стираем её с ней
+        this.parkCompanyItems();
         try {
             // Один запрос на обе половины: рабочие переписки и те, что убрали в
             // архив. Раньше это были два разных вида одного экрана, между
@@ -3704,39 +3906,45 @@ const App = {
         const kp = t.proposal
             ? `<a class="chip chip--kp" href="#mail/proposal/${t.proposal.id}" onclick="event.stopPropagation()">КП ${this.esc(t.proposal.number || '#' + t.proposal.id)}</a>`
             : (t.request_id ? `<a class="chip" href="#mail/request/${t.request_id}" onclick="event.stopPropagation()">запрос #${t.request_id}</a>` : '');
+        const key = this.jsStr(t.thread_key);
+        // Строка как в Gmail (issue #60): кто · тема — начало письма · дата.
+        // Действия всплывают на месте даты при наведении, а не лежат отдельной
+        // строкой под каждой перепиской
         return `
             <article class="${cls.join(' ')}" data-thread="${this.esc(t.thread_key)}">
-                <div class="conv__head" onclick="App.toggleCompanyThread('${this.jsStr(t.thread_key)}')">
-                    <span class="conv__dir">${t.last_direction === 'in' ? '📥' : '📤'}</span>
+                <div class="conv__head" onclick="App.toggleCompanyThread('${key}')">
+                    <span class="conv__who" title="${this.esc(t.last_from_name || '')}">
+                        <span class="conv__dir" title="${t.last_direction === 'in' ? 'последнее письмо клиента' : 'последнее письмо наше'}"
+                              >${t.last_direction === 'in' ? '📥' : '📤'}</span>
+                        <span class="conv__name">${this.esc(t.last_from_name || (t.last_mine ? 'Мы' : 'Клиент'))}</span>
+                        ${t.count > 1 ? `<span class="conv__count" title="писем в переписке">${t.count}</span>` : ''}
+                    </span>
                     <div class="conv__main">
-                        <div class="conv__subject">
-                            ${this.esc(t.subject) || '<em>без темы</em>'}
-                            ${t.count > 1 ? `<span class="conv__count" title="писем в переписке">${t.count}</span>` : ''}
-                            ${t.unread ? `<span class="pill pill--danger">${t.unread}</span>` : ''}
+                        <div class="conv__line">
+                            <span class="conv__subject">${this.esc(t.subject) || '<em>без темы</em>'}</span>
+                            ${t.preview ? `<span class="conv__preview">— ${this.esc(t.preview)}</span>` : ''}
                         </div>
                         <div class="conv__meta">
-                            <!-- В строке переписки видно, КТО пишет: по одной теме
-                                 понять, чьё это письмо, нельзя (issue #38). И ЧЬЁ
-                                 последнее — словами: стрелка 📤/📥 в списке из
+                            <!-- ЧЬЁ последнее письмо — словами: стрелка в списке из
                                  пятнадцати строк не читается (модуль 029) -->
                             <span class="chip ${t.last_mine ? 'chip--mine' : 'chip--theirs'}">${t.last_mine
                                 ? 'последнее письмо наше' : 'последнее письмо клиента'}</span>
-                            ${t.last_from_name ? `<strong>${this.esc(t.last_from_name)}</strong>` : ''}
+                            ${t.unread ? `<span class="pill pill--danger" title="непрочитанных">${t.unread}</span>` : ''}
                             ${t.category ? this.categoryBadge(t.category, App.categoryLabels[t.category]) : ''}
                             ${kp}
                             ${t.unanswered ? '<span class="badge badge--unanswered">ждёт ответа</span>' : ''}
                             ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
+                            ${t.archived_at ? `<span class="muted">${t.archived_reason === 'mailbox_off' ? 'ящик отключён' : 'не наш профиль'}</span>` : ''}
                         </div>
-                        <div class="conv__preview">${this.esc(t.preview)}</div>
                     </div>
                     <span class="conv__date muted">${this.fmtDate(t.last_at)}</span>
-                </div>
-                <div class="conv__tools">
-                    ${t.archived_at
-                        ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(t.thread_key)}')">↩ Вернуть в работу</button>
-                           <span class="muted">${t.archived_reason === 'mailbox_off' ? 'ящик отключён' : 'не наш профиль'}</span>`
-                        : `<button class="btn btn--outline btn--sm" title="Убрать переписку с экрана: на сервере она уйдёт в «Архив»"
-                                   onclick="App.archiveThread('${this.jsStr(t.thread_key)}', ${t.count})">🗄 В архив (не наш профиль)</button>`}
+                    <span class="conv__acts" onclick="event.stopPropagation()">
+                        ${t.archived_at
+                            ? `<button class="conv__act" title="Вернуть в работу" onclick="App.unarchiveThread('${key}')">↩</button>`
+                            : `<button class="conv__act" title="В архив (не наш профиль): на сервере переписка уйдёт в «Архив»"
+                                       onclick="App.archiveThread('${key}', ${t.count})">🗄</button>`}
+                        <button class="conv__act" title="Удалить переписку" onclick="App.deleteThread('${key}', ${t.count})">🗑</button>
+                    </span>
                 </div>
                 <div class="conv__open" id="th_${this.esc(this.threadDomId(t.thread_key))}" hidden></div>
             </article>`;
@@ -3790,6 +3998,7 @@ const App = {
             this.setCompanyItems(box.dataset.requestId || '', key);
             return;
         }
+        this.parkCompanyItems();
         box.innerHTML = '<div class="loading">Загрузка писем...</div>';
         try {
             const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key)
@@ -3811,6 +4020,13 @@ const App = {
         }
     },
 
+    /** Вернуть панель подбора в боковую колонку карточки компании. */
+    parkCompanyItems() {
+        const side = document.getElementById('cpItems');
+        const dock = document.getElementById('companySide');
+        if (side && dock && side.nextElementSibling !== dock) dock.before(side);
+    },
+
     /**
      * Панель подбора карточки компании — справа, для раскрытой переписки.
      *
@@ -3820,6 +4036,11 @@ const App = {
     setCompanyItems(requestId, threadKey = '') {
         const side = document.getElementById('cpItems');
         if (!side) return;
+        // Раскрытая переписка получает подбор над своим полем письма
+        const open = threadKey ? document.getElementById('th_' + this.threadDomId(threadKey)) : null;
+        const composer = open && open.querySelector('[data-composer]');
+        if (requestId !== null && composer) composer.before(side);
+        else this.parkCompanyItems();
         if (requestId === null) {
             side.className = 'card card--items';
             side.innerHTML = `<div class="card__title">Подходящие позиции${this.hint('match')}</div>
@@ -3918,6 +4139,13 @@ const App = {
             const draw = req => {
                 const kp = {proposal_id: (req.proposals && req.proposals[0]) ? req.proposals[0].id : null};
                 host.dataset.kp = JSON.stringify(kp);
+                // Первое КП ушло клиенту — подбор свёрнут, но стоит на месте
+                // (issue #60). Раскрытый руками так и остаётся раскрытым.
+                if (host.dataset.foldFor !== String(requestId)) {
+                    host.dataset.foldFor = String(requestId);
+                    const sent = (req.proposals || []).some(p => ['sent', 'order_created'].includes(p.status));
+                    host.dataset.folded = sent ? '1' : '0';
+                }
                 this.renderMatchedItems(requestId, req.items || [], host,
                     {kp, delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
             };
@@ -4423,6 +4651,20 @@ const App = {
         }
     },
 
+    /**
+     * Текст черновика → HTML редактора: абзацы, переносы и ссылки.
+     * «см. на сайте: https://…» становится ссылкой со словами «см. на сайте»
+     * (issue #60) — так же, как на сервере в `MailText::textToHtml()`.
+     */
+    draftHtml(text) {
+        const link = /(см\. на сайте)\s*:?\s*(https?:\/\/[^\s<>"']+)|(https?:\/\/[^\s<>"']+)/g;
+        return String(text).split(/\n{2,}/).map(p => '<p>' + this.esc(p).replace(link, (m, label, u1, u2) => {
+            const raw = u1 || u2;
+            const url = raw.replace(/[.,;)]+$/, '');
+            return `<a href="${url}">${label || url}</a>` + raw.slice(url.length);
+        }).replace(/\n/g, '<br>') + '</p>').join('');
+    },
+
     async threadDraft(key, btn) {
         const c = this.composerOf(key);
         if (!c) return;
@@ -4441,8 +4683,7 @@ const App = {
         try {
             const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body});
             // Черновик приходит текстом — в редакторе он становится абзацами
-            area.innerHTML = (r.text || '').split(/\n{2,}/)
-                .map(p => '<p>' + this.esc(p).replace(/\n/g, '<br>') + '</p>').join('');
+            area.innerHTML = this.draftHtml(r.text || '');
             this.composerChanged(key);
             const subj = c.querySelector('[data-cmp-subject]');
             if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
@@ -6590,10 +6831,13 @@ const App = {
             <div class="letter">
                 <div class="letter__main">
                     ${this.threadHtml(d.messages, key)}
+                    <!-- Подбор — в левой колонке над полем письма (issue #60):
+                         читаем переписку, подбираем товары, собираем КП, ниже
+                         пишем письмо -->
+                    <div data-thread-items></div>
                     ${this.threadComposer(key, reply, d.mailboxes || [])}
                 </div>
                 <aside class="letter__side">
-                    <div data-thread-items></div>
                     <div id="threadFacts"></div>
                 </aside>
             </div>
@@ -6972,6 +7216,7 @@ const App = {
         this.boardPicked = new Set();
         document.getElementById('mailBody').innerHTML = `
             ${this.boardFiltersHtml(b)}
+            <div id="boardSupport"></div>
             <div id="boardBulk"></div>
             <div id="boardSearchOut"></div>
             <div class="board" id="board">
@@ -6980,6 +7225,7 @@ const App = {
         `;
         this.boardBindDnd();
         this.applyBoardFilters();
+        this.loadBoardSupport();
         const added = (b.sync && (b.sync.created || b.sync.upgraded)) || 0;
         if (added) this.toast(`Новых карточек на доске: ${added}`, 'success');
     },
@@ -7198,6 +7444,32 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
         this.archivePicked = new Set();
         this.loadArchiveList();
+    },
+
+    /**
+     * Обращения менеджеров на доске «Письма» (issue #60) — только у
+     * администратора и только те, что ждут ревью. Пусто — полосы нет.
+     */
+    async loadBoardSupport() {
+        const box = document.getElementById('boardSupport');
+        if (!box || !(this.manager && this.manager.is_admin)) return;
+        try {
+            const d = await this.api('support.php?action=list&status=new');
+            const items = d.items || [];
+            if (!items.length || !box.isConnected) { box.innerHTML = ''; return; }
+            const kinds = d.kinds || {};
+            box.innerHTML = `
+                <div class="card card--inline board-support">
+                    <strong>🛟 Обращения менеджеров на ревью: ${items.length}</strong>
+                    ${items.slice(0, 5).map(t => `
+                        <a class="board-support__row" href="#settings/support">
+                            <span class="chip">${this.esc(kinds[t.kind] || t.kind)}</span>
+                            ${this.esc(t.title)}
+                            <span class="muted">· ${this.esc(t.manager_name || '')} · ${this.fmtDate(t.created_at)}</span>
+                        </a>`).join('')}
+                    ${items.length > 5 ? `<a href="#settings/support">и ещё ${items.length - 5} →</a>` : ''}
+                </div>`;
+        } catch { box.innerHTML = ''; }
     },
 
     /**
@@ -8077,9 +8349,18 @@ const App = {
             table{border-collapse:collapse;max-width:100%;table-layout:fixed}
             td,th{border:1px solid #ddd;padding:4px 6px;font-size:12px;text-align:left}
             a{color:#8a2a24}
-            </style></head><body>${innerHtml}</body></html>`;
+            </style></head><body>${this.lazyImages(innerHtml)}</body></html>`;
         return `<iframe class="html-frame" data-maxh="${maxHeight}" sandbox="allow-same-origin allow-popups"
-                    onload="App.sizeFrame(this)" srcdoc="${this.esc(doc)}"></iframe>`;
+                    loading="lazy" onload="App.sizeFrame(this)" srcdoc="${this.esc(doc)}"></iframe>`;
+    },
+
+    /**
+     * Картинки письма грузятся, когда до них доходит прокрутка (issue #60):
+     * длинная переписка с десятком писем и логотипов в подписях не тянет всё
+     * разом. Атрибут работает и без скриптов — рамка письма их не исполняет.
+     */
+    lazyImages(html) {
+        return String(html || '').replace(/<img\b(?![^>]*\bloading=)/gi, '<img loading="lazy" decoding="async"');
     },
 
     /**
@@ -10909,7 +11190,7 @@ Object.assign(App, {
                 ${(t.files || []).length ? `<div class="flex flex--wrap" style="gap:8px;margin-top:8px">
                     ${(t.files || []).map(f => (f.mime || '').startsWith('image/')
                         ? `<a href="/api/support.php?action=file&id=${f.id}" target="_blank" rel="noopener">
-                             <img src="/api/support.php?action=file&id=${f.id}" alt="${this.esc(f.filename)}"
+                             <img loading="lazy" src="/api/support.php?action=file&id=${f.id}" alt="${this.esc(f.filename)}"
                                   style="max-height:120px;border:1px solid var(--border);border-radius:4px"></a>`
                         : `<a class="chip" href="/api/support.php?action=file&id=${f.id}" target="_blank" rel="noopener">📎 ${this.esc(f.filename)}</a>`
                     ).join('')}</div>` : ''}

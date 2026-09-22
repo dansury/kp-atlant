@@ -263,6 +263,9 @@ final class Html2Docx {
                 // (модуль 036, начертание сменено на жирное — issue #60)
                 'analog-of'    => ['b' => true, 'color' => '6B6B6B', 'size' => 17] + $style,
                 'sign-name'    => ['b' => true] + $style,
+                // «Не наша номенклатура»: серым, название жирным (модуль 045)
+                'out-of-scope' => ['color' => '8A8A8A'] + $style,
+                'out-of-scope__name' => ['b' => true, 'color' => '8A8A8A'] + $style,
                 // Выравнивание текста — слева (issue #60)
                 'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'left'] + $style,
                 'appendix__subtitle' => ['b' => true, 'size' => 24, 'align' => 'center'] + $style,

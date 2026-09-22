@@ -636,4 +636,27 @@ class KpContent {
             default => 'image/jpeg',
         };
     }
+
+    /**
+     * «Не наша номенклатура» for the КП table (module 045, issue #60).
+     *
+     * The client's own wording of lines marked out of scope. Printed in the
+     * request's FIRST КП only — a request split into two КП must not list the
+     * same refusal twice. `KP_SHOW_OUT_OF_SCOPE = 0` prints none.
+     *
+     * @return list<array{requested:string,quantity:mixed,unit:string}>
+     */
+    public static function outOfScopeRows(array $proposal): array {
+        if ((int)Settings::get('KP_SHOW_OUT_OF_SCOPE', 1) !== 1) return [];
+        $requestId = (int)($proposal['request_id'] ?? 0);
+        if (!$requestId) return [];
+        $first = (int)Db::val("SELECT MIN(id) FROM proposals WHERE request_id=?", [$requestId]);
+        if ($first !== (int)$proposal['id']) return [];
+        require_once __DIR__ . '/request_items.php';
+        return array_map(fn($r) => [
+            'requested' => $r['requested'],
+            'quantity'  => $r['quantity'],
+            'unit'      => $r['unit'],
+        ], RequestItems::outOfScope($requestId));
+    }
 }

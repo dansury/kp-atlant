@@ -651,9 +651,10 @@ class MoySklad {
      * МойСклад либо не принимал, либо принимал не тот товар. Тип берётся из
      * каталога: там у модификации стоит `product_type = 'variant'` (модуль 026).
      */
-    private static function assortmentMeta(string $productId): array {
-        $type = (string)(Db::val("SELECT product_type FROM products_cache WHERE moysklad_id=?", [$productId]) ?: '');
-        $entity = $type === 'variant' ? 'variant' : 'product';
+    private static function assortmentMeta(string $productId, string $type = ''): array {
+        // A service (delivery line, module 045) is never in products_cache
+        if ($type === '') $type = (string)(Db::val("SELECT product_type FROM products_cache WHERE moysklad_id=?", [$productId]) ?: '');
+        $entity = in_array($type, ['variant', 'service'], true) ? $type : 'product';
         return ['meta' => [
             'href'      => self::$base . '/entity/' . $entity . '/' . $productId,
             'type'      => $entity,
@@ -699,9 +700,10 @@ class MoySklad {
 
         $positions = array_map(fn($p) => array_filter([
             'quantity' => $p['quantity'],
-            'price' => $p['price'] * 100, // MoySklad uses kopeks
+            'price' => round($p['price'] * 100), // MoySklad uses kopeks
+            'discount' => $p['discount'] ?? null,
             'vat' => $p['vat'] ?? null,
-            'assortment' => self::assortmentMeta((string)$p['product_id']),
+            'assortment' => self::assortmentMeta((string)$p['product_id'], (string)($p['type'] ?? '')),
         ], fn($v) => $v !== null), $data['positions']);
 
         $body = [
@@ -794,10 +796,10 @@ class MoySklad {
     public static function createInvoice(array $data): array {
         $positions = array_map(fn($p) => [
             'quantity'   => $p['quantity'],
-            'price'      => $p['price'] * 100,   // МойСклад считает в копейках
+            'price'      => round($p['price'] * 100),   // МойСклад считает в копейках
             'discount'   => $p['discount'] ?? 0,
             'vat'        => $p['vat'] ?? 0,
-            'assortment' => self::assortmentMeta((string)$p['product_id']),
+            'assortment' => self::assortmentMeta((string)$p['product_id'], (string)($p['type'] ?? '')),
         ], $data['positions']);
 
         $body = [
@@ -1077,12 +1079,35 @@ class MoySklad {
         return null;
     }
 
+    /**
+     * The print form the invoice is exported with (module 045).
+     *
+     * `MS_INVOICE_TEMPLATE` names it the way the «Печать» menu does — «Счет
+     * покупателю с печатью с QR и с подписью» by default: exact name first,
+     * then a name containing it; nothing matched — the first template, as
+     * before.
+     */
     private static function firstInvoiceTemplate(): ?array {
+        $rows = [];
         foreach (['customtemplate', 'embeddedtemplate'] as $kind) {
             $data = self::get("/entity/invoiceout/metadata/$kind");
-            if (!empty($data['rows'][0]['meta'])) return $data['rows'][0];
+            foreach ((array)($data['rows'] ?? []) as $row) {
+                if (!empty($row['meta'])) $rows[] = $row;
+            }
         }
-        return null;
+        return self::pickTemplate($rows, (string)Settings::get('MS_INVOICE_TEMPLATE', ''));
+    }
+
+    /** @param list<array> $rows templates as MoySklad lists them */
+    public static function pickTemplate(array $rows, string $wanted): ?array {
+        if (!$rows) return null;
+        $norm = fn(string $s) => str_replace('ё', 'е', mb_strtolower(trim(preg_replace('/\s+/u', ' ', $s))));
+        $wanted = $norm($wanted);
+        if ($wanted !== '') {
+            foreach ($rows as $r) if ($norm((string)($r['name'] ?? '')) === $wanted) return $r;
+            foreach ($rows as $r) if (str_contains($norm((string)($r['name'] ?? '')), $wanted)) return $r;
+        }
+        return $rows[0];
     }
 
     // ---- Webhooks (FR-028, FR-029) ----

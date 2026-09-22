@@ -10,6 +10,8 @@ data/auto-pull.json.lock
 data/kp.db-wal
 data/kp.db-shm
 data/kp/
+# Фото страницы-редактора КП (модуль 045)
+data/kp_img/
 data/tmp/
 storage/signatures/*
 !storage/signatures/.gitkeep

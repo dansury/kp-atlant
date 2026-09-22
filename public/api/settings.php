@@ -177,6 +177,8 @@ switch ($action) {
             'wait_prepay'        => (int)Settings::get('KP_WAIT_PREPAY', 100),
             'wait_auto'          => (int)Settings::get('KP_WAIT_AUTO', 0) === 1,
             'mail_poll_min'      => max(0, (int)Settings::get('MAIL_AUTO_POLL_MIN', 10)),
+            // Подпись строки доставки в подборе (модуль 045)
+            'delivery_mode'      => (string)Settings::get('KP_DELIVERY_MODE', 'included'),
             'mail_sound'         => trim((string)($mine['notify_sound'] ?? '')) !== ''
                                         ? (string)$mine['notify_sound'] : (string)Settings::get('MAIL_SOUND', ''),
             'mail_sound_volume'  => max(0, min(100, $mine['notify_volume'] !== null && $mine['notify_volume'] !== ''

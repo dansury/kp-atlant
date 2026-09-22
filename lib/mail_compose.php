@@ -76,7 +76,7 @@ final class MailCompose {
         $html = trim((string)($input['html'] ?? ''));
         $html = $html !== ''
             ? MailArchive::sanitizeHtml($html)
-            : '<p>' . nl2br(htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')) . '</p>';
+            : MailText::textToHtml($text);
 
         // Подпись менеджера — до цитаты и до отправки (модуль 039): она
         // заканчивает НАШЕ письмо, а не процитированное чужое. Второй раз

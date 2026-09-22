@@ -309,7 +309,7 @@ final class Terms {
         return rtrim(rtrim(number_format($v, 2, ',', ''), '0'), ',');
     }
 
-    private static function clampPercent(float $v): float {
+    public static function clampPercent(float $v): float {
         return max(0.0, min(100.0, $v));
     }
 }

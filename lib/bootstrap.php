@@ -1859,6 +1859,16 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '40')");
         $current = 40;
     }
+
+    // v41 — модуль 045 (issue #60): КП, поправленное руками в предпросмотре.
+    // Пока поле не пусто, PDF и Word собираются из него, а не из шаблона.
+    if ($current < 41) {
+        Db::ensureColumn('proposals', 'html_override', 'TEXT');
+        Db::ensureColumn('proposals', 'html_override_at', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '41')");
+        $current = 41;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

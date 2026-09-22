@@ -18,6 +18,7 @@ require_once __DIR__ . '/variants.php';
 require_once __DIR__ . '/terms.php';
 require_once __DIR__ . '/markup.php';
 require_once __DIR__ . '/kp_content.php';
+require_once __DIR__ . '/mail_text.php';
 
 final class RequestItems {
 
@@ -930,12 +931,23 @@ final class RequestItems {
 
             $price = (float)($row['effective_price'] ?? $row['price'] ?? 0);
             if ($price > 0) $line .= ', ' . number_format($price, 2, ',', ' ') . ' руб. за ед.';
+            // Скидка — в письме так же, как в КП (issue #60). Скидка за
+            // ожидание стоит ниже, в условиях ожидания
+            $discount = Terms::clampPercent((float)($row['discount_percent'] ?? 0));
+            if ($price > 0 && $discount > 0) {
+                $line .= ' (цена до скидки ' . number_format((float)$row['price'], 2, ',', ' ')
+                       . ' руб., скидка ' . rtrim(rtrim(number_format($discount, 2, ',', ''), '0'), ',') . '%)';
+            }
 
-            $stock = $row['stock'] === null ? null : (int)$row['stock'];
-            if ($stock !== null) $line .= $stock > 0 ? ", в наличии $stock" : ', под заказ';
+            // Наличие словами, без остатка цифрой (issue #60): клиенту не нужно
+            // знать, сколько у нас на складе
+            $line .= self::stockWords($row['stock'] ?? null, (float)($row['quantity'] ?? 0));
 
             $wait = trim((string)($row['wait_note'] ?? ''));
             if ($wait !== '') $line .= ' (' . $wait . ')';
+
+            $url = self::siteUrl((string)($row['moysklad_product_id'] ?? ''));
+            if ($url !== '') $line .= "\n  " . MailText::SITE_LINK_LABEL . ': ' . $url;
 
             $lines[] = $line;
         }
@@ -944,8 +956,29 @@ final class RequestItems {
         return "\n===== ЧТО МЫ ПРЕДЛАГАЕМ ПО ЭТОМУ ЗАПРОСУ =====\n"
              . "Это уже подобрано и проверено менеджером. Назови в ответе ИМЕННО эти позиции, "
              . "эти количества и эти цены — не придумывай других и не меняй цифры. "
+             . "Скидки, срок ожидания и предоплату назови так же, как они указаны здесь. "
+             . "Остаток на складе числом не называй — только «в наличии» или «под заказ». "
+             . "Строку «" . MailText::SITE_LINK_LABEL . ": адрес» ставь под своей позицией дословно, адрес не меняй. "
              . "Описания товаров в письмо не переписывай: они напечатаны в КП.\n"
              . implode("\n", $lines) . "\n";
+    }
+
+    /** «в наличии» / «в наличии частично» / «под заказ» — без цифры остатка. */
+    public static function stockWords($stock, float $quantity): string {
+        if ($stock === null || $stock === '') return '';
+        $stock = (int)$stock;
+        if ($stock <= 0) return ', под заказ';
+        if ($quantity > 0 && $stock < $quantity) return ', в наличии не всё количество — остальное под заказ';
+        return ', в наличии';
+    }
+
+    /** Ссылка на товар на сайте из кэша каталога — без обращения к сайту. */
+    public static function siteUrl(string $productId): string {
+        if ($productId === '') return '';
+        return trim((string)(Db::val(
+            "SELECT COALESCE(NULLIF(p.site_url, ''),
+                    (SELECT NULLIF(site_url, '') FROM products_cache WHERE moysklad_id = p.parent_id))
+             FROM products_cache p WHERE p.moysklad_id = ?", [$productId]) ?: ''));
     }
 
     public static function unmatchedBlock(array $unmatched): string {
