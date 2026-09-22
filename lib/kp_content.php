@@ -618,7 +618,6 @@ class KpContent {
         ]);
         $body = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
         if ($code < 200 || $code >= 300 || !$body) return null;
 
         @file_put_contents($cache, $body);
