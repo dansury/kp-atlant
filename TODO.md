@@ -1,16 +1,15 @@
 # TODO
 
-Items from GitHub issue #60 not implemented in module 042 (see
-`specs/042-scope-price-delivery-and-board-fixes/spec.md` for what *was*
-done from that issue). Issue #60 listed 30+ distinct requests in one pass;
-this is the remainder, grouped by area, roughly in the order they appeared.
+Items from GitHub issue #60 not implemented in modules 042 and 043 (see
+`specs/042-scope-price-delivery-and-board-fixes/spec.md` and
+`specs/043-session-safety-and-sound/spec.md` for what *was* done from that
+issue). Issue #60 listed 30+ distinct requests in one pass; this is the
+remainder, grouped by area, roughly in the order they appeared.
 
 ## Photos / lazy loading
 - General lazy-loading for interface elements/photos beyond product photos
   (issue only specifically asked for sequential photo loading; investigate
   where else images load in bulk — mail attachments, board card thumbnails).
-- Photos should be open by default in the match-row photo picker (currently
-  behind a "🖼 Фото в КП" toggle).
 
 ## Board
 - Per-board (not just per-column) settings surfaced more prominently in the
@@ -65,19 +64,8 @@ this is the remainder, grouped by area, roughly in the order they appeared.
 - Delayed send with a date/time picker and quick presets ("Завтра в 09:00",
   "В понедельник в 09:00"), plus a custom time.
 
-## Notifications / signature
-- Per-user notification sound choice.
-- Per-user email/КП signature and "roспись" — check how much of this
-  already exists via `managers.email_signature` (added module 041) vs. what
-  the issue additionally wants.
-
 ## Correspondence UI
 - Make the correspondence card list look and behave more like Gmail.
-
-## Auth
-- Configurable cookie lifetime (issue asks for up to a year).
-- Notify admins when an already-logged-in account gets a new login
-  elsewhere, and let the admin force-reset a manager's login/session.
 
 ## Plugins
 - Make the "Re:palin" plugin toggleable and swappable for different code —

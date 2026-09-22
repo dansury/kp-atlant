@@ -140,16 +140,35 @@ switch ($action) {
      * экран считает скидку не так, как её посчитает КП.
      */
     case 'ui':
-        requireAuth();
+        $manager = requireAuth();
+        require_once ROOT . '/lib/notification_sound.php';
+        $sound = NotificationSound::forManager((int)$manager['id']);
         jsonData(['ui' => [
             'wait_months'        => (int)Settings::get('KP_WAIT_MONTHS', 3),
             'wait_discount'      => (float)Settings::get('KP_WAIT_DISCOUNT', 10),
             'wait_prepay'        => (int)Settings::get('KP_WAIT_PREPAY', 100),
             'wait_auto'          => (int)Settings::get('KP_WAIT_AUTO', 0) === 1,
             'mail_poll_min'      => max(0, (int)Settings::get('MAIL_AUTO_POLL_MIN', 10)),
-            'mail_sound'         => (string)Settings::get('MAIL_SOUND', ''),
-            'mail_sound_volume'  => max(0, min(100, (int)Settings::get('MAIL_SOUND_VOLUME', 60))),
+            // Свой звук у менеджера, а нет своего — общий из настроек (issue #60)
+            'mail_sound'         => $sound['file'],
+            'mail_sound_volume'  => $sound['volume'],
         ]]);
+
+    /**
+     * Звук уведомления — свой у каждого менеджера (issue #60). GET отдаёт то,
+     * что менеджер выбрал сам, и то, чем оно реально прозвучит, если своего
+     * нет. POST сохраняет; пустой файл возвращает к общему звуку компании.
+     */
+    case 'notification_sound':
+        $manager = requireAuth();
+        require_once ROOT . '/lib/notification_sound.php';
+        if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+            jsonData(NotificationSound::forManager((int)$manager['id']));
+        }
+        $input = getInput();
+        $volume = array_key_exists('volume', $input) && $input['volume'] !== null && $input['volume'] !== ''
+            ? (int)$input['volume'] : null;
+        jsonOk(NotificationSound::save((int)$manager['id'], trim((string)($input['file'] ?? '')), $volume));
 
     case 'general':
         $manager = requireAuth();

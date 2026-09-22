@@ -452,6 +452,13 @@ try {
         case 'manager_delete':
             jsonOk(['result' => Managers::delete((int)($input['id'] ?? $_GET['id'] ?? 0), (int)$admin['id'])]);
 
+        // Постоянные разрывы сессии сделали повторный вход обычным явлением —
+        // это кнопка на случай, когда его правда нужно оборвать (issue #60)
+        case 'manager_kick_session':
+            require_once ROOT . '/lib/auth.php';
+            Auth::kickSession((int)($input['id'] ?? $_GET['id'] ?? 0));
+            jsonOk();
+
         // ---------- Prompts ----------
 
         case 'prompts':

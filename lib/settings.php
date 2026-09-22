@@ -12,7 +12,7 @@ final class Settings {
         // --- General ---
         'APP_URL'          => ['general', 'Публичный адрес сервиса', 'text', false, '', 'https://… — используется в вебхуках МойСклад'],
         'TIMEZONE'         => ['general', 'Часовой пояс', 'text', false, 'Europe/Moscow', ''],
-        'SESSION_LIFETIME' => ['general', 'Время жизни сессии, сек', 'int', false, 86400, ''],
+        'SESSION_LIFETIME' => ['general', 'Время жизни сессии, сек', 'int', false, 86400, 'Пока это время не истекло, кука входа не просит войти заново. Можно поставить до года (31536000)'],
 
         // --- LLM ---
         'LLM_PROVIDER_PRIORITY' => ['llm', 'Порядок провайдеров', 'text', false, 'yandex', 'Через запятую: yandex, openrouter'],

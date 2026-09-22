@@ -1918,6 +1918,12 @@ const App = {
         const backorder = Number(i.is_backorder) === 1 || (i.stock !== null && i.stock !== undefined && Number(i.stock) <= 0);
         // Товара нет — «под заказ» встаёт сама, без ручной галочки (issue #60)
         const waitOn = i.wait_on ? 1 : (backorder ? 1 : 0);
+        // Фото открыты сразу, без клика (issue #60) — грузим, как только строка
+        // реально окажется в DOM: этот вызов начинает ждать ответ сети раньше,
+        // чем вызывающий код успеет вставить возвращаемую разметку innerHTML'ом,
+        // а находит свою коробку по id уже после (тот же приём, что у
+        // loadSoundOptions/loadOrganizations).
+        if (i.id) this.autoLoadMatchPhotos(i.id);
         return `
             <div class="match-extra">
                 <div class="match-extra__money">
@@ -1947,10 +1953,11 @@ const App = {
                     ${i.wait_note ? `<span class="muted">${this.esc(i.wait_note)}</span>` : ''}
                 </div>
                 <div class="match-extra__photos">
-                    <!-- Фото выбираются здесь, сразу после товара (модуль 040) -->
+                    <!-- Фото выбираются здесь, сразу после товара (модуль 040), и
+                         открыты сразу, без клика (issue #60) -->
                     <button class="btn btn--outline btn--sm" ${i.id ? '' : 'disabled title="Сначала сохраните строку"'}
                             onclick="App.toggleMatchPhotos(this, ${i.id || 0})">🖼 Фото в КП</button>
-                    <div class="match-photos" data-match-photos hidden></div>
+                    <div class="match-photos" id="mp_${i.id || 0}" data-match-photos ${i.id ? '' : 'hidden'}></div>
                 </div>
                 <textarea data-field="comment_text" rows="4" class="match-extra__comment"
                           data-from-catalog="${i.comment_from_catalog ? 1 : 0}" oninput="this.dataset.fromCatalog = 0"
@@ -3074,29 +3081,44 @@ const App = {
         box.innerHTML = '<div class="loading">Загружаем фотографии...</div>';
         try {
             const d = await this.api(`requests.php?action=item_images&item_id=${itemId}`);
-            if (!d.available.length) {
-                box.innerHTML = '<div class="muted">Фотографий у позиции нет. Их приносит синхронизация '
-                              + 'с МойСклад или импорт каталога из Excel.</div>';
-                return;
-            }
-            // «Выбор не делали» — это все фотографии, как было до выбора
-            const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
-            box.innerHTML = `
-                <div class="muted">В КП пойдут отмеченные (${chosen.length} из ${d.available.length}):</div>
-                <div class="photos">
-                    ${d.available.map(a => `
-                        <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
-                            <input type="checkbox" data-photo-key="${this.esc(a.key)}"
-                                   ${chosen.includes(a.key) ? 'checked' : ''}
-                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked);
-                                             App.saveMatchPhotos(this, ${itemId})">
-                            <img src="${this.esc(a.url)}" alt="" loading="lazy">
-                        </label>`).join('')}
-                </div>
-                <div class="muted" data-photo-saved></div>`;
+            this.renderMatchPhotoBox(box, itemId, d);
         } catch (err) {
             box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
         }
+    },
+
+    /** Фото открыты сразу, без клика по «🖼 Фото в КП» (issue #60). Тихо: кнопка рядом покажет ошибку сама. */
+    async autoLoadMatchPhotos(itemId) {
+        if (!itemId) return;
+        try {
+            const d = await this.api(`requests.php?action=item_images&item_id=${itemId}`);
+            const box = document.getElementById(`mp_${itemId}`);
+            if (box) this.renderMatchPhotoBox(box, itemId, d);
+        } catch { /* окно фото просто останется пустым — кнопка рядом откроет и покажет ошибку */ }
+    },
+
+    /** Разметка блока фотографий подбора — общая для клика по кнопке и для автозагрузки. */
+    renderMatchPhotoBox(box, itemId, d) {
+        if (!d.available.length) {
+            box.innerHTML = '<div class="muted">Фотографий у позиции нет. Их приносит синхронизация '
+                          + 'с МойСклад или импорт каталога из Excel.</div>';
+            return;
+        }
+        // «Выбор не делали» — это все фотографии, как было до выбора
+        const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
+        box.innerHTML = `
+            <div class="muted">В КП пойдут отмеченные (${chosen.length} из ${d.available.length}):</div>
+            <div class="photos">
+                ${d.available.map(a => `
+                    <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
+                        <input type="checkbox" data-photo-key="${this.esc(a.key)}"
+                               ${chosen.includes(a.key) ? 'checked' : ''}
+                               onchange="this.closest('.photo').classList.toggle('photo--on', this.checked);
+                                         App.saveMatchPhotos(this, ${itemId})">
+                        <img src="${this.esc(a.url)}" alt="" loading="lazy">
+                    </label>`).join('')}
+            </div>
+            <div class="muted" data-photo-saved></div>`;
     },
 
     /** Галочка на фотографии сохраняется сама — «Сохранить» для неё не нужно. */
@@ -5859,6 +5881,7 @@ const App = {
         try {
             const d = await this.api('admin.php?action=signature');
             const mail = await this.api('settings.php?action=mail_signature');
+            const snd = await this.api('settings.php?action=notification_sound');
             card.innerHTML = `
                 <div class="card__title">Моя подпись${this.hint('signature')}</div>
                 <p class="muted">Ставится под теми КП, которые отправляете вы. Пусто — печатается подписант
@@ -5897,10 +5920,41 @@ const App = {
                 <pre class="sig-preview">${this.esc(mail.effective || '')}</pre>
                 <div class="flex flex--wrap">
                     <button class="btn btn--primary" onclick="App.saveMailSignature(this)">Сохранить подпись в письмах</button>
+                </div>
+
+                <!-- Звук уведомления — свой у каждого (issue #60) -->
+                <div class="card__title" style="margin-top:18px">Звук уведомлений</div>
+                <p class="muted">Каким звуком служба оповещает именно вас о новом письме. Пусто — общий звук
+                   из «Настройки → Почта».</p>
+                <div class="form-group flex">
+                    <select id="mySoundFile"><option value="${this.esc(snd.own_file || '')}">${this.esc(snd.own_file || '') || '(как в настройках)'}</option></select>
+                    <button type="button" class="btn btn--outline btn--sm" onclick="App.playSoundPreview('mySoundFile','mySoundVolume')">▶ Послушать</button>
+                </div>
+                <div class="form-group"><label>Громкость, %</label>
+                    <input type="number" id="mySoundVolume" min="0" max="100"
+                           value="${snd.own_volume ?? ''}" placeholder="${snd.volume}"></div>
+                <div class="flex flex--wrap">
+                    <button class="btn btn--primary" onclick="App.saveNotificationSound(this)">Сохранить звук уведомлений</button>
                 </div>`;
+            this.loadSoundOptions('mySoundFile', snd.own_file || '');
         } catch (err) {
             card.innerHTML = `<div class="card__title">Моя подпись</div><p class="no">${this.esc(err.message)}</p>`;
         }
+    },
+
+    /** Звук уведомления — свой у каждого менеджера (issue #60). */
+    async saveNotificationSound(btn) {
+        btn.disabled = true;
+        try {
+            const file = document.getElementById('mySoundFile').value;
+            const volEl = document.getElementById('mySoundVolume');
+            const volume = volEl.value === '' ? null : Number(volEl.value);
+            await this.api('settings.php?action=notification_sound', {method: 'POST', body: {file, volume}});
+            this.toast('Звук уведомлений сохранён', 'success');
+            this.loadUiPrefs();
+            this.loadSignature();
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
     },
 
     async saveSignatoryName(btn) {
@@ -8516,12 +8570,13 @@ const App = {
         } catch { /* останется то, что уже выбрано */ }
     },
 
-    playSoundPreview(selectId) {
+    /** volumeId по умолчанию — общая настройка; личный звук передаёт свой (issue #60). */
+    playSoundPreview(selectId, volumeId) {
         const sel = document.getElementById(selectId);
         if (!sel || !sel.value) { this.toast('Звук не выбран', 'info'); return; }
         try {
             const a = new Audio('/sounds/' + encodeURIComponent(sel.value));
-            const vol = document.getElementById('set_MAIL_SOUND_VOLUME');
+            const vol = document.getElementById(volumeId || 'set_MAIL_SOUND_VOLUME');
             a.volume = Math.min(1, Math.max(0, Number(vol ? vol.value : 60) / 100));
             a.play().catch(() => this.toast('Браузер не дал проиграть звук', 'error'));
         } catch (err) { this.toast(err.message, 'error'); }
@@ -9625,10 +9680,21 @@ const App = {
                 </div>
                 <div class="flex">
                     <button class="btn btn--primary" onclick="App.saveManager(${id || 'null'})">Сохранить</button>
+                    ${id ? `<button class="btn btn--outline" onclick="App.kickManagerSession(${id})"
+                                    title="Оборвать вход этого менеджера на всех устройствах">Сбросить вход</button>` : ''}
                     ${id ? `<button class="btn btn--danger" onclick="App.deleteManager(${id})">Удалить</button>` : ''}
                 </div>
             </div>
         `;
+    },
+
+    /** Оборвать активный вход менеджера на всех устройствах (issue #60). */
+    async kickManagerSession(id) {
+        if (!confirm('Сбросить вход? Менеджер будет разлогинен на всех устройствах при следующем действии.')) return;
+        try {
+            await this.api('admin.php?action=manager_kick_session', {method: 'POST', body: {id}});
+            this.toast('Вход сброшен', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     async saveManager(id) {

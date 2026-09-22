@@ -1785,6 +1785,26 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '38')");
         $current = 38;
     }
+
+    // v39 — модуль 043: вход не выбивает сам себя, но админ видит повторный
+    // логин и может сбросить чужую сессию; звук уведомления свой у каждого.
+    if ($current < 39) {
+        // Растёт при «Сбросить вход» из панели менеджеров — несовпадение со
+        // значением в $_SESSION делает текущую сессию менеджера недействительной.
+        Db::ensureColumn('managers', 'session_epoch', 'INTEGER', '0');
+        // Когда менеджер входил в последний раз — по этому штампу вход,
+        // случившийся, пока предыдущий ещё не истёк по SESSION_LIFETIME,
+        // считается «уже залогинен где-то ещё» и уведомляет админов.
+        Db::ensureColumn('managers', 'session_last_login_at', 'TEXT');
+
+        // Звук уведомления — свой у каждого (issue #60). Пусто — общий звук
+        // из MAIL_SOUND/MAIL_SOUND_VOLUME, как и раньше.
+        Db::ensureColumn('managers', 'notification_sound', 'TEXT');
+        Db::ensureColumn('managers', 'notification_sound_volume', 'INTEGER');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '39')");
+        $current = 39;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
@@ -1962,9 +1982,15 @@ function startSession(): void {
     // Never adopt an id we did not issue: after the session storage is wiped a
     // stale cookie would otherwise keep an unwritable session alive.
     ini_set('session.use_strict_mode', '1');
+    $lifetime = (int)($GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400);
+    // PHP's own garbage collector is independent of the cookie's lifetime and
+    // defaults to ~24 minutes on some hosts — a long SESSION_LIFETIME (issue
+    // #60 asks for up to a year) is pointless if the session file is swept
+    // long before the cookie expires.
+    ini_set('session.gc_maxlifetime', (string)max($lifetime, 86400));
     session_name(SESSION_COOKIE);
     session_set_cookie_params([
-        'lifetime' => (int)($GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400),
+        'lifetime' => $lifetime,
         'path'     => '/',
         'httponly' => true,
         'secure'   => $https,   // must be false on plain HTTP, or the cookie is dropped
@@ -1997,11 +2023,27 @@ function currentManager(): ?array {
     startSession();
     $id = $_SESSION['manager_id'] ?? null;
     if (!$id) return null;
-    return Db::one(
-        "SELECT id, login, name, email, phone, is_admin, moysklad_uid FROM managers
+    $m = Db::one(
+        "SELECT id, login, name, email, phone, is_admin, moysklad_uid, session_epoch FROM managers
          WHERE id=? AND COALESCE(is_active, 1) = 1",
         [$id]
     );
+    if (!$m) return null;
+
+    // Админ мог сбросить вход этого менеджера кнопкой «Сбросить вход»
+    // (issue #60) — сессия, заведённая до этого сброса, больше не годится.
+    // Сессия, заведённая ДО этой миграции, ещё не несёт session_epoch —
+    // такую доверяем один раз и забираем текущее значение, а не разлогиниваем
+    // всех при деплое.
+    if (!array_key_exists('session_epoch', $_SESSION)) {
+        $_SESSION['session_epoch'] = (int)$m['session_epoch'];
+    } elseif ((int)$_SESSION['session_epoch'] !== (int)$m['session_epoch']) {
+        $_SESSION = [];
+        if (session_status() === PHP_SESSION_ACTIVE) session_destroy();
+        return null;
+    }
+    unset($m['session_epoch']);
+    return $m;
 }
 
 /**
