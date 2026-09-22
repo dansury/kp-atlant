@@ -14,26 +14,35 @@ class LLM {
         // added when the request is built (gpt://<folder>/<slug>/latest), the way
         // careerhack does it. A slug that carries its own version still works —
         // «yandexgpt/rc» keeps the rc.
-        // Открытые модели (Llama, DeepSeek, Qwen, Gemma) в каталоге есть, но
-        // включены они не в каждом облаке и не в каждом регионе: слаг,
-        // которого у провайдера нет, отвечает 404 «unknown model». Поэтому
-        // список здесь — это КАНДИДАТЫ, а не факт. Что из них реально
-        // отвечает, выясняет «Проверить каталог Yandex» (verifyYandexModels)
-        // и запоминает в `yandex_models`; непроверенный слаг наружу уходит
-        // только после того, как его проверили.
+        // Список — это КАНДИДАТЫ, а не факт: открытые модели (Llama, DeepSeek,
+        // Qwen, Gemma) включены не в каждом облаке и не в каждом регионе, и
+        // слаг, которого у провайдера нет, отвечает 404 «unknown model».
+        // Что каталог отдаёт на самом деле, спрашивает «Проверить каталог
+        // Yandex» (verifyYandexModels) — у Models API, а если тот не ответил,
+        // то по одному короткому запросу на слаг, — и запоминает в
+        // `yandex_models` вместе с моделями, которых в этом списке нет.
         'yandex' => [
-            ['id' => 'yandexgpt',             'label' => 'YandexGPT Pro',             'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-32k',         'label' => 'YandexGPT Pro 32k',         'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-lite',        'label' => 'YandexGPT Lite — дешевле',  'group' => 'YandexGPT'],
-            ['id' => 'llama',                 'label' => 'Llama 70B',                 'group' => 'Открытые модели'],
-            ['id' => 'llama-lite',            'label' => 'Llama 8B',                  'group' => 'Открытые модели'],
-            ['id' => 'llama-3.3-70b-instruct','label' => 'Llama 3.3 70B Instruct',    'group' => 'Открытые модели'],
-            ['id' => 'deepseek-r1',           'label' => 'DeepSeek R1',               'group' => 'Открытые модели'],
-            ['id' => 'deepseek-v3',           'label' => 'DeepSeek V3',               'group' => 'Открытые модели'],
+            ['id' => 'yandexgpt-5.1',         'label' => 'YandexGPT Pro 5.1',         'group' => 'YandexGPT'],
+            ['id' => 'yandexgpt-5-pro',       'label' => 'YandexGPT Pro 5',           'group' => 'YandexGPT'],
+            ['id' => 'yandexgpt-5-lite',      'label' => 'YandexGPT Lite 5 — дешевле','group' => 'YandexGPT'],
+            ['id' => 'yandexgpt',             'label' => 'YandexGPT Pro — алиас последней версии', 'group' => 'YandexGPT'],
+            ['id' => 'yandexgpt-lite',        'label' => 'YandexGPT Lite — алиас последней версии', 'group' => 'YandexGPT'],
+            ['id' => 'aliceai-llm',           'label' => 'Alice AI LLM',              'group' => 'Alice AI'],
+            ['id' => 'aliceai-llm-flash',     'label' => 'Alice AI LLM Flash',        'group' => 'Alice AI'],
+            ['id' => 'deepseek-v4-flash',     'label' => 'DeepSeek V4 Flash',         'group' => 'Открытые модели'],
+            ['id' => 'gpt-oss-120b',          'label' => 'gpt-oss-120b',              'group' => 'Открытые модели'],
+            ['id' => 'gpt-oss-20b',           'label' => 'gpt-oss-20b',               'group' => 'Открытые модели'],
             ['id' => 'qwen3-235b-a22b-fp8',   'label' => 'Qwen3 235B',                'group' => 'Открытые модели'],
-            ['id' => 'qwen3-30b-a3b',         'label' => 'Qwen3 30B A3B',             'group' => 'Открытые модели'],
+            ['id' => 'qwen3.6-35b-a3b',       'label' => 'Qwen3.6 35B A3B',           'group' => 'Открытые модели'],
+            ['id' => 'qwen2.5-72b-instruct',  'label' => 'Qwen2.5 72B Instruct',      'group' => 'Открытые модели'],
+            ['id' => 'qwen2.5-32b-instruct',  'label' => 'Qwen2.5 32B Instruct',      'group' => 'Открытые модели'],
+            ['id' => 'qwen2.5-7b-instruct',   'label' => 'Qwen2.5 7B Instruct',       'group' => 'Открытые модели'],
+            ['id' => 'llama-3.3-70b-instruct','label' => 'Llama 3.3 70B Instruct',    'group' => 'Открытые модели'],
+            ['id' => 'llama-3.1-70b-instruct','label' => 'Llama 3.1 70B Instruct',    'group' => 'Открытые модели'],
             ['id' => 'gemma-3-27b-it',        'label' => 'Gemma 3 27B IT',            'group' => 'Открытые модели'],
             ['id' => 'gemma-3-12b-it',        'label' => 'Gemma 3 12B IT',            'group' => 'Открытые модели'],
+            ['id' => 'gemma-3-4b-it',         'label' => 'Gemma 3 4B IT',             'group' => 'Открытые модели'],
+            ['id' => 'gemma-3-1b-it',         'label' => 'Gemma 3 1B IT',             'group' => 'Открытые модели'],
         ],
         'openrouter' => [
             ['id' => 'anthropic/claude-sonnet-4.5',       'label' => 'Claude Sonnet 4.5',      'group' => 'Anthropic'],
@@ -64,6 +73,9 @@ class LLM {
 
     /** What the folder really serves, filled by verifyYandexModels(). */
     private const YX_CACHE_KEY = 'yandex_models';
+
+    /** Точный список моделей каталога: Models API, как советует документация. */
+    private const YX_MODELS_URL = 'https://llm.api.cloud.yandex.net/foundationModels/v1/models';
 
     /** Слаг, на который откатываемся, когда выбранного у провайдера нет. */
     private const YX_FALLBACK = 'yandexgpt';
@@ -144,13 +156,25 @@ class LLM {
     public static function catalog(string $provider): array {
         $rows = self::CATALOG[$provider] ?? [];
         if ($provider === 'yandex') {
-            $checked = self::yandexCache()['checked'] ?? [];
+            $cache   = self::yandexCache();
+            $checked = $cache['checked'] ?? [];
             foreach ($rows as &$row) {
                 $state = (string)($checked[$row['id']] ?? '');
                 $row['state'] = $state !== '' ? $state : 'unknown';
                 if ($state === 'missing') $row['label'] .= ' — нет в этом облаке';
             }
             unset($row);
+            // Модели, которые каталог облака перечислил, а список кандидатов не знает.
+            $seen = array_column($rows, 'id');
+            foreach ((array)($cache['models'] ?? []) as $m) {
+                if (!is_array($m) || empty($m['id']) || in_array($m['id'], $seen, true)) continue;
+                $rows[] = [
+                    'id'    => (string)$m['id'],
+                    'label' => (string)($m['label'] ?? $m['id']),
+                    'group' => (string)($m['group'] ?? 'Yandex · каталог облака'),
+                    'state' => 'ok',
+                ];
+            }
             return $rows;
         }
         if ($provider !== 'openrouter') return $rows;
@@ -230,12 +254,12 @@ class LLM {
     // нет, до запроса не доходит. Здесь роль каталога играет проба: у Yandex
     // нет открытого списка моделей, зато есть ответ на короткий запрос.
 
-    /** Что проба уже выяснила: {models, checked: {slug: ok|missing}, synced_at}. */
+    /** Что каталог уже выяснил: {checked: {slug: ok|missing}, models, synced_at}. */
     public static function yandexCache(): array {
         $raw  = Db::val("SELECT value FROM settings WHERE key=?", [self::YX_CACHE_KEY]);
         $data = $raw ? json_decode((string)$raw, true) : null;
-        if (!is_array($data)) return ['checked' => [], 'synced_at' => null];
-        return $data + ['checked' => [], 'synced_at' => null];
+        if (!is_array($data)) return ['checked' => [], 'models' => [], 'synced_at' => null];
+        return $data + ['checked' => [], 'models' => [], 'synced_at' => null];
     }
 
     private static function saveYandexCache(array $data): void {
@@ -248,17 +272,113 @@ class LLM {
     }
 
     /**
-     * Прогнать каталог Yandex по одному короткому запросу на слаг.
+     * Прогнать каталог Yandex: сперва спросить сам каталог, потом — пробой.
      *
-     * Кнопка в «Нейросетях». Отвечает — `ok`, 404 «unknown model» — `missing`,
-     * всё остальное (нет ключа, прокси, лимит) слаг не судит: это не про
-     * модель, и в кэш такой ответ не пишется, иначе одна сетевая неудача
-     * вычеркнула бы весь каталог.
+     * Кнопка в «Нейросетях». Точный список моделей, доступных именно в этом
+     * каталоге, отдаёт Models API (`GET /foundationModels/v1/models`) — его и
+     * спрашиваем: что там перечислено, то `ok`, чего нет — `missing`, а
+     * модели, которых нет в нашем списке кандидатов, попадают в `models` и
+     * дальше в выпадающий список, чтобы выбрать можно было и то, о чём код не
+     * знал. Если Models API не ответил (старое облако, прокси, 404), работает
+     * прежний способ: по одному короткому запросу на слаг.
      */
     public static function verifyYandexModels(): array {
         if (!self::ready('yandex')) throw new LLMException('Yandex: не задан ключ или Folder ID');
 
-        $checked = self::yandexCache()['checked'] ?? [];
+        try {
+            $listed = self::fetchYandexCatalog();
+        } catch (LLMException $e) {
+            Logger::warning('llm', 'Models API не ответил — проверяем слаги по одному: ' . $e->getMessage());
+            return self::probeYandexModels() + ['source' => 'probe'];
+        }
+
+        $known = array_column(self::CATALOG['yandex'], 'id');
+        $checked = [];
+        foreach ($known as $slug) {
+            $checked[$slug] = in_array($slug, $listed, true) ? 'ok' : 'missing';
+        }
+        $extra = [];
+        foreach ($listed as $slug) {
+            $checked[$slug] = 'ok';
+            if (!in_array($slug, $known, true)) {
+                $extra[] = ['id' => $slug, 'label' => $slug, 'group' => 'Yandex · каталог облака'];
+            }
+        }
+        $ok      = array_values(array_keys(array_filter($checked, static fn($s) => $s === 'ok')));
+        $missing = array_values(array_keys(array_filter($checked, static fn($s) => $s === 'missing')));
+
+        $payload = ['checked' => $checked, 'models' => $extra, 'synced_at' => date('Y-m-d H:i:s')];
+        self::saveYandexCache($payload);
+        Logger::info('llm', 'Каталог Yandex получен: моделей ' . count($listed) . ', из списка нет ' . count($missing),
+                     ['ok' => $ok, 'missing' => $missing, 'extra' => array_column($extra, 'id')]);
+        return $payload + ['ok' => $ok, 'missing' => $missing, 'unclear' => [], 'source' => 'models_api'];
+    }
+
+    /**
+     * Список моделей каталога — так, как его отдаёт провайдер. Ответ читается
+     * терпимо: `models` / `data` / `items`, строка-слаг или объект с
+     * `modelUri` / `uri` / `id` / `name`; `gpt://<каталог>/<слаг>/latest`
+     * приводится к слагу, чужой каталог и не-`gpt://` адреса (`art://`)
+     * пропускаются.
+     */
+    public static function fetchYandexCatalog(): array {
+        $key    = (string)(self::$cfg['YANDEX_API_KEY'] ?? '');
+        $folder = (string)(self::$cfg['YANDEX_FOLDER_ID'] ?? '');
+        if ($key === '' || $folder === '') throw new LLMException('Yandex: не задан ключ или Folder ID');
+
+        [$code, $body, $err] = self::httpGet(
+            self::YX_MODELS_URL . '?folderId=' . rawurlencode($folder),
+            ['Accept: application/json', 'Authorization: Api-Key ' . $key, 'x-folder-id: ' . $folder],
+            'yandex'
+        );
+        if ($code >= 400 || $body === '') throw new LLMException(self::explain('yandex', $code, $body, $err));
+
+        $slugs = self::yandexSlugsFrom(json_decode($body, true), $folder);
+        if (!$slugs) throw new LLMException('В ответе Models API не нашлось ни одной модели');
+        return $slugs;
+    }
+
+    /** Разобранный ответ Models API → слаги моделей этого каталога. */
+    public static function yandexSlugsFrom($data, string $folder): array {
+        if (!is_array($data)) return [];
+        $list = [];
+        foreach (['models', 'data', 'items'] as $k) {
+            if (isset($data[$k]) && is_array($data[$k])) { $list = $data[$k]; break; }
+        }
+        $slugs = [];
+        foreach ($list as $m) {
+            $raw = '';
+            if (is_string($m)) {
+                $raw = $m;
+            } elseif (is_array($m)) {
+                foreach (['modelUri', 'uri', 'id', 'name'] as $k) {
+                    if (isset($m[$k]) && is_string($m[$k])) { $raw = $m[$k]; break; }
+                }
+            }
+            $raw = trim($raw);
+            if ($raw === '') continue;
+            if (str_starts_with($raw, 'gpt://')) {
+                $parts = explode('/', substr($raw, 6));
+                if (count($parts) < 2) continue;
+                if ($parts[0] !== $folder && $parts[0] !== '') continue;   // чужой каталог
+                $raw = $parts[1];
+            }
+            $slug = (string)preg_replace('~/(latest|rc|deprecated)$~', '', $raw);
+            if (!preg_match('~^[A-Za-z0-9][A-Za-z0-9._-]*$~', $slug)) continue;   // art://, emb://, мусор
+            if (!in_array($slug, $slugs, true)) $slugs[] = $slug;
+        }
+        return $slugs;
+    }
+
+    /**
+     * Запасной способ: по одному короткому запросу на слаг. Отвечает — `ok`,
+     * 404 «unknown model» — `missing`, всё остальное (нет ключа, прокси,
+     * лимит) слаг не судит: это не про модель, и в кэш такой ответ не
+     * пишется, иначе одна сетевая неудача вычеркнула бы весь каталог.
+     */
+    private static function probeYandexModels(): array {
+        $cache = self::yandexCache();
+        $checked = $cache['checked'] ?? [];
         $ok = $missing = $unclear = [];
         foreach (self::CATALOG['yandex'] as $row) {
             $slug = (string)$row['id'];
@@ -275,9 +395,9 @@ class LLM {
                 }
             }
         }
-        $payload = ['checked' => $checked, 'synced_at' => date('Y-m-d H:i:s')];
+        $payload = ['checked' => $checked, 'models' => (array)($cache['models'] ?? []), 'synced_at' => date('Y-m-d H:i:s')];
         self::saveYandexCache($payload);
-        Logger::info('llm', 'Каталог Yandex проверен: доступно ' . count($ok) . ', нет ' . count($missing),
+        Logger::info('llm', 'Каталог Yandex проверен пробой: доступно ' . count($ok) . ', нет ' . count($missing),
                      ['ok' => $ok, 'missing' => $missing, 'unclear' => $unclear]);
         return $payload + ['ok' => $ok, 'missing' => $missing, 'unclear' => $unclear];
     }
@@ -768,8 +888,8 @@ class LLM {
         if ($code === 402) return $head . '. На счёте провайдера нет средств.';
         if ($code === 404) {
             $where = $provider === 'yandex'
-                ? ' Кнопка «Проверить каталог Yandex» в «Настройках → Нейросети» прогоняет слаги по одному '
-                  . 'и вычёркивает те, которых в этом облаке нет.'
+                ? ' Кнопка «Проверить каталог Yandex» в «Настройках → Нейросети» спрашивает '
+                  . 'у облака его список моделей и вычёркивает те, которых в нём нет.'
                 : ' Проверьте слаг в каталоге.';
             return $head . '. Такой модели у провайдера нет.' . $where;
         }

@@ -8243,9 +8243,11 @@ const App = {
                 <div class="card">
                     <div class="card__title">Каталог моделей Yandex</div>
                     <p class="muted">Открытые модели (Llama, DeepSeek, Qwen, Gemma) включены не в каждом облаке:
-                       слаг, которого у провайдера нет, отвечает «unknown model». Проверка прогоняет весь список
-                       по одному короткому запросу и вычёркивает то, чего в вашем Folder ID не оказалось —
-                       дальше такой слаг в запрос не уходит, вместо него отвечает YandexGPT.</p>
+                       слаг, которого у провайдера нет, отвечает «unknown model». Проверка спрашивает у облака
+                       его список моделей (Models API) и вычёркивает то, чего в вашем Folder ID не оказалось —
+                       дальше такой слаг в запрос не уходит, вместо него отвечает YandexGPT. Модели, которых нет
+                       в списке ниже, а в облаке есть, добавляются в выбор. Если Models API не ответил, список
+                       проверяется по-старому — по одному короткому запросу на слаг.</p>
                     <p class="muted">${yx.synced_at
                         ? `Проверено ${this.fmtDate(yx.synced_at)}: отвечает <strong class="ok">${yx.ok}</strong>,
                            нет в облаке <strong class="${yx.missing ? 'no' : ''}">${yx.missing}</strong> из ${yx.total}.`
@@ -8303,15 +8305,19 @@ const App = {
     },
 
     /**
-     * Прогнать слаги Yandex по одному (модуль 029). Так же сделано в CGM-diet:
-     * каталог приходит от провайдера, а не берётся из кода.
+     * Спросить у облака его каталог моделей (модуль 029). Так же сделано в
+     * CGM-diet: каталог приходит от провайдера, а не берётся из кода.
      */
     async verifyYandexModels() {
         const out = document.getElementById('yxCatalogResult');
-        out.innerHTML = '<p class="muted">Спрашиваем Yandex по одной модели — это небыстро...</p>';
+        out.innerHTML = '<p class="muted">Спрашиваем у Yandex список моделей каталога...</p>';
         try {
             const r = await this.api('admin.php?action=yandex_models_verify', {method: 'POST', body: {}});
+            const how = r.source === 'models_api'
+                ? 'Список пришёл от облака (Models API).'
+                : 'Models API не ответил — слаги проверены по одному.';
             out.innerHTML = `
+                <p class="muted">${how}</p>
                 <p class="ok">Отвечает: ${(r.ok || []).join(', ') || '— ни одна'}</p>
                 ${(r.missing || []).length ? `<p class="no">Нет в этом облаке: ${this.esc(r.missing.join(', '))}</p>` : ''}
                 ${(r.unclear || []).length ? `<p class="muted">Не удалось выяснить (ответ не про модель):<br>
