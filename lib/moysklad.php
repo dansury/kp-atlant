@@ -1263,7 +1263,8 @@ class MoySklad {
             $resp = curl_exec($ch);
             $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $curlErr = curl_error($ch);
-            curl_close($ch);
+            // Let the handle go now: the retry backoff below sleeps for seconds
+            unset($ch);
 
             // Keep the last response for diagnostics
             self::$lastHttp = [
