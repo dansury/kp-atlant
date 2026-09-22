@@ -328,7 +328,8 @@ function download(string $url, string $dest, array $extraHeaders = []): array {
         $errno    = curl_errno($ch);
         $errstr   = curl_error($ch);
         $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        // The handle holds $fp, so let it go before fclose()
+        unset($ch);
         fclose($fp);
         if (!$ok || $errno !== 0) {
             return [0, "curl errno {$errno}: {$errstr} (http {$httpCode})"];

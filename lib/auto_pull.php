@@ -259,7 +259,6 @@ final class AutoPull {
             $errno = curl_errno($ch);
             $err   = curl_error($ch);
             $code  = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
             if ($errno !== 0) return [null, 'curl ' . $errno . ': ' . $err];
         } else {
             if (!ini_get('allow_url_fopen')) return [null, 'нет curl и allow_url_fopen=Off'];
@@ -335,7 +334,6 @@ final class AutoPull {
         $errno = curl_errno($ch);
         $err   = curl_error($ch);
         $code  = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         $tail = trim(mb_substr($body, -600));
         // 42 — our own "silence" abort above, 28 — the whole timeout ran out

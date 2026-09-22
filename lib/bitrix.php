@@ -391,7 +391,6 @@ final class Bitrix {
         ]);
         curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         // Битрикс commonly answers a missing element with 200 + a «404» page;
         // that is the site's business. Everything outside 2xx is a definite no.
@@ -410,7 +409,6 @@ final class Bitrix {
         $body = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-        curl_close($ch);
 
         if ($code < 200 || $code >= 300 || !is_string($body) || $body === '') {
             Logger::warning('bitrix', 'Сайт не ответил по товару (HTTP ' . $code . ')',
