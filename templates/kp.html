@@ -12,6 +12,7 @@
     /* Знак — слева вверху, до всего остального: реквизиты отправителя стоят
        справа от него и в Word ложатся следующим абзацем (модуль 020) */
     .logo { float: left; max-height: 62px; margin: 0 15px 6px 0; }
+    .title-gap { margin: 0; font-size: 10pt; line-height: 1.45; }
     .title { text-align: center; font-size: 16pt; font-weight: bold; margin: 30px 0 20px; text-transform: uppercase; letter-spacing: 1px; }
     .intro { margin-bottom: 15px; }
     .block { margin: 15px 0; }
@@ -42,7 +43,9 @@
     .analog-of { font-size: 8.5pt; color: #6b6b6b; font-weight: bold; }
     /* Приложение: описания товаров за таблицей цен (модуль 034) */
     .appendix { page-break-before: always; margin-bottom: 10px; }
-    .appendix__title { font-size: 13pt; font-weight: bold; text-align: right; }
+        /* Выравнивание текста — слева (issue #60). Справа остаются только шапка
+       отправителя и денежные колонки таблицы: их так читают. */
+    .appendix__title { font-size: 13pt; font-weight: bold; text-align: left; }
     .appendix__subtitle { font-size: 12pt; font-weight: bold; text-align: center; margin-top: 10px; }
 
     /* Product card: description, photo gallery, specs, kit contents */
@@ -52,7 +55,7 @@
     /* Цена «до скидки» рядом с ценой «после» — клиент должен видеть, за что платит меньше */
     .was { font-size: 8pt; color: #777; text-decoration: line-through; }
     .card__name { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
-    .card__desc { font-size: 10pt; text-align: justify; }
+    .card__desc { font-size: 10pt; text-align: left; }
     .card__subtitle { font-size: 10pt; font-weight: bold; margin: 12px 0 4px; }
     .card__list { font-size: 10pt; margin: 0; }
     /* Описание приходит из МойСклад размеченным и печатается разметкой, а не
@@ -61,10 +64,12 @@
     .card__desc li, .card__list li { margin: 0 0 2px; }
     .card__desc p, .card__list p { margin: 0 0 5px; }
     .gallery { margin: 10px 0; text-align: center; }
-    .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; }
+    /* Фотографии не слипаются с текстом (issue #60): рамка отступа вокруг
+       каждой и поле между галереей и колонкой описания */
+    .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; padding: 4px; }
     /* В приложении фотография стоит СПРАВА, а описание обтекает её слева —
        так собран образец, по которому КП уходит клиенту (модуль 035) */
-    .card .gallery { float: right; width: 225px; margin: 0 0 8px 12px; text-align: right; }
+    .card .gallery { float: right; width: 225px; margin: 0 0 12px 16px; text-align: left; }
     .card .gallery img { max-width: 225px; max-height: 240px; }
     .disclaimer { font-size: 8.5pt; color: #666; font-style: italic; margin-top: 8px; }
 
@@ -159,6 +164,11 @@
 </div>
 
 <div style="clear:both"></div>
+
+<!-- Пустая строка перед заголовком (issue #60). В PDF это отступ, а в Word —
+     НАСТОЯЩИЙ пустой абзац: поля CSS Word схлопывает, и шапка упиралась
+     прямо в «Коммерческое предложение». -->
+<p class="title-gap">&nbsp;</p>
 
 <!-- Title -->
 <div class="title">Коммерческое предложение</div>

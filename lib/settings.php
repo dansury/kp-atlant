@@ -7,28 +7,75 @@
  * config.php from the server leaves the values edited in the UI in charge.
  */
 final class Settings {
+
+    /**
+     * Виджет чата, который стоял в `public/index.php` зашитым (issue #60).
+     *
+     * Остаётся значением по умолчанию, чтобы обновление ничего не выключило:
+     * администратор волен стереть его, выключить галочкой или вставить код
+     * другого сервиса.
+     */
+    public const SUPPORT_WIDGET_DEFAULT = <<<'HTML'
+        <script>
+        window.replainSettings = { id: '02391a2c-0104-46cd-9b04-87a680dfb320' };
+        (function(u){var s=document.createElement('script');s.async=true;s.src=u;
+        var x=document.getElementsByTagName('script')[0];x.parentNode.insertBefore(s,x);
+        })('https://widget.replain.cc/dist/client.js');
+        </script>
+        HTML;
+    /**
+     * Где взять значение (issue #60).
+     *
+     * Настройка, значение которой выдаёт другой сервис, объясняется не только
+     * словами: рядом с полем стоит ссылка на ту самую страницу, где токен
+     * создаётся. Иначе установка сводится к поиску «как получить ключ
+     * Yandex Cloud» в соседней вкладке — и к ключу с неверными правами.
+     *
+     * key => [url, label]
+     */
+    public const LINKS = [
+        'TIMEZONE'           => ['https://www.php.net/manual/ru/timezones.php', 'Список имён часовых поясов'],
+        'OPENROUTER_API_KEY' => ['https://openrouter.ai/settings/keys', 'Создать ключ OpenRouter'],
+        'OPENROUTER_MODEL'   => ['https://openrouter.ai/models', 'Список моделей OpenRouter'],
+        'YANDEX_API_KEY'     => ['https://yandex.cloud/ru/docs/iam/operations/authentication/manage-api-keys', 'Как выпустить API-ключ сервисного аккаунта'],
+        'YANDEX_FOLDER_ID'   => ['https://console.yandex.cloud/', 'Консоль Yandex Cloud: каталог и его идентификатор'],
+        'YANDEX_MODEL'       => ['https://yandex.cloud/ru/docs/foundation-models/concepts/yandexgpt/models', 'Модели Yandex Foundation Models'],
+        'GITHUB_TOKEN'       => ['https://github.com/settings/personal-access-tokens/new', 'Создать fine-grained токен (Contents: Read)'],
+        'MOYSKLAD_TOKEN'     => ['https://online.moysklad.ru/app/#profile', 'Профиль сотрудника МойСклад → «Токен доступа»'],
+        'MOYSKLAD_ORG_ID'    => ['https://online.moysklad.ru/app/#company/edit', 'Организации в МойСклад'],
+        'IMAP_PASSWORD'      => ['https://id.yandex.ru/security/app-passwords', 'Яндекс: пароль приложения для почты'],
+        'SMTP_PASSWORD'      => ['https://id.yandex.ru/security/app-passwords', 'Яндекс: пароль приложения для почты'],
+        'PUSH_VAPID_PRIVATE' => ['https://web.dev/articles/push-notifications-web-push-protocol?hl=ru', 'Что такое ключи VAPID'],
+        'BITRIX_WEBHOOK_URL' => ['#settings/catalog', 'Модуль для сайта: адрес вебхука выдаётся при его установке'],
+        'LEARNING_EXPORT_REPO' => ['https://github.com/settings/personal-access-tokens/new', 'Токену нужен Contents: Read and write в этом репозитории'],
+        'SUPPORT_WIDGET_CODE'  => ['https://replain.cc/', 'Re:plain — виджет, который стоит здесь по умолчанию'],
+        'SUPPORT_REPO'         => ['https://github.com/', 'Репозиторий, в issues которого уходят обращения'],
+        'SUPPORT_TOKEN'        => ['https://github.com/settings/personal-access-tokens/new', 'Создать токен с правом Issues: Read and write'],
+        'LLM_PROXY_AUTH'       => ['#settings/llm', 'Логин и пароль выдаёт владелец прокси'],
+    ];
+
     /** Keys the admin panel knows about: key => [group, label, type, secret, default, hint] */
     public const SPEC = [
         // --- General ---
         'APP_URL'          => ['general', 'Публичный адрес сервиса', 'text', false, '', 'https://… — используется в вебхуках МойСклад'],
-        'TIMEZONE'         => ['general', 'Часовой пояс', 'text', false, 'Europe/Moscow', ''],
-        'SESSION_LIFETIME' => ['general', 'Время жизни сессии, сек', 'int', false, 86400, ''],
+        'TIMEZONE'         => ['general', 'Часовой пояс', 'text', false, 'Europe/Moscow', 'Имя зоны из базы IANA: Europe/Moscow, Asia/Yekaterinburg. В этой зоне печатаются даты в КП и считается отложенная отправка'],
+        'SESSION_LIFETIME' => ['general', 'Время жизни сессии, сек', 'int', false, 86400, 'Сколько браузер помнит вход. 86400 — сутки, 2592000 — месяц, 31536000 — год. Кука продлевается при каждом заходе, так что работающий каждый день не разлогинится вовсе'],
 
         // --- LLM ---
         'LLM_PROVIDER_PRIORITY' => ['llm', 'Порядок провайдеров', 'text', false, 'yandex', 'Через запятую: yandex, openrouter'],
-        'LLM_TIMEOUT_SEC'       => ['llm', 'Таймаут запроса, сек', 'int', false, 30, ''],
-        'LLM_TEMPERATURE'       => ['llm', 'Температура по умолчанию', 'text', false, '0.3', ''],
+        'LLM_TIMEOUT_SEC'       => ['llm', 'Таймаут запроса, сек', 'int', false, 30, 'Сколько ждать ответ модели. Кончилось время — работает следующий провайдер из списка'],
+        'LLM_TEMPERATURE'       => ['llm', 'Температура по умолчанию', 'text', false, '0.3', '0 — модель повторяема и суха, 1 — свободна и выдумчива. Для разбора писем и подбора 0.2–0.4'],
         'LLM_MAX_TOKENS'        => ['llm', 'Предел длины ответа, токенов', 'int', false, 4096, 'Ограничивает ответ Yandex — API требует число. Оборванный на полуслове разбор письма («ответ оборвался по пределу длины» в журнале) лечится увеличением. У OpenRouter предел свой, провайдерский'],
         'LLM_MODEL_PICKER'      => ['llm', 'Выбор модели в окне ответа', 'bool', false, 1, 'Менеджер выбирает нейросеть прямо при создании ответа; выключено — работает цепочка провайдеров'],
         'LLM_PROXY'             => ['llm', 'Адрес прокси для запросов к нейросетям', 'text', false, '', 'http://host:port или socks5h://host:port. Общий адрес для обоих провайдеров — какой из них через него реально ходит, решают переключатели ниже'],
         'LLM_PROXY_AUTH'        => ['llm', 'Логин:пароль прокси', 'secret', true, '', 'user:password, если прокси с авторизацией'],
         'LLM_PROXY_OPENROUTER'  => ['llm', 'Прокси для OpenRouter', 'bool', false, 1, 'OpenRouter обычно недоступен напрямую с российского хостинга — прокси включён по умолчанию'],
         'LLM_PROXY_YANDEX'      => ['llm', 'Прокси для Yandex Foundation Models', 'bool', false, 0, 'Yandex Cloud обычно доступен напрямую с российского хостинга — прокси выключен по умолчанию'],
-        'OPENROUTER_API_KEY'    => ['llm', 'Ключ OpenRouter', 'secret', true, '', ''],
-        'OPENROUTER_MODEL'      => ['llm', 'Модель OpenRouter', 'model:openrouter', false, 'google/gemini-2.5-flash', ''],
+        'OPENROUTER_API_KEY'    => ['llm', 'Ключ OpenRouter', 'secret', true, '', 'Ключ вида sk-or-… из личного кабинета OpenRouter'],
+        'OPENROUTER_MODEL'      => ['llm', 'Модель OpenRouter', 'model:openrouter', false, 'google/gemini-2.5-flash', 'Слаг модели, как он записан у OpenRouter: google/gemini-2.5-flash, openai/gpt-4o-mini'],
         'OPENROUTER_BASE_URL'   => ['llm', 'Адрес API OpenRouter', 'text', false, 'https://openrouter.ai/api/v1', 'Свой зеркальный адрес, если основной недоступен'],
-        'YANDEX_API_KEY'        => ['llm', 'Ключ Yandex', 'secret', true, '', ''],
-        'YANDEX_FOLDER_ID'      => ['llm', 'Folder ID Yandex', 'text', false, '', ''],
+        'YANDEX_API_KEY'        => ['llm', 'Ключ Yandex', 'secret', true, '', 'API-ключ сервисного аккаунта Yandex Cloud с ролью ai.languageModels.user'],
+        'YANDEX_FOLDER_ID'      => ['llm', 'Folder ID Yandex', 'text', false, '', 'Идентификатор каталога Yandex Cloud вида b1g… — виден в адресной строке консоли и на странице каталога'],
         'YANDEX_MODEL'          => ['llm', 'Модель Yandex', 'model:yandex', false, 'yandexgpt', 'Слаг без версии: /latest подставляется сам'],
         'LLM_DISCIPLINE'        => ['llm', 'Дисциплина ответа', 'bool', false, 1, 'Ко всем промптам добавляется блок правил: делать работу целиком, не сокращать, не задавать лишних уточняющих вопросов, не выдумывать факты'],
         'LLM_DISCIPLINE_TEXT'   => ['llm', 'Текст блока дисциплины', 'textarea', false, '', 'Пусто — встроенный текст (виден в «Промптах»). Здесь его можно переписать под себя'],
@@ -36,11 +83,11 @@ final class Settings {
         // --- Knowledge base (module 005): the company wiki from GitHub ---
         'KNOWLEDGE_ENABLED'      => ['knowledge', 'Использовать базу знаний', 'bool', false, 1, 'Вики компании подмешивается в промпты, когда относится к делу'],
         'KNOWLEDGE_REPO'         => ['knowledge', 'Репозиторий GitHub', 'text', false, 'dansury/Atlant', 'В формате owner/repo'],
-        'KNOWLEDGE_BRANCH'       => ['knowledge', 'Ветка', 'text', false, 'Main', ''],
+        'KNOWLEDGE_BRANCH'       => ['knowledge', 'Ветка', 'text', false, 'Main', 'Ветка репозитория вики, откуда читаются .md'],
         'KNOWLEDGE_PATH'         => ['knowledge', 'Папка с вики', 'text', false, 'GRAPH/wiki', 'Путь внутри репозитория; читаются все .md'],
         'GITHUB_TOKEN'           => ['knowledge', 'Токен GitHub', 'secret', true, '', 'Fine-grained токен с правом Contents: Read. Для приватного репозитория обязателен'],
         'KNOWLEDGE_SYNC_TTL_SEC' => ['knowledge', 'Проверять обновления не чаще, сек', 'int', false, 600, '0 — проверять версию репозитория перед каждой генерацией'],
-        'KNOWLEDGE_TIMEOUT_SEC'  => ['knowledge', 'Таймаут запроса к GitHub, сек', 'int', false, 20, ''],
+        'KNOWLEDGE_TIMEOUT_SEC'  => ['knowledge', 'Таймаут запроса к GitHub, сек', 'int', false, 20, 'Сколько ждать ответ GitHub. Не дождались — берётся последняя скачанная копия вики'],
         'KNOWLEDGE_TASKS'        => ['knowledge', 'Где применять', 'text', false, 'mail_reply,reply_kp,reply_product,reply_availability,reply_order_status,reply_delivery,reply_edo,reply_closing_docs,reply_contract,reply_tender,reply_gov_order,reply_return,reply_docs,reply_wholesale,reply_complaint,cover_letter,followup,normalize_names', 'Ключи задач через запятую: mail_reply, cover_letter, followup, normalize_names'],
         'KNOWLEDGE_MAX_CHARS'    => ['knowledge', 'Максимум символов вики в промпте', 'int', false, 6000, 'Бюджет для ответа на письмо; у остальных задач — доля от него'],
         'KNOWLEDGE_MIN_HITS'     => ['knowledge', 'Минимум совпавших терминов', 'int', false, 2, 'Ниже порога раздел вики не подмешивается — «незачем»'],
@@ -64,6 +111,8 @@ final class Settings {
         'SITE_FORM_SPAM_FILTER'=> ['triage', 'Отсеивать спам из форм сайта', 'bool', false, 1, 'Заявки, заполненные ботом (имя «1», сообщение «555», SQL-payload), не доходят до модели и не заводят запрос'],
         'MAIL_SYNC_TRIAGE_BUDGET' => ['mail', 'Секунд на разбор при нажатии «Забрать почту»', 'int', false, 10, 'Письма забираются целиком и сразу видны; на разбор нейросетью отводится столько секунд, остальное дочитает следующий заход или cron. 0 — разбирать всё сразу и заставить кнопку ждать'],
         'MAIL_SIGNATURE'       => ['mail', 'Общая подпись в письмах', 'textarea', false, '', 'Ею подписываются письма тех, кто не завёл свою подпись в «Моей подписи». Пусто — подпись собирается из имени и телефона менеджера'],
+        // Отложенная отправка (issue #60): час, который предлагают подсказки
+        'MAIL_SCHEDULE_HOUR'   => ['mail', 'Час для подсказок отложенной отправки', 'int', false, 9, 'Подсказки «Завтра в 09:00» и «В понедельник в 09:00» считают именно этот час. Само время можно всегда выставить вручную'],
         'MAIL_OUTGOING_FROM'   => ['mail', 'Адрес для всех исходящих', 'text', false, '', 'Пусто — письмо уходит из ящика, в который пришло. Заполнено — ВСЕ ответы уходят с этого адреса, каким бы ящиком их ни открыли'],
 
         // --- Web push (module 007) ---
@@ -80,7 +129,7 @@ final class Settings {
         'CATALOG_DEFAULT_PRICE_TYPE' => ['moysklad', 'Тип цены по умолчанию', 'text', false, 'Цена продажи', 'Имя типа цены МойСклад (Опт безнал, Розница, Цена продажи). Это же имя — колонка «Цена: …» в импорте Excel: импорт берёт цену из неё и записывает её сюда. Используется, когда для контрагента или товара не выбран другой тип'],
         // --- Правки, на которых сервис учится (модуль 022) ---
         'LEARNING_EXPORT_REPO'   => ['knowledge', 'Репозиторий для выгрузки правок', 'text', false, 'dansury/Atlant', 'Куда уходит архив правок. Пусто — тот же, что у вики'],
-        'LEARNING_EXPORT_BRANCH' => ['knowledge', 'Ветка для выгрузки правок', 'text', false, 'Main', ''],
+        'LEARNING_EXPORT_BRANCH' => ['knowledge', 'Ветка для выгрузки правок', 'text', false, 'Main', 'Ветка, в которую коммитится архив правок'],
         'LEARNING_EXPORT_PATH'   => ['knowledge', 'Папка для выгрузки правок', 'text', false, 'GRAPH/RAW/NEW', 'Путь внутри репозитория. Архив кладётся файлом с датой в имени'],
         'REQUISITES_AUTOSYNC' => ['moysklad', 'Тянуть реквизиты из МойСклад', 'bool', false, 1, 'НДС, ИНН/КПП, адреса, банк и договор берутся из организации и договора в МойСклад и фиксируются в КП'],
         // --- Счёт создаётся вместе с заказом в резерве (модуль 026) ---
@@ -101,17 +150,17 @@ final class Settings {
         'MATCH_AUTO_CONFIRM'   => ['match', 'Порог автоподтверждения', 'text', false, '0.88', 'Выше него позиция подставляется сама и помечается «ок»'],
         'MATCH_EQUAL_DELTA'    => ['match', 'Разница «равнозначных», доли', 'text', false, '0.05', 'Кандидаты в пределах этой разницы считаются равнозначными — менеджер выбирает сам'],
         'MATCH_VECTOR_WEIGHT'  => ['match', 'Вес векторного поиска', 'text', false, '0.5', '0 — только слова, 1 — только смысл. Работает при включённой векторизации'],
-        'MATCH_CANDIDATES'     => ['match', 'Сколько вариантов показывать', 'int', false, 5, ''],
+        'MATCH_CANDIDATES'     => ['match', 'Сколько вариантов показывать', 'int', false, 5, 'Сколько вариантов каталога показывать в строке подбора под «ещё похожие»'],
         'MATCH_DESC_WEIGHT'    => ['match', 'Вес совпадения в описании', 'text', false, '0.75', 'Позиция ищется и по описанию, не только по названию: «монокуляр» бывает не в имени товара, а в его описании. 0 — не искать по описанию вовсе. Найденное по описанию стоит ПОСЛЕ всего, что совпало названием, и само себя не подтверждает: комплект, который перечисляет товар в составе, не занимает место самого товара'],
         'VECTOR_ENABLED'       => ['match', 'Векторный поиск по каталогу', 'bool', false, 1, 'Эмбеддинги Yandex Cloud. Без ключа Yandex подбор молча остаётся словесным'],
         'VECTOR_MODEL_DOC'     => ['match', 'Модель эмбеддингов каталога', 'text', false, 'text-search-doc', 'emb://<folder>/<модель>/latest'],
-        'VECTOR_MODEL_QUERY'   => ['match', 'Модель эмбеддингов запроса', 'text', false, 'text-search-query', ''],
+        'VECTOR_MODEL_QUERY'   => ['match', 'Модель эмбеддингов запроса', 'text', false, 'text-search-query', 'Модель эмбеддингов для текста ЗАПРОСА — пара к модели каталога выше'],
         'VECTOR_BATCH'         => ['match', 'Позиций в одной пачке', 'int', false, 20, 'Размер порции, которая обрабатывается за один заход. Больше — быстрее, но легче упереться в лимит'],
         'VECTOR_CONCURRENCY'   => ['match', 'Параллельных запросов', 'int', false, 5, 'Сколько запросов пачки висят на линии одновременно. Уменьшите при HTTP 429 от Yandex'],
         'VECTOR_PAUSE_MS'      => ['match', 'Пауза между пачками, мс', 'int', false, 100, 'Страховка от rate limit'],
         'VECTOR_BUDGET_SEC'    => ['match', 'Лимит времени на шаг, сек', 'int', false, 20, 'Шаг останавливается по времени, следующий продолжает с того же места'],
         'VECTOR_RETRIES'       => ['match', 'Повторов при ошибке', 'int', false, 3, 'На 429 и 5xx позиция уходит в повтор с нарастающей паузой'],
-        'VECTOR_TIMEOUT_SEC'   => ['match', 'Таймаут запроса, сек', 'int', false, 20, ''],
+        'VECTOR_TIMEOUT_SEC'   => ['match', 'Таймаут запроса, сек', 'int', false, 20, 'Сколько ждать ответ API эмбеддингов на одну пачку'],
         'VECTOR_ENDPOINT'      => ['match', 'Адрес API эмбеддингов', 'text', false, '', 'Пусто — стандартный адрес Yandex Cloud. Свой нужен, когда API доступен только через зеркало'],
         'MATCH_SYNONYMS'       => ['match', 'Свои синонимы', 'textarea', false, '', 'По строке на группу, слова через запятую. Первое слово — основное: «бронежилет, броник, бж». Встроенный список этим дополняется, а не заменяется'],
         'ALT_ENABLED'          => ['match', 'Предлагать аналоги, когда позиции нет в наличии', 'bool', false, 1, 'В КП вместо пустой строки встаёт похожая позиция со склада, и документ прямо называет, каким требованиям она соответствует'],
@@ -156,31 +205,31 @@ final class Settings {
         'BITRIX_URL_TEMPLATE'    => ['bitrix', 'Шаблон адреса товара', 'text', false, '', 'Например /catalog/{article}/ — подставляются {article}, {code}, {slug}, {id}. Используется, когда вебхука нет или он не ответил'],
         'BITRIX_SEARCH_TEMPLATE' => ['bitrix', 'Шаблон поиска по сайту', 'text', false, '/search/?q={query}', 'Последний вариант: ссылка на поиск по артикулу. Пусто — ссылку не печатать вовсе'],
         'BITRIX_VERIFY_URL'      => ['bitrix', 'Проверять ссылку перед КП', 'bool', false, 1, 'Ссылка, отвечающая не 2xx, в документ не попадает'],
-        'BITRIX_CACHE_DAYS'      => ['bitrix', 'Хранить найденную ссылку, дней', 'int', false, 30, ''],
-        'BITRIX_TIMEOUT_SEC'     => ['bitrix', 'Таймаут запроса к сайту, сек', 'int', false, 10, ''],
+        'BITRIX_CACHE_DAYS'      => ['bitrix', 'Хранить найденную ссылку, дней', 'int', false, 30, 'Найденный адрес товара на сайте не ищется заново столько дней'],
+        'BITRIX_TIMEOUT_SEC'     => ['bitrix', 'Таймаут запроса к сайту, сек', 'int', false, 10, 'Сколько ждать ответ сайта при поиске ссылки на товар'],
         'BITRIX_EXPORT_PAGE'     => ['bitrix', 'Товаров за один шаг выгрузки', 'int', false, 500, 'Модуль «Атлант: выгрузка каталога для КП» отдаёт весь каталог страницами — одним запросом вместо одного на позицию. Меньше — если хостинг сайта не успевает'],
         'BITRIX_EXPORT_STEPS'    => ['bitrix', 'Шагов выгрузки за один проход', 'int', false, 20, 'Проход обрывается на этом числе страниц, следующий продолжает с того же места'],
 
         // --- Mail defaults (a new mailbox is pre-filled from these) ---
-        'IMAP_HOST'       => ['mail', 'IMAP сервер', 'text', false, '', ''],
-        'IMAP_PORT'       => ['mail', 'IMAP порт', 'int', false, 993, ''],
-        'IMAP_USER'       => ['mail', 'IMAP логин', 'text', false, '', ''],
-        'IMAP_PASSWORD'   => ['mail', 'IMAP пароль', 'secret', true, '', ''],
-        'IMAP_ENCRYPTION' => ['mail', 'IMAP шифрование', 'select:ssl,tls,notls', false, 'ssl', ''],
-        'SMTP_HOST'       => ['mail', 'SMTP сервер', 'text', false, '', ''],
-        'SMTP_PORT'       => ['mail', 'SMTP порт', 'int', false, 465, ''],
-        'SMTP_USER'       => ['mail', 'SMTP логин', 'text', false, '', ''],
-        'SMTP_PASSWORD'   => ['mail', 'SMTP пароль', 'secret', true, '', ''],
-        'SMTP_ENCRYPTION' => ['mail', 'SMTP шифрование', 'select:ssl,tls,', false, 'ssl', ''],
-        'SMTP_FROM_NAME'  => ['mail', 'Имя отправителя', 'text', false, 'Atlant Armour', ''],
-        'SMTP_FROM_EMAIL' => ['mail', 'Адрес отправителя', 'text', false, '', ''],
+        'IMAP_HOST'       => ['mail', 'IMAP сервер', 'text', false, '', 'Адрес входящей почты хостера: imap.yandex.ru, imap.mail.ru, mail.<ваш домен>'],
+        'IMAP_PORT'       => ['mail', 'IMAP порт', 'int', false, 993, '993 с SSL, 143 без шифрования'],
+        'IMAP_USER'       => ['mail', 'IMAP логин', 'text', false, '', 'Обычно полный адрес ящика'],
+        'IMAP_PASSWORD'   => ['mail', 'IMAP пароль', 'secret', true, '', 'Для Яндекса и Mail.ru — ПАРОЛЬ ПРИЛОЖЕНИЯ, а не пароль от аккаунта: с обычным паролем IMAP отключён'],
+        'IMAP_ENCRYPTION' => ['mail', 'IMAP шифрование', 'select:ssl,tls,notls', false, 'ssl', 'ssl для порта 993, tls (STARTTLS) для 143, notls — без шифрования'],
+        'SMTP_HOST'       => ['mail', 'SMTP сервер', 'text', false, '', 'Адрес исходящей почты хостера: smtp.yandex.ru, smtp.mail.ru'],
+        'SMTP_PORT'       => ['mail', 'SMTP порт', 'int', false, 465, '465 с SSL, 587 со STARTTLS'],
+        'SMTP_USER'       => ['mail', 'SMTP логин', 'text', false, '', 'Обычно полный адрес ящика'],
+        'SMTP_PASSWORD'   => ['mail', 'SMTP пароль', 'secret', true, '', 'Тот же пароль приложения, что и у IMAP'],
+        'SMTP_ENCRYPTION' => ['mail', 'SMTP шифрование', 'select:ssl,tls,', false, 'ssl', 'ssl для 465, tls для 587, пусто — без шифрования'],
+        'SMTP_FROM_NAME'  => ['mail', 'Имя отправителя', 'text', false, 'Atlant Armour', 'Имя, которое клиент видит вместо адреса в поле «От кого»'],
+        'SMTP_FROM_EMAIL' => ['mail', 'Адрес отправителя', 'text', false, '', 'Адрес в поле «От кого». Должен совпадать с ящиком SMTP — иначе письмо уйдёт в спам'],
 
         // --- Mail behaviour ---
         'MAIL_ARCHIVE_ALL'   => ['mail', 'Архивировать всю почту', 'bool', false, 1, 'Входящие и исходящие складываются в раздел «Почта»'],
         'MAIL_SYNC_SENT'     => ['mail', 'Забирать папку «Отправленные»', 'bool', false, 1, 'Письма, отправленные мимо сервиса — с телефона, из Outlook, из веб-почты, — приходят вместе с входящими: по кнопке «Забрать почту», при открытии страницы и по расписанию. Ответ ложится на карточку компании, и она перестаёт ждать ответа'],
         'MAIL_APPEND_SENT'   => ['mail', 'Класть свои письма в «Отправленные»', 'bool', false, 1, 'IMAP APPEND после отправки'],
-        'MAIL_FETCH_LIMIT'   => ['mail', 'Писем за один проход', 'int', false, 50, ''],
-        'MAIL_BODY_MAX_KB'   => ['mail', 'Максимум тела письма, КБ', 'int', false, 512, ''],
+        'MAIL_FETCH_LIMIT'   => ['mail', 'Писем за один проход', 'int', false, 50, 'Сколько писем забирать с сервера за один заход. Первый заход по большому ящику идёт несколькими проходами'],
+        'MAIL_BODY_MAX_KB'   => ['mail', 'Максимум тела письма, КБ', 'int', false, 512, 'Тело длиннее обрезается при сохранении: рассылка с картинками на 8 МБ не должна раздувать базу'],
         'MAIL_BACKFILL_BATCH'   => ['mail', 'Писем за один шаг скачивания архива', 'int', false, 100, 'Скачивание всей почты идёт шагами — на дешёвом хостинге ставьте меньше'],
         'MAIL_BACKFILL_SECONDS' => ['mail', 'Лимит времени на шаг, сек', 'int', false, 20, 'Шаг прерывается по времени, следующий продолжает с того же места'],
         'MAIL_THREADS'       => ['mail', 'Показывать письма цепочками', 'bool', false, 1, 'Письма с одной темой (с «Re:» и без) собираются в одну переписку по всем ящикам'],
@@ -191,7 +240,7 @@ final class Settings {
         // --- Как почта забирается сама (модуль 023) ---
         'MAIL_AUTO_POLL_MIN' => ['mail', 'Опрашивать ящики каждые, мин', 'int', false, 10, 'Панель забирает почту сама с этим интервалом и один раз сразу после открытия страницы. 0 — только по кнопке «Забрать почту»'],
         'MAIL_SOUND'         => ['mail', 'Звук нового письма', 'sound', false, '', 'Файл из папки sounds/. Пусто — без звука'],
-        'MAIL_SOUND_VOLUME'  => ['mail', 'Громкость звука, %', 'int', false, 60, ''],
+        'MAIL_SOUND_VOLUME'  => ['mail', 'Громкость звука, %', 'int', false, 60, 'Громкость звука уведомления. Свой звук и свою громкость каждый выбирает в «Моей подписи»'],
         'MAIL_ATTACH_MAX_MB' => ['mail', 'Максимум своего вложения, МБ', 'int', false, 25, 'Файл, который менеджер прикладывает к письму сам. Больше этого почта всё равно не примет'],
 
         // --- Дедупликация и импорт переписки (модуль 021) ---
@@ -209,8 +258,8 @@ final class Settings {
 
         // --- Notifications ---
         'FALLBACK_EMAIL'        => ['notify', 'Почта для эскалации', 'text', false, '', 'Куда уходит письмо о необработанном запросе'],
-        'FALLBACK_HOURS'        => ['notify', 'Порог эскалации, часов', 'int', false, 24, ''],
-        'NOTIFICATION_POLL_SEC' => ['notify', 'Опрос уведомлений, сек', 'int', false, 30, ''],
+        'FALLBACK_HOURS'        => ['notify', 'Порог эскалации, часов', 'int', false, 24, 'Через столько часов без реакции уведомление дублируется письмом'],
+        'NOTIFICATION_POLL_SEC' => ['notify', 'Опрос уведомлений, сек', 'int', false, 30, 'Как часто открытая вкладка спрашивает сервер о новых уведомлениях'],
 
         // --- Обратная связь (модуль 038): жалоба из панели → issue репозитория ---
         'SUPPORT_ENABLED'       => ['support', 'Кнопка «Написать в поддержку»', 'bool', false, 1, 'Менеджер описывает проблему прямо на том экране, где её встретил, и прикладывает файлы. Обращение уходит администратору на ревью, а не сразу в GitHub'],
@@ -220,15 +269,21 @@ final class Settings {
         'SUPPORT_ASSETS_BRANCH' => ['support', 'Ветка для файлов', 'text', false, '', 'Пусто — ветка репозитория по умолчанию'],
         'SUPPORT_MAX_MB'        => ['support', 'Файл к обращению, МБ', 'int', false, 25, 'Картинки, документы и видео крупнее не принимаются'],
 
+        // --- Виджет поддержки на странице (issue #60) ---
+        // Код виджета был зашит в index.php вместе с чужим идентификатором
+        // аккаунта: выключить его было нельзя, заменить — тем более.
+        'SUPPORT_WIDGET'      => ['support', 'Виджет чата на странице', 'bool', false, 1, 'Плавающая кнопка чата в углу окна. Выключено — на странице не будет ни кнопки, ни запроса к стороннему сервису'],
+        'SUPPORT_WIDGET_CODE' => ['support', 'Код виджета чата', 'textarea', false, self::SUPPORT_WIDGET_DEFAULT, 'HTML-код, который выдаёт сервис чата (Re:plain, Jivo, Carrot quest — любой). Вставляется в страницу как есть. Пусто — виджета нет'],
+
         // --- Auto-deploy (module 014): the active-development checkbox ---
         'AUTOPULL_ENABLED'  => ['deploy', 'Проверять обновления при каждом запуске', 'bool', false, 0, 'На время активной разработки: каждое открытие страницы тихо спрашивает у GitHub head отслеживаемой ссылки, и новый коммит выкладывается через pull.php — страница открывается заново уже на новом коде. Репозиторий, токен и пароль pull.php берутся из pull-config.php в корне сайта'],
         'AUTOPULL_INTERVAL' => ['deploy', 'Проверять не чаще, сек', 'int', false, 0, '0 — при каждом открытии страницы. Каждая проверка — один запрос к API GitHub (лимит 5000 в час с токеном)'],
         'AUTOPULL_URL'      => ['deploy', 'Адрес pull.php', 'text', false, '', 'Пусто — вычисляется сам из каталога скрипта. Заполняется, когда хостинг не открывает собственный домен изнутри PHP'],
 
         // --- Logging ---
-        'LOG_LEVEL'          => ['log', 'Уровень логирования', 'select:debug,info,warning,error', false, 'info', ''],
-        'LOG_RETENTION_DAYS' => ['log', 'Хранить логи, дней', 'int', false, 30, ''],
-        'LOG_PHP_ERRORS'     => ['log', 'Ловить ошибки и warning PHP', 'bool', false, 1, ''],
+        'LOG_LEVEL'          => ['log', 'Уровень логирования', 'select:debug,info,warning,error', false, 'info', 'С какого уровня писать в журнал. debug — всё подряд, info — обычная работа, warning и error — только проблемы'],
+        'LOG_RETENTION_DAYS' => ['log', 'Хранить логи, дней', 'int', false, 30, 'Записи старше убираются. 0 — не убирать вовсе'],
+        'LOG_PHP_ERRORS'     => ['log', 'Ловить ошибки и warning PHP', 'bool', false, 1, 'Ошибки и warning самого PHP попадают в журнал панели, а не только в лог хостинга'],
         'LOG_PHP_DEPRECATED' => ['log', 'Писать deprecated-предупреждения PHP', 'bool', false, 0, 'Служебные сообщения новой версии PHP — нужны разработчику, не администратору'],
         'NOTIFY_ERRORS'      => ['log', 'Слать ошибки администратору в уведомления', 'bool', false, 1, 'Каждая НОВАЯ запись уровня «ошибка» приходит колокольчиком и push-ом со ссылкой на журнал. Повторы одного и того же сообщения внутри окна дедупликации не шлются — уведомление приходит один раз, а не двести'],
     ];
@@ -350,6 +405,8 @@ final class Settings {
                 'type'         => $type,
                 'secret'       => (bool)$secret,
                 'hint'         => $hint,
+                // Где взять значение — ссылкой, а не подсказкой «см. документацию»
+                'link'         => self::link($key),
                 'source'       => $source,
                 'has_config'   => array_key_exists($key, self::$file),
                 'has_override' => $source === 'db',
@@ -360,6 +417,16 @@ final class Settings {
             ];
         }
         return $rows;
+    }
+
+    /**
+     * Ссылка «где взять» у ключа: [url, label] или null.
+     *
+     * @return array{url:string,label:string}|null
+     */
+    public static function link(string $key): ?array {
+        $l = self::LINKS[$key] ?? null;
+        return $l ? ['url' => $l[0], 'label' => $l[1]] : null;
     }
 
     /**

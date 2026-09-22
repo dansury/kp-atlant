@@ -31,6 +31,9 @@ const MANAGER_ACTIONS = [
     'tov', 'tov_save', 'tov_reset',
     'learning', 'learning_save', 'learning_add',
     'signature', 'signature_reset',
+    // Свой звук уведомления выбирает каждый — значит, и список звуков
+    // должен открываться каждому (issue #60)
+    'sounds',
 ];
 
 $admin = in_array($action, MANAGER_ACTIONS, true) ? requireAuth() : requireAdmin();
@@ -453,6 +456,28 @@ try {
 
         case 'manager_delete':
             jsonOk(['result' => Managers::delete((int)($input['id'] ?? $_GET['id'] ?? 0), (int)$admin['id'])]);
+
+        /**
+         * Обнулить вход менеджера (issue #60).
+         *
+         * Чужая сессия перестаёт открываться сразу, где бы она ни была открыта:
+         * на своём телефоне, на компьютере в офисе, на чужом ноутбуке.
+         */
+        case 'manager_logout': {
+            $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!Db::one("SELECT id FROM managers WHERE id=?", [$id])) jsonError('Менеджер не найден', 404);
+            $epoch = Auth::resetSessions($id);
+            Logger::info('auth', 'Вход менеджера обнулён', ['manager_id' => $id, 'by' => $admin['id']]);
+            jsonOk(['epoch' => $epoch]);
+        }
+
+        // Последние входы менеджера: когда и откуда (issue #60)
+        case 'manager_logins': {
+            $id = (int)($_GET['id'] ?? 0);
+            jsonData(['items' => Db::all(
+                "SELECT id, ip, user_agent, created_at FROM manager_logins
+                 WHERE manager_id=? ORDER BY id DESC LIMIT 20", [$id])]);
+        }
 
         // ---------- Prompts ----------
 

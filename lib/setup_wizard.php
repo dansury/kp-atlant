@@ -289,6 +289,9 @@ final class SetupWizard {
             'label'  => $label,
             'type'   => $type,
             'hint'   => $hint,
+            // Ссылка «где взять токен» — та же, что в настройках (issue #60):
+            // мастер и настройки объясняют поле одинаково
+            'link'   => Settings::link($key),
             'secret' => (bool)$secret,
             'value'  => $secret ? '' : (string)$value,
             'filled' => $secret ? ((string)$value !== '') : null,

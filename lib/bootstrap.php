@@ -1802,6 +1802,63 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '39')");
         $current = 39;
     }
+
+    // v40 — модуль 044 (issue #60): свой звук уведомления, вход под контролем,
+    // отложенная отправка письма.
+    if ($current < 40) {
+        // Звук нового письма и его громкость — у каждого свои. NULL — «как в
+        // настройках сервиса»: общий звук остаётся значением по умолчанию
+        Db::ensureColumn('managers', 'notify_sound', 'TEXT');
+        Db::ensureColumn('managers', 'notify_volume', 'INTEGER');
+
+        /**
+         * «Постоянно слетает авторизация» (issue #60).
+         *
+         * Кука жила ровно `SESSION_LIFETIME` от входа и не продлевалась, а
+         * сборщик мусора PHP убирал файл сессии через свои 24 минуты. Теперь
+         * кука продлевается на каждом заходе, а администратор может обнулить
+         * чужой вход: `session_epoch` растёт, и сессии со старым номером
+         * перестают открываться.
+         */
+        Db::ensureColumn('managers', 'session_epoch', 'INTEGER', '0');
+
+        // Входы: кто, когда и откуда. По ним же видно вход с нового адреса —
+        // о нём администратор получает уведомление
+        Db::q("CREATE TABLE IF NOT EXISTS manager_logins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER NOT NULL REFERENCES managers(id),
+            ip TEXT,
+            user_agent TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_manager_logins ON manager_logins(manager_id, id)");
+
+        /**
+         * Отложенная отправка (issue #60).
+         *
+         * Письмо, которому назначили время, лежит здесь целиком — тем самым
+         * телом, которое собрал менеджер. Отправляет его тот же код, что и
+         * кнопка «Отправить»: отложенное письмо не должно отличаться от
+         * обычного ничем, кроме минуты отправки.
+         */
+        Db::q("CREATE TABLE IF NOT EXISTS mail_scheduled (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER NOT NULL REFERENCES managers(id),
+            send_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            subject TEXT,
+            to_addr TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            sent_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_mail_scheduled_due ON mail_scheduled(status, send_at)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '40')");
+        $current = 40;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
@@ -1970,24 +2027,64 @@ function syncManagersFromConfig(array $cfg): void {
     }
 }
 
+/**
+ * Сколько живёт вход, в секундах (issue #60).
+ *
+ * Настройка `SESSION_LIFETIME` читается и до того, как `$GLOBALS['cfg']`
+ * собран: сессия стартует раньше многих вещей. Потолок — год, как и просили;
+ * меньше пяти минут не бывает, иначе опечатка в поле выкидывает всех.
+ */
+function sessionLifetime(): int {
+    $raw = $GLOBALS['cfg']['SESSION_LIFETIME'] ?? null;
+    if ($raw === null && class_exists('Settings')) $raw = Settings::get('SESSION_LIFETIME', 86400);
+    return max(300, min(31536000, (int)($raw ?? 86400)));
+}
+
 // Start the PHP session with consistent cookie flags. Safe to call repeatedly.
 function startSession(): void {
     if (PHP_SAPI === 'cli') return;                       // cron/CLI has no session
     if (session_status() === PHP_SESSION_ACTIVE) return;
     if (headers_sent()) return;
     $https = isHttps();
+    $lifetime = sessionLifetime();
     // Never adopt an id we did not issue: after the session storage is wiped a
     // stale cookie would otherwise keep an unwritable session alive.
     ini_set('session.use_strict_mode', '1');
+    // «Постоянно слетает авторизация» (issue #60): кука жила месяц, а файл
+    // сессии убирал сборщик мусора PHP через свои 24 минуты. Живут они теперь
+    // одинаково долго.
+    ini_set('session.gc_maxlifetime', (string)$lifetime);
     session_name(SESSION_COOKIE);
     session_set_cookie_params([
-        'lifetime' => (int)($GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400),
+        'lifetime' => $lifetime,
         'path'     => '/',
         'httponly' => true,
         'secure'   => $https,   // must be false on plain HTTP, or the cookie is dropped
         'samesite' => 'Lax',    // Strict drops the cookie on external return links
     ]);
     session_start();
+    renewSessionCookie($lifetime, $https);
+}
+
+/**
+ * Продлить куку входа — не чаще раза в сутки.
+ *
+ * Без этого «месяц» означал месяц ОТ ПЕРВОГО ВХОДА: менеджер, работающий
+ * каждый день, всё равно в один день оказывался на форме входа. Продление
+ * стоит денег ровно в один заголовок, и его незачем слать при каждом запросе.
+ */
+function renewSessionCookie(int $lifetime, bool $https): void {
+    if (empty($_SESSION['manager_id']) || headers_sent()) return;
+    $last = (int)($_SESSION['cookie_renewed'] ?? 0);
+    if ($last > time() - 86400) return;
+    $_SESSION['cookie_renewed'] = time();
+    setcookie(session_name(), session_id(), [
+        'expires'  => time() + $lifetime,
+        'path'     => '/',
+        'httponly' => true,
+        'secure'   => $https,
+        'samesite' => 'Lax',
+    ]);
 }
 
 // Request came over TLS (directly or through a proxy)
@@ -2014,11 +2111,21 @@ function currentManager(): ?array {
     startSession();
     $id = $_SESSION['manager_id'] ?? null;
     if (!$id) return null;
-    return Db::one(
-        "SELECT id, login, name, email, phone, is_admin, moysklad_uid FROM managers
+    $m = Db::one(
+        "SELECT id, login, name, email, phone, is_admin, moysklad_uid, session_epoch FROM managers
          WHERE id=? AND COALESCE(is_active, 1) = 1",
         [$id]
     );
+    if (!$m) return null;
+
+    // Администратор обнулил вход (issue #60): номер поколения в карточке
+    // ушёл вперёд, и сессии, выданные до этого, больше не открываются
+    if ((int)($m['session_epoch'] ?? 0) !== (int)($_SESSION['epoch'] ?? 0)) {
+        $_SESSION = [];
+        return null;
+    }
+    unset($m['session_epoch']);
+    return $m;
 }
 
 /**

@@ -109,12 +109,25 @@ final class Outbox {
         return (string)preg_replace('/^[0-9a-f]{16}__/', '', basename($stored));
     }
 
-    /** Убрать то, что приложили и не отправили. */
+    /**
+     * Убрать то, что приложили и не отправили.
+     *
+     * Кроме файлов отложенного письма (issue #60): письмо, назначенное на
+     * следующий понедельник, ждёт дольше этих 48 часов и должно уйти с теми же
+     * вложениями, которые к нему прикладывали.
+     */
     public static function sweep(int $managerId): void {
         $dir = self::dir($managerId);
         $deadline = time() - self::KEEP_HOURS * 3600;
+        $keep = [];
+        if (class_exists('MailSchedule') || is_file(ROOT . '/lib/mail_schedule.php')) {
+            require_once ROOT . '/lib/mail_schedule.php';
+            $keep = array_flip(MailSchedule::pendingFiles($managerId));
+        }
         foreach (glob($dir . '/*') ?: [] as $path) {
-            if (is_file($path) && filemtime($path) < $deadline) @unlink($path);
+            if (!is_file($path) || filemtime($path) >= $deadline) continue;
+            if (isset($keep[basename($path)])) continue;
+            @unlink($path);
         }
     }
 

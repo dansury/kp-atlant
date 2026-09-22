@@ -139,16 +139,49 @@ switch ($action) {
      * нового письма. Отдаются любому вошедшему: это не секреты, а то, без чего
      * экран считает скидку не так, как её посчитает КП.
      */
+    /**
+     * Звук уведомления — свой у каждого (issue #60).
+     *
+     * Он был один на весь сервис: администратор выбирал, и двое в одной
+     * комнате слышали один и тот же сигнал. Пусто — «как в настройках».
+     */
+    case 'my_sound': {
+        $manager = requireAuth();
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' || $_SERVER['REQUEST_METHOD'] === 'PUT') {
+            $in = getInput();
+            $sound = trim((string)($in['sound'] ?? ''));
+            $volume = $in['volume'] ?? '';
+            Db::update('managers', [
+                'notify_sound'  => $sound !== '' ? basename($sound) : null,
+                'notify_volume' => $volume === '' || $volume === null ? null : max(0, min(100, (int)$volume)),
+                'updated_at'    => date('Y-m-d H:i:s'),
+            ], 'id=?', [(int)$manager['id']]);
+        }
+        $row = Db::one("SELECT notify_sound, notify_volume FROM managers WHERE id=?", [(int)$manager['id']]) ?: [];
+        jsonData([
+            'sound'     => (string)($row['notify_sound'] ?? ''),
+            'volume'    => $row['notify_volume'] === null ? '' : (int)$row['notify_volume'],
+            'common'    => (string)Settings::get('MAIL_SOUND', ''),
+            'effective' => (string)($row['notify_sound'] ?? '') !== ''
+                            ? (string)$row['notify_sound'] : (string)Settings::get('MAIL_SOUND', ''),
+        ]);
+    }
+
     case 'ui':
-        requireAuth();
+        $me = requireAuth();
+        // Свой звук менеджера важнее общего (issue #60)
+        $mine = Db::one("SELECT notify_sound, notify_volume FROM managers WHERE id=?", [(int)$me['id']]) ?: [];
         jsonData(['ui' => [
             'wait_months'        => (int)Settings::get('KP_WAIT_MONTHS', 3),
             'wait_discount'      => (float)Settings::get('KP_WAIT_DISCOUNT', 10),
             'wait_prepay'        => (int)Settings::get('KP_WAIT_PREPAY', 100),
             'wait_auto'          => (int)Settings::get('KP_WAIT_AUTO', 0) === 1,
             'mail_poll_min'      => max(0, (int)Settings::get('MAIL_AUTO_POLL_MIN', 10)),
-            'mail_sound'         => (string)Settings::get('MAIL_SOUND', ''),
-            'mail_sound_volume'  => max(0, min(100, (int)Settings::get('MAIL_SOUND_VOLUME', 60))),
+            'mail_sound'         => trim((string)($mine['notify_sound'] ?? '')) !== ''
+                                        ? (string)$mine['notify_sound'] : (string)Settings::get('MAIL_SOUND', ''),
+            'mail_sound_volume'  => max(0, min(100, $mine['notify_volume'] !== null && $mine['notify_volume'] !== ''
+                                        ? (int)$mine['notify_volume']
+                                        : (int)Settings::get('MAIL_SOUND_VOLUME', 60))),
         ]]);
 
     case 'general':
