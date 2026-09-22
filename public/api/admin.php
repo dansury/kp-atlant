@@ -175,6 +175,8 @@ try {
                 'ok'        => $payload['ok'],
                 'missing'   => $payload['missing'],
                 'unclear'   => $payload['unclear'],
+                // Слаги, которые отвечают только по OpenAI-совместимому маршруту
+                'openai'    => $payload['openai'] ?? [],
                 'synced_at' => $payload['synced_at'],
             ]);
 
@@ -865,6 +867,7 @@ function yandexCatalogStats(): array {
     return [
         'ok'        => count(array_filter($checked, fn($v) => $v === 'ok')),
         'missing'   => count(array_filter($checked, fn($v) => $v === 'missing')),
+        'openai'    => count(array_filter((array)($cache['routes'] ?? []), fn($v) => $v === 'openai')),
         'total'     => count(LLM::CATALOG['yandex'] ?? []),
         'synced_at' => $cache['synced_at'] ?? null,
     ];

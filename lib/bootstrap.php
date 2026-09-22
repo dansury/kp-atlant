@@ -1785,6 +1785,23 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '38')");
         $current = 38;
     }
+
+    // v39 — module 043: a webhook event that failed is kept and repeated.
+    // MoySklad delivers each event once; one lost to a rate limit used to leave
+    // the order unsynced until someone opened the card by hand.
+    if ($current < 39) {
+        Db::ensureColumn('webhook_log', 'status', 'TEXT', "'ok'");
+        Db::ensureColumn('webhook_log', 'attempts', 'INTEGER', '1');
+        // The one event, apart from the whole delivered body: that is what a
+        // repeat needs — a body can carry several events at once
+        Db::ensureColumn('webhook_log', 'event_json', 'TEXT');
+        // Rows written before this migration have nothing to repeat — count them done
+        Db::q("UPDATE webhook_log SET status='ok' WHERE status IS NULL");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_webhook_retry ON webhook_log(status, id)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '39')");
+        $current = 39;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

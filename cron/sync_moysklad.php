@@ -24,6 +24,15 @@ $rows = Db::all(
     [$limit]
 );
 
+// Events whose webhook failed (rate limit, MoySklad 5xx) go first: they are a
+// document already created in MoySklad that the CRM has never seen (module 043).
+$hooks = ['done' => 0, 'failed' => 0];
+try {
+    $hooks = MsSync::retryFailedWebhooks();
+} catch (Throwable $e) {
+    Logger::exception('moysklad', $e, ['stage' => 'webhook_retry']);
+}
+
 $totalOrders = 0;
 $totalInvoices = 0;
 
@@ -72,4 +81,5 @@ try {
     Logger::exception('bitrix', $e, ['stage' => 'urls']);
 }
 
-echo "Synced " . count($rows) . " companies: $totalOrders orders, $totalInvoices invoices, $urls site links\n";
+echo "Synced " . count($rows) . " companies: $totalOrders orders, $totalInvoices invoices, $urls site links"
+   . ", webhooks retried: {$hooks['done']} ok / {$hooks['failed']} failed\n";

@@ -35,56 +35,11 @@ if (function_exists('fastcgi_finish_request')) {
     @flush();
 }
 
+// Each event is handled and logged on its own: one that fails waits for the
+// cron to repeat it, and the rest still go through (module 043).
 foreach ($payload['events'] as $event) {
-    $href = $event['meta']['href'] ?? '';
-    $entityType = $event['meta']['type'] ?? '';
-    $action = $event['action'] ?? '';
-    $msId = $href ? basename(parse_url($href, PHP_URL_PATH) ?: '') : '';
-    $result = 'skipped';
-
-    try {
-        if (!$msId) {
-            $result = 'no id';
-        } elseif ($entityType === 'customerorder') {
-            $localId = MsSync::upsertOrder($msId);
-            if ($localId) {
-                MsSync::syncInvoicesForOrder($localId);
-                $result = "order #$localId synced";
-            } else {
-                $result = 'order not linked to any company';
-            }
-        } elseif ($entityType === 'invoiceout') {
-            MsSync::init();
-            $inv = MoySklad::getInvoice($msId);
-            if ($inv) {
-                $localOrder = !empty($inv['order_id'])
-                    ? Db::one("SELECT id, counterparty_id FROM orders WHERE moysklad_id=?", [$inv['order_id']])
-                    : null;
-                $cpId = $localOrder['counterparty_id'] ?? MsSync::localCounterparty($inv['agent_id'] ?? '');
-                if ($localOrder && empty($localOrder['counterparty_id'])) {
-                    // Order arrived before the company link — refresh it
-                    MsSync::upsertOrder($inv['order_id']);
-                }
-                $id = MsSync::upsertInvoice($inv, $localOrder ? (int)$localOrder['id'] : null, $cpId ? (int)$cpId : null);
-                $result = "invoice #$id synced";
-            } else {
-                $result = 'invoice not found';
-            }
-        } else {
-            $result = "unsupported entity: $entityType";
-        }
-    } catch (Throwable $e) {
-        $result = 'error: ' . $e->getMessage();
-        Logger::exception('moysklad', $e, ['entity' => $entityType, 'action' => $action, 'moysklad_id' => $msId]);
-    }
-
-    Db::insert('webhook_log', [
-        'entity_type' => $entityType,
-        'action'      => $action,
-        'moysklad_id' => $msId,
-        'payload'     => mb_substr($raw, 0, 4000),
-        'result'      => $result,
-    ]);
+    if (!is_array($event)) continue;
+    MsSync::runWebhookEvent($event, $raw);
 }
 
 // Keep the log from growing forever on a shared host

@@ -102,3 +102,12 @@ this is the remainder, grouped by area, roughly in the order they appeared.
   re-render discarding unsaved edits) might exist in other action handlers
   that call `renderMatchedItems()` with server data — worth a broader audit
   if it recurs.
+
+## Module 043 — left for a live check
+- Run «Проверить каталог Yandex» against the real cloud: the OpenAI-compatible
+  route is learned from the provider's own 400, but which open models actually
+  answer there was never verified without network access in this pass.
+- If MoySklad keeps answering 429 after the retry fix, add a client-side rate
+  guard (45 requests / 3 s per token) instead of relying on the backoff alone.
+- `php tests/module_026.php` has one failing check («новое письмо поднимает
+  карточку обратно») that predates this module — not investigated here.
