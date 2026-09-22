@@ -8,6 +8,11 @@ class LLM {
      * Model catalog shown in the admin panel (same idea as NeuroPro AVAILABLE_MODELS).
      * Grouped so the picker can use <optgroup>; a slug can still be typed by hand,
      * and «Обновить каталог OpenRouter» replaces this list with the live one.
+     *
+     * `tier` — 1 дешёвая, 2 рабочая, 3 самая дорогая. Это порядок, по которому
+     * «палец вниз» предлагает модель ПОДОРОЖЕ (модуль 038), когда настоящей
+     * цены нет: у Yandex прайса в API вовсе нет, а каталог OpenRouter мог ни
+     * разу не обновляться. Обновлённый каталог несёт `price` и решает сам.
      */
     public const CATALOG = [
         // Yandex slugs are stored WITHOUT the version segment: the version is
@@ -22,47 +27,47 @@ class LLM {
         // то по одному короткому запросу на слаг, — и запоминает в
         // `yandex_models` вместе с моделями, которых в этом списке нет.
         'yandex' => [
-            ['id' => 'yandexgpt-5.1',         'label' => 'YandexGPT Pro 5.1',         'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-5-pro',       'label' => 'YandexGPT Pro 5',           'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-5-lite',      'label' => 'YandexGPT Lite 5 — дешевле','group' => 'YandexGPT'],
-            ['id' => 'yandexgpt',             'label' => 'YandexGPT Pro — алиас последней версии', 'group' => 'YandexGPT'],
-            ['id' => 'yandexgpt-lite',        'label' => 'YandexGPT Lite — алиас последней версии', 'group' => 'YandexGPT'],
-            ['id' => 'aliceai-llm',           'label' => 'Alice AI LLM',              'group' => 'Alice AI'],
-            ['id' => 'aliceai-llm-flash',     'label' => 'Alice AI LLM Flash',        'group' => 'Alice AI'],
-            ['id' => 'deepseek-v4-flash',     'label' => 'DeepSeek V4 Flash',         'group' => 'Открытые модели'],
-            ['id' => 'gpt-oss-120b',          'label' => 'gpt-oss-120b',              'group' => 'Открытые модели'],
-            ['id' => 'gpt-oss-20b',           'label' => 'gpt-oss-20b',               'group' => 'Открытые модели'],
-            ['id' => 'qwen3-235b-a22b-fp8',   'label' => 'Qwen3 235B',                'group' => 'Открытые модели'],
-            ['id' => 'qwen3.6-35b-a3b',       'label' => 'Qwen3.6 35B A3B',           'group' => 'Открытые модели'],
-            ['id' => 'qwen2.5-72b-instruct',  'label' => 'Qwen2.5 72B Instruct',      'group' => 'Открытые модели'],
-            ['id' => 'qwen2.5-32b-instruct',  'label' => 'Qwen2.5 32B Instruct',      'group' => 'Открытые модели'],
-            ['id' => 'qwen2.5-7b-instruct',   'label' => 'Qwen2.5 7B Instruct',       'group' => 'Открытые модели'],
-            ['id' => 'llama-3.3-70b-instruct','label' => 'Llama 3.3 70B Instruct',    'group' => 'Открытые модели'],
-            ['id' => 'llama-3.1-70b-instruct','label' => 'Llama 3.1 70B Instruct',    'group' => 'Открытые модели'],
-            ['id' => 'gemma-3-27b-it',        'label' => 'Gemma 3 27B IT',            'group' => 'Открытые модели'],
-            ['id' => 'gemma-3-12b-it',        'label' => 'Gemma 3 12B IT',            'group' => 'Открытые модели'],
-            ['id' => 'gemma-3-4b-it',         'label' => 'Gemma 3 4B IT',             'group' => 'Открытые модели'],
-            ['id' => 'gemma-3-1b-it',         'label' => 'Gemma 3 1B IT',             'group' => 'Открытые модели'],
+            ['id' => 'yandexgpt-5.1',         'label' => 'YandexGPT Pro 5.1',         'group' => 'YandexGPT', 'tier' => 3],
+            ['id' => 'yandexgpt-5-pro',       'label' => 'YandexGPT Pro 5',           'group' => 'YandexGPT', 'tier' => 3],
+            ['id' => 'yandexgpt-5-lite',      'label' => 'YandexGPT Lite 5 — дешевле','group' => 'YandexGPT', 'tier' => 1],
+            ['id' => 'yandexgpt',             'label' => 'YandexGPT Pro — алиас последней версии', 'group' => 'YandexGPT', 'tier' => 2],
+            ['id' => 'yandexgpt-lite',        'label' => 'YandexGPT Lite — алиас последней версии', 'group' => 'YandexGPT', 'tier' => 1],
+            ['id' => 'aliceai-llm',           'label' => 'Alice AI LLM',              'group' => 'Alice AI', 'tier' => 3],
+            ['id' => 'aliceai-llm-flash',     'label' => 'Alice AI LLM Flash',        'group' => 'Alice AI', 'tier' => 2],
+            ['id' => 'deepseek-v4-flash',     'label' => 'DeepSeek V4 Flash',         'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'gpt-oss-120b',          'label' => 'gpt-oss-120b',              'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'gpt-oss-20b',           'label' => 'gpt-oss-20b',               'group' => 'Открытые модели', 'tier' => 1],
+            ['id' => 'qwen3-235b-a22b-fp8',   'label' => 'Qwen3 235B',                'group' => 'Открытые модели', 'tier' => 3],
+            ['id' => 'qwen3.6-35b-a3b',       'label' => 'Qwen3.6 35B A3B',           'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'qwen2.5-72b-instruct',  'label' => 'Qwen2.5 72B Instruct',      'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'qwen2.5-32b-instruct',  'label' => 'Qwen2.5 32B Instruct',      'group' => 'Открытые модели', 'tier' => 1],
+            ['id' => 'qwen2.5-7b-instruct',   'label' => 'Qwen2.5 7B Instruct',       'group' => 'Открытые модели', 'tier' => 1],
+            ['id' => 'llama-3.3-70b-instruct','label' => 'Llama 3.3 70B Instruct',    'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'llama-3.1-70b-instruct','label' => 'Llama 3.1 70B Instruct',    'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'gemma-3-27b-it',        'label' => 'Gemma 3 27B IT',            'group' => 'Открытые модели', 'tier' => 2],
+            ['id' => 'gemma-3-12b-it',        'label' => 'Gemma 3 12B IT',            'group' => 'Открытые модели', 'tier' => 1],
+            ['id' => 'gemma-3-4b-it',         'label' => 'Gemma 3 4B IT',             'group' => 'Открытые модели', 'tier' => 1],
+            ['id' => 'gemma-3-1b-it',         'label' => 'Gemma 3 1B IT',             'group' => 'Открытые модели', 'tier' => 1],
         ],
         'openrouter' => [
-            ['id' => 'anthropic/claude-sonnet-4.5',       'label' => 'Claude Sonnet 4.5',      'group' => 'Anthropic'],
-            ['id' => 'anthropic/claude-haiku-4.5',        'label' => 'Claude Haiku 4.5',       'group' => 'Anthropic'],
-            ['id' => 'anthropic/claude-opus-4.1',         'label' => 'Claude Opus 4.1',        'group' => 'Anthropic'],
-            ['id' => 'openai/gpt-5',                      'label' => 'GPT-5',                  'group' => 'OpenAI'],
-            ['id' => 'openai/gpt-5-mini',                 'label' => 'GPT-5 mini',             'group' => 'OpenAI'],
-            ['id' => 'openai/gpt-4.1',                    'label' => 'GPT-4.1',                'group' => 'OpenAI'],
-            ['id' => 'openai/gpt-4.1-mini',               'label' => 'GPT-4.1 mini',           'group' => 'OpenAI'],
-            ['id' => 'openai/gpt-4o-mini',                'label' => 'GPT-4o mini',            'group' => 'OpenAI'],
-            ['id' => 'google/gemini-2.5-pro',             'label' => 'Gemini 2.5 Pro',         'group' => 'Google'],
-            ['id' => 'google/gemini-2.5-flash',           'label' => 'Gemini 2.5 Flash',       'group' => 'Google'],
-            ['id' => 'google/gemini-2.5-flash-lite',      'label' => 'Gemini 2.5 Flash Lite',  'group' => 'Google'],
-            ['id' => 'deepseek/deepseek-chat-v3.1',       'label' => 'DeepSeek V3.1',          'group' => 'DeepSeek'],
-            ['id' => 'deepseek/deepseek-r1',              'label' => 'DeepSeek R1',            'group' => 'DeepSeek'],
-            ['id' => 'qwen/qwen3-235b-a22b',              'label' => 'Qwen3 235B',             'group' => 'Qwen'],
-            ['id' => 'qwen/qwen-2.5-72b-instruct',        'label' => 'Qwen 2.5 72B',           'group' => 'Qwen'],
-            ['id' => 'meta-llama/llama-3.3-70b-instruct', 'label' => 'Llama 3.3 70B',          'group' => 'Meta'],
-            ['id' => 'mistralai/mistral-large',           'label' => 'Mistral Large',          'group' => 'Mistral'],
-            ['id' => 'x-ai/grok-4',                       'label' => 'Grok 4',                 'group' => 'xAI'],
+            ['id' => 'anthropic/claude-sonnet-4.5',       'label' => 'Claude Sonnet 4.5',      'group' => 'Anthropic', 'tier' => 3],
+            ['id' => 'anthropic/claude-haiku-4.5',        'label' => 'Claude Haiku 4.5',       'group' => 'Anthropic', 'tier' => 2],
+            ['id' => 'anthropic/claude-opus-4.1',         'label' => 'Claude Opus 4.1',        'group' => 'Anthropic', 'tier' => 3],
+            ['id' => 'openai/gpt-5',                      'label' => 'GPT-5',                  'group' => 'OpenAI', 'tier' => 3],
+            ['id' => 'openai/gpt-5-mini',                 'label' => 'GPT-5 mini',             'group' => 'OpenAI', 'tier' => 2],
+            ['id' => 'openai/gpt-4.1',                    'label' => 'GPT-4.1',                'group' => 'OpenAI', 'tier' => 3],
+            ['id' => 'openai/gpt-4.1-mini',               'label' => 'GPT-4.1 mini',           'group' => 'OpenAI', 'tier' => 2],
+            ['id' => 'openai/gpt-4o-mini',                'label' => 'GPT-4o mini',            'group' => 'OpenAI', 'tier' => 1],
+            ['id' => 'google/gemini-2.5-pro',             'label' => 'Gemini 2.5 Pro',         'group' => 'Google', 'tier' => 3],
+            ['id' => 'google/gemini-2.5-flash',           'label' => 'Gemini 2.5 Flash',       'group' => 'Google', 'tier' => 2],
+            ['id' => 'google/gemini-2.5-flash-lite',      'label' => 'Gemini 2.5 Flash Lite',  'group' => 'Google', 'tier' => 1],
+            ['id' => 'deepseek/deepseek-chat-v3.1',       'label' => 'DeepSeek V3.1',          'group' => 'DeepSeek', 'tier' => 1],
+            ['id' => 'deepseek/deepseek-r1',              'label' => 'DeepSeek R1',            'group' => 'DeepSeek', 'tier' => 2],
+            ['id' => 'qwen/qwen3-235b-a22b',              'label' => 'Qwen3 235B',             'group' => 'Qwen', 'tier' => 2],
+            ['id' => 'qwen/qwen-2.5-72b-instruct',        'label' => 'Qwen 2.5 72B',           'group' => 'Qwen', 'tier' => 1],
+            ['id' => 'meta-llama/llama-3.3-70b-instruct', 'label' => 'Llama 3.3 70B',          'group' => 'Meta', 'tier' => 1],
+            ['id' => 'mistralai/mistral-large',           'label' => 'Mistral Large',          'group' => 'Mistral', 'tier' => 2],
+            ['id' => 'x-ai/grok-4',                       'label' => 'Grok 4',                 'group' => 'xAI', 'tier' => 3],
         ],
     ];
 
@@ -80,12 +85,22 @@ class LLM {
     /** Слаг, на который откатываемся, когда выбранного у провайдера нет. */
     private const YX_FALLBACK = 'yandexgpt';
 
+    // Yandex serves its models through two different endpoints: the YandexGPT
+    // family answers on the Foundation Models URL, most open models only on the
+    // OpenAI-compatible one. Which slug needs which is learned, not guessed.
+    private const YX_URL_FM     = 'https://llm.api.cloud.yandex.net/foundationModels/v1/completion';
+    private const YX_URL_OPENAI = 'https://llm.api.cloud.yandex.net/v1/chat/completions';
+
     private static array $cfg = [];
     private static array $providers = [];
     /** One-shot model override: ['provider' => …, 'model' => …] — see useModel(). */
     private static ?array $override = null;
     /** Last raw HTTP exchange per provider, for the diagnostics card. */
     private static array $lastHttp = [];
+    /** Who answered the last call: provider, slug and route — for the journal. */
+    private static array $lastCall = [];
+    /** How the provider ended the last answer: length/TRUNCATED means cut off. */
+    private static string $lastFinish = '';
 
     // Init with config array
     public static function init(array $cfg): void {
@@ -157,11 +172,14 @@ class LLM {
         $rows = self::CATALOG[$provider] ?? [];
         if ($provider === 'yandex') {
             $cache   = self::yandexCache();
-            $checked = $cache['checked'] ?? [];
+            $checked = (array)($cache['checked'] ?? []);
+            $routes  = (array)($cache['routes'] ?? []);
             foreach ($rows as &$row) {
                 $state = (string)($checked[$row['id']] ?? '');
                 $row['state'] = $state !== '' ? $state : 'unknown';
+                $row['route'] = ((string)($routes[$row['id']] ?? '')) === 'openai' ? 'openai' : 'fm';
                 if ($state === 'missing') $row['label'] .= ' — нет в этом облаке';
+                elseif ($row['route'] === 'openai') $row['label'] .= ' — по OpenAI-совместимому API';
             }
             unset($row);
             // Модели, которые каталог облака перечислил, а список кандидатов не знает.
@@ -173,6 +191,7 @@ class LLM {
                     'label' => (string)($m['label'] ?? $m['id']),
                     'group' => (string)($m['group'] ?? 'Yandex · каталог облака'),
                     'state' => 'ok',
+                    'route' => ((string)($routes[$m['id']] ?? '')) === 'openai' ? 'openai' : 'fm',
                 ];
             }
             return $rows;
@@ -202,6 +221,7 @@ class LLM {
                 'id'    => (string)$m['id'],
                 'label' => (string)($m['label'] ?? $m['id']),
                 'group' => (string)($m['group'] ?? 'OpenRouter'),
+                'price' => isset($m['price']) ? (float)$m['price'] : null,
             ];
         }
         return $rows;
@@ -231,6 +251,9 @@ class LLM {
                 'id'    => $id,
                 'label' => ($name !== '' ? $name : $id) . ($free ? ' — бесплатно' : ''),
                 'group' => $free ? 'OpenRouter · бесплатные' : 'OpenRouter · ' . (explode('/', $id)[0]),
+                // Цена за токен, как её называет сам OpenRouter: по ней «палец
+                // вниз» и находит модель дороже нынешней (модуль 038)
+                'price' => $price,
             ];
         }
         if (!$rows) throw new LLMException('В ответе OpenRouter не нашлось ни одной модели');
@@ -246,20 +269,109 @@ class LLM {
         Db::q("DELETE FROM settings WHERE key=?", [self::OR_CACHE_KEY]);
     }
 
+    /**
+     * Модели ДОРОЖЕ нынешней — что предложить, когда качество не устроило
+     * (модуль 038).
+     *
+     * «Возьмите модель получше» без списка — это предложение читать прайсы
+     * двух провайдеров. Порядок считается по настоящей цене там, где она есть
+     * (обновлённый каталог OpenRouter), и по `tier` там, где её нет. Модели
+     * провайдера без ключа в список не попадают: предлагать то, чем нельзя
+     * воспользоваться, — это тупик, а не выбор.
+     *
+     * @param string $spec «provider:slug»; пусто — нынешняя модель цепочки
+     * @return array<int,array{provider:string,model:string,label:string,spec:string,price:?float,tier:int}>
+     */
+    public static function pricier(string $spec = '', int $limit = 8): array {
+        [$provider, $model] = array_pad(explode(':', trim($spec), 2), 2, '');
+        if ($provider === '' || $model === '') {
+            $cur = self::currentModel();
+            [$provider, $model] = [(string)$cur['provider'], (string)$cur['model']];
+        }
+
+        $rank = fn(array $row): array => [$row['price'] ?? null, (int)($row['tier'] ?? 2)];
+        $now  = [null, 2];
+        $rows = [];
+        foreach (array_keys(self::CATALOG) as $p) {
+            if (!self::ready($p)) continue;
+            foreach (self::catalog($p) as $m) {
+                $row = [
+                    'provider' => $p,
+                    'model'    => (string)$m['id'],
+                    'label'    => (string)($m['label'] ?? $m['id']),
+                    'group'    => (string)($m['group'] ?? ''),
+                    'spec'     => $p . ':' . $m['id'],
+                    'price'    => isset($m['price']) ? (float)$m['price'] : null,
+                    'tier'     => (int)($m['tier'] ?? 2),
+                    'state'    => (string)($m['state'] ?? ''),
+                ];
+                if ($p === $provider && $row['model'] === $model) $now = $rank($row);
+                if ($row['state'] === 'missing') continue;   // этого слага в облаке нет
+                $rows[] = $row;
+            }
+        }
+
+        $dearer = array_values(array_filter($rows, function (array $row) use ($rank, $now, $provider, $model) {
+            if ($row['provider'] === $provider && $row['model'] === $model) return false;
+            [$price, $tier] = $rank($row);
+            // Цены сравнимы только между собой; где одной из них нет — решает ступень
+            if ($price !== null && $now[0] !== null) return $price > $now[0];
+            return $tier > $now[1];
+        }));
+
+        usort($dearer, function (array $a, array $b) use ($rank) {
+            [$ap, $at] = $rank($a);
+            [$bp, $bt] = $rank($b);
+            return [$at, $ap ?? 0, $a['label']] <=> [$bt, $bp ?? 0, $b['label']];
+        });
+        return array_slice($dearer, 0, max(1, $limit));
+    }
+
     // ---- Каталог Yandex: слаг проверяется у провайдера, а не берётся на веру ----
     //
     // Так же это решено в CGM-diet (`spec/models.md`): каталог там приходит от
     // провайдера в `free_catalog`, а `model_selection.is_known()` не отдаёт
     // модель слоту, который её не перечисляет, — выбор, которого у провайдера
-    // нет, до запроса не доходит. Здесь роль каталога играет проба: у Yandex
-    // нет открытого списка моделей, зато есть ответ на короткий запрос.
+    // нет, до запроса не доходит. Здесь список отдаёт сам Yandex — Models API,
+    // — а если тот не ответил, роль каталога играет проба: ответ на короткий
+    // запрос по каждому слагу.
 
-    /** Что каталог уже выяснил: {checked: {slug: ok|missing}, models, synced_at}. */
+    /**
+     * Что каталог уже выяснил:
+     * {checked: {slug: ok|missing}, models, routes: {slug: openai}, synced_at}.
+     */
     public static function yandexCache(): array {
         $raw  = Db::val("SELECT value FROM settings WHERE key=?", [self::YX_CACHE_KEY]);
         $data = $raw ? json_decode((string)$raw, true) : null;
-        if (!is_array($data)) return ['checked' => [], 'models' => [], 'synced_at' => null];
-        return $data + ['checked' => [], 'models' => [], 'synced_at' => null];
+        $empty = ['checked' => [], 'models' => [], 'routes' => [], 'synced_at' => null];
+        return is_array($data) ? $data + $empty : $empty;
+    }
+
+    /**
+     * Which endpoint this slug answers on: `fm` (Foundation Models) or `openai`
+     * (the OpenAI-compatible URL). Unknown means «not tried yet» — the FM route
+     * is the one to try first, and a 400 about gRPC settles the question.
+     */
+    public static function yandexRoute(string $model): string {
+        $routes = (array)(self::yandexCache()['routes'] ?? []);
+        return ((string)($routes[trim($model, " /")] ?? '')) === 'openai' ? 'openai' : 'fm';
+    }
+
+    /** Remember the endpoint a slug answers on, so the next call goes there at once. */
+    private static function markYandexRoute(string $model, string $route): void {
+        $cache = self::yandexCache();
+        $cache['routes'][trim($model, " /")] = $route;
+        $cache['synced_at'] = date('Y-m-d H:i:s');
+        self::saveYandexCache($cache);
+    }
+
+    /**
+     * «Model is not available via gRPC API. Please use HTTP OpenAI API instead»
+     * — the model exists, it is simply served by the other endpoint.
+     */
+    private static function isOpenAiOnlyModel(string $message): bool {
+        return str_contains($message, 'HTTP 400')
+            && (stripos($message, 'via gRPC') !== false || stripos($message, 'OpenAI API') !== false);
     }
 
     private static function saveYandexCache(array $data): void {
@@ -307,11 +419,18 @@ class LLM {
         $ok      = array_values(array_keys(array_filter($checked, static fn($s) => $s === 'ok')));
         $missing = array_values(array_keys(array_filter($checked, static fn($s) => $s === 'missing')));
 
-        $payload = ['checked' => $checked, 'models' => $extra, 'synced_at' => date('Y-m-d H:i:s')];
+        // Список моделей — не то же, что адрес запроса: какой слаг на каком
+        // из двух адресов отвечает, выяснено раньше и переживает обновление.
+        $routes  = (array)(self::yandexCache()['routes'] ?? []);
+        $payload = ['checked' => $checked, 'models' => $extra, 'routes' => $routes,
+                    'synced_at' => date('Y-m-d H:i:s')];
         self::saveYandexCache($payload);
+
+        $openai = array_values(array_intersect($ok, array_keys(array_filter($routes, fn($r) => $r === 'openai'))));
         Logger::info('llm', 'Каталог Yandex получен: моделей ' . count($listed) . ', из списка нет ' . count($missing),
-                     ['ok' => $ok, 'missing' => $missing, 'extra' => array_column($extra, 'id')]);
-        return $payload + ['ok' => $ok, 'missing' => $missing, 'unclear' => [], 'source' => 'models_api'];
+                     ['ok' => $ok, 'missing' => $missing, 'extra' => array_column($extra, 'id'), 'openai' => $openai]);
+        return $payload + ['ok' => $ok, 'missing' => $missing, 'unclear' => [],
+                           'openai' => $openai, 'source' => 'models_api'];
     }
 
     /**
@@ -387,7 +506,13 @@ class LLM {
                 $checked[$slug] = 'ok';
                 $ok[] = $slug;
             } catch (LLMException $e) {
-                if (self::isUnknownModel($e->getMessage())) {
+                // «Only on the OpenAI-compatible route» judges the endpoint, not
+                // the slug: the model is there, and callYandex has just recorded
+                // where it answers — so the probe scores it `ok`.
+                if (self::isOpenAiOnlyModel($e->getMessage())) {
+                    $checked[$slug] = 'ok';
+                    $ok[] = $slug;
+                } elseif (self::isUnknownModel($e->getMessage())) {
                     $checked[$slug] = 'missing';
                     $missing[] = $slug;
                 } else {
@@ -395,11 +520,18 @@ class LLM {
                 }
             }
         }
-        $payload = ['checked' => $checked, 'models' => (array)($cache['models'] ?? []), 'synced_at' => date('Y-m-d H:i:s')];
+        // Маршруты, которые проба только что выяснила, уже лежат в кэше —
+        // перечитываем его, а не пишем `checked` поверх них
+        $fresh   = self::yandexCache();
+        $routes  = (array)($fresh['routes'] ?? []);
+        $payload = ['checked' => $checked, 'models' => (array)($fresh['models'] ?? []),
+                    'routes' => $routes, 'synced_at' => date('Y-m-d H:i:s')];
         self::saveYandexCache($payload);
+
+        $openai = array_values(array_intersect($ok, array_keys(array_filter($routes, fn($r) => $r === 'openai'))));
         Logger::info('llm', 'Каталог Yandex проверен пробой: доступно ' . count($ok) . ', нет ' . count($missing),
-                     ['ok' => $ok, 'missing' => $missing, 'unclear' => $unclear]);
-        return $payload + ['ok' => $ok, 'missing' => $missing, 'unclear' => $unclear];
+                     ['ok' => $ok, 'missing' => $missing, 'unclear' => $unclear, 'openai' => $openai]);
+        return $payload + ['ok' => $ok, 'missing' => $missing, 'unclear' => $unclear, 'openai' => $openai];
     }
 
     /** «404 unknown model» — единственная ошибка, которая судит именно слаг. */
@@ -526,23 +658,59 @@ class LLM {
         return trim($raw);
     }
 
-    // JSON completion — returns parsed array
+    /**
+     * JSON completion — returns parsed array.
+     *
+     * Three attempts with the same prompt are three identical answers: a model
+     * that wrote a phrase before the brace, or hit the length limit, does it
+     * again. So every next attempt KNOWS how the previous one ended — what could
+     * not be parsed, and whether the answer was cut off.
+     */
     public static function chatJson(string $system, string $user, float $temp = 0.1): array {
         $maxRetries = 3;
         $raw = '';
         $why = 'пустой ответ';
+        $hint = '';
+        $truncated = false;
         for ($i = 0; $i < $maxRetries; $i++) {
-            $raw = self::call($system, $user, $temp, true);
+            $raw = self::call($system . $hint, $user, $temp, true);
             $data = self::decodeJson($raw);
             if (is_array($data)) return $data;
             // json_last_error() is reset by any json_encode() further down (logging,
             // for one), so the reason has to be captured right here
             $why = json_last_error() === JSON_ERROR_NONE ? 'ответ не является объектом JSON' : json_last_error_msg();
+            $truncated = self::lastTruncated();
+            if ($truncated) $why .= ' (ответ оборвался по пределу длины)';
+            $hint = self::jsonRetryHint($why, $truncated);
             // Retry with lower temp
             $temp = 0.05;
         }
-        Logger::error('llm', 'Модель вернула не-JSON после ' . $maxRetries . ' попыток: ' . $why, ['tail' => mb_substr($raw, -400)]);
+        $call = self::lastCall();
+        Logger::error('llm', 'Модель вернула не-JSON после ' . $maxRetries . ' попыток: ' . $why
+            . ($truncated ? '. Предел длины ответа — настройка LLM_MAX_TOKENS' : ''), [
+            'provider'  => $call['provider'] ?? '',
+            'model'     => $call['model'] ?? '',
+            'route'     => $call['route'] ?? '',
+            'truncated' => $truncated,
+            // The head shows a phrase before the object, the tail shows a cut-off
+            // mid-word: one end alone does not always tell what happened
+            'head'      => mb_substr($raw, 0, 400),
+            'tail'      => mb_substr($raw, -400),
+        ]);
         throw new LLMException("Failed to parse JSON after $maxRetries attempts: $why");
+    }
+
+    /** What the next attempt adds to the system prompt. */
+    private static function jsonRetryHint(string $why, bool $truncated): string {
+        $hint = "\n\n===== ПОВТОРНАЯ ПОПЫТКА =====\n"
+              . "Предыдущий ответ не удалось разобрать: {$why}.\n"
+              . 'Верни ТОЛЬКО один объект JSON: без пояснений, без ограды ```, без текста до и после. '
+              . 'Переводы строк внутри значений экранируй как \\n, кавычки внутри строк — как \\".';
+        if ($truncated) {
+            $hint .= "\nОтвет обязан уместиться целиком: пиши короче — только обязательные поля, "
+                   . 'без длинных описаний и повторов исходного текста.';
+        }
+        return $hint;
     }
 
     /**
@@ -560,6 +728,9 @@ class LLM {
      * те скобки, которые модель ОТКРЫЛА.
      */
     public static function decodeJson(string $raw): ?array {
+        // Broken bytes go first: any /u pattern returns null on them, and the
+        // whole answer used to be declared «not JSON» (module 043)
+        $raw = self::onlyUtf8($raw);
         // Ограда и рассуждения снимаются всегда
         $raw = (string)preg_replace('/<think>.*?<\/think>/su', '', trim($raw));
         $raw = (string)preg_replace('/```[a-z]*\s*/iu', '', $raw);
@@ -581,8 +752,51 @@ class LLM {
             $clean = strtr((string)$clean, ['“' => '"', '”' => '"', '„' => '"', '«' => '"', '»' => '"']);
             $data = json_decode((string)$clean, true);
             if (is_array($data)) return $data;
+            // A raw line break inside a value is the commonest way a model breaks
+            // its own JSON: escape what it left unescaped
+            $data = json_decode(self::escapeControls((string)$clean), true);
+            if (is_array($data)) return $data;
         }
         return null;
+    }
+
+    /**
+     * Bytes that are not valid UTF-8, dropped.
+     *
+     * A single broken byte makes every `/u` pattern return null, and the answer
+     * was declared «not JSON» without ever being looked at.
+     */
+    private static function onlyUtf8(string $raw): string {
+        if ($raw === '' || mb_check_encoding($raw, 'UTF-8')) return $raw;
+        $out = @iconv('UTF-8', 'UTF-8//IGNORE', $raw);
+        return $out === false ? (string)mb_convert_encoding($raw, 'UTF-8', 'UTF-8') : $out;
+    }
+
+    /**
+     * Raw control characters inside string literals — escaped, not dropped.
+     *
+     * JSON forbids a bare line break inside a string; a model writing a
+     * multi-line description puts one there anyway. Outside strings control
+     * characters are ordinary whitespace and stay as they are.
+     */
+    private static function escapeControls(string $json): string {
+        $out = '';
+        $inString = false;
+        $len = strlen($json);
+        for ($i = 0; $i < $len; $i++) {
+            $c = $json[$i];
+            if ($inString && $c === '\\' && $i + 1 < $len) { $out .= $c . $json[$i + 1]; $i++; continue; }
+            if ($c === '"') { $inString = !$inString; $out .= $c; continue; }
+            if ($inString && ord($c) < 0x20) {
+                $out .= match ($c) {
+                    "\n" => '\\n', "\r" => '\\r', "\t" => '\\t',
+                    default => sprintf('\\u%04x', ord($c)),
+                };
+                continue;
+            }
+            $out .= $c;
+        }
+        return $out;
     }
 
     /**
@@ -657,6 +871,14 @@ class LLM {
 
         $lastErr = null;
         foreach ($chain as $provider) {
+            // Провайдер, который только что отваливался по таймауту, не
+            // спрашивается снова ближайшие минуты (модуль 040). Тридцать
+            // секунд ожидания на КАЖДОМ письме — это почта, которая не
+            // забирается, и кнопка, которая не возвращается.
+            if (self::isCoolingDown($provider)) {
+                $lastErr = new LLMException(self::coolDownMessage($provider));
+                continue;
+            }
             try {
                 return match ($provider) {
                     'openrouter' => self::callOpenRouter($system, $user, $temp, $jsonMode),
@@ -666,12 +888,56 @@ class LLM {
             } catch (LLMException $e) {
                 $lastErr = $e;
                 Logger::warning('llm', "Провайдер $provider не ответил: " . $e->getMessage(), ['provider' => $provider]);
+                self::noteFailure($provider, $e->getMessage());
                 // Continue to next provider
             }
         }
         $message = 'All LLM providers failed: ' . ($lastErr ? $lastErr->getMessage() : 'none configured');
         Logger::error('llm', $message, ['providers' => $chain]);
         throw new LLMException($message);
+    }
+
+    /**
+     * ==== Провайдер на паузе (модуль 040) ====
+     *
+     * Сеть до провайдера не доходит — фильтр по дороге, отвалившийся прокси,
+     * просто таймаут. Каждое следующее письмо честно ждало свои тридцать
+     * секунд, и разбор почты превращался в минуты ожидания на ровном месте.
+     *
+     * Подряд идущие СЕТЕВЫЕ неудачи ставят провайдера на паузу: ключ, квота и
+     * отказ модели сюда не попадают — это ответы, а не молчание, и повторять
+     * их незачем. Пауза короткая: провайдер должен вернуться сам, без правки
+     * настроек.
+     */
+    private const COOLDOWN_AFTER = 2;
+    private const COOLDOWN_SEC   = 180;
+
+    private static array $failures = [];
+    private static array $pausedUntil = [];
+
+    private static function isCoolingDown(string $provider): bool {
+        $until = self::$pausedUntil[$provider] ?? 0;
+        if ($until <= time()) return false;
+        return true;
+    }
+
+    private static function coolDownMessage(string $provider): string {
+        $left = max(1, (int)ceil(((self::$pausedUntil[$provider] ?? 0) - time()) / 60));
+        return "$provider: не отвечал подряд, пропущен на ~$left мин. — сеть до него не доходит";
+    }
+
+    private static function noteFailure(string $provider, string $message): void {
+        // Отказ с ответом — это ответ: ключ, квота, неизвестная модель
+        if (!preg_match('/(timed out|timeout|could not resolve|connection|cURL|сеть|не доходит)/iu', $message)) {
+            self::$failures[$provider] = 0;
+            return;
+        }
+        $n = (self::$failures[$provider] ?? 0) + 1;
+        self::$failures[$provider] = $n;
+        if ($n < self::COOLDOWN_AFTER) return;
+        self::$pausedUntil[$provider] = time() + self::COOLDOWN_SEC;
+        Logger::warning('llm', "Провайдер $provider пропускается " . (self::COOLDOWN_SEC / 60)
+            . " мин.: подряд не отвечает", ['provider' => $provider]);
     }
 
     /** Base address of the OpenRouter API — a mirror can be put here instead. */
@@ -694,6 +960,7 @@ class LLM {
         if (!$key) throw new LLMException('OPENROUTER_API_KEY not set');
         $model = self::modelOf('openrouter') ?: 'google/gemini-2.5-flash';
 
+        self::$lastCall = ['provider' => 'openrouter', 'model' => $model, 'route' => 'openai'];
         $body = [
             'model' => $model,
             'messages' => [
@@ -737,12 +1004,19 @@ class LLM {
         $model = $slug !== null ? $slug : self::yandexSlug();
         $uri = self::yandexModelUri($folder, $model);
 
+        // Open models answer only on the OpenAI-compatible endpoint. Where that
+        // is already known, the request goes there straight away.
+        if (self::yandexRoute($model) === 'openai') {
+            return self::callYandexOpenAI($system, $user, $temp, $jsonMode, $model, $uri, $key, $folder);
+        }
+        self::$lastCall = ['provider' => 'yandex', 'model' => $model, 'route' => 'fm'];
+
         $body = [
             'modelUri' => $uri,
             'completionOptions' => [
                 'stream' => false,
                 'temperature' => $temp,
-                'maxTokens' => 4096,
+                'maxTokens' => self::maxTokens(),
             ],
             'messages' => [
                 ['role' => 'system', 'text' => $system],
@@ -754,13 +1028,18 @@ class LLM {
         }
 
         try {
-            return self::httpPost(
-                'https://llm.api.cloud.yandex.net/foundationModels/v1/completion',
-                $body,
-                ['Authorization: Api-Key ' . $key, 'x-folder-id: ' . $folder],
-                'yandex'
-            );
+            return self::httpPost(self::YX_URL_FM, $body,
+                                  ['Authorization: Api-Key ' . $key, 'x-folder-id: ' . $folder], 'yandex');
         } catch (LLMException $e) {
+            // «Use HTTP OpenAI API instead» — the model is there, the endpoint is
+            // the wrong one. Remember the route and repeat at once: the manager's
+            // choice stands and the answer still arrives.
+            if (self::isOpenAiOnlyModel($e->getMessage())) {
+                self::markYandexRoute($model, 'openai');
+                Logger::info('llm', "Модель Yandex «{$model}» отвечает по OpenAI-совместимому API — "
+                                  . 'повторяем запрос по нему', ['model' => $model]);
+                return self::callYandexOpenAI($system, $user, $temp, $jsonMode, $model, $uri, $key, $folder);
+            }
             if (!self::isUnknownModel($e->getMessage())) throw $e;
             self::markYandexMissing($model);
             $fallback = trim(self::YX_FALLBACK, " /");
@@ -769,6 +1048,40 @@ class LLM {
                             ['model' => $model, 'uri' => $uri]);
             return self::callYandex($system, $user, $temp, $jsonMode, $fallback, false);
         }
+    }
+
+    /**
+     * The same folder and the same key, the OpenAI-shaped request: this is how
+     * Yandex serves the open models (Llama, Qwen, Gemma, DeepSeek). The model is
+     * still addressed by its `gpt://folder/slug/version` URI.
+     */
+    private static function callYandexOpenAI(string $system, string $user, float $temp, bool $jsonMode,
+                                             string $model, string $uri, string $key, string $folder): string {
+        self::$lastCall = ['provider' => 'yandex', 'model' => $model, 'route' => 'openai'];
+        $body = [
+            'model' => $uri,
+            'messages' => [
+                ['role' => 'system', 'content' => $system],
+                ['role' => 'user', 'content' => $user],
+            ],
+            'temperature' => $temp,
+            'max_tokens' => self::maxTokens(),
+            'stream' => false,
+        ];
+        if ($jsonMode) $body['response_format'] = ['type' => 'json_object'];
+
+        return self::httpPost(self::YX_URL_OPENAI, $body,
+                              ['Authorization: Api-Key ' . $key, 'x-folder-id: ' . $folder],
+                              'yandex', 'openai');
+    }
+
+    /**
+     * Answer length limit. It bounds the Yandex request, where the API demands a
+     * number — OpenRouter keeps the provider's own default, so nothing that fits
+     * today starts being cut off.
+     */
+    private static function maxTokens(): int {
+        return max(256, min(32000, (int)(self::$cfg['LLM_MAX_TOKENS'] ?? 4096) ?: 4096));
     }
 
     /**
@@ -808,15 +1121,20 @@ class LLM {
         $resp = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err  = curl_error($ch);
-        curl_close($ch);
 
         $body = $resp === false ? '' : (string)$resp;
         self::$lastHttp[$provider] = ['code' => $code, 'body' => mb_substr($body, 0, 500), 'error' => $err];
         return [$code, $body, $err];
     }
 
-    // HTTP POST with cURL, parse provider response
-    private static function httpPost(string $url, array $body, array $headers, string $provider): string {
+    /**
+     * HTTP POST with cURL, parse provider response.
+     *
+     * $shape — how to read the answer: `openai` (choices[0].message.content) or
+     * the provider's own. Yandex speaks both, depending on the endpoint.
+     */
+    private static function httpPost(string $url, array $body, array $headers, string $provider,
+                                     string $shape = ''): string {
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
@@ -831,9 +1149,9 @@ class LLM {
         $resp = curl_exec($ch);
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
-        curl_close($ch);
 
         self::$lastHttp[$provider] = ['code' => (int)$code, 'body' => mb_substr((string)$resp, 0, 500), 'error' => $err];
+        self::$lastFinish = '';
 
         if ($resp === false) throw new LLMException(self::explain($provider, 0, '', $err));
         if ($code >= 400) throw new LLMException(self::explain($provider, (int)$code, (string)$resp));
@@ -841,16 +1159,34 @@ class LLM {
         $data = json_decode($resp, true);
         if (!$data) throw new LLMException("$provider: invalid JSON response");
 
-        // Extract text from provider-specific format
-        if ($provider === 'openrouter') {
+        // Extract text from the answer shape this endpoint speaks
+        if ($shape === 'openai' || $provider === 'openrouter') {
+            self::$lastFinish = (string)($data['choices'][0]['finish_reason'] ?? '');
             return $data['choices'][0]['message']['content']
-                ?? throw new LLMException('openrouter: no content in response');
+                ?? throw new LLMException("$provider: no content in response");
         }
         if ($provider === 'yandex') {
+            self::$lastFinish = (string)($data['result']['alternatives'][0]['status'] ?? '');
             return $data['result']['alternatives'][0]['message']['text']
                 ?? throw new LLMException('yandex: no text in response');
         }
         throw new LLMException("Unknown provider: $provider");
+    }
+
+    /**
+     * The provider says it stopped because the answer hit the length limit —
+     * `finish_reason: length` on the OpenAI shape, `…TRUNCATED_FINAL` on the
+     * Foundation Models one. A truncated answer is never valid JSON, and
+     * asking again the same way produces the same stump.
+     */
+    public static function lastTruncated(): bool {
+        $f = self::$lastFinish;
+        return $f === 'length' || $f === 'max_tokens' || stripos($f, 'TRUNCATED') !== false;
+    }
+
+    /** Who answered the last call — for the journal and the diagnostics card. */
+    public static function lastCall(): array {
+        return self::$lastCall ?: self::currentModel();
     }
 
     /**

@@ -15,6 +15,25 @@ if (!defined('ROOT')) define('ROOT', dirname(__DIR__));
 require_once ROOT . '/lib/branding.php';
 $brandVer  = Branding::stamp();
 $appLogo   = Branding::uploaded('app');
+
+/**
+ * Виджет чата — из настроек, а не зашитый в страницу (issue #60).
+ *
+ * Его можно выключить галочкой и заменить кодом любого другого сервиса.
+ * Оболочка по-прежнему обходится без базы, если та недоступна: не открылась —
+ * печатается встроенный код, ровно тот, что стоял здесь раньше.
+ */
+require_once ROOT . '/lib/settings.php';
+$supportWidget = Settings::SUPPORT_WIDGET_DEFAULT;
+try {
+    require_once ROOT . '/lib/db.php';
+    require_once ROOT . '/lib/crypt.php';
+    $widgetCfg = file_exists(ROOT . '/config.php') ? (array)(require ROOT . '/config.php') : [];
+    Db::init($widgetCfg['DB_PATH'] ?? ROOT . '/data/kp.db');
+    Settings::boot($widgetCfg);
+    $supportWidget = (int)Settings::get('SUPPORT_WIDGET', 1) === 1
+        ? (string)Settings::get('SUPPORT_WIDGET_CODE', Settings::SUPPORT_WIDGET_DEFAULT) : '';
+} catch (Throwable) { /* база не открылась — страница всё равно должна открыться */ }
 ?>
 <!DOCTYPE html>
 <html lang="ru">
@@ -35,13 +54,10 @@ $appLogo   = Branding::uploaded('app');
     <link rel="apple-touch-icon" href="/api/branding.php?kind=icon&amp;size=192&amp;v=<?= $brandVer ?>">
     <link rel="stylesheet" href="/assets/css/app.css?v=<?= $assetVer ?>">
 
-    <!-- Виджет поддержки Replain -->
-    <script>
-    window.replainSettings = { id: '02391a2c-0104-46cd-9b04-87a680dfb320' };
-    (function(u){var s=document.createElement('script');s.async=true;s.src=u;
-    var x=document.getElementsByTagName('script')[0];x.parentNode.insertBefore(s,x);
-    })('https://widget.replain.cc/dist/client.js');
-    </script>
+    <!-- Виджет чата: код из «Настройки → Обратная связь» (issue #60) -->
+<?php if (trim($supportWidget) !== ''): ?>
+    <?= $supportWidget ?>
+<?php endif; ?>
 
     <!-- Yandex.Metrika counter -->
     <script type="text/javascript">

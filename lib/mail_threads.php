@@ -236,10 +236,21 @@ final class MailThreads {
         ];
     }
 
-    /** Неотвеченных писем на экране — архив в счётчик не входит. */
+    /**
+     * Непрочитанных писем на экране — архив в счётчик не входит.
+     *
+     * ОТВЕЧЕННОЕ письмо непрочитанным не считается (модуль 040): если после
+     * него в переписке стоит наше письмо, оно прочитано делом, а не галочкой.
+     * Счётчик «Письма 2» висел и тогда, когда на доске давно всё разобрано.
+     */
     public static function unreadCount(): int {
-        return (int)Db::val("SELECT COUNT(*) FROM mail_messages
-                             WHERE direction='in' AND is_read=0 AND archived_at IS NULL");
+        return (int)Db::val(
+            "SELECT COUNT(*) FROM mail_messages m
+             WHERE m.direction='in' AND m.is_read=0 AND m.archived_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM mail_messages o
+                               WHERE o.thread_key = m.thread_key AND o.thread_key IS NOT NULL
+                                 AND o.direction='out'
+                                 AND (o.date_at > m.date_at OR (o.date_at = m.date_at AND o.id > m.id)))");
     }
 
     /**

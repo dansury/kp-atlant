@@ -79,11 +79,10 @@ switch ($action) {
 
         $cp = requireMsCounterparty($proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null);
 
-        $positions = array_map(fn($i) => [
-            'product_id' => $i['moysklad_product_id'],
-            'quantity'   => $i['quantity'],
-            'price'      => $i['price'],
-        ], $items);
+        // Те же цены, скидки и доставка, что в КП и в счёте (модуль 045)
+        require_once ROOT . '/lib/delivery_share.php';
+        $positions = DeliveryShare::invoicePositions($proposal, $items)['positions'];
+        if (!$positions) jsonError('В КП нет позиций с ценой, сопоставленных с товарами МойСклад');
 
         $appUrl = rtrim($cfg['APP_URL'] ?? '', '/');
         try {

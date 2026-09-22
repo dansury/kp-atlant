@@ -95,17 +95,39 @@ final class Outbox {
             $name = basename(trim($name));
             if ($name === '' || $name === '.' || $name === '..') continue;
             $path = $dir . '/' . $name;
-            if (is_file($path)) $out[] = $path;
+            // Имя НА ДИСКЕ и имя В ПИСЬМЕ — разные вещи (модуль 040). Клиент
+            // получал «14eeebfbc5257884__Счет_на_турникеты.pdf»: приставка
+            // существует, чтобы два «Счёт.pdf» не затирали друг друга на
+            // сервере, и в письме ей делать нечего.
+            if (is_file($path)) $out[] = ['path' => $path, 'name' => self::displayName($name)];
         }
         return $out;
     }
 
-    /** Убрать то, что приложили и не отправили. */
+    /** Человеческое имя файла: без служебной приставки, которой он лежит на диске. */
+    public static function displayName(string $stored): string {
+        return (string)preg_replace('/^[0-9a-f]{16}__/', '', basename($stored));
+    }
+
+    /**
+     * Убрать то, что приложили и не отправили.
+     *
+     * Кроме файлов отложенного письма (issue #60): письмо, назначенное на
+     * следующий понедельник, ждёт дольше этих 48 часов и должно уйти с теми же
+     * вложениями, которые к нему прикладывали.
+     */
     public static function sweep(int $managerId): void {
         $dir = self::dir($managerId);
         $deadline = time() - self::KEEP_HOURS * 3600;
+        $keep = [];
+        if (class_exists('MailSchedule') || is_file(ROOT . '/lib/mail_schedule.php')) {
+            require_once ROOT . '/lib/mail_schedule.php';
+            $keep = array_flip(MailSchedule::pendingFiles($managerId));
+        }
         foreach (glob($dir . '/*') ?: [] as $path) {
-            if (is_file($path) && filemtime($path) < $deadline) @unlink($path);
+            if (!is_file($path) || filemtime($path) >= $deadline) continue;
+            if (isset($keep[basename($path)])) continue;
+            @unlink($path);
         }
     }
 

@@ -13,6 +13,7 @@ require_once ROOT . '/lib/attachments.php';
 require_once ROOT . '/lib/outbox.php';
 require_once ROOT . '/lib/drafts.php';
 require_once ROOT . '/lib/forwards.php';
+require_once ROOT . '/lib/mail_signature.php';
 
 $manager = requireAuth();
 $action  = $_GET['action'] ?? '';
@@ -143,107 +144,58 @@ try {
 
         case 'sync':
             $id = (int)($input['mailbox_id'] ?? $_GET['mailbox_id'] ?? 0);
-            jsonOk(['report' => MailSync::run($id ?: null)]);
+            // Кнопку нажал человек и он ждёт: письма забираются целиком, а на
+            // разбор моделью отводится несколько секунд — остальное дочитает
+            // следующий заход или cron (модуль 040)
+            $budget = max(0, (int)Settings::get('MAIL_SYNC_TRIAGE_BUDGET', 10));
+            jsonOk(['report' => MailSync::run($id ?: null, ['budget' => $budget])]);
 
-        case 'send':
-            $to = trim((string)($input['to'] ?? ''));
-            if ($to === '') jsonError('Укажите адрес получателя');
-            $text = (string)($input['text'] ?? '');
-            if (trim($text) === '') jsonError('Письмо пустое');
-
-            // Replying keeps the thread and the company card of the original message
-            $replyTo = null;
-            $source = null;
-            $counterpartyId = isset($input['counterparty_id']) ? (int)$input['counterparty_id'] : null;
-            $requestId = isset($input['request_id']) ? (int)$input['request_id'] : null;
-            $threadKey = trim((string)($input['thread_key'] ?? '')) ?: null;
-            if (!empty($input['reply_to_id'])) {
-                $src = MailArchive::get((int)$input['reply_to_id']);
-                if ($src) {
-                    $source = $src;
-                    $replyTo = $src['message_id'] ?: null;
-                    $counterpartyId = $counterpartyId ?: ($src['counterparty_id'] ? (int)$src['counterparty_id'] : null);
-                    $requestId = $requestId ?: ($src['request_id'] ? (int)$src['request_id'] : null);
-                    // An answer stays in the thread it answers, whichever mailbox
-                    // it leaves from — the manager may pick any of them
-                    $threadKey = $threadKey ?: ($src['thread_key'] ?: null);
+        /**
+         * Отправить письмо — сейчас или в назначенное время (issue #60).
+         *
+         * Само письмо собирает `MailCompose::send()`: тот же код уходит и по
+         * кнопке, и по расписанию, так что отложенное письмо ничем не
+         * отличается от обычного.
+         */
+        case 'send': {
+            $sendAt = trim((string)($input['send_at'] ?? ''));
+            if ($sendAt !== '') {
+                require_once ROOT . '/lib/mail_schedule.php';
+                try {
+                    $row = MailSchedule::add($input, (int)$manager['id'], $sendAt);
+                } catch (InvalidArgumentException|RuntimeException $e) {
+                    jsonError($e->getMessage(), 400);
                 }
+                jsonOk(['scheduled' => $row]);
             }
-
-            // Черновик этого письма уже знает компанию, которой пишут, —
-            // даже если форма её не передала (модуль 033)
-            $draftKeys = [
-                'draft_id'        => $input['draft_id'] ?? 0,
-                'mail_message_id' => $input['reply_to_id'] ?? 0,
-                'thread_key'      => $threadKey ?? '',
-                'counterparty_id' => $counterpartyId ?: 0,
-            ];
-            $draft = MailDrafts::find($draftKeys, (int)$manager['id']);
-            if (!$counterpartyId && $draft && !empty($draft['counterparty_id'])) {
-                $counterpartyId = (int)$draft['counterparty_id'];
+            require_once ROOT . '/lib/mail_compose.php';
+            try {
+                $res = MailCompose::send($input, (int)$manager['id']);
+            } catch (InvalidArgumentException $e) {
+                jsonError($e->getMessage(), 400);
             }
+            jsonOk($res);
+        }
 
-            $subject = (string)($input['subject'] ?? '');
-
-            // Оформление, которое менеджер видел в поле, уходит клиенту: жирный,
-            // списки и ссылки перестали срезаться по дороге. Чужого тут нет —
-            // но разметка всё равно проходит тот же фильтр, что и входящая.
-            $html = trim((string)($input['html'] ?? ''));
-            $html = $html !== ''
-                ? MailArchive::sanitizeHtml($html)
-                : '<p>' . nl2br(htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')) . '</p>';
-
-            // Ответ несёт письмо, на которое отвечает (модуль 031): клиенту не
-            // приходится вспоминать, о каком заказе речь, а нам — пересказывать
-            // его же вопрос своими словами.
-            $quoted = MailText::withQuote($text, $html, $source);
-            $text = $quoted['text'];
-            $html = $quoted['html'];
-
-            $res = Mailer::send([
-                'to'              => $to,
-                'cc'              => array_filter(array_map('trim', explode(',', (string)($input['cc'] ?? '')))),
-                'subject'         => $subject,
-                'text'            => $text,
-                'html'            => $html,
-                'mailbox_id'      => $input['mailbox_id'] ?? null,
-                'manager_id'      => (int)$manager['id'],
-                'counterparty_id' => $counterpartyId,
-                'request_id'      => $requestId,
-                'in_reply_to'     => $replyTo,
-                'thread_key'      => $threadKey,
-                // Менеджер мог переделать документ руками и приложить свой
-                'attachments'     => Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']),
+        // Что ещё лежит в очереди отложенных — и подсказки «когда»
+        case 'scheduled': {
+            require_once ROOT . '/lib/mail_schedule.php';
+            jsonData([
+                'items'   => MailSchedule::pending(!empty($manager['is_admin']) ? null : (int)$manager['id']),
+                'presets' => MailSchedule::presets(),
             ]);
+        }
 
-            // Отправленное письмо — уже не черновик, но его карточка остаётся
-            // на доске и в своей колонке (модуль 033)
-            MailDrafts::sent($draftKeys, (int)$manager['id'], [
-                'thread_key'      => (string)(Db::val("SELECT thread_key FROM mail_messages WHERE id=?",
-                                                      [(int)$res['archive_id']]) ?: $threadKey),
-                'counterparty_id' => $counterpartyId,
-                'mail_message_id' => (int)$res['archive_id'],
-                'title'           => $counterpartyId
-                    ? (string)(Db::val("SELECT name FROM counterparties WHERE id=?", [$counterpartyId]) ?: $to)
-                    : $to,
-                'manager_id'      => (int)$manager['id'],
-            ]);
-
-            // The company chat shows the same message, so nothing is invisible there
-            if ($counterpartyId) {
-                Crm::logEvent($counterpartyId, 'out', $text, [
-                    'request_id' => $requestId,
-                    'subject'    => $subject,
-                    'email_to'   => $to,
-                    'manager_id' => (int)$manager['id'],
-                    'event_type' => 'mail_sent',
-                ]);
+        case 'schedule_cancel': {
+            require_once ROOT . '/lib/mail_schedule.php';
+            try {
+                MailSchedule::cancel((int)($input['id'] ?? $_GET['id'] ?? 0),
+                                     (int)$manager['id'], !empty($manager['is_admin']));
+            } catch (RuntimeException $e) {
+                jsonError($e->getMessage(), 400);
             }
-            // «Отправлено» is not the whole truth when the copy never reached the
-            // server's «Отправленные» — say so instead of letting it be found later
-            jsonOk($res + ['warning' => $res['sent_state'] === 'failed'
-                ? 'Письмо ушло, но копия не попала в «Отправленные»: ' . (string)$res['sent_error']
-                : null]);
+            jsonOk();
+        }
 
         /**
          * ==== Перенаправление письма (модуль 037) ====
@@ -271,6 +223,25 @@ try {
                 jsonError($e->getMessage(), 400);
             }
             jsonOk($res + ['addresses' => Forwards::all()]);
+
+        /**
+         * Подбор товара по переписке, из которой запрос не завели (модуль 039).
+         * Кнопка «Подобрать товар» в панели позиций — и таблица подбора
+         * открывается по любому письму, а не только по разобранному.
+         */
+        case 'make_request': {
+            $key = trim((string)($input['key'] ?? $_GET['key'] ?? ''));
+            if ($key === '' && !empty($input['mail_message_id'])) {
+                $key = (string)(Db::val("SELECT thread_key FROM mail_messages WHERE id=?",
+                                        [(int)$input['mail_message_id']]) ?: '');
+            }
+            try {
+                $res = MailSync::requestFromThread($key, (int)$manager['id']);
+            } catch (InvalidArgumentException $e) {
+                jsonError($e->getMessage(), 404);
+            }
+            jsonOk($res);
+        }
 
         case 'draft_reply':
             // «Создать ответ»: the draft is generated here and only here — the mail
@@ -312,6 +283,11 @@ try {
 
             $ctx = [
                 'org_name'        => $msg['counterparty_name'] ?? '',
+                // К кому обращаться: контакт компании, а не адрес ящика (модуль 041)
+                'contact_person'  => $msg['counterparty_id']
+                    ? (string)(Db::val("SELECT contact_person FROM counterparties WHERE id=?",
+                                       [(int)$msg['counterparty_id']]) ?: '')
+                    : '',
                 'attachments'     => $attachText,
                 'thread'          => array_reverse($thread),
                 'counterparty_id' => $msg['counterparty_id'] ?? null,
@@ -365,6 +341,19 @@ try {
                                'id=?', [(int)$msg['request_id']]);
                 }
             }
+
+            // Форма письма одна на все пути черновика — и на готовый черновик
+            // из синхронизации, и на ответ без классификатора (модуль 041)
+            require_once ROOT . '/lib/letter_shape.php';
+            $text = LetterShape::apply($text, (string)($ctx['contact_person'] ?: ($msg['from_name'] ?? '')));
+
+            // Промпты ответа заканчиваются словами «без подписи — её подставит
+            // система». Система подставляет её здесь (модуль 039).
+            $text = MailSignature::appendText($text, MailSignature::forManager((int)$manager['id']));
+
+            // Чем ответила модель — помним: отправленное письмо встанет с этим
+            // в пару и попадёт в «Исправления» (модуль 041)
+            Db::update('mail_messages', ['model_draft_text' => $text], 'id=?', [$id]);
 
             $used = LLM::currentModel();
             Logger::info('mail', "Черновик ответа на письмо #$id создан (" . Triage::label($category) . ')', [
@@ -558,6 +547,27 @@ try {
                          ['manager_id' => (int)$manager['id'], 'failed' => $failed]);
             jsonOk(['done' => $done, 'failed' => $failed, 'errors' => array_slice($errors, 0, 5)]);
         }
+
+        /**
+         * ==== Корзина писем (модуль 040) ====
+         *
+         * Удалить можно любое письмо — и вернуть тоже, пока корзину не
+         * очистили. До сих пор удаление было окончательным: строка исчезала,
+         * файлы стирались с диска.
+         */
+        case 'trash':
+            jsonData(['items' => MailSync::trash((int)($_GET['limit'] ?? 200))]);
+
+        case 'trash_restore':
+            try {
+                jsonOk(MailSync::restoreFromTrash((int)($input['id'] ?? 0)));
+            } catch (Throwable $e) {
+                jsonError($e->getMessage(), 404);
+            }
+
+        case 'trash_purge':
+            $one = (int)($input['id'] ?? 0);
+            jsonOk(['purged' => MailSync::purgeTrash($one ?: null)]);
 
         case 'categories':
             // For the «тип запроса» selector in the reply dialog

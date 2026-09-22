@@ -21,6 +21,8 @@ class ProductMatcher {
     private const VEC_STRONG = 0.8;
     /** Нижний край оценки за полное вхождение слов запроса в название. */
     private const NAME_CONTAIN_BASE = 0.7;
+    /** Потолок оценки для товара с ЧУЖОЙ меткой («бр2» против «бр3») — ниже порога. */
+    private const MARKER_CONFLICT_CAP = 0.45;
 
     /**
      * Match parsed items against products_cache.
@@ -221,6 +223,12 @@ class ProductMatcher {
         $nameCap = max(self::NAME_CONTAIN_BASE,
                        (float)Settings::get('MATCH_AUTO_CONFIRM', 0.88) - 0.01);
 
+        // «Бр2» и «Бр3» — это РАЗНЫЕ товары (модуль 040). Отличаются они ровно
+        // одним знаком, слово короче четырёх букв в отбор не попадает, и
+        // «Боковая плита для бронежилета Бр2» уверенно находила плиту Бр3:
+        // совпадение 84% и ни одного намёка, что класс защиты другой.
+        $queryMarkers = self::markers($normQuery);
+
         $scored = [];
         foreach ($products as $p) {
             $byName = self::similarity($normQuery, $p['match_text']);
@@ -252,7 +260,13 @@ class ProductMatcher {
             // score stands in, so a half-indexed catalog still ranks sensibly
             $combined = $vec === null ? $lexical : (1 - $weight) * $lexical + $weight * $vec;
 
-            $qualifies = $combined >= $minScore || ($vec !== null && $vec >= self::VEC_STRONG);
+            // Класс защиты, номер модели, ГОСТ-индекс: запрос назвал один, у
+            // товара стоит другой — это не «почти то же самое», это не тот
+            // товар. Смысловая близость такую пару тоже не спасает.
+            $conflict = $queryMarkers && self::markerConflict($queryMarkers, $p['match_text']);
+            if ($conflict) $combined = min($combined, self::MARKER_CONFLICT_CAP);
+
+            $qualifies = $combined >= $minScore || (!$conflict && $vec !== null && $vec >= self::VEC_STRONG);
             if (!$qualifies) continue;
 
             $prices = Catalog::decodePrices($p['prices_json'] ?? null);
@@ -351,6 +365,39 @@ class ProductMatcher {
             if ($stem !== $w && str_contains($haystack, $stem)) $hits++;
         }
         return $hits / count($queryWords);
+    }
+
+    /**
+     * Метки-различители названия: «бр2», «бр5а», «6б45», «xm30f» (модуль 040).
+     *
+     * Это те куски названия, ради которых товар и выбирают: класс защиты,
+     * номер модели, индекс ГОСТ. Голое число меткой не считается — это
+     * количество, размер упаковки или год.
+     *
+     * @return array<string, array<string, true>> приставка => её значения
+     */
+    private static function markers(string $normalized): array {
+        $out = [];
+        foreach (explode(' ', $normalized) as $w) {
+            if ($w === '' || !preg_match('/^(\p{L}+)(\d[\p{L}\d+]*)$/u', $w, $m)) continue;
+            $out[$m[1]][$m[2]] = true;
+        }
+        return $out;
+    }
+
+    /**
+     * Метка запроса и метка товара с той же приставкой, но другая — конфликт.
+     *
+     * Метки у товара НЕТ вовсе — не конфликт: так выглядит товар-родитель,
+     * у которого класс стоит на модификациях.
+     */
+    private static function markerConflict(array $queryMarkers, string $candidateText): bool {
+        $theirs = self::markers($candidateText);
+        foreach ($queryMarkers as $prefix => $values) {
+            if (empty($theirs[$prefix])) continue;
+            if (!array_intersect_key($values, $theirs[$prefix])) return true;
+        }
+        return false;
     }
 
     /** Слова запроса, по которым вообще имеет смысл искать. */

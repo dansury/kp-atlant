@@ -24,6 +24,10 @@ Return JSON with fields:
 - contact_email: email if present (string or null)
 - contact_phone: phone if present (string or null)
 - delivery_terms: delivery conditions if mentioned (string or null)
+- kp_requirements: array of short Russian phrases — what the client asks to be STATED in
+  the КП itself («страна производства», «гарантийный срок», «срок поставки до 01.11»,
+  «сертификаты соответствия», «доставка до склада в Казани»). Only explicit asks about the
+  document's content; not the positions. Empty array when there are none.
 - items: array of {name: string, qty: int, raw_text: string}
 
 Classification rules:
@@ -71,6 +75,10 @@ Fields:
 - request_type: "order" | "kp_request"
 - org_name, inn (digits only), contact_person, contact_email, contact_phone,
   delivery_terms — string or null
+- kp_requirements: array of short Russian phrases — what the client asks to be STATED in
+  the КП itself («страна производства», «гарантийный срок», «срок поставки до 01.11»,
+  «сертификаты соответствия», «доставка до склада в Казани»). Only explicit asks about the
+  document's content; not the positions. Empty array when there are none.
 - items: array of {name, qty, raw_text} — everything the client asks for
 - order_numbers: array of order numbers the letter quotes («7150», «6764»), digits only
 - edo: {operator: "Диадок"|"СБИС"|"Такском"|null, id: participant identifier or null,
@@ -637,6 +645,26 @@ PROMPT,
 PROMPT,
             ],
 
+            'kp_requirements' => [
+                'Текст КП по требованиям клиента',
+                'Системный промпт (модуль 046): клиент просил указать в КП что-то конкретное — абзац документа, который на это отвечает. {{knowledge}} — выдержки из вики компании.',
+                ['knowledge'],
+                <<<'PROMPT'
+Ты пишешь один блок текста коммерческого предложения Atlant Armour. Клиент попросил,
+чтобы в КП было указано определённое — список его требований во входных данных.
+Там же — условия КП, позиции и факты о компании.
+
+{{knowledge}}
+
+Правила:
+- На каждое требование — одно короткое предложение с фактом ИЗ ВХОДНЫХ ДАННЫХ или базы знаний.
+- Факта нет — так и напиши: «<требование> — уточним и сообщим дополнительно». Ничего не выдумывай:
+  страну, гарантию, сертификаты, сроки и цены — только из источников.
+- Деловой тон, без приветствия и подписи, без markdown. Каждое предложение с новой строки.
+Верни JSON: {"text": "..."}
+PROMPT,
+            ],
+
             'normalize_names' => [
                 'Нормализация наименований',
                 'Приводит названия из запроса к виду, по которому ищется товар в каталоге МойСклад. {{knowledge}} — номенклатура из вики.',
@@ -849,6 +877,42 @@ TEXT;
                            $managerId, (string)($prev['content'] ?? ''), '');
         Logger::info('prompts', "Промпт «{$key}» возвращён к встроенному", ['manager_id' => $managerId]);
     }
+
+    /**
+     * Вернуть версию из истории (модуль 041).
+     *
+     * История была списком для чтения: увидеть прежний текст можно было, а
+     * вернуть его — только выделив и скопировав руками. Откат идёт через
+     * `save()`, поэтому нынешний текст тоже попадает в историю: откат самого
+     * отката всегда возможен.
+     */
+    public static function restore(string $key, int $historyId, ?int $managerId): string {
+        $row = Db::one("SELECT content FROM prompt_history WHERE id=? AND key=?", [$historyId, $key]);
+        if (!$row) throw new InvalidArgumentException('Такой версии промпта нет');
+        self::save($key, (string)$row['content'], $managerId);
+        return (string)$row['content'];
+    }
+
+    /**
+     * Дописать к промпту готовый блок правил — то, что модель собрала из
+     * правок менеджеров (модуль 041). Одной кнопкой, с историей, как обычное
+     * сохранение: неудачное подмешивание откатывается тем же откатом.
+     */
+    public static function append(string $key, string $block, ?int $managerId): string {
+        $block = trim($block);
+        if ($block === '') throw new InvalidArgumentException('Нечего подмешивать');
+        // Именно `text()`, а не `render()`: там плейсхолдеры уже подставлены и
+        // приписан блок дисциплины — сохранять такое как промпт нельзя
+        $current = self::text($key);
+        // Дважды один и тот же блок в промпт не попадает
+        if (str_contains($current, $block)) return $current;
+        $merged = rtrim($current) . "\n\n" . self::LEARNED_HEADER . "\n" . $block . "\n";
+        self::save($key, $merged, $managerId);
+        return $merged;
+    }
+
+    /** Заголовок блока, подмешанного из правок: по нему его видно в тексте промпта. */
+    public const LEARNED_HEADER = '===== ИЗ ПРАВОК МЕНЕДЖЕРОВ =====';
 
     public static function history(string $key, int $limit = 20): array {
         return Db::all("SELECT h.id, h.content, h.created_at, m.name AS manager_name

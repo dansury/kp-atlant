@@ -165,21 +165,10 @@ switch ($action) {
                          WHERE proposal_id=? AND (is_excluded IS NULL OR is_excluded=0)
                          ORDER BY position", [$proposalId]);
 
-        $positions = [];
-        $skipped   = [];
-        foreach ($rows as $r) {
-            $price = (float)$r['price'];
-            $qty   = (float)$r['quantity'];
-            if (empty($r['moysklad_product_id'])) { $skipped[] = (string)$r['product_name']; continue; }
-            if ($price <= 0 || $qty <= 0)         { $skipped[] = (string)$r['product_name']; continue; }
-            $positions[] = [
-                'product_id' => $r['moysklad_product_id'],
-                'quantity'   => $qty,
-                'price'      => $price,
-                'discount'   => (float)($r['discount_percent'] ?? 0),
-                'vat'        => (int)($r['vat_rate'] ?? $p['vat_rate'] ?? 0),
-            ];
-        }
+        // Цены, скидки и доставка — те же, что напечатаны в КП (модуль 045)
+        require_once ROOT . '/lib/delivery_share.php';
+        ['positions' => $positions, 'skipped' => $skipped, 'delivery_missing' => $deliveryMissing]
+            = DeliveryShare::invoicePositions($p, $rows);
         if (!$positions) {
             jsonError('Ни одной позиции с ценой и карточкой МойСклад — счёт выставлять не из чего', 400);
         }
@@ -290,6 +279,8 @@ switch ($action) {
             ] : null,
             'order_error'   => $orderError,
             'order_missing' => $orderMissing,
+            // Доставка отдельной строкой, а услуга в МойСклад не указана
+            'delivery_missing' => $deliveryMissing,
         ]);
     }
 

@@ -4,7 +4,8 @@
  *
  *   — один товар в трёх размерах становится тремя строками со своими
  *     количествами и своими карточками каталога;
- *   — «не наша номенклатура» не уходит ни в КП, ни в ответ клиенту;
+ *   — «не наша номенклатура» не становится позицией КП (печатается строкой
+ *     с прочерками — модуль 045) и не уходит в ответ клиенту;
  *   — КП печатается с логотипом, со строкой подписи под картинкой подписи
  *     (модуль 035 — по образцу заказчика) и без второго
  *     блока реквизитов поставщика;
@@ -164,10 +165,19 @@ $row = fn(string $id) => Db::one("SELECT * FROM products_cache WHERE moysklad_id
 $suggest = Variants::expandSuggest([$row('ms-old'), $row('ms-helmet'), $row('ms-ptt'), $row('ms-ear')]);
 $ids = array_column($suggest, 'moysklad_id');
 
-ok('сам товар с модификациями в подсказку не попадает', !in_array('ms-helmet', $ids, true),
-   implode(', ', $ids));
+// Модуль 040 развернул это правило: сам товар СТОИТ в подсказке первой
+// строкой семьи и выбирается — КП на «шлем» пишут без размера, с вилкой цен,
+// а размеры уточняют в заказе. Модификации при этом никуда не делись.
+$helmet = array_values(array_filter($suggest, fn($s) => $s['moysklad_id'] === 'ms-helmet'))[0] ?? [];
+ok('сам товар с модификациями тоже можно выбрать', !empty($helmet['is_group']), implode(', ', $ids));
+ok('и у него вилка цен по модификациям',
+   (float)($helmet['price'] ?? 0) > 0 && (float)($helmet['price_max'] ?? 0) >= (float)($helmet['price'] ?? 0),
+   json_encode([$helmet['price'] ?? null, $helmet['price_max'] ?? null]));
+ok('а остаток — сумма по размерам', (int)($helmet['stock'] ?? -1) === 33, (string)($helmet['stock'] ?? ''));
+
 $sizes = [];
 foreach ($suggest as $s) {
+    if (!empty($s['is_group'])) continue;   // строка всего товара — не размер
     if ($s['group_name'] === 'Баллистический шлем Протон СВМПЭ') $sizes[$s['variant_label']] = $s['stock'];
 }
 ok('у каждого размера своё количество', $sizes === ['L' => 9, 'M' => 20, 'S' => 4],
@@ -181,6 +191,7 @@ ok('и с количеством за вычетом резерва', ($ptt['sto
 
 $colors = [];
 foreach ($suggest as $s) {
+    if (!empty($s['is_group'])) continue;
     if (($s['group_name'] ?? '') === 'Наушники Earmor M32') $colors[$s['variant_label']] = $s['stock'];
 }
 ok('метка модификации — её характеристики, а не имя товара целиком',
@@ -190,10 +201,16 @@ ok('метка модификации — её характеристики, а 
 ok('пустая полка уходит вниз списка', end($ids) === 'ms-old', implode(', ', $ids));
 
 $one = Variants::expandSuggest([$row('ms-helmet-L')]);
-ok('нашлась одна модификация — её одну и показываем',
-   array_column($one, 'moysklad_id') === ['ms-helmet-L'], json_encode(array_column($one, 'moysklad_id')));
-ok('и подписана она своим товаром',
-   ($one[0]['group_name'] ?? '') === 'Баллистический шлем Протон СВМПЭ', (string)($one[0]['group_name'] ?? ''));
+// Нашлась одна модификация — показываем её и её товар (модуль 040): выбрать
+// можно и размер, и шлем целиком, а найденной остаётся ровно одна строка размера
+ok('нашлась одна модификация — она и её товар',
+   array_column($one, 'moysklad_id') === ['ms-helmet', 'ms-helmet-L'],
+   json_encode(array_column($one, 'moysklad_id')));
+$sizesOnly = array_values(array_filter($one, fn($r) => empty($r['is_group'])));
+ok('размер в списке ровно один', count($sizesOnly) === 1, (string)count($sizesOnly));
+ok('и подписан он своим товаром',
+   ($sizesOnly[0]['group_name'] ?? '') === 'Баллистический шлем Протон СВМПЭ',
+   (string)($sizesOnly[0]['group_name'] ?? ''));
 
 ok('характеристики из скобок имени тоже читаются меткой',
    Variants::label(['name' => 'Наушники Earmor M32 (Цвет: Олива; Вид рельсы: arc)']) === 'Олива · arc',
@@ -262,7 +279,7 @@ ok('возврат в работу возможен',
 
 // ===================================================================== 4
 
-echo "\n== 4. КП: чужие позиции в документ не уходят ==\n";
+echo "\n== 4. КП: чужие позиции не становятся позициями документа ==\n";
 
 $matched = RequestItems::toProposalItems(RequestItems::all($requestId));
 ok('в КП уходят только наши строки', count($matched) === 3, (string)count($matched));
@@ -285,12 +302,23 @@ foreach ($matched as $i => $m) {
 }
 Requisites::freeze($proposalId);
 
+// Строки печатаются по галочке КП «Показать в КП отсутствующую номенклатуру» (модуль 046)
+Settings::set('KP_SHOW_OUT_OF_SCOPE', 1);
 $html = PdfGenerator::html($proposalId);
 ok('шлем в документе есть', str_contains($html, 'Протон СВМПЭ'));
-ok('топора в документе нет', !str_contains($html, 'Топор пожарный'));
-ok('рукава тоже', !str_contains($html, '5ELEM'));
-ok('и ящиков для песка', !str_contains($html, 'Рапан'));
-ok('блока «нужно уточнение» про них нет', !str_contains($html, 'Водопенное'));
+// «Не наша номенклатура» печатается только строкой с прочерками, серым
+// курсивом названием клиента (issue #60, #67) — не позицией и не
+// «нужно уточнение»
+preg_match_all('#<tr class="out-of-scope">.*?</tr>#s', $html, $scopeRows);
+$scopeHtml = implode('', $scopeRows[0]);
+$rest = str_replace($scopeRows[0], '', $html);
+ok('топор — только строкой «не наша номенклатура»', str_contains($scopeHtml, 'Топор пожарный') && !str_contains($rest, 'Топор пожарный'));
+ok('рукава тоже', !str_contains($rest, '5ELEM'));
+ok('и ящики для песка', !str_contains($rest, 'Рапан'));
+ok('блока «нужно уточнение» про них нет', !str_contains($rest, 'Водопенное'));
+Settings::set('KP_SHOW_OUT_OF_SCOPE', 0);
+ok('настройка выключает эти строки', !str_contains(PdfGenerator::html($proposalId), 'Топор пожарный'));
+Settings::forget('KP_SHOW_OUT_OF_SCOPE');
 
 echo "\n== 5. Документ: логотип, подпись, реквизиты, разметка ==\n";
 

@@ -531,9 +531,7 @@ final class Embeddings {
                 'body' => $body,
             ];
             curl_multi_remove_handle($mh, $ch);
-            curl_close($ch);
         }
-        curl_multi_close($mh);
         return $out;
     }
 
@@ -543,7 +541,6 @@ final class Embeddings {
         $body = (string)curl_exec($ch);
         $res = ['vec' => self::readVector($body), 'code' => (int)curl_getinfo($ch, CURLINFO_HTTP_CODE),
                 'curl' => curl_error($ch), 'body' => $body];
-        curl_close($ch);
         return $res;
     }
 

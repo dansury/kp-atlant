@@ -114,47 +114,21 @@ const App = {
         const el = document.createElement('div');
         el.className = `toast toast--${type}`;
         const sticky = type === 'error';
-        el.innerHTML = `<span class="toast__text"></span><span class="toast__hint">нажмите, чтобы скопировать</span>`;
+        el.innerHTML = `<span class="toast__text"></span>`;
         el.querySelector('.toast__text').textContent = text;
-        el.title = 'Нажмите — текст скопируется в буфер обмена';
 
         let timer = null;
         const close = () => { clearTimeout(timer); el.remove(); };
         const arm = ms => { clearTimeout(timer); timer = setTimeout(close, ms); };
 
-        // Наведение держит сообщение на экране, уход — снова отпускает таймер.
-        // У ошибки таймера нет вовсе, пока её не прочитали.
+        // Наведение держит сообщение на экране; убрали курсор — оно уходит
+        // (issue #60). У ошибки таймера на появление нет вовсе, пока её не
+        // навели курсором хотя бы раз — не пропустить.
         el.addEventListener('mouseenter', () => { clearTimeout(timer); el.dataset.seen = '1'; });
-        el.addEventListener('mouseleave', () => { if (!sticky) arm(2000); });
-        el.addEventListener('click', async () => {
-            await this.copyText(text);
-            el.classList.add('toast--copied');
-            el.querySelector('.toast__hint').textContent = 'скопировано';
-            arm(700);
-        });
+        el.addEventListener('mouseleave', () => arm(sticky ? 300 : 2000));
 
         document.getElementById('toasts').appendChild(el);
         if (!sticky) arm(4000);
-    },
-
-    /** Текст в буфер обмена. `clipboard` есть не везде — есть и запасной путь. */
-    async copyText(text) {
-        try {
-            if (navigator.clipboard && window.isSecureContext) {
-                await navigator.clipboard.writeText(text);
-                return true;
-            }
-        } catch { /* отказали в доступе — пробуем по-старому */ }
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
-            return true;
-        } catch { return false; }
     },
 
     // Escape untrusted text (email bodies, client names) before injecting into HTML
@@ -221,6 +195,7 @@ const App = {
     // Init app
     async init() {
         this.registerServiceWorker();
+        this.watchBlocks();
         this.watchInstallPrompt();
         try {
             this.manager = await this.api('auth.php?action=me');
@@ -230,6 +205,9 @@ const App = {
             this.loadUiPrefs();
             this.startPolling();
             this.startMailPolling();
+            // Первый заход администратора на ненастроенный сервис — в мастер,
+            // а не на пустую доску (модуль 038). Открытую закладку не трогаем.
+            if (this.manager.setup_pending && !location.hash) location.hash = 'settings/setup';
             this.route();
         } catch {
             let needsSetup = false;
@@ -263,6 +241,10 @@ const App = {
             <a href="#notifications" data-page="notifications">Уведомления<span id="notifBadge"></span></a>
         `;
         document.getElementById('userBlock').innerHTML = `
+            <!-- Всегда на виду, справа вверху шапки (issue #60) -->
+            <button class="btn btn--outline btn--sm header__support" onclick="App.supportModal()"
+                    title="Написать в поддержку: что сломалось или чего не хватает на этом экране"
+                    >✉<span class="header__support-text"> Написать в поддержку</span></button>
             ${this.manager.name} <a onclick="App.logout()">Выход</a>
         `;
     },
@@ -412,18 +394,22 @@ const App = {
                     // вторым почтовым клиентом рядом с доской — со своим
                     // поиском, своими вкладками и всеми письмами подряд.
                     // Старая закладка открывает доску с включённым архивом.
-                    if (seg === 'inbox') {
-                        this.boardFilters = Object.assign(this.boardFilters || {}, {archived: 1});
-                        location.replace('#mail');
-                        return;
-                    }
+                    // Старая закладка открывает доску В РАБОТЕ, а не архив
+                    // (модуль 040): архив включался здесь сам, и после удаления
+                    // или архивации письма экран уезжал в «Письма · архив» —
+                    // человек нажимал «в архив», а попадал в чужую комнату.
+                    if (seg === 'inbox') { location.replace('#mail'); return; }
+                    // Корзина писем (модуль 040): удалённое письмо возвращается
+                    if (seg === 'trash') return this.pageMailTrash();
                     if (seg === 't') return this.pageMailThread(decodeURIComponent(params[1] || ''));
                     if (seg === 'msg') return this.pageMailMessage(params[1]);
                     // Отдельного списка запросов больше нет: всё открывается с
                     // доски, чтобы один и тот же запрос не жил на двух экранах
                     // с разной вёрсткой (модуль 023)
                     if (seg === 'requests') { location.replace('#mail'); return; }
-                    if (seg === 'new') return this.pageNewRequest();
+                    // «#mail/new/trial» — проверочный запрос мастера настройки (модуль 038)
+                    if (seg === 'new') return this.pageNewRequest(params[1] === 'trial'
+                        ? {trial: true, text: this.trialText || ''} : {});
                     if (seg === 'request') return this.pageRequest(params[1]);
                     if (seg === 'proposal') return this.pageProposal(params[1]);
                     if (seg === 'companies') return this.pageCounterparties();
@@ -453,6 +439,8 @@ const App = {
         // Whatever the page throws, the user sees the reason and a retry button —
         // never a spinner that spins forever
         Promise.resolve().then(open)
+            // Карточка проверочного запроса: полоска с оценкой качества (модуль 038)
+            .then(() => this.trialStrip(hash))
             // Первый заход на экран — гайд по его подсказкам, по очереди
             .then(() => setTimeout(() => this.startTour(hash.split('/').slice(0, 2).join('/')), 600))
             .catch(err => this.pageFail(err));
@@ -479,7 +467,7 @@ const App = {
         // Архив — это та же доска, открытая ссылкой «Архив», отсюда и заголовок:
         // «Письма · архив», а не отдельный раздел «Архив писем»
         const titles = {board: (this.boardFilters || {}).archived ? 'Письма · архив' : 'Письма',
-                        requests: 'Запросы', companies: 'Компании'};
+                        trash: 'Письма · корзина', requests: 'Запросы', companies: 'Компании'};
         return `
             <div class="flex flex--between flex--wrap" style="margin-bottom:10px;gap:10px">
                 <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
@@ -538,44 +526,130 @@ const App = {
         `;
     },
 
-    // New request (manual paste, US2)
-    pageNewRequest() {
+    /**
+     * Запрос, который пришёл мимо почты (модуль 038).
+     *
+     * Ссылка на этот экран стоит НАД «Входящими» на доске: запрос из мессенджера,
+     * с телефона или файлом на почту коллеге приходит чаще, чем кажется, и до
+     * сих пор его перепечатывали руками, теряя вложение.
+     *
+     * Поле принимает и текст, и файлы — спецификацию, фотографию переписки,
+     * скан. Созданный запрос кладётся карточкой в «В работе» и открывается
+     * сразу: разбирать его всё равно сейчас.
+     */
+    pageNewRequest(opts = {}) {
+        this.newReqFiles = [];
         document.getElementById('app').innerHTML = `
             <div class="flex" style="margin-bottom:16px;gap:10px">
                 <a href="#mail" class="btn btn--outline btn--sm">← К доске</a>
                 <h2 style="margin:0">Новый запрос</h2>
             </div>
+            ${opts.trial ? `
+            <div class="card card--alert">
+                <div class="card__title">Проверочный запрос</div>
+                <p>Текст ниже — пример. Создайте по нему КП и письмо и вернитесь
+                   в <a href="#settings/setup">мастер настройки</a>, чтобы оценить качество.</p>
+            </div>` : ''}
             <div class="card">
                 <form id="newRequestForm">
                     <div class="form-group">
                         <label>Текст запроса</label>
-                        <textarea id="reqText" rows="8" placeholder="Вставьте текст запроса из мессенджера, email или заметок..."></textarea>
+                        <textarea id="reqText" rows="8" placeholder="Вставьте текст запроса из мессенджера, email или заметок…"
+                                  onpaste="App.newRequestPaste(event)">${this.esc(opts.text || '')}</textarea>
+                        <div class="muted">Скриншот можно вставить прямо сюда — Ctrl+V.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Файлы</label>
+                        <input type="file" id="reqFiles" multiple onchange="App.newRequestAttach(this)">
+                        <div class="flex flex--wrap" id="reqFileList" style="gap:6px;margin-top:6px"></div>
+                        <div class="muted">Спецификация, фотография переписки, скан — текст из них уходит в подбор позиций.</div>
                     </div>
                     <div class="form-group">
                         <label>Контрагент (название организации)</label>
                         <input type="text" id="reqCounterparty" placeholder="ООО Ромашка (необязательно — система определит из текста)">
                     </div>
-                    <button type="submit" class="btn btn--primary btn--block">Создать запрос и сформировать КП</button>
+                    <input type="hidden" id="reqTrial" value="${opts.trial ? '1' : ''}">
+                    <button type="submit" class="btn btn--primary btn--block">Создать карточку в «В работе»</button>
                 </form>
             </div>
         `;
-        document.getElementById('newRequestForm').onsubmit = async (e) => {
-            e.preventDefault();
-            const text = document.getElementById('reqText').value.trim();
-            if (!text) return App.toast('Введите текст запроса', 'error');
-            const btn = e.target.querySelector('button');
-            btn.disabled = true; btn.textContent = 'Обработка...';
-            try {
-                const r = await App.api('requests.php?action=create', {method:'POST', body: {
-                    text, counterparty_name: document.getElementById('reqCounterparty').value.trim()
-                }});
-                App.toast('Запрос создан', 'success');
-                location.hash = `mail/request/${r.id}`;
-            } catch (err) {
-                App.toast(err.message, 'error');
-                btn.disabled = false; btn.textContent = 'Создать запрос и сформировать КП';
-            }
-        };
+        document.getElementById('newRequestForm').onsubmit = (e) => { e.preventDefault(); this.submitNewRequest(e.target); };
+        // Проверочный текст открыли по закладке, мимо мастера — спросим его у сервера
+        if (opts.trial && !(opts.text || '').trim()) this.fillTrialText();
+    },
+
+    async fillTrialText() {
+        try {
+            const d = await this.api('setup.php?action=state');
+            const box = document.getElementById('reqText');
+            if (box && !box.value.trim()) box.value = d.trial_text || '';
+        } catch { /* мастер админский — менеджер напишет свой текст */ }
+    },
+
+    async submitNewRequest(form) {
+        const text = document.getElementById('reqText').value.trim();
+        const files = this.newReqFiles || [];
+        if (!text && !files.length) return this.toast('Вставьте текст запроса или приложите файл', 'error');
+        const trial = document.getElementById('reqTrial').value === '1';
+        const btn = form.querySelector('button[type=submit]');
+        btn.disabled = true; btn.textContent = 'Обработка…';
+        try {
+            const r = await this.api('requests.php?action=create', {method: 'POST', body: {
+                text,
+                counterparty_name: document.getElementById('reqCounterparty').value.trim(),
+                files: files.map(f => f.name),
+                trial,
+            }});
+            this.toast('Карточка в «В работе» создана', 'success');
+            // Проверочный запрос ведёт назад в мастер — за оценкой
+            if (trial) this.trialWatch(r.hash);
+            location.hash = r.hash || ('mail/request/' + r.id);
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false; btn.textContent = 'Создать карточку в «В работе»';
+        }
+    },
+
+    /** Файлы формы живут там же, где вложения письма, — в папке менеджера. */
+    async newRequestAttach(input) {
+        for (const file of [...(input.files || [])]) await this.newRequestUpload(file);
+        input.value = '';
+    },
+
+    /** Скриншот из буфера — обычный файл, просто без имени. */
+    newRequestPaste(ev) {
+        const items = [...((ev.clipboardData || {}).items || [])].filter(i => i.kind === 'file');
+        if (!items.length) return;
+        ev.preventDefault();
+        items.forEach(i => {
+            const file = i.getAsFile();
+            if (file) this.newRequestUpload(file);
+        });
+    },
+
+    async newRequestUpload(file) {
+        const fd = new FormData();
+        fd.append('file', file, file.name || ('снимок-' + Date.now() + '.png'));
+        try {
+            const res = await fetch('/api/mail.php?action=upload', {method: 'POST', body: fd, credentials: 'same-origin'});
+            const d = await res.json();
+            if (!res.ok || d.error) throw new Error(d.error || 'Файл не загрузился');
+            (this.newReqFiles = this.newReqFiles || []).push(d.file);
+            this.drawNewRequestFiles();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    drawNewRequestFiles() {
+        const box = document.getElementById('reqFileList');
+        if (!box) return;
+        box.innerHTML = (this.newReqFiles || []).map((f, i) => `
+            <span class="chip">📎 ${this.esc(f.filename)}
+                <a onclick="App.newRequestDrop(${i})" title="Убрать">×</a></span>`).join('');
+    },
+
+    newRequestDrop(i) {
+        (this.newReqFiles || []).splice(i, 1);
+        this.drawNewRequestFiles();
     },
 
     // Single request view
@@ -681,6 +755,7 @@ const App = {
         host = host || document.getElementById('matchCard');
         if (!host) return;
         host.dataset.matchHost = '1';
+        host.dataset.block = 'items';
         host.dataset.requestId = requestId;
         // Доставка живёт на блоке подбора: перерисовка строк её не теряет
         if (opts.delivery) host.dataset.delivery = JSON.stringify(opts.delivery);
@@ -690,23 +765,32 @@ const App = {
         if (opts.conditions) host.dataset.conditions = JSON.stringify(opts.conditions);
         if (opts.price_types) host.dataset.priceTypes = JSON.stringify(opts.price_types);
         const open = items.filter(i => i.needs_choice).length;
+        host.classList.toggle('card--folded', host.dataset.folded === '1');
         host.innerHTML = `
             <div class="card__title">Подходящие позиции ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}
-                ${this.hint('match')}</div>
+                ${this.hint('match')}
+                <button class="btn btn--outline btn--sm card__fold" onclick="App.toggleMatchFold(this)"
+                        title="Свернуть или развернуть подбор">${host.dataset.folded === '1'
+                            ? `▸ Развернуть (позиций: ${items.length})` : '▾ Свернуть'}</button></div>
             <p class="muted">Подбираются сами при открытии карточки. Начните печатать название —
                подскажет локальная база товаров.</p>
             ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
                 выберите нужный, автоподбор сам не решает.</div>` : ''}
+            <!-- Кнопки подбора стоят НАД общими условиями (issue #60): сначала
+                 собирают позиции, потом назначают на них цены и сроки -->
+            <div class="flex flex--wrap" style="margin-bottom:8px">
+                <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
+                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
+                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
+                        title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
+            </div>
             <div data-conditions>${this.conditionsPanel(host)}</div>
             <div data-match-rows>${items.map((i, n) => this.matchRow(i, n)).join('')}</div>
             ${items.length ? '' : '<p class="muted" data-match-empty>Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
             <div data-delivery>${this.deliveryRow(opts.delivery)}</div>
             <div class="flex flex--wrap" style="margin-top:10px">
-                <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
-                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
-                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
-                        title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
-                <button class="btn btn--outline btn--sm" onclick="App.saveMatchedItems(this)">Сохранить</button>
+                <!-- «Сохранить» больше нет: правки сохраняются сами (issue #60) -->
+                <span class="muted" data-match-saved></span>
                 <span data-kp-buttons class="flex flex--wrap">${this.matchKpButton(requestId, opts.kp || {})}</span>
             </div>
             <div data-match-total class="muted" style="margin-top:8px"></div>
@@ -717,7 +801,111 @@ const App = {
         `;
         this.updateMatchTotal(host);
         this.bindMatchDnd(host);
+        this.bindMatchAutosave(host);
+        this.watchMatchPhotos(host);
         this.loadKpBoard(requestId, host);
+    },
+
+    /**
+     * ==== Блоки письма (issue #67) ====
+     *
+     * Переписка, подбор, информация, заметки и счета МойСклад сворачиваются
+     * кнопкой в заголовке. Положение запоминается у КАЖДОГО письма
+     * (`localStorage['kp.fold.<ключ переписки>']`); «Информация» на телефоне
+     * свёрнута всегда. У каждого блока свой оттенок — `[data-block]` в CSS.
+     * Подбор сворачивается своим механизмом (`toggleMatchFold`), здесь только
+     * запоминается.
+     */
+    FOLDABLE: ['thread', 'info', 'events', 'ms'],
+
+    isPhone() {
+        return window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
+    },
+
+    foldStore() {
+        try { return JSON.parse(localStorage.getItem('kp.fold.' + (this.foldKey || '')) || '{}') || {}; }
+        catch { return {}; }
+    },
+
+    /** true — свёрнут, false — раскрыт, null — у этого письма не трогали. */
+    foldGet(name) {
+        if (name === 'info' && this.isPhone()) return true;
+        const st = this.foldStore();
+        return name in st ? !!st[name] : null;
+    },
+
+    foldSet(name, folded) {
+        if (!this.foldKey) return;
+        const st = this.foldStore();
+        st[name] = folded ? 1 : 0;
+        try { localStorage.setItem('kp.fold.' + this.foldKey, JSON.stringify(st)); } catch { /* не запомним */ }
+    },
+
+    /** Письмо, чьё положение блоков сейчас на экране; сменилось — блоки перечитываются. */
+    setFoldKey(key) {
+        this.foldKey = key || '';
+        this.bindBlocks(document, true);
+    },
+
+    /** Кнопка свернуть в заголовке каждого блока; $reapply — выставить сохранённое заново. */
+    bindBlocks(root = document, reapply = false) {
+        root.querySelectorAll('[data-block]').forEach(el => {
+            const name = el.dataset.block;
+            if (!this.FOLDABLE.includes(name)) return;
+            const head = el.querySelector(':scope > [data-block-head], :scope > .card__title');
+            if (!head) return;
+            if (!head.querySelector(':scope > .block-fold')) {
+                head.classList.add('block-head');
+                head.insertAdjacentHTML('beforeend',
+                    '<button type="button" class="block-fold" onclick="App.toggleBlock(this)"></button>');
+            } else if (!reapply && el.dataset.foldBound === '1') {
+                return;
+            }
+            el.dataset.foldBound = '1';
+            this.applyBlockFold(el, !!this.foldGet(name));
+        });
+    },
+
+    applyBlockFold(el, folded) {
+        el.classList.toggle('is-folded', folded);
+        const btn = el.querySelector(':scope > .block-head > .block-fold');
+        if (btn) {
+            btn.textContent = folded ? '▸' : '▾';
+            btn.title = folded ? 'Развернуть' : 'Свернуть';
+            btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+        }
+    },
+
+    toggleBlock(btn) {
+        const el = btn.closest('[data-block]');
+        if (!el) return;
+        const folded = !el.classList.contains('is-folded');
+        this.applyBlockFold(el, folded);
+        this.foldSet(el.dataset.block, folded);
+    },
+
+    /** Блоки появляются в разметке в разное время — привязываем их по мере появления. */
+    watchBlocks() {
+        if (this._blockObserver || !('MutationObserver' in window)) return;
+        let queued = false;
+        this._blockObserver = new MutationObserver(() => {
+            if (queued) return;
+            queued = true;
+            requestAnimationFrame(() => { queued = false; this.bindBlocks(); });
+        });
+        this._blockObserver.observe(document.body, {childList: true, subtree: true});
+    },
+
+    /** Свернуть/развернуть подбор — строки остаются в DOM, автосохранение живо. */
+    toggleMatchFold(btn) {
+        const host = this.matchHost(btn);
+        if (!host) return;
+        const folded = host.dataset.folded !== '1';
+        host.dataset.folded = folded ? '1' : '0';
+        host.classList.toggle('card--folded', folded);
+        this.foldSet('items', folded);
+        const rows = host.querySelectorAll('[data-match-row]').length;
+        btn.textContent = folded ? `▸ Развернуть (позиций: ${rows})` : '▾ Свернуть';
     },
 
     /**
@@ -750,16 +938,23 @@ const App = {
                         <input type="number" step="0.01" min="0" max="100" data-cond="discount" value="${Number(c.discount) || 0}">%
                     </label>
                     <label title="Условия ниже получат только позиции, которых нет на складе">
-                        <input type="checkbox" data-cond="wait_on" ${Number(c.wait_on) === 1 ? 'checked' : ''}> под заказ
+                        <input type="checkbox" data-cond="wait_on" ${Number(c.wait_on) === 1 ? 'checked' : ''}
+                               onchange="App.toggleWaitFields(this)"> под заказ
                     </label>
-                    <label>ждать
-                        <input type="number" min="0" max="120" data-cond="wait_months" value="${Number(c.wait_months) || 0}"> мес.
-                    </label>
-                    <label>за ожидание −
-                        <input type="number" step="0.01" min="0" max="100" data-cond="wait_discount" value="${Number(c.wait_discount) || 0}">%
-                    </label>
-                    <label>предоплата
-                        <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
+                    <span class="match-extra__wait" ${Number(c.wait_on) === 1 ? '' : 'hidden'}>
+                        <label>ждать
+                            <input type="number" min="0" max="120" data-cond="wait_months" value="${Number(c.wait_months) || 0}"> мес.
+                        </label>
+                        <label>за ожидание −
+                            <input type="number" step="0.01" min="0" max="100" data-cond="wait_discount" value="${Number(c.wait_discount) || 0}">%
+                        </label>
+                        <label>предоплата
+                            <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
+                        </label>
+                    </span>
+                    <label title="Сколько фотографий печатать у каждой позиции. Пусто — сколько разрешают настройки КП">фото
+                        <input type="number" min="0" max="12" data-cond="photos" style="width:4.5em"
+                               placeholder="как в настройках" value="${c.photos === null || c.photos === undefined ? '' : Number(c.photos)}">
                     </label>
                     <button class="btn btn--outline btn--sm" onclick="App.applyConditions(this)"
                             title="Проставить выбранное всем позициям и запомнить для следующих КП">Применить ко всем</button>
@@ -792,6 +987,11 @@ const App = {
         const requestId = Number(host.dataset.requestId);
         btn.disabled = true;
         try {
+            // Та же защита, что и у смены «не наша номенклатура» — «применить ко
+            // всем» тоже перерисовывает таблицу целиком (issue #60)
+            await this.api(`requests.php?action=items_save&id=${requestId}`, {
+                method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
+            });
             const r = await this.api(`requests.php?action=items_conditions&id=${requestId}`,
                                      {method: 'POST', body: {conditions, apply: 1}});
             host.dataset.conditions = JSON.stringify(r.conditions || conditions);
@@ -823,7 +1023,9 @@ const App = {
         }
         return `<div class="match-row match-row--delivery" data-delivery-row>
             <div class="match-row__name">
-                <div class="muted">Отдельная строка КП — не входит в цену товара</div>
+                <div class="muted">${(this.ui || {}).delivery_mode === 'line'
+                    ? 'Отдельная строка КП — не входит в цену товара'
+                    : 'Включена в стоимость товаров — распределится по позициям КП и счёта'}</div>
                 <input type="text" data-delivery-name value="${this.esc(d.name || 'Доставка')}"
                        placeholder="Доставка">
             </div>
@@ -872,21 +1074,19 @@ const App = {
      * единственном числе перестаёт что-либо значить.
      */
     matchKpButton(requestId, kp) {
-        // «Собрать КП в файл» — то, чего под таблицей подбора не хватало: КП
-        // собирается и сразу скачивается, без захода в редактор (модуль 023)
-        // Word и PDF — два равноправных выхода: до модуля 035 кнопка была одна и
-        // отдавала только Word, а PDF в карточке взять было негде
-        const files = `<button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'docx')"
-                       title="Собрать КП и скачать файлом Word">⬇ Собрать КП в Word</button>
-                <button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'pdf')"
-                       title="Собрать КП и скачать файлом PDF">⬇ …в PDF</button>`;
-        if (kp.proposal_id) {
-            return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId}, this)"
-                            title="Собрать ещё одно КП из этих позиций">Собрать КП заново</button>
-                    ${files}`;
+        // Скачать можно то, что собрано (issue #60): пока КП нет, «⬇Word» и
+        // «⬇PDF» обещали бы файл, которого не существует. Появляются они после
+        // «Сформировать КП» — и ссылками, а не кнопками: кнопка здесь одна, и
+        // это сборка документа.
+        if (!kp.proposal_id) {
+            return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId}, this)">Сформировать КП</button>`;
         }
-        return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId}, this)">Сформировать КП</button>
-                ${files}`;
+        return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId}, this)"
+                        title="Собрать КП заново из этих позиций">🔄</button>
+                <a class="kp-file" onclick="App.buildKpFile(${requestId}, this, 'docx')"
+                   title="Собрать КП и скачать файлом Word">⬇Word</a>
+                <a class="kp-file" onclick="App.buildKpFile(${requestId}, this, 'pdf')"
+                   title="Собрать КП и скачать файлом PDF">⬇PDF</a>`;
     },
 
 
@@ -934,13 +1134,19 @@ const App = {
             return;
         }
 
+        // Колонка «Позиции запроса» нужна ровно тогда, когда есть между чем
+        // раскладывать: после «+ Ещё одно КП» (issue #60). При одном КП это
+        // пустая колонка рядом с таблицей подбора, которая уже выше. Но если
+        // в ней что-то ЛЕЖИТ, она рисуется всегда: спрятанная позиция —
+        // потерянная позиция.
+        const showPool = proposals.length > 1 || pool.length > 0;
         box.innerHTML = `
             <div class="card__title" style="margin-top:14px">Коммерческие предложения${this.hint('kp-board')}</div>
             <p class="muted">Одному запросу можно собрать несколько КП — по одному на заявку клиента.
                КП идут списком сверху вниз; позиции перетаскиваются между ними мышью или переносятся
                выбором «перенести…»; счёт выставляется по конкретному КП.</p>
             <div class="kpboard" data-kp-dnd>
-                <div class="kpcol kpcol--pool" data-kp-drop="0">
+                ${showPool ? `<div class="kpcol kpcol--pool" data-kp-drop="0">
                     <div class="kpcol__head">
                         <span class="kpcol__title">Позиции запроса</span>
                         <span class="kpcol__count">${pool.length}</span>
@@ -950,7 +1156,7 @@ const App = {
                             ? pool.map(r => this.kpPoolCard(r, proposals, requestId)).join('')
                             : '<div class="kpcol__empty">Все позиции разложены по КП</div>'}
                     </div>
-                </div>
+                </div>` : ''}
                 ${proposals.map(p => this.kpColumn(p, proposals, requestId)).join('')}
                 <button class="kpcol kpcol--add" onclick="App.kpAddProposal(${requestId}, this)">
                     + Ещё одно КП
@@ -1347,9 +1553,12 @@ const App = {
         // видимого экрана — до него надо было домотать, и то, что КП вообще
         // открылось, было не видно.
         const host = this.matchHost(btn);
-        const slot = this.kpSlot()
+        // На телефоне КП раскрывается прямо под блоком, где нажали «Открыть»
+        // (issue #67): до поля письма внизу страницы пришлось бы листать
+        const slot = (this.isPhone() && host && host.querySelector('[data-kp-slot]'))
+            || this.kpSlot()
             || (host && (host.querySelector('[data-kp-slot]')
-                || host.appendChild(Object.assign(document.createElement('div'), {dataset: {kpSlot: '1'}}))));
+                || host.appendChild(this.dataDiv('kpSlot'))));
         // Карточки под рукой нет (страница редактора КП) — только тогда переход
         if (!slot) { location.hash = '#mail/proposal/' + id; return; }
         if (slot.dataset.open === String(id)) {
@@ -1361,7 +1570,7 @@ const App = {
         slot.dataset.open = String(id);
         const height = Number(localStorage.getItem('kpHeight')) || 60;
         slot.innerHTML = `
-            <div class="card card--inline kp-open" style="margin-top:10px">
+            <div class="card card--inline kp-open" data-block="kp" style="margin-top:10px">
                 <div class="flex flex--between flex--wrap">
                     <strong>КП #${id}</strong>
                     <span class="flex flex--wrap">
@@ -1372,10 +1581,11 @@ const App = {
                                    oninput="App.kpResize(this)"><span data-kp-size>${height}vh</span>
                         </label>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.saveAs('/api/proposals.php?action=docx&id=${id}')">⬇ Word</button>
+                                onclick="App.kpDownload(${id}, 'docx', this)">⬇ Word</button>
                         <button class="btn btn--outline btn--sm"
-                                onclick="App.saveAs('/api/proposals.php?action=preview&id=${id}')">⬇ PDF</button>
-                        <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)">✎ Править текст</button>
+                                onclick="App.kpDownload(${id}, 'pdf', this)">⬇ PDF</button>
+                        <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)"
+                                title="Текст документа по полям: вступление, названия, условия">✎ Текст по полям</button>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
                         <button class="btn btn--primary btn--sm" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
@@ -1385,14 +1595,286 @@ const App = {
                     </span>
                 </div>
                 <div data-kp-edit></div>
-                <!-- Пока документ собирается, в рамке был белый прямоугольник, и
-                     было не отличить «ещё считает» от «не открылось» (модуль 035) -->
-                <div data-kp-state class="loading">Собираем документ...</div>
-                <iframe class="kp-preview" style="height:${height}vh;display:none"
-                        title="Предпросмотр КП #${id}"></iframe>
+                <!-- Документ открывается страницей A4, которую можно править прямо
+                     здесь (issue #60); PDF — второй вид того же документа -->
+                <div class="kp-modes">
+                    <button class="btn btn--sm btn--primary" data-kp-mode="page"
+                            onclick="App.kpMode(this, 'page', ${id})">📝 Страница A4</button>
+                    <button class="btn btn--sm btn--outline" data-kp-mode="pdf"
+                            onclick="App.kpMode(this, 'pdf', ${id})">PDF</button>
+                    <!-- Масштаб листа: пальцами, Ctrl + колесо / щипок тачпада, кнопками -->
+                    <span class="kp-zoom" data-kp-zoom title="Масштаб: Ctrl + колесо мыши, щипок пальцами или тачпадом">
+                        <button class="btn btn--sm btn--outline" onclick="App.kpZoomStep(this, -1)" aria-label="Уменьшить">−</button>
+                        <button class="btn btn--sm btn--outline" data-kp-zoom-label onclick="App.kpZoomStep(this, 0)"
+                                title="По ширине окна / 100%">100%</button>
+                        <button class="btn btn--sm btn--outline" onclick="App.kpZoomStep(this, 1)" aria-label="Увеличить">+</button>
+                    </span>
+                </div>
+                <div data-kp-pagewrap>
+                    <div data-kp-page-bar></div>
+                    <div data-kp-page-state class="loading">Собираем документ...</div>
+                    <iframe class="kp-page" style="height:${height}vh;display:none" sandbox="allow-same-origin"
+                            title="КП #${id} — страница A4"></iframe>
+                </div>
+                <div data-kp-pdf hidden>
+                    <!-- Пока документ собирается, в рамке был белый прямоугольник, и
+                         было не отличить «ещё считает» от «не открылось» (модуль 035) -->
+                    <div data-kp-state class="loading">Собираем документ...</div>
+                    <iframe class="kp-preview" style="height:${height}vh;display:none"
+                            title="Предпросмотр КП #${id}"></iframe>
+                </div>
             </div>`;
         slot.scrollIntoView({behavior: 'smooth', block: 'start'});
-        this.fillKpPreview(slot, id);
+        this.fillKpPage(slot, id);
+    },
+
+    /** Страница A4 или PDF — два вида одного документа. PDF грузится при первом показе. */
+    kpMode(btn, mode, id) {
+        const card = btn.closest('.kp-open');
+        if (!card) return;
+        card.querySelectorAll('[data-kp-mode]').forEach(b => {
+            b.classList.toggle('btn--primary', b.dataset.kpMode === mode);
+            b.classList.toggle('btn--outline', b.dataset.kpMode !== mode);
+        });
+        card.querySelector('[data-kp-pagewrap]').hidden = mode !== 'page';
+        const zoom = card.querySelector('[data-kp-zoom]');
+        if (zoom) zoom.hidden = mode !== 'page';
+        const pdf = card.querySelector('[data-kp-pdf]');
+        pdf.hidden = mode !== 'pdf';
+        if (mode === 'pdf') {
+            const run = () => {
+                const frame = card.querySelector('.kp-preview');
+                if (frame && !frame.getAttribute('src')) this.fillKpPreview(card.parentElement, id);
+                else if (frame) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            };
+            // Несохранённая правка страницы сначала сохраняется — PDF собирается из неё
+            if (card.dataset.dirty === '1') this.kpPageSave(id, card).then(ok => ok && run());
+            else run();
+        }
+    },
+
+    /**
+     * ==== КП страницей A4 (модуль 045, issue #60) ====
+     *
+     * Документ — тот же HTML, из которого собираются PDF и Word, в рамке без
+     * скриптов (`sandbox`), с `designMode`: текст правится прямо на листе.
+     * «Сохранить правки» кладёт страницу в КП — из неё соберутся PDF и Word.
+     */
+    async fillKpPage(slot, id) {
+        const state = slot.querySelector('[data-kp-page-state]');
+        const frame = slot.querySelector('.kp-page');
+        const bar = slot.querySelector('[data-kp-page-bar]');
+        const card = slot.querySelector('.kp-open');
+        if (!state || !frame || !card) return;
+        state.hidden = false;
+        state.className = 'loading';
+        state.textContent = 'Собираем документ...';
+        try {
+            const d = await this.api(`proposals.php?action=html&id=${id}`);
+            if (!slot.isConnected || slot.dataset.open !== String(id)) return;
+            card.dataset.dirty = '';
+            bar.innerHTML = this.kpPageBar(id, d);
+            // Лист A4 на сером поле — только в редакторе; перед сохранением
+            // этот стиль убирается (и сервер его вырезает тоже)
+            const sheet = `<style data-kp-editor>html{background:#e9e9e9}
+                body{width:210mm;min-height:297mm;margin:12px auto!important;padding:10mm 15mm!important;
+                box-sizing:border-box;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+                ${d.editable ? 'body:focus,body *:focus{outline:1px dashed #b0b0b0}' : ''}</style>`;
+            const html = String(d.html || '');
+            frame.onload = () => {
+                const doc = frame.contentDocument;
+                if (!doc) return;
+                if (d.editable) {
+                    doc.designMode = 'on';
+                    doc.addEventListener('input', () => { card.dataset.dirty = '1'; this.kpPageDirty(card, true); });
+                }
+                this.kpBindZoom(frame, card);
+            };
+            frame.srcdoc = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, sheet + '</head>') : sheet + html;
+            frame.style.display = '';
+            state.hidden = true;
+        } catch (err) {
+            state.className = 'no';
+            state.innerHTML = `<strong>КП не открылось.</strong> ${this.esc(err.message)}
+                <button class="btn btn--outline btn--sm" style="margin-left:8px"
+                        onclick="App.fillKpPage(this.closest('.kp-open').parentElement, ${id})">Повторить</button>`;
+        }
+    },
+
+    /**
+     * ==== Масштаб листа A4 ====
+     *
+     * Масштаб — CSS `zoom` корня документа в рамке: сам документ не меняется,
+     * и в сохранённую правку он не попадает (`style[data-kp-editor]` вырезается,
+     * а zoom стоит на элементе и снимается перед сохранением). 30–300 %.
+     * Колесо без Ctrl остаётся прокруткой листа — иначе документ не прочитать.
+     */
+    KP_ZOOM_MIN: 0.3,
+    KP_ZOOM_MAX: 3,
+
+    /** Масштаб «по ширине»: лист A4 целиком в ширину рамки, но не крупнее 100 %. */
+    kpFitZoom(frame) {
+        const w = frame.clientWidth || 800;
+        return Math.min(1, Math.max(this.KP_ZOOM_MIN, (w - 16) / 818));   // 210 мм ≈ 794 px + поля
+    },
+
+    kpZoomSet(card, z) {
+        const frame = card && card.querySelector('.kp-page');
+        const doc = frame && frame.contentDocument;
+        if (!doc || !doc.documentElement) return;
+        z = Math.min(this.KP_ZOOM_MAX, Math.max(this.KP_ZOOM_MIN, Math.round(z * 100) / 100));
+        card._kpZoom = z;
+        doc.documentElement.style.zoom = String(z);
+        const label = card.querySelector('[data-kp-zoom-label]');
+        if (label) label.textContent = Math.round(z * 100) + '%';
+        try { localStorage.setItem('kpZoom', String(z)); } catch { /* не запомним */ }
+    },
+
+    /** −/+ — шаг 10 %; средняя кнопка — «по ширине» ⇄ 100 %. */
+    kpZoomStep(btn, dir) {
+        const card = btn.closest('.kp-open');
+        const frame = card && card.querySelector('.kp-page');
+        if (!frame) return;
+        const z = card._kpZoom || 1;
+        if (dir === 0) {
+            const fit = this.kpFitZoom(frame);
+            this.kpZoomSet(card, Math.abs(z - 1) < 0.01 ? fit : 1);
+        } else {
+            this.kpZoomSet(card, z + dir * 0.1);
+        }
+    },
+
+    /** Колесо с Ctrl (и щипок тачпада — это то же событие), щипок двумя пальцами, жест Safari. */
+    kpBindZoom(frame, card) {
+        const doc = frame.contentDocument;
+        if (!doc) return;
+        let saved = NaN;
+        try { saved = parseFloat(localStorage.getItem('kpZoom')); } catch { /* нет хранилища */ }
+        this.kpZoomSet(card, Number.isFinite(saved) ? saved : this.kpFitZoom(frame));
+
+        doc.addEventListener('wheel', e => {
+            if (!e.ctrlKey && !e.metaKey) return;
+            e.preventDefault();
+            const z = card._kpZoom || 1;
+            this.kpZoomSet(card, z * Math.exp(-e.deltaY * 0.0025));
+        }, {passive: false});
+
+        let pinch = null;
+        const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+        doc.addEventListener('touchstart', e => {
+            if (e.touches.length === 2) pinch = {d: dist(e.touches), z: card._kpZoom || 1};
+        }, {passive: true});
+        doc.addEventListener('touchmove', e => {
+            if (!pinch || e.touches.length !== 2) return;
+            e.preventDefault();
+            this.kpZoomSet(card, pinch.z * dist(e.touches) / (pinch.d || 1));
+        }, {passive: false});
+        doc.addEventListener('touchend', e => { if (e.touches.length < 2) pinch = null; });
+
+        // Safari на Mac шлёт щипок тачпада жестом, а не колесом
+        let gz = 1;
+        doc.addEventListener('gesturestart', e => { e.preventDefault(); gz = card._kpZoom || 1; });
+        doc.addEventListener('gesturechange', e => { e.preventDefault(); this.kpZoomSet(card, gz * e.scale); });
+    },
+
+    kpPageBar(id, d) {
+        if (!d.editable) {
+            return '<div class="muted kp-page-note">КП отправлено клиенту — документ показан как отправлен, править его нельзя.</div>';
+        }
+        const oos = d.out_of_scope || {};
+        const asks = d.requirements || [];
+        return `
+            ${asks.length ? `<div class="note kp-asks">Клиент просил указать в КП: ${asks.map(a => this.esc(a)).join('; ')}.
+                Абзац на это собран под таблицей — проверьте его на листе.</div>` : ''}
+            <div class="kp-page-note flex flex--wrap">
+                ${oos.count ? `<label class="kp-oos" title="Строки «не наша номенклатура» — на своих местах, серым курсивом, с прочерками">
+                    <input type="checkbox" ${oos.shown ? 'checked' : ''}
+                           onchange="App.kpToggleOutOfScope(${id}, this)"> Показать в КП отсутствующую номенклатуру (${oos.count})</label>` : ''}
+                <span class="muted" data-kp-page-status>${d.override_at
+                    ? `Документ поправлен руками ${this.esc(d.override_at)}. Изменения подбора в него не попадут, пока не вернёте автоматическую сборку.`
+                    : 'Щёлкните по тексту на листе и правьте. Сохранённая правка уйдёт в PDF и Word.'}</span>
+                <button class="btn btn--primary btn--sm" data-kp-page-save
+                        onclick="App.kpPageSave(${id}, this.closest('.kp-open'))">💾 Сохранить правки</button>
+                ${d.override_at ? `<button class="btn btn--outline btn--sm"
+                        title="Собрать документ из подбора и настроек заново — ручные правки листа пропадут"
+                        onclick="App.kpPageReset(${id}, this)">↺ Вернуть автоматическую сборку</button>` : ''}
+            </div>`;
+    },
+
+    /** Галочка КП «Показать отсутствующую номенклатуру»: сохранить и пересобрать лист. */
+    async kpToggleOutOfScope(id, input) {
+        const card = input.closest('.kp-open');
+        if (card && card.dataset.dirty === '1'
+            && !confirm('На листе есть несохранённые правки — документ соберётся заново и они пропадут. Продолжить?')) {
+            input.checked = !input.checked;
+            return;
+        }
+        input.disabled = true;
+        try {
+            await this.api(`proposals.php?action=update&id=${id}`, {method: 'POST',
+                body: {show_out_of_scope: input.checked ? 1 : 0}});
+            if (card) this.fillKpPage(card.parentElement, id);
+        } catch (err) {
+            input.checked = !input.checked;
+            this.toast(err.message, 'error');
+        } finally { input.disabled = false; }
+    },
+
+    kpPageDirty(card, dirty) {
+        const status = card.querySelector('[data-kp-page-status]');
+        if (status && dirty) status.textContent = 'Есть несохранённые правки.';
+    },
+
+    /** Сохранить лист. Возвращает true, когда сервер принял правку и собрал PDF. */
+    async kpPageSave(id, card) {
+        const frame = card && card.querySelector('.kp-page');
+        const doc = frame && frame.contentDocument;
+        if (!doc || !doc.documentElement) return false;
+        const btn = card.querySelector('[data-kp-page-save]');
+        if (btn) { btn.disabled = true; btn.textContent = 'Сохраняем...'; }
+        try {
+            const root = doc.documentElement.cloneNode(true);
+            root.querySelectorAll('style[data-kp-editor]').forEach(el => el.remove());
+            root.style.removeProperty('zoom');
+            if (!root.getAttribute('style')) root.removeAttribute('style');
+            const html = '<!DOCTYPE html>\n' + root.outerHTML;
+            const r = await this.api(`proposals.php?action=html_save&id=${id}`, {method: 'POST', body: {html}});
+            card.dataset.dirty = '';
+            const bar = card.querySelector('[data-kp-page-bar]');
+            if (bar) bar.innerHTML = this.kpPageBar(id, {editable: true, override_at: r.override_at});
+            // PDF, если его уже смотрели, — свежий
+            const pdf = card.querySelector('.kp-preview');
+            if (pdf && pdf.getAttribute('src')) pdf.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            this.toast('Правки сохранены — PDF и Word соберутся из этой страницы', 'success');
+            return true;
+        } catch (err) {
+            this.toast(err.message, 'error');
+            return false;
+        } finally {
+            const b = card.querySelector('[data-kp-page-save]');
+            if (b) { b.disabled = false; b.textContent = '💾 Сохранить правки'; }
+        }
+    },
+
+    async kpPageReset(id, btn) {
+        if (!confirm('Вернуть автоматическую сборку? Ручные правки листа пропадут.')) return;
+        const card = btn.closest('.kp-open');
+        btn.disabled = true;
+        try {
+            await this.api(`proposals.php?action=html_reset&id=${id}`, {method: 'POST', body: {}});
+            this.toast('Документ собран заново из подбора', 'success');
+            const pdf = card.querySelector('.kp-preview');
+            if (pdf && pdf.getAttribute('src')) pdf.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            this.fillKpPage(card.parentElement, id);
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+
+    /** ⬇ Word / ⬇ PDF: несохранённая правка листа сначала сохраняется. */
+    async kpDownload(id, kind, btn) {
+        const card = btn.closest('.kp-open');
+        if (card && card.dataset.dirty === '1' && !(await this.kpPageSave(id, card))) return;
+        this.saveAs(kind === 'docx' ? `/api/proposals.php?action=docx&id=${id}`
+                                    : `/api/proposals.php?action=preview&id=${id}`);
     },
 
     /**
@@ -1435,12 +1917,19 @@ const App = {
      * Куда раскрывать КП: под поле ответа в левой колонке, если оно на экране
      * есть, и в старый блок под карточкой, если нет (страница КП, экран запроса).
      */
+    /** Пустой <div data-…="1">. `Object.assign(el, {dataset})` падал: dataset только для чтения. */
+    dataDiv(key) {
+        const el = document.createElement('div');
+        el.dataset[key] = '1';
+        return el;
+    },
+
     kpSlot() {
         const composer = document.querySelector('[data-composer]');
         if (composer && composer.parentElement) {
             return composer.parentElement.querySelector('[data-kp-under-letter]')
                 || composer.insertAdjacentElement('afterend',
-                       Object.assign(document.createElement('div'), {dataset: {kpUnderLetter: '1'}}));
+                       this.dataDiv('kpUnderLetter'));
         }
         return document.getElementById('kpWide');
     },
@@ -1448,10 +1937,10 @@ const App = {
     /** Ползунок высоты окна КП. Значение живёт в этом браузере. */
     kpResize(input) {
         const card = input.closest('.kp-open');
-        const frame = card && card.querySelector('.kp-preview');
+        const frames = card ? card.querySelectorAll('.kp-preview, .kp-page') : [];
         const label = card && card.querySelector('[data-kp-size]');
-        if (!frame) return;
-        frame.style.height = input.value + 'vh';
+        if (!frames.length) return;
+        frames.forEach(f => { f.style.height = input.value + 'vh'; });
         if (label) label.textContent = input.value + 'vh';
         try { localStorage.setItem('kpHeight', input.value); } catch { /* приватный режим — просто не запомним */ }
     },
@@ -1526,15 +2015,16 @@ const App = {
                        'success');
             if (card) {
                 const out = card.querySelector('[data-kp-invoice]')
-                    || card.insertBefore(Object.assign(document.createElement('div'), {dataset: {kpInvoice: '1'}}),
+                    || card.insertBefore(this.dataDiv('kpInvoice'),
                                          card.querySelector('.kp-preview'));
                 out.innerHTML = this.kpInvoiceNote(r);
-            } else if (r.order_error || (r.order_missing || []).length || (r.skipped || []).length) {
+            } else if (r.order_error || (r.order_missing || []).length || (r.skipped || []).length || r.delivery_missing) {
                 // Кнопке в колонке некуда положить оговорки — говорим их вслух
                 this.toast([
                     r.order_error ? 'Заказ не создан: ' + r.order_error : '',
                     (r.order_missing || []).length ? 'В МойСклад не нашлось: ' + r.order_missing.join('; ') : '',
                     (r.skipped || []).length ? 'В счёт не вошли: ' + r.skipped.join('; ') : '',
+                    r.delivery_missing ? 'Доставка в счёт не вошла: укажите услугу доставки в настройках МойСклад' : '',
                 ].filter(Boolean).join('. '), 'error');
             }
             // Счёт встаёт под своим КП на доске предложений (модуль 027) и
@@ -1592,6 +2082,8 @@ const App = {
                          счёт выставлен сам по себе.</div>`}
                 ${(r.order_missing || []).length
                     ? `<div class="muted">В МойСклад не нашлось: ${this.esc(r.order_missing.join('; '))}</div>` : ''}
+                ${r.delivery_missing
+                    ? '<div class="no">Доставка в счёт не вошла: укажите услугу доставки (MS_DELIVERY_SERVICE_ID) в настройках</div>' : ''}
                 ${(r.skipped || []).length
                     ? `<div class="muted">В счёт не вошли (нет цены или карточки МойСклад):
                        ${this.esc(r.skipped.join('; '))}</div>` : ''}
@@ -1641,7 +2133,9 @@ const App = {
             this.toast(r.changed ? `Документ пересобран, правок: ${r.changed}` : 'Правок не было', r.changed ? 'success' : 'info');
             // Предпросмотр показывает свежий файл, а не тот, что браузер закэшировал
             const frame = card.querySelector('.kp-preview');
-            if (frame) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            if (frame && frame.getAttribute('src')) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            // Правка по полям собирает документ заново — лист тоже
+            if (r.changed && card.querySelector('.kp-page')) this.fillKpPage(card.parentElement, id);
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = label; }
     },
@@ -1670,7 +2164,7 @@ const App = {
             ...(i.moysklad_product_id ? [{
                 moysklad_id: i.moysklad_product_id, name: i.product_name, article: i.article,
                 unit: i.unit, price: i.price, stock: i.stock, score: i.match_confidence,
-                variant_stock: i.variant_stock, source: i.match_source,
+                variant_stock: i.variant_stock, source: i.match_source, description: i.comment_text || '',
             }] : []),
             ...(i.variants || []),
         ];
@@ -1679,7 +2173,8 @@ const App = {
             <div class="choice">
                 <div class="choice__title">Равнозначные варианты — выберите один</div>
                 ${options.map(v => `
-                    <button type="button" class="choice__opt" onclick="App.chooseMatch(${i.id || 0}, '${this.jsStr(v.moysklad_id)}', this)">
+                    <button type="button" class="choice__opt" data-description="${this.esc(v.description || '')}"
+                            onclick="App.chooseMatch(${i.id || 0}, '${this.jsStr(v.moysklad_id)}', this)">
                         <span class="choice__name">${this.esc(v.name)}</span>
                         <span class="muted">${this.fmtMoney(v.price)}${this.stockLabel(v) ? ' · ' + this.stockLabel(v) : ''}
                             ${v.score ? ` · ${Math.round(v.score * 100)}%` : ''}
@@ -1774,25 +2269,42 @@ const App = {
                 <input type="hidden" data-field="needs_choice" value="${i.needs_choice ? 1 : 0}">
                 <input type="hidden" data-field="is_out_of_scope" value="${i.is_out_of_scope ? 1 : 0}">
                 <input type="hidden" data-field="price_max" value="${i.price_max ?? 0}">
+                <input type="hidden" data-field="price_is_manual" value="${i.price_is_manual ? 1 : 0}">
                 <div class="match-row__name">
-                    ${i.raw_name ? `<div class="muted">из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}</div>` : ''}
+                    <!-- «Не наша номенклатура» — справа от строки «из письма…» (issue #60) -->
+                    <div class="match-row__src">
+                        <span class="muted">${i.raw_name ? `из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}` : 'добавлено вручную'}</span>
+                        <button class="btn btn--outline btn--sm ${i.is_out_of_scope ? 'btn--primary' : ''}"
+                                title="${i.is_out_of_scope ? 'Вернуть строку в работу' : 'Мы этим не занимаемся: в КП строка встанет серым с прочерками, в ответ клиенту не попадёт'}"
+                                onclick="App.setItemScope(this, ${i.id || 0}, ${i.is_out_of_scope ? 0 : 1})">${i.is_out_of_scope ? '↩' : '🚫'}</button>
+                        ${index === 0 && !i.is_out_of_scope ? this.hint('match-scope') : ''}
+                    </div>
                     ${this.variantNote(i)}
                     ${this.stockNote(i)}
                     ${this.scopeNote(i)}
                     ${this.altNote(i)}
-                    <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
-                           value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
-                    <div class="suggest" hidden></div>
+                    <!-- «×» — справа от поля названия (issue #60) -->
+                    <div class="match-row__nameline">
+                        <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
+                               value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
+                        <button class="btn btn--outline btn--sm" title="Убрать строку"
+                                onclick="const h=App.matchHost(this); this.closest('[data-match-row]').remove(); App.updateMatchTotal(h)">×</button>
+                        <div class="suggest" hidden></div>
+                    </div>
                     ${this.analogField(i)}
                     ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted">ещё похожие:
                         ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
                 </div>
-                <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
-                       placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal(this)">
+                <span class="qty-cell">
+                    <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
+                           placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal(this); App.toggleQtyWarning(this)">
+                    ${this.qtyWarning(i)}
+                </span>
                 <input type="text" data-field="unit" value="${this.esc(i.unit || 'шт.')}" placeholder="Ед." title="Единица измерения">
                 <span class="price-cell">
                     <input type="number" step="0.01" min="0" data-field="price" value="${i.price ?? 0}"
-                           placeholder="Цена" title="Цена за единицу" oninput="App.updateMatchTotal(this)">
+                           placeholder="Цена" title="Цена за единицу"
+                           oninput="App.updateMatchTotal(this); App.markPriceManual(this)">
                     ${this.priceRangeNote(i)}
                 </span>
                 <span class="price-opts-slot">${this.priceOptsSelect(i.price_options || {})}</span>
@@ -1805,18 +2317,13 @@ const App = {
                            onchange="App.toggleAnalog(this)"> аналог
                 </label>
                 ${index === 0 ? this.hint('match-analog') : ''}
-                <div class="match-row__tools">
+                ${this.matchRowExtra(i)}
+                <!-- Порядок строк — внизу карточки позиции (issue #60) -->
+                <div class="match-row__tools match-row__tools--bottom">
                     <span class="match-row__grip" draggable="true" title="Перетащить строку мышью">⠿</span>
                     <button class="btn btn--outline btn--sm" title="Выше" onclick="App.moveMatchRow(this, -1)">↑</button>
                     <button class="btn btn--outline btn--sm" title="Ниже" onclick="App.moveMatchRow(this, 1)">↓</button>
-                    <button class="btn btn--outline btn--sm ${i.is_out_of_scope ? 'btn--primary' : ''}"
-                            title="${i.is_out_of_scope ? 'Вернуть строку в работу' : 'Мы этим не занимаемся: строка не попадёт ни в КП, ни в ответ клиенту'}"
-                            onclick="App.setItemScope(this, ${i.id || 0}, ${i.is_out_of_scope ? 0 : 1})">${i.is_out_of_scope ? '↩' : '🚫'}</button>
-                    ${index === 0 && !i.is_out_of_scope ? this.hint('match-scope') : ''}
-                    <button class="btn btn--outline btn--sm" title="Убрать строку"
-                            onclick="const h=App.matchHost(this); this.closest('[data-match-row]').remove(); App.updateMatchTotal(h)">×</button>
                 </div>
-                ${this.matchRowExtra(i)}
             </div>`;
     },
 
@@ -1832,6 +2339,8 @@ const App = {
      */
     matchRowExtra(i = {}) {
         const backorder = Number(i.is_backorder) === 1 || (i.stock !== null && i.stock !== undefined && Number(i.stock) <= 0);
+        // Товара нет — «под заказ» встаёт сама, без ручной галочки (issue #60)
+        const waitOn = i.wait_on ? 1 : (backorder ? 1 : 0);
         return `
             <div class="match-extra">
                 <div class="match-extra__money">
@@ -1839,27 +2348,36 @@ const App = {
                         <input type="number" step="0.01" min="0" max="100" data-field="discount_percent"
                                value="${i.discount_percent ?? 0}" oninput="App.updateMatchTotal(this)">%
                     </label>
-                    <label title="Цену поставил человек: повторный подбор её не перетрёт">
-                        <input type="checkbox" data-field="price_is_manual" ${i.price_is_manual ? 'checked' : ''}> цена вручную
-                    </label>
                     <label class="${backorder ? '' : 'muted'}" title="Товара нет на складе: срок ожидания, скидка за ожидание и предоплата">
-                        <input type="checkbox" data-field="wait_on" ${i.wait_on ? 'checked' : ''}
-                               onchange="App.updateMatchTotal(this)"> под заказ
+                        <input type="checkbox" data-field="wait_on" ${waitOn ? 'checked' : ''}
+                               onchange="App.updateMatchTotal(this); App.toggleWaitFields(this)"> под заказ
                     </label>
-                    <label>ждать
-                        <input type="number" min="0" max="120" data-field="wait_months" value="${i.wait_months ?? ''}"
-                               placeholder="3" title="Срок ожидания, месяцев"> мес.
-                    </label>
-                    <label>за ожидание −
-                        <input type="number" step="0.01" min="0" max="100" data-field="wait_discount"
-                               value="${i.wait_discount ?? ''}" placeholder="10"
-                               title="Скидка за ожидание, %" oninput="App.updateMatchTotal(this)">%
-                    </label>
-                    <label>предоплата
-                        <input type="number" min="0" max="100" data-field="wait_prepay" value="${i.wait_prepay ?? ''}"
-                               placeholder="100" title="Доля предоплаты, %">%
-                    </label>
+                    <span class="match-extra__wait" ${waitOn ? '' : 'hidden'}>
+                        <label>ждать
+                            <input type="number" min="0" max="120" data-field="wait_months" value="${i.wait_months ?? ''}"
+                                   placeholder="3" title="Срок ожидания, месяцев"> мес.
+                        </label>
+                        <label>за ожидание −
+                            <input type="number" step="0.01" min="0" max="100" data-field="wait_discount"
+                                   value="${i.wait_discount ?? ''}" placeholder="10"
+                                   title="Скидка за ожидание, %" oninput="App.updateMatchTotal(this)">%
+                        </label>
+                        <label>предоплата
+                            <input type="number" min="0" max="100" data-field="wait_prepay" value="${i.wait_prepay ?? ''}"
+                                   placeholder="100" title="Доля предоплаты, %">%
+                        </label>
+                    </span>
                     ${i.wait_note ? `<span class="muted">${this.esc(i.wait_note)}</span>` : ''}
+                </div>
+                <div class="match-extra__photos">
+                    <!-- Фото выбираются здесь, сразу после товара (модуль 040).
+                         Полоса открыта сразу (issue #60): выбор фотографий —
+                         часть подбора, а не спрятанная за кнопкой настройка.
+                         Кнопка осталась, чтобы длинную таблицу можно было
+                         свернуть. -->
+                    <button class="btn btn--outline btn--sm" ${i.id ? '' : 'disabled title="Сначала сохраните строку"'}
+                            onclick="App.toggleMatchPhotos(this, ${i.id || 0})">🖼 Фото в КП ▾</button>
+                    <div class="match-photos" data-match-photos data-item-id="${i.id || 0}"></div>
                 </div>
                 <textarea data-field="comment_text" rows="4" class="match-extra__comment"
                           data-from-catalog="${i.comment_from_catalog ? 1 : 0}" oninput="this.dataset.fromCatalog = 0"
@@ -1939,7 +2457,7 @@ const App = {
         if (!i.is_out_of_scope) return '';
         // Подсказка про «не наш профиль» — у строки, которую отбросили
         return `<div class="note note--out">
-            <strong>Не наша номенклатура.</strong> В КП и в ответ клиенту эта позиция не уйдёт.
+            <strong>Не наша номенклатура.</strong> В КП встанет серой строкой с прочерками, в ответ клиенту не уйдёт.
             ${i.out_of_scope_reason ? `<span class="muted">Правило: «${this.esc(i.out_of_scope_reason)}»</span>` : ''}
             ${this.hint('match-scope')}
         </div>`;
@@ -1994,6 +2512,12 @@ const App = {
         if (!itemId) { this.toast('Сначала сохраните строку', 'error'); return; }
         btn.disabled = true;
         try {
+            // Сохранить то, что менеджер уже набрал в ДРУГИХ строках, — иначе
+            // перерисовка ниже вернёт их к тому, что лежит в базе, и незасохранённый
+            // выбор товара пропадёт (issue #60)
+            await this.api(`requests.php?action=items_save&id=${requestId}`, {
+                method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
+            });
             const res = await this.api(`requests.php?action=items_scope&id=${requestId}`, {
                 method: 'POST', body: {item_id: itemId, out_of_scope: !!outOfScope},
             });
@@ -2019,7 +2543,56 @@ const App = {
         if (!sel.value) return;
         const row = sel.closest('[data-match-row]');
         const price = row && row.querySelector('[data-field="price"]');
-        if (price) { price.value = sel.value; this.updateMatchTotal(sel); }
+        if (price) {
+            price.value = sel.value;
+            // Выбор из списка — это снова цена «по умолчанию», а не то, что
+            // менеджер вписал руками: следующий выбор из списка должен её
+            // перетереть (issue #60, вместо убранной галочки «цена вручную»)
+            const manual = row.querySelector('[data-field="price_is_manual"]');
+            if (manual) manual.value = 0;
+            this.updateMatchTotal(sel);
+        }
+    },
+
+    // Ручной ввод в поле «Цена» помечает её как выставленную человеком — так
+    // повторный подбор и общие условия КП её не перетрут (issue #60, замена
+    // убранной галочки «цена вручную»)
+    markPriceManual(input) {
+        const row = input.closest('[data-match-row]');
+        const manual = row && row.querySelector('[data-field="price_is_manual"]');
+        if (manual) manual.value = 1;
+    },
+
+    // «Ждать»/«за ожидание»/«предоплата» видны только когда включено «под заказ»
+    toggleWaitFields(checkbox) {
+        const wrap = checkbox.closest('.match-extra__money') || checkbox.closest('.conditions__row');
+        const fields = wrap && wrap.querySelector('.match-extra__wait');
+        if (fields) fields.hidden = !checkbox.checked;
+    },
+
+    // Красный «!» у количества: товар есть, но меньше, чем просит клиент
+    qtyWarning(i) {
+        const stock = Number(i.stock);
+        const qty = Number(i.quantity ?? 1);
+        if (!(stock > 0) || !(qty > stock)) return '';
+        return `<span class="qty-warn" title="На складе ${stock}, запрошено ${qty} — товара меньше, чем нужно">!</span>`;
+    },
+
+    toggleQtyWarning(input) {
+        const cell = input.closest('.qty-cell');
+        if (!cell) return;
+        const warn = cell.querySelector('.qty-warn');
+        const row = input.closest('[data-match-row]');
+        const stock = Number(row && row.querySelector('[data-field="stock"]') && row.querySelector('[data-field="stock"]').value);
+        const short = stock > 0 && Number(input.value) > stock;
+        if (short && !warn) {
+            cell.insertAdjacentHTML('beforeend',
+                `<span class="qty-warn" title="На складе ${stock}, запрошено ${input.value} — товара меньше, чем нужно">!</span>`);
+        } else if (!short && warn) {
+            warn.remove();
+        } else if (short && warn) {
+            warn.title = `На складе ${stock}, запрошено ${input.value} — товара меньше, чем нужно`;
+        }
     },
 
     // The manager answered the «равнозначные» question — the line stops asking
@@ -2034,13 +2607,25 @@ const App = {
             set('moysklad_product_id', moyskladId);
             set('needs_choice', 0);
             row.querySelector('[data-field="is_confirmed"]').checked = true;
+            // Описание принадлежит товару и должно подставляться сразу — а не
+            // только когда его подобрала нейросеть (issue #60)
+            const comment = row.querySelector('[data-field="comment_text"]');
+            if (comment && comment.dataset.fromCatalog === '1' && btn.dataset.description) {
+                comment.value = btn.dataset.description;
+            }
             row.classList.remove('match-row--choice');
             btn.closest('.choice').remove();
+            this.reloadMatchPhotos(row);
             this.updateMatchTotal(host);
             return;
         }
         const requestId = Number(host && host.dataset.requestId);
         try {
+            // Сохранить незасохранённые правки других строк перед перерисовкой
+            // всей таблицы (issue #60, та же защита, что и у смены области/условий)
+            await this.api(`requests.php?action=items_save&id=${requestId}`, {
+                method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
+            });
             const res = await this.api(`requests.php?action=items_choose&id=${requestId}`, {
                 method: 'POST', body: {item_id: itemId, moysklad_id: moyskladId},
             });
@@ -2094,18 +2679,23 @@ const App = {
                             p.group_article ? ' · ' + this.esc(p.group_article) : ''}</div>`;
                     }
                     group = p.group_name || null;
-                    const meta = [p.article || p.code || '', this.fmtMoney(p.price),
+                    // Товар целиком: цена — вилка по модификациям, остаток — их сумма
+                    const range = Number(p.price_max) > Number(p.price)
+                        ? `${this.fmtMoney(p.price)} — ${this.fmtMoney(p.price_max)}` : this.fmtMoney(p.price);
+                    const meta = [p.article || p.code || '', range,
                                   this.stockPlain(p.stock)].filter(Boolean).join(' · ');
                     return head + `
-                    <div class="suggest__item ${p.variant_label ? 'suggest__item--variant' : ''}"
+                    <div class="suggest__item ${p.variant_label ? 'suggest__item--variant' : ''} ${p.is_group ? 'suggest__item--group' : ''}"
                          onmousedown="App.pickSuggest(this, '${this.jsStr(JSON.stringify({
                         moysklad_id: p.moysklad_id, name: p.name, article: p.article || p.code || '',
-                        unit: p.unit || 'шт.', price: p.price || 0, stock: p.stock ?? '', prices: p.prices || {},
+                        unit: p.unit || 'шт.', price: p.price || 0, price_max: p.price_max || 0,
+                        stock: p.stock ?? '', prices: p.prices || {},
                         // Описание едет вместе с позицией — иначе поле комментария
                         // остаётся пустым при выборе из подсказки (модуль 032)
                         description: p.description || '',
                     }))}')">
-                        <div>${this.esc(p.variant_label || p.name)}</div>
+                        <div>${this.esc(p.variant_label || p.name)}${
+                            p.is_group ? ' <span class="muted">— весь товар, без размера</span>' : ''}</div>
                         <div class="muted">${this.esc(meta)}</div>
                     </div>`;
                 }).join('');
@@ -2131,7 +2721,15 @@ const App = {
         set('article', p.article);
         set('unit', p.unit);
         set('price', p.price);
+        set('price_max', p.price_max || 0);
         set('stock', p.stock);
+        // Вилка цен рисуется рядом с ценой и обновляется вместе с выбором
+        const range = row.querySelector('.price-cell .price-range');
+        if (range) range.remove();
+        if (Number(p.price_max) > Number(p.price)) {
+            row.querySelector('.price-cell').insertAdjacentHTML('beforeend',
+                this.priceRangeNote({price: p.price, price_max: p.price_max}));
+        }
         // Описание принадлежит товару, а не строке: выбрали другую позицию —
         // в поле её описание. Написанное менеджером не трогаем (модуль 032).
         const comment = row.querySelector('[data-field="comment_text"]');
@@ -2141,6 +2739,8 @@ const App = {
         if (slot) slot.innerHTML = this.priceOptsSelect(p.prices || {});
         const suggest = el.closest ? el.closest('.suggest') : null;
         if (suggest) suggest.hidden = true;
+        // Другой товар — другие фотографии (issue #60)
+        this.reloadMatchPhotos(row);
         this.updateMatchTotal();
     },
 
@@ -2202,6 +2802,88 @@ const App = {
     },
 
     // $from — any element of the table (a button of its own toolbar)
+    /**
+     * ==== Подбор сохраняется сам (issue #60) ====
+     *
+     * Кнопки «Сохранить» больше нет. Она была источником целого класса потерь:
+     * менеджер правил строки, нажимал что-нибудь, что перерисовывает таблицу с
+     * сервера, — и правки исчезали, потому что сохранить их он не успел.
+     *
+     * Слушатель один на весь блок подбора: строки перерисовываются, а
+     * `[data-match-host]` — нет. Правка откладывается на 1,2 секунды, чтобы
+     * набор названия не превратился в тридцать запросов подряд.
+     *
+     * Автосохранение НЕ перерисовывает таблицу — курсор остаётся там, где его
+     * оставили. Идентификаторы новых строк, которые придумал сервер,
+     * проставляются на месте: без них строке некуда сохранять фотографии.
+     */
+    bindMatchAutosave(host) {
+        if (!host || host.dataset.autosave === '1') return;
+        host.dataset.autosave = '1';
+        const schedule = e => {
+            // Фотографии сохраняются сами и своим запросом; общие условия
+            // проставляются кнопкой «Применить ко всем» — им автосейв не нужен
+            if (e.target.closest('[data-match-photos]') || e.target.closest('[data-conditions]')) return;
+            if (!e.target.closest('[data-match-row], [data-delivery-row]')) return;
+            clearTimeout(host._autosaveTimer);
+            host._autosaveTimer = setTimeout(() => this.autosaveMatch(host), 1200);
+        };
+        host.addEventListener('input', schedule);
+        host.addEventListener('change', schedule);
+    },
+
+    /** Тихое сохранение: без тоста и без перерисовки. */
+    async autosaveMatch(host) {
+        const requestId = Number(host && host.dataset.requestId);
+        if (!requestId) return;
+        const note = host.querySelector('[data-match-saved]');
+        if (note) note.textContent = 'сохраняем...';
+        try {
+            const res = await this.api(`requests.php?action=items_save&id=${requestId}`, {
+                method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
+            });
+            this.adoptItemIds(host, res.items || []);
+            // Полосы, ждавшие сохранения нового товара, теперь спросят сервер и
+            // получат фотографии ЭТОГО товара, а не предыдущего (issue #60)
+            host.querySelectorAll('[data-match-photos][data-state="stale"]').forEach(box => {
+                box.dataset.state = '';
+                if (Number(box.dataset.itemId) > 0) this.loadMatchPhotos(box);
+                else box.innerHTML = '<div class="muted">Фотографии подтянутся после сохранения строки.</div>';
+            });
+            if (note) note.textContent = 'сохранено ' + new Date().toLocaleTimeString('ru-RU',
+                {hour: '2-digit', minute: '2-digit'});
+        } catch (err) {
+            if (note) note.textContent = 'не сохранилось: ' + err.message;
+        }
+    },
+
+    /**
+     * Проставить строкам идентификаторы, которые придумал сервер.
+     *
+     * Сопоставление по порядку — тот же порядок, в котором строки уезжали, —
+     * и только когда числа сошлись: сервер выбрасывает пустые строки, и при
+     * расхождении угадывать нельзя. Не сошлось — идентификаторы приедут со
+     * следующей полной перерисовкой.
+     */
+    adoptItemIds(host, items) {
+        const rows = [...host.querySelectorAll('[data-match-row]')];
+        if (rows.length !== items.length) return;
+        rows.forEach((row, n) => {
+            const idField = row.querySelector('[data-field="id"]');
+            const id = Number(items[n].id || 0);
+            if (!idField || !id || Number(idField.value) === id) return;
+            idField.value = id;
+            const box = row.querySelector('[data-match-photos]');
+            if (box && Number(box.dataset.itemId) === 0) {
+                box.dataset.itemId = id;
+                const btn = row.querySelector('.match-extra__photos .btn');
+                if (btn) { btn.disabled = false; btn.removeAttribute('title'); }
+                // Полосу со `state="stale"` догрузит общий проход ниже
+                if (box.dataset.state !== 'stale') this.loadMatchPhotos(box);
+            }
+        });
+    },
+
     async saveMatchedItems(from, silent = false) {
         const host = this.matchHost(from);
         if (!host) return [];
@@ -2873,18 +3555,198 @@ const App = {
             // No stored choice means «все, что нашлись» — the behaviour before the picker
             const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
             box.innerHTML = `
-                <div class="muted">Фото в этом КП (${chosen.length} из ${d.available.length}):</div>
+                <div class="photos__head">
+                    <span class="muted">Фото в этом КП (<span data-photo-count>${chosen.length}</span> из ${d.available.length}):</span>
+                    <button type="button" class="btn btn--outline btn--sm" data-photo-reset
+                            ${chosen.length ? '' : 'disabled'}
+                            onclick="App.resetPhotos(this, 0)">Сбросить выбор</button>
+                </div>
                 <div class="photos">
                     ${d.available.map(a => `
                         <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
                             <input type="checkbox" data-photo-key="${this.esc(a.key)}"
                                    ${chosen.includes(a.key) ? 'checked' : ''}
-                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked)">
+                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked); App.photoCount(this)">
                             <img src="${this.esc(a.url)}" alt="" loading="lazy">
                         </label>`).join('')}
                 </div>`;
         } catch (err) {
             box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
+        }
+    },
+
+    /**
+     * ==== Фотографии позиции прямо в таблице подбора (модуль 040) ====
+     *
+     * Картинки выбирались только в уже собранном КП — то есть после того, как
+     * документ собран, а не тогда, когда определились с товаром. Теперь выбор
+     * стоит на строке подбора и едет в КП вместе с позицией; уже собранные
+     * неотправленные КП этого запроса подхватывают его сразу.
+     */
+    toggleMatchPhotos(btn, itemId) {
+        const box = btn.parentElement.querySelector('[data-match-photos]');
+        if (!box || !itemId) return;
+        box.hidden = !box.hidden;
+        btn.textContent = box.hidden ? '🖼 Фото в КП ▸' : '🖼 Фото в КП ▾';
+        if (!box.hidden) this.loadMatchPhotos(box);
+    },
+
+    /**
+     * ==== Фотографии грузятся по одной, и только когда нужны (issue #60) ====
+     *
+     * Таблица подбора на двадцать позиций открывала сотню картинок разом:
+     * браузер вставал, а менеджер смотрел на пустые рамки. Теперь полоса
+     * спрашивает список, только подъехав к экрану (`IntersectionObserver`), а
+     * внутри полосы миниатюры выстраиваются в очередь: `src` следующей
+     * ставится после `load` или `error` предыдущей. Первая фотография на
+     * экране, пока остальные ещё едут.
+     */
+    watchMatchPhotos(host) {
+        const boxes = [...(host || document).querySelectorAll('[data-match-photos]')]
+            .filter(b => !b.hidden && Number(b.dataset.itemId) > 0 && b.dataset.state !== 'done');
+        if (!boxes.length) return;
+        if (!('IntersectionObserver' in window)) { boxes.forEach(b => this.loadMatchPhotos(b)); return; }
+        if (!this.photoObserver) {
+            this.photoObserver = new IntersectionObserver(entries => {
+                entries.forEach(e => {
+                    if (!e.isIntersecting) return;
+                    this.photoObserver.unobserve(e.target);
+                    this.loadMatchPhotos(e.target);
+                });
+            }, {rootMargin: '300px'});
+        }
+        boxes.forEach(b => this.photoObserver.observe(b));
+    },
+
+    /** Список фотографий строки — один запрос, и он не повторяется впустую. */
+    async loadMatchPhotos(box) {
+        const itemId = Number(box && box.dataset.itemId);
+        // 'stale' — строка ждёт сохранения нового товара: спросить сервер сейчас
+        // значит снова получить фотографии предыдущего
+        if (!box || !itemId || ['loading', 'done', 'stale'].includes(box.dataset.state)) return;
+        box.dataset.state = 'loading';
+        box.innerHTML = '<div class="loading">Загружаем фотографии...</div>';
+        try {
+            const d = await this.api(`requests.php?action=item_images&item_id=${itemId}`);
+            box.dataset.state = 'done';
+            if (!d.available.length) {
+                box.innerHTML = '<div class="muted">Фотографий у позиции нет. Их приносит синхронизация '
+                              + 'с МойСклад или импорт каталога из Excel.</div>';
+                return;
+            }
+            // «Выбор не делали» — это все фотографии, как было до выбора
+            const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
+            box.innerHTML = `
+                <div class="photos__head">
+                    <span class="muted">В КП пойдут отмеченные (<span data-photo-count>${chosen.length}</span> из ${d.available.length}):</span>
+                    <!-- Сбросить всё и отметить только нужное (issue #67) -->
+                    <button type="button" class="btn btn--outline btn--sm" data-photo-reset
+                            ${chosen.length ? '' : 'disabled'}
+                            onclick="App.resetPhotos(this, ${itemId})">Сбросить выбор</button>
+                </div>
+                <div class="photos">
+                    ${d.available.map(a => `
+                        <label class="photo ${chosen.includes(a.key) ? 'photo--on' : ''}">
+                            <input type="checkbox" data-photo-key="${this.esc(a.key)}"
+                                   ${chosen.includes(a.key) ? 'checked' : ''}
+                                   onchange="this.closest('.photo').classList.toggle('photo--on', this.checked);
+                                             App.photoCount(this); App.saveMatchPhotos(this, ${itemId})">
+                            <img data-src="${this.esc(a.url)}" alt="" loading="lazy">
+                        </label>`).join('')}
+                </div>
+                <div class="muted" data-photo-saved></div>`;
+            this.chainPhotos(box);
+        } catch (err) {
+            box.dataset.state = '';
+            box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
+        }
+    },
+
+    /** Миниатюры одной полосы — строго по очереди, а не все разом. */
+    chainPhotos(box) {
+        const imgs = [...box.querySelectorAll('img[data-src]')];
+        const next = () => {
+            const img = imgs.shift();
+            if (!img) return;
+            img.addEventListener('load', next, {once: true});
+            // Картинка, которой нет, не должна останавливать очередь
+            img.addEventListener('error', next, {once: true});
+            img.src = img.dataset.src;
+            img.removeAttribute('data-src');
+        };
+        next();
+    },
+
+    /**
+     * Товар на строке поменялся — полоса фотографий перечитывается (issue #60).
+     *
+     * Без этого на экране оставались картинки ПРЕДЫДУЩЕГО товара: полоса
+     * грузилась один раз и больше себя не спрашивала. У строки, которую ещё
+     * не сохранили, спрашивать нечего — там стоит просьба сохранить.
+     */
+    reloadMatchPhotos(row) {
+        const box = row && row.querySelector('[data-match-photos]');
+        if (!box) return;
+        // Спрашивать сервер прямо сейчас нельзя: новый товар стоит пока только
+        // на экране, и в ответ приедут фотографии ПРЕЖНЕГО. Полоса ждёт, пока
+        // автосохранение довезёт строку, и обновляется после него.
+        box.dataset.state = 'stale';
+        box.innerHTML = '<div class="muted">Обновляем фотографии...</div>';
+        this.touchMatch(row);
+    },
+
+    /**
+     * Строку правили не руками, а выбором из списка — сохранить её поскорее.
+     *
+     * Выбор товара мышью не поднимает `input`, а значит и автосохранение: без
+     * этого новая позиция висела бы несохранённой, пока менеджер не тронет
+     * какое-нибудь поле.
+     */
+    touchMatch(el) {
+        const host = this.matchHost(el);
+        if (!host) return;
+        clearTimeout(host._autosaveTimer);
+        host._autosaveTimer = setTimeout(() => this.autosaveMatch(host), 400);
+    },
+
+    /** Счётчик «отмечено N» и доступность «Сбросить выбор» у полосы фото. */
+    photoCount(el) {
+        const strip = el.closest('[data-match-photos], [data-photos]');
+        if (!strip) return;
+        const n = strip.querySelectorAll('[data-photo-key]:checked').length;
+        const count = strip.querySelector('[data-photo-count]');
+        if (count) count.textContent = n;
+        const reset = strip.querySelector('[data-photo-reset]');
+        if (reset) reset.disabled = n === 0;
+    },
+
+    /**
+     * «Сбросить выбор» (issue #67): снять все галочки разом, чтобы отметить
+     * только нужные. Пустой выбор — это решение «без фото», оно сохраняется.
+     * $itemId = 0 — полоса редактора КП: там выбор уходит с «Сохранить».
+     */
+    resetPhotos(btn, itemId) {
+        const strip = btn.closest('[data-match-photos], [data-photos]');
+        if (!strip) return;
+        const boxes = [...strip.querySelectorAll('[data-photo-key]')];
+        boxes.forEach(b => { b.checked = false; b.closest('.photo').classList.remove('photo--on'); });
+        this.photoCount(btn);
+        if (itemId && boxes.length) this.saveMatchPhotos(boxes[0], itemId);
+    },
+
+    /** Галочка на фотографии сохраняется сама — «Сохранить» для неё не нужно. */
+    async saveMatchPhotos(input, itemId) {
+        const box = input.closest('[data-match-photos]');
+        const selected = [...box.querySelectorAll('[data-photo-key]')]
+            .filter(b => b.checked).map(b => b.dataset.photoKey);
+        const note = box.querySelector('[data-photo-saved]');
+        try {
+            const r = await this.api(`requests.php?action=item_images_save&item_id=${itemId}`,
+                                     {method: 'POST', body: {selected}});
+            if (note) note.textContent = `выбрано ${selected.length}`
+                + (r.kp_items ? ` · в КП обновлено позиций: ${r.kp_items}` : '');
+        } catch (err) {
+            if (note) note.textContent = 'не сохранилось: ' + err.message;
         }
     },
 
@@ -3134,6 +3996,7 @@ const App = {
         document.getElementById('app').innerHTML = `<div class="loading">Загрузка...</div>`;
         const cp = await this.api(`counterparties.php?action=get&id=${id}`);
         this.company = cp;
+        this.foldKey = 'cp:' + id;
         document.getElementById('app').innerHTML = `
             <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
                 <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
@@ -3171,7 +4034,9 @@ const App = {
                     </div>
                 </div>
                 <aside class="letter__side">
-                    <!-- Подбор открытой переписки живёт здесь и только здесь -->
+                    <!-- Подбор открытой переписки — один на карточку. Пока
+                         переписка раскрыта, он стоит в ней над полем письма
+                         (issue #60), свёрнута — ждёт здесь -->
                     <div id="cpItems" data-thread-items></div>
                     <div id="companySide">${this.companySide(cp)}</div>
                 </aside>
@@ -3183,7 +4048,6 @@ const App = {
         this.loadCompanyThreads(cp.id);
         this.loadCardPlacement(cp.id);
         this.loadChat(cp.id);
-        this.loadCounterpartyPriceTypes(cp);
 
         // Returning from the MoySklad tab refreshes the card (FR-030)
         this.onTabVisible = () => {
@@ -3201,6 +4065,8 @@ const App = {
     async loadCompanyThreads(id) {
         const box = document.getElementById('cpThreads');
         if (!box) return;
+        // Панель подбора может стоять внутри переписки — не стираем её с ней
+        this.parkCompanyItems();
         try {
             // Один запрос на обе половины: рабочие переписки и те, что убрали в
             // архив. Раньше это были два разных вида одного экрана, между
@@ -3287,39 +4153,45 @@ const App = {
         const kp = t.proposal
             ? `<a class="chip chip--kp" href="#mail/proposal/${t.proposal.id}" onclick="event.stopPropagation()">КП ${this.esc(t.proposal.number || '#' + t.proposal.id)}</a>`
             : (t.request_id ? `<a class="chip" href="#mail/request/${t.request_id}" onclick="event.stopPropagation()">запрос #${t.request_id}</a>` : '');
+        const key = this.jsStr(t.thread_key);
+        // Строка как в Gmail (issue #60): кто · тема — начало письма · дата.
+        // Действия всплывают на месте даты при наведении, а не лежат отдельной
+        // строкой под каждой перепиской
         return `
             <article class="${cls.join(' ')}" data-thread="${this.esc(t.thread_key)}">
-                <div class="conv__head" onclick="App.toggleCompanyThread('${this.jsStr(t.thread_key)}')">
-                    <span class="conv__dir">${t.last_direction === 'in' ? '📥' : '📤'}</span>
+                <div class="conv__head" onclick="App.toggleCompanyThread('${key}')">
+                    <span class="conv__who" title="${this.esc(t.last_from_name || '')}">
+                        <span class="conv__dir" title="${t.last_direction === 'in' ? 'последнее письмо клиента' : 'последнее письмо наше'}"
+                              >${t.last_direction === 'in' ? '📥' : '📤'}</span>
+                        <span class="conv__name">${this.esc(t.last_from_name || (t.last_mine ? 'Мы' : 'Клиент'))}</span>
+                        ${t.count > 1 ? `<span class="conv__count" title="писем в переписке">${t.count}</span>` : ''}
+                    </span>
                     <div class="conv__main">
-                        <div class="conv__subject">
-                            ${this.esc(t.subject) || '<em>без темы</em>'}
-                            ${t.count > 1 ? `<span class="conv__count" title="писем в переписке">${t.count}</span>` : ''}
-                            ${t.unread ? `<span class="pill pill--danger">${t.unread}</span>` : ''}
+                        <div class="conv__line">
+                            <span class="conv__subject">${this.esc(t.subject) || '<em>без темы</em>'}</span>
+                            ${t.preview ? `<span class="conv__preview">— ${this.esc(t.preview)}</span>` : ''}
                         </div>
                         <div class="conv__meta">
-                            <!-- В строке переписки видно, КТО пишет: по одной теме
-                                 понять, чьё это письмо, нельзя (issue #38). И ЧЬЁ
-                                 последнее — словами: стрелка 📤/📥 в списке из
+                            <!-- ЧЬЁ последнее письмо — словами: стрелка в списке из
                                  пятнадцати строк не читается (модуль 029) -->
                             <span class="chip ${t.last_mine ? 'chip--mine' : 'chip--theirs'}">${t.last_mine
                                 ? 'последнее письмо наше' : 'последнее письмо клиента'}</span>
-                            ${t.last_from_name ? `<strong>${this.esc(t.last_from_name)}</strong>` : ''}
+                            ${t.unread ? `<span class="pill pill--danger" title="непрочитанных">${t.unread}</span>` : ''}
                             ${t.category ? this.categoryBadge(t.category, App.categoryLabels[t.category]) : ''}
                             ${kp}
                             ${t.unanswered ? '<span class="badge badge--unanswered">ждёт ответа</span>' : ''}
                             ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
+                            ${t.archived_at ? `<span class="muted">${t.archived_reason === 'mailbox_off' ? 'ящик отключён' : 'не наш профиль'}</span>` : ''}
                         </div>
-                        <div class="conv__preview">${this.esc(t.preview)}</div>
                     </div>
                     <span class="conv__date muted">${this.fmtDate(t.last_at)}</span>
-                </div>
-                <div class="conv__tools">
-                    ${t.archived_at
-                        ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(t.thread_key)}')">↩ Вернуть в работу</button>
-                           <span class="muted">${t.archived_reason === 'mailbox_off' ? 'ящик отключён' : 'не наш профиль'}</span>`
-                        : `<button class="btn btn--outline btn--sm" title="Убрать переписку с экрана: на сервере она уйдёт в «Архив»"
-                                   onclick="App.archiveThread('${this.jsStr(t.thread_key)}', ${t.count})">🗄 В архив (не наш профиль)</button>`}
+                    <span class="conv__acts" onclick="event.stopPropagation()">
+                        ${t.archived_at
+                            ? `<button class="conv__act" title="Вернуть в работу" onclick="App.unarchiveThread('${key}')">↩</button>`
+                            : `<button class="conv__act" title="В архив (не наш профиль): на сервере переписка уйдёт в «Архив»"
+                                       onclick="App.archiveThread('${key}', ${t.count})">🗄</button>`}
+                        <button class="conv__act" title="Удалить переписку" onclick="App.deleteThread('${key}', ${t.count})">🗑</button>
+                    </span>
                 </div>
                 <div class="conv__open" id="th_${this.esc(this.threadDomId(t.thread_key))}" hidden></div>
             </article>`;
@@ -3368,11 +4240,14 @@ const App = {
         const own = box.closest('.conv');
         if (own) own.classList.add('conv--open');
         this.companyOpenThread = key;
+        // Блоки карточки помнят положение у своей переписки
+        this.setFoldKey(key);
         if (box.dataset.loaded) {
             this.mountBodies(box);
-            this.setCompanyItems(box.dataset.requestId || '');
+            this.setCompanyItems(box.dataset.requestId || '', key);
             return;
         }
+        this.parkCompanyItems();
         box.innerHTML = '<div class="loading">Загрузка писем...</div>';
         try {
             const d = await this.api('mail.php?action=thread&key=' + encodeURIComponent(key)
@@ -3384,7 +4259,8 @@ const App = {
             box.dataset.loaded = '1';
             box.dataset.requestId = reply.request_id || '';
             this.restoreComposerDraft(key);
-            this.setCompanyItems(reply.request_id || '');
+            this.fillSignatureNote(box);
+            this.setCompanyItems(reply.request_id || '', key);
             // Сервер уже снял отметку вместе с загрузкой — строке остаётся
             // только перестать кричать
             if (markRead) this.markThreadRead(key, box, true);
@@ -3393,15 +4269,27 @@ const App = {
         }
     },
 
+    /** Вернуть панель подбора в боковую колонку карточки компании. */
+    parkCompanyItems() {
+        const side = document.getElementById('cpItems');
+        const dock = document.getElementById('companySide');
+        if (side && dock && side.nextElementSibling !== dock) dock.before(side);
+    },
+
     /**
      * Панель подбора карточки компании — справа, для раскрытой переписки.
      *
      * `null` — переписку свернули: панель говорит, что выбрать нечего, а не
      * показывает позиции закрытого письма.
      */
-    setCompanyItems(requestId) {
+    setCompanyItems(requestId, threadKey = '') {
         const side = document.getElementById('cpItems');
         if (!side) return;
+        // Раскрытая переписка получает подбор над своим полем письма
+        const open = threadKey ? document.getElementById('th_' + this.threadDomId(threadKey)) : null;
+        const composer = open && open.querySelector('[data-composer]');
+        if (requestId !== null && composer) composer.before(side);
+        else this.parkCompanyItems();
         if (requestId === null) {
             side.className = 'card card--items';
             side.innerHTML = `<div class="card__title">Подходящие позиции${this.hint('match')}</div>
@@ -3410,7 +4298,7 @@ const App = {
         }
         // Хост подбора ищется как `[data-thread-items]` внутри переданного узла
         if (requestId) this.loadThreadItems(side.parentElement, Number(requestId));
-        else this.noThreadItems(side.parentElement);
+        else this.noThreadItems(side.parentElement, threadKey);
         // Лента справа и счета под письмом смотрят на тот же запрос (модуль 029)
         this.companyRequestId = requestId ? String(requestId) : '';
         this.markChatScope();
@@ -3440,16 +4328,55 @@ const App = {
      * is the one the КП is built from.
      */
     /**
-     * Переписка, из которой не завели запрос: подбирать нечего, и блок говорит
-     * это вслух. Молча пропущенная таблица читается как «подбор товаров пропал».
+     * Переписка, из которой не завели запрос (модуль 039).
+     *
+     * Здесь стоял тупик: «запрос не заведён — подбирать по каталогу нечего».
+     * Сервис живёт составлением КП, и отказать в подборе он не вправе ни по
+     * какому письму: классификатор мог ошибиться, а запрос на бронеплиты
+     * «от бр2 до бр5» — самый настоящий. Теперь это кнопка: подбор заводится
+     * по этой переписке, письмо перечитывается и позиции ищутся в каталоге.
      */
-    noThreadItems(box) {
+    noThreadItems(box, threadKey = '') {
         const host = box.querySelector('[data-thread-items]');
         if (!host) return;
         host.className = 'card card--items';
         host.innerHTML = `<div class="card__title">Подходящие позиции${this.hint('match')}</div>
-            <p class="muted">По этой переписке запрос не заведён — подбирать по каталогу нечего.
-               Позиции появляются, когда письмо разобрано как запрос КП или заказ.</p>`;
+            <p class="muted">По этой переписке подбор ещё не заводили. Нажмите — письмо перечитается,
+               позиции найдутся в каталоге, и отсюда же соберётся КП.</p>
+            ${threadKey ? `<button class="btn btn--primary" data-make-request
+                    onclick="App.makeThreadRequest('${this.jsStr(threadKey)}', this)">Подобрать товар</button>`
+                : '<p class="muted">Раскройте переписку слева.</p>'}`;
+    },
+
+    /**
+     * «Подобрать товар» по переписке без запроса (модуль 039).
+     *
+     * Один вызов модели — его просят, а не тратят на каждое входящее письмо.
+     * Модель промолчала — таблица откроется пустой, и позицию в неё впишут
+     * руками: подобрать товар можно ВСЕГДА.
+     */
+    async makeThreadRequest(key, btn) {
+        btn.disabled = true;
+        btn.textContent = 'Читаем письмо...';
+        try {
+            const r = await this.api('mail.php?action=make_request', {method: 'POST', body: {key}});
+            // Панель рисуется там же, где стояла кнопка: у письма своей страницей
+            // и у переписки в карточке компании это разные узлы
+            const panel = btn.closest('[data-thread-items]');
+            const thread = document.getElementById('th_' + this.threadDomId(key));
+            if (thread) thread.dataset.requestId = r.request_id;
+            if (panel && panel.parentElement) this.loadThreadItems(panel.parentElement, r.request_id);
+            this.companyRequestId = String(r.request_id);
+            this.markChatScope();
+            this.loadInvoiceDock();
+            this.toast(r.items
+                ? `Подбор заведён · позиций: ${r.items}`
+                : 'Подбор заведён — позиций в письме не нашлось, впишите их сами', r.items ? 'success' : 'info');
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Подобрать товар';
+        }
     },
 
     async loadThreadItems(box, requestId) {
@@ -3461,6 +4388,16 @@ const App = {
             const draw = req => {
                 const kp = {proposal_id: (req.proposals && req.proposals[0]) ? req.proposals[0].id : null};
                 host.dataset.kp = JSON.stringify(kp);
+                // Первое КП ушло клиенту — подбор свёрнут, но стоит на месте
+                // (issue #60). Раскрытый руками так и остаётся раскрытым.
+                if (host.dataset.foldFor !== String(requestId)) {
+                    host.dataset.foldFor = String(requestId);
+                    const sent = (req.proposals || []).some(p => ['sent', 'order_created'].includes(p.status));
+                    host.dataset.folded = sent ? '1' : '0';
+                    // Свёрнутый или раскрытый руками — так и остаётся у этого письма (issue #67)
+                    const own = this.foldGet('items');
+                    if (own !== null) host.dataset.folded = own ? '1' : '0';
+                }
                 this.renderMatchedItems(requestId, req.items || [], host,
                     {kp, delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
             };
@@ -3482,13 +4419,20 @@ const App = {
         // Письмо, которое ещё никому не отвечает: ни цепочки, ни письма-исходника
         const fresh = !key && !reply.reply_to_id;
         return `
-            <div class="composer" data-composer="${this.esc(id)}">
+            <div class="composer" data-block="composer" data-composer="${this.esc(id)}">
                 <div class="composer__head">
                     <span class="composer__title">${fresh ? 'Новое письмо' : 'Ответ'}${this.hint('composer')}</span>
                     ${fresh ? '' : `<span class="muted" data-cmp-target>кому: ${this.esc(reply.to || '')}</span>`}
                     <select data-cmp-box title="Из какого ящика отправить">
                         ${(mailboxes || []).map(b => `<option value="${b.id}" ${reply.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
                     </select>
+                    <!-- Подпись (модуль 039): видно, чем письмо закончится, ещё
+                         до отправки — и её можно снять одной галочкой -->
+                    <label class="muted composer__sign" title="Ваша подпись допишется в конец письма">
+                        <input type="checkbox" data-cmp-sign checked
+                               onchange="App.toggleSignatureNote(this)"> подпись
+                        <span data-cmp-sign-text></span>
+                    </label>
                 </div>
                 <!-- У первого письма адресата ещё нет — его пишут здесь же, и
                      он попадает и в черновик, и в карточку (модуль 033) -->
@@ -3523,12 +4467,17 @@ const App = {
                         📎 Файл<input type="file" multiple hidden onchange="App.composerAttach('${this.jsStr(key)}', this)">
                     </label>
                     <button class="btn btn--primary btn--sm" onclick="App.threadSend('${this.jsStr(key)}', this)">Отправить</button>
+                    <!-- Отложенная отправка (issue #60): письмо, написанное ночью,
+                         приходит клиенту утром -->
+                    <button class="btn btn--outline btn--sm" title="Отправить позже — в выбранный день и час"
+                            onclick="App.scheduleMenu('${this.jsStr(key)}', this)">⏱ Отложить</button>
                     <button class="btn btn--outline btn--sm" data-cmp-draft
                             ${reply.reply_to_id ? '' : 'disabled title="Отвечать нечего: в переписке нет входящего письма"'}
                             onclick="App.threadDraft('${this.jsStr(key)}', this)">✨ Сгенерировать ответ</button>
                     <span class="muted" data-cmp-note></span>
                     <span class="muted" data-cmp-saved></span>
                 </div>
+                <div class="composer__schedule" data-cmp-schedule hidden></div>
                 <!-- Счета, выставленные по этому запросу, стоят ЗДЕСЬ, под
                      письмом, которым их и отправляют (модуль 029): посмотреть,
                      переименовать, приложить — не уходя с письма -->
@@ -3573,8 +4522,8 @@ const App = {
         if (!dock) return;
         if (!items.length) { dock.innerHTML = ''; return; }
         dock.innerHTML = `
-            <div class="invdock">
-                <div class="invdock__title">Счета по этому запросу (${items.length})</div>
+            <div class="invdock" data-block="ms">
+                <div class="invdock__title" data-block-head>Счета МойСклад по этому запросу (${items.length})</div>
                 ${items.map(i => `
                     <div class="invdock__row" data-invoice="${i.id}">
                         <div class="invdock__head">
@@ -3675,6 +4624,34 @@ const App = {
             .replace(/<li[^>]*>/gi, '— ');
         const text = (tmp.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
         return {html, text};
+    },
+
+    /**
+     * ==== Подпись в письме (модуль 039) ====
+     *
+     * Подпись дописывает сервер — она одна и та же во всех письмах менеджера,
+     * и держать её в поле ввода значит однажды её оттуда стереть. Но увидеть
+     * её надо ДО отправки, поэтому она стоит строкой рядом с галочкой.
+     */
+    async mailSignature() {
+        if (this._mailSign === undefined) {
+            try { this._mailSign = (await this.api('settings.php?action=mail_signature')).effective || ''; }
+            catch { this._mailSign = ''; }
+        }
+        return this._mailSign;
+    },
+
+    async fillSignatureNote(c) {
+        const box = c && c.querySelector('[data-cmp-sign-text]');
+        if (!box) return;
+        const sign = await this.mailSignature();
+        box.textContent = sign ? '· ' + sign.split('\n').join(' · ') : '· не заведена';
+        box.title = sign || 'Подпись не заведена — «Настройки → Моя подпись»';
+    },
+
+    toggleSignatureNote(input) {
+        const box = input.closest('.composer__sign');
+        if (box) box.classList.toggle('composer__sign--off', !input.checked);
     },
 
     /**
@@ -3926,6 +4903,20 @@ const App = {
         }
     },
 
+    /**
+     * Текст черновика → HTML редактора: абзацы, переносы и ссылки.
+     * «см. на сайте: https://…» становится ссылкой со словами «см. на сайте»
+     * (issue #60) — так же, как на сервере в `MailText::textToHtml()`.
+     */
+    draftHtml(text) {
+        const link = /(см\. на сайте)\s*:?\s*(https?:\/\/[^\s<>"']+)|(https?:\/\/[^\s<>"']+)/g;
+        return String(text).split(/\n{2,}/).map(p => '<p>' + this.esc(p).replace(link, (m, label, u1, u2) => {
+            const raw = u1 || u2;
+            const url = raw.replace(/[.,;)]+$/, '');
+            return `<a href="${url}">${label || url}</a>` + raw.slice(url.length);
+        }).replace(/\n/g, '<br>') + '</p>').join('');
+    },
+
     async threadDraft(key, btn) {
         const c = this.composerOf(key);
         if (!c) return;
@@ -3944,8 +4935,7 @@ const App = {
         try {
             const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body});
             // Черновик приходит текстом — в редакторе он становится абзацами
-            area.innerHTML = (r.text || '').split(/\n{2,}/)
-                .map(p => '<p>' + this.esc(p).replace(/\n/g, '<br>') + '</p>').join('');
+            area.innerHTML = this.draftHtml(r.text || '');
             this.composerChanged(key);
             const subj = c.querySelector('[data-cmp-subject]');
             if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
@@ -3958,7 +4948,61 @@ const App = {
     },
 
 
-    async threadSend(key, btn) {
+    /**
+     * ==== Отложенная отправка (issue #60) ====
+     *
+     * Подсказки считает СЕРВЕР, в часовом поясе сервиса: «завтра в 09:00» у
+     * менеджера с часами на другом поясе означало бы не то время, которое
+     * увидит клиент. Своё время всегда можно выставить руками.
+     */
+    async scheduleMenu(key, btn) {
+        const c = this.composerOf(key);
+        const box = c && c.querySelector('[data-cmp-schedule]');
+        if (!box) return;
+        if (!box.hidden) { box.hidden = true; return; }
+        box.hidden = false;
+        box.innerHTML = '<div class="loading">Считаем время...</div>';
+        try {
+            const d = await this.api('mail.php?action=scheduled');
+            const mine = d.items || [];
+            box.innerHTML = `
+                <div class="flex flex--wrap">
+                    ${(d.presets || []).map(p => `<button class="btn btn--outline btn--sm"
+                        onclick="App.threadSend('${this.jsStr(key)}', this, '${this.jsStr(p.at)}')">${this.esc(p.label)}</button>`).join('')}
+                    <label>своё время
+                        <input type="datetime-local" data-cmp-when>
+                    </label>
+                    <button class="btn btn--primary btn--sm" onclick="App.threadSendAtCustom('${this.jsStr(key)}', this)">Отложить</button>
+                </div>
+                ${mine.length ? `<div class="muted" style="margin-top:6px">В очереди:
+                    ${mine.map(r => `<span class="sched-item">${this.esc(r.send_at)} — ${this.esc(r.to_addr || '')}
+                        <a onclick="App.cancelScheduled(${r.id}, '${this.jsStr(key)}')" title="Отменить отправку">×</a></span>`).join(' ')}
+                    </div>` : ''}`;
+        } catch (err) {
+            box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
+        }
+    },
+
+    /** Время, выставленное руками, — в том же виде, что и подсказки. */
+    threadSendAtCustom(key, btn) {
+        const c = this.composerOf(key);
+        const when = c && c.querySelector('[data-cmp-when]');
+        if (!when || !when.value) { this.toast('Выберите день и время', 'error'); return; }
+        // datetime-local отдаёт «2026-09-23T09:00» — сервер ждёт секунды
+        this.threadSend(key, btn, when.value.replace('T', ' ') + ':00');
+    },
+
+    async cancelScheduled(id, key) {
+        try {
+            await this.api('mail.php?action=schedule_cancel', {method: 'POST', body: {id}});
+            this.toast('Отправка отменена', 'success');
+            const c = this.composerOf(key);
+            const box = c && c.querySelector('[data-cmp-schedule]');
+            if (box) { box.hidden = true; }
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async threadSend(key, btn, sendAt = null) {
         const c = this.composerOf(key);
         if (!c) return;
         const {text, html} = this.composerBody(c);
@@ -3966,6 +5010,8 @@ const App = {
         btn.disabled = true;
         try {
             const res = await this.api('mail.php?action=send', {method: 'POST', body: {
+                // Пусто — уходит сейчас; время — ложится в очередь (issue #60)
+                send_at:     sendAt || '',
                 to:          c.querySelector('[data-cmp-to]').value.trim(),
                 subject:     c.querySelector('[data-cmp-subject]').value.trim(),
                 text,
@@ -3977,7 +5023,16 @@ const App = {
                 thread_key:  key || null,
                 draft_id:    Number((c.querySelector('[data-cmp-draft-id]') || {}).value) || null,
                 files:       this.composerFiles(c),
+                // Галочка «подпись» снята — письмо уходит ровно как набрано
+                signature:   (c.querySelector('[data-cmp-sign]') || {checked: true}).checked ? 1 : 0,
             }});
+            // Отложенное письмо ещё не ушло — и говорить «отправлено» о нём нельзя
+            if (res.scheduled) {
+                this.toast('Письмо уйдёт ' + res.scheduled.send_at, 'success');
+                const sbox = c.querySelector('[data-cmp-schedule]');
+                if (sbox) sbox.hidden = true;
+                return;
+            }
             // «Отправлено» is only half the news when the copy never reached the
             // server's «Отправленные» — the manager hears it now, not in a month
             if (res.warning) this.toast(res.warning, 'error');
@@ -4045,29 +5100,6 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    // Which price type this counterparty gets by default (module: price defaults)
-    async loadCounterpartyPriceTypes(cp) {
-        const sel = document.getElementById('cpPriceType');
-        if (!sel) return;
-        try {
-            const d = await this.api('products.php?action=price_types');
-            (d.items || []).forEach(name => {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                if (name === cp.default_price_type) opt.selected = true;
-                sel.appendChild(opt);
-            });
-        } catch { /* каталог ещё не синхронизирован — список типов пуст, это не ошибка */ }
-    },
-
-    async setCounterpartyPriceType(id, value) {
-        try {
-            await this.api(`counterparties.php?action=update&id=${id}`, {method: 'POST', body: {default_price_type: value}});
-            this.toast('Сохранено', 'success');
-        } catch (err) { this.toast(err.message, 'error'); }
-    },
-
     /**
      * Правая колонка карточки (модуль 029).
      *
@@ -4082,7 +5114,7 @@ const App = {
         const contacts = cp.contacts || [];
         const orgs = cp.orgs || [];
         return `
-            <div class="card">
+            <div class="card" data-block="info">
                 <div class="card__title">Информация</div>
                 <p><strong>ИНН:</strong> ${this.esc(cp.inn) || '—'}</p>
                 <p><strong>Домен:</strong> ${this.esc(cp.email_domain) || '—'}</p>
@@ -4112,16 +5144,10 @@ const App = {
                             onclick="App.splitContact(${cp.id}, '${this.jsStr(c.email)}')">Отделить</button>
                     </div>`).join('') : '<p class="muted">Контактов пока нет</p>'}
 
-                <div class="form-group" style="margin-top:12px">
-                    <label>Цена по умолчанию для этого контрагента</label>
-                    <select id="cpPriceType" onchange="App.setCounterpartyPriceType(${cp.id}, this.value)">
-                        <option value="">как в настройках каталога</option>
-                    </select>
-                </div>
             </div>
 
-            <div class="card">
-                <div class="card__title">Заметки и события</div>
+            <div class="card" data-block="events">
+                <div class="card__title">Заметки, заказы и счета</div>
                 <div class="note" style="margin-bottom:8px">Заметки для коллег, вехи сделки, заказы и счета —
                     одной лентой со ссылками в МойСклад. То, что не относится к открытой переписке, приглушено.
                     Письма — слева, в «Переписке»: там на них можно ответить.</div>
@@ -4567,9 +5593,11 @@ const App = {
         'kp-exclude':   ['Свернуть позицию', 'Позиции, которой нет в наличии, в таблице КП не будет — но в документе она останется: КП назовёт её словами клиента и скажет, что мы по ней уточняем. Молча выкинуть строку нельзя.'],
         // Настройки
         'kp-settings':  ['Оформление КП', 'Тексты и значения по умолчанию для каждого нового КП: условия поставки, сроки, подписи под фотографиями. В самом КП их можно переписать — здесь стоит то, с чего КП начинается, и сюда же приезжает последняя правка условий из любого КП.'],
+        'mail-signature': ['Подпись в письмах', 'Дописывается в конец каждого письма, которое вы отправляете из сервиса, и в конец черновика нейросети. Второй раз не приписывается — если подпись в письме уже стоит, она остаётся одна. Пусто — берётся общая подпись компании из настроек почты.'],
         'signature':    ['Моя подпись', 'КП подписывает тот, кто его отправляет. Загрузите картинку своей подписи и напишите расшифровку — они встанут под вашими КП. Пусто — печатается подписант организации.'],
         'knowledge':    ['База знаний', 'Вики компании из репозитория GitHub. В промпт она попадает не целиком, а теми разделами, которые относятся к тексту письма. Это ЗНАНИЯ О ТОВАРЕ — инструкции про кнопки сюда класть нельзя, они мешают модели отвечать.'],
         'knowledge-check': ['Проверка подбора', 'Вставьте текст письма — увидите, какие разделы вики попадут в промпт и что сервис на это ответит. Ответ можно тут же забраковать кнопкой 👎 и написать, как он должен был звучать: эта правка уйдёт в обучение.'],
+        'rethink':      ['Переосмыслить правки', 'Модель читает последние правки менеджеров и отправленные письма и собирает из них короткий свод правил. Свод сам никуда не уходит: его читают, правят и одной кнопкой подмешивают в выбранный промпт — отдельным блоком «ИЗ ПРАВОК МЕНЕДЖЕРОВ». Модель для этой работы выбирается здесь же: читать сотню писем лучше моделью поумнее.'],
         'prompts':      ['Промпты', 'Инструкции, по которым нейросеть пишет каждый ответ и каждое письмо. Правится текстом; у каждого промпта есть история и кнопка «Вернуть встроенный». Ко всем добавляется общий блок дисциплины — его отдельно дублировать не надо.'],
         'tov':          ['Tone of Voice', 'Как мы разговариваем с клиентом: обращение, длина фраз, что обещаем и чего не обещаем. Подмешивается в каждый ответ. Это НЕ база знаний: факты о товаре живут в вики, здесь — только манера речи.'],
         'stores':       ['Склады для остатков', 'Отметьте склады, с которых вы реально отгружаете. Остаток считается только по ним: остаток витрины или брака, попавший в КП, превращается в обещание, которого не выполнить. Ничего не отмечено — считаем по всем складам.'],
@@ -4577,6 +5605,8 @@ const App = {
         'learning-export': ['Выгрузка правок', 'Архив со всеми новыми правками уходит файлом в репозиторий вики. После удачной выгрузки они помечаются выгруженными, и следующий архив собирается только из новых — повторов не будет.'],
         'logo':         ['Логотипы', 'Три разных знака: в шапке КП, иконка приложения на телефоне и значок вкладки браузера. Файлы лежат вне репозитория, поэтому обновление кода их не стирает. Для КП лучше PNG без прозрачного фона — прозрачность на некоторых серверах не печатается.'],
         'catalog':      ['Каталог товаров', 'Копия номенклатуры МойСклад: названия, артикулы, цены, остатки и модификации. Из неё собираются КП — чтобы документ не зависел от того, отвечает ли сейчас МойСклад. Если API недоступен, каталог можно загрузить из Excel-выгрузки.'],
+        'support':      ['Обратная связь', 'Что-то сломалось или мешает — опишите прямо с того экрана, где это увидели, и приложите скриншот, документ или видео. Обращение уходит АДМИНИСТРАТОРУ на ревью, а не сразу в публичный трекер; с его подтверждения оно становится issue в репозитории, и вы увидите ссылку. Отклонённое обращение возвращается с причиной.'],
+        'setup':        ['Мастер настройки', 'Всё, что нужно сервису для старта с нуля, по одному делу за раз: ключи МойСклад и нейросетей, почтовый ящик, логотип, люди. У каждого шага стоит прямая ссылка, где взять ключ, и какие права ему нужны. Шаг считается пройденным, только когда он РАБОТАЕТ: каталог синхронизирован, провайдер отвечает, ящик включён. Мастер можно пройти заново на работающем сервисе — настройки при этом не стираются.'],
     },
 
     /**
@@ -4752,6 +5782,10 @@ const App = {
             ['prompts',    'Промпты',         false],
             ['learning',   'Правки и обучение', true],
             ['managers',   'Менеджеры',       true],
+            // Мастер настройки и обратная связь (модуль 038): мастер — админский,
+            // жалоба — общая, жалуется тот, кто увидел поломку
+            ['setup',      'Мастер настройки', true],
+            ['support',    'Обратная связь',  false],
             ['device',     'Это устройство',  false],
             ['all',        'Все параметры',   true],
             ['logs',       'Логи',            true],
@@ -4790,6 +5824,8 @@ const App = {
             tov:        () => this.settingsTov(),
             learning:   () => this.adminLearning(),
             managers:   () => this.adminManagers(),
+            setup:      () => this.settingsSetup(),
+            support:    () => this.settingsSupport(),
             prompts:    () => this.adminPrompts(),
             device:     () => this.settingsDevice(),
             all:        () => this.adminSettings(),
@@ -5574,6 +6610,9 @@ const App = {
         if (!card) return;
         try {
             const d = await this.api('admin.php?action=signature');
+            const mail = await this.api('settings.php?action=mail_signature');
+            // Звук уведомления — тоже личная настройка, и живёт рядом с подписью
+            const snd = await this.api('settings.php?action=my_sound').catch(() => null);
             card.innerHTML = `
                 <div class="card__title">Моя подпись${this.hint('signature')}</div>
                 <p class="muted">Ставится под теми КП, которые отправляете вы. Пусто — печатается подписант
@@ -5595,7 +6634,39 @@ const App = {
                     ${d.has_image ? '<button class="btn btn--outline btn--danger" onclick="App.resetSignature()">Убрать картинку</button>' : ''}
                 </div>
                 <p class="muted" style="margin-top:6px">PNG или JPG, лучше на прозрачном или белом фоне, высотой около 200 px.</p>
-                <div id="sigOut" style="margin-top:8px"></div>`;
+                <div id="sigOut" style="margin-top:8px"></div>
+
+                <!-- Подпись в письмах (модуль 039): письмо заканчивается именем
+                     того, кто его отправил, а не обрывается на полуслове -->
+                <div class="card__title" style="margin-top:18px">Подпись в письмах${this.hint('mail-signature')}</div>
+                <p class="muted">Дописывается к каждому вашему письму — и к черновику, который пишет нейросеть.
+                   ${mail.source === 'manager' ? 'Сейчас стоит ваша.'
+                     : mail.source === 'company' ? 'Своей нет — подписывается общей подписью компании.'
+                     : 'Своей нет и общей нет — подпись собирается из вашего имени и телефона.'}</p>
+                <div class="form-group">
+                    <textarea id="mailSig" rows="4"
+                        placeholder="${this.esc(mail.fallback || 'С уважением,\nЯна, менеджер по оптовым заказам\n+7 977 508-45-85')}">${this.esc(mail.signature || '')}</textarea>
+                </div>
+                <p class="muted">Уйдёт с письмом:</p>
+                <pre class="sig-preview">${this.esc(mail.effective || '')}</pre>
+                <div class="flex flex--wrap">
+                    <button class="btn btn--primary" onclick="App.saveMailSignature(this)">Сохранить подпись в письмах</button>
+                </div>
+
+                <!-- Звук уведомления — свой у каждого (issue #60): один сигнал
+                     на всю комнату означает, что на него перестают оборачиваться -->
+                ${snd ? `
+                <div class="card__title" style="margin-top:18px">Мой звук уведомления</div>
+                <p class="muted">Играет, когда приходит новое письмо. «Как в настройках» —
+                   общий звук сервиса${snd.common ? ': ' + this.esc(snd.common) : ' (сейчас не выбран)'}.</p>
+                <div class="flex flex--wrap">
+                    <select id="mySound"><option value="">(как в настройках)</option></select>
+                    <button type="button" class="btn btn--outline btn--sm" onclick="App.playSoundPreview('mySound')">▶ Послушать</button>
+                    <label>громкость <input type="number" id="myVolume" min="0" max="100" style="width:5em"
+                           placeholder="как в настройках" value="${this.esc(snd.volume)}"></label>
+                    <button class="btn btn--primary btn--sm" onclick="App.saveMySound(this)">Сохранить звук</button>
+                </div>` : ''}`;
+            if (snd) this.loadSoundOptions('mySound', snd.sound || '');
         } catch (err) {
             card.innerHTML = `<div class="card__title">Моя подпись</div><p class="no">${this.esc(err.message)}</p>`;
         }
@@ -5608,6 +6679,37 @@ const App = {
                 body: {signatory_name: document.getElementById('sigName').value}});
             this.toast('Расшифровка сохранена', 'success');
             this.loadSignature();
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
+    },
+
+    /** Подпись в письмах — своя у каждого (модуль 039). */
+    async saveMailSignature(btn) {
+        btn.disabled = true;
+        try {
+            await this.api('settings.php?action=mail_signature', {method: 'POST',
+                body: {signature: document.getElementById('mailSig').value}});
+            this._mailSign = undefined;   // строка у поля ответа покажет новую
+            this.toast('Подпись в письмах сохранена', 'success');
+            this.loadSignature();
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
+    },
+
+    /** Свой звук уведомления (issue #60): пусто — как в настройках сервиса. */
+    async saveMySound(btn) {
+        btn.disabled = true;
+        try {
+            const r = await this.api('settings.php?action=my_sound', {method: 'POST', body: {
+                sound: document.getElementById('mySound').value,
+                volume: document.getElementById('myVolume').value,
+            }});
+            // Экран должен зазвонить по-новому сразу, не дожидаясь перезагрузки
+            this.ui.mail_sound = r.effective || '';
+            if (document.getElementById('myVolume').value !== '') {
+                this.ui.mail_sound_volume = Number(document.getElementById('myVolume').value);
+            }
+            this.toast('Звук сохранён', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
     },
@@ -5942,6 +7044,7 @@ const App = {
         // Открыть переписку отдельной страницей — само по себе явное действие:
         // здесь отметка «прочитано» ставится сразу (модуль 020)
         const d = await this.api('mail.php?action=thread&read=1&key=' + encodeURIComponent(key));
+        this.foldKey = key;
         const t = d.thread;
         const reply = d.reply || {};
         // Кто написал: последнее входящее письмо цепочки — то, на что отвечают
@@ -5981,10 +7084,13 @@ const App = {
             <div class="letter">
                 <div class="letter__main">
                     ${this.threadHtml(d.messages, key)}
+                    <!-- Подбор — в левой колонке над полем письма (issue #60):
+                         читаем переписку, подбираем товары, собираем КП, ниже
+                         пишем письмо -->
+                    <div data-thread-items></div>
                     ${this.threadComposer(key, reply, d.mailboxes || [])}
                 </div>
                 <aside class="letter__side">
-                    <div data-thread-items></div>
                     <div id="threadFacts"></div>
                 </aside>
             </div>
@@ -5993,12 +7099,13 @@ const App = {
         this.mountBodies(document.getElementById('app'));
         this.loadThreadPlacement(key);
         this.restoreComposerDraft(key);
+        this.fillSignatureNote(document.getElementById('app'));
         this.loadThreadFacts(t, lastIn, d.moysklad);
         // Панель подбора есть у КАЖДОГО письма: у письма без запроса она честно
         // говорит, почему пуста, а не исчезает вовсе
         const host = document.getElementById('app');
         if (reply.request_id) this.loadThreadItems(host, reply.request_id);
-        else this.noThreadItems(host);
+        else this.noThreadItems(host, key);
         // Счета этого запроса — под полем ответа (модуль 029)
         this.companyRequestId = reply.request_id ? String(reply.request_id) : '';
         this.loadInvoiceDock();
@@ -6029,7 +7136,8 @@ const App = {
         add('Категория', this.esc(this.categoryLabels[lastIn.category] || lastIn.category || ''));
         add('Вложений', (lastIn.attachments || []).length || '');
         box.className = 'card';
-        box.innerHTML = `<div class="card__title">О письме</div>
+        box.dataset.block = 'info';
+        box.innerHTML = `<div class="card__title">Информация</div>
             <div class="facts">${rows.join('') || '<p class="muted">Ничего, кроме самого письма.</p>'}</div>
             ${ms && !ms.linked ? this.msCreateLink(ms, t.thread_key) : ''}`;
     },
@@ -6230,9 +7338,13 @@ const App = {
      * в одной не доезжала до другой. Теперь обе зовут это.
      */
     threadHtml(messages, key) {
-        return `<div class="thread">
-            ${(messages || []).map((m, i) => this.threadMessage(m, i === messages.length - 1, key)).join('')}
-        </div>`;
+        const n = (messages || []).length;
+        return `<section class="lblock" data-block="thread">
+            <div class="lblock__head" data-block-head>Письма <span class="muted">· ${n}</span></div>
+            <div class="thread">
+                ${(messages || []).map((m, i) => this.threadMessage(m, i === messages.length - 1, key)).join('')}
+            </div>
+        </section>`;
     },
 
     /**
@@ -6297,7 +7409,7 @@ const App = {
                     ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
                     ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
                     ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
-                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail/inbox'}')">🗑 Удалить</button>
+                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail'}')">🗑 Удалить</button>
                 </div>
             </div>
             <div class="card">
@@ -6350,7 +7462,10 @@ const App = {
             </span>
             <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
             <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
+            <a href="#mail/new" class="btn btn--outline btn--sm"
+               title="Запрос пришёл в мессенджер или по телефону — вставьте текст и файлы">+ Запрос</a>
             <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn()">+ Колонка</button>
+            <a href="#mail/trash" class="btn btn--outline btn--sm" title="Удалённые письма — их можно вернуть">🗑 Корзина</a>
         `);
         // action=get syncs first: the intake is not a button somebody remembers
         // to press, it is what opening the board means
@@ -6359,6 +7474,7 @@ const App = {
         this.boardPicked = new Set();
         document.getElementById('mailBody').innerHTML = `
             ${this.boardFiltersHtml(b)}
+            <div id="boardSupport"></div>
             <div id="boardBulk"></div>
             <div id="boardSearchOut"></div>
             <div class="board" id="board">
@@ -6367,8 +7483,74 @@ const App = {
         `;
         this.boardBindDnd();
         this.applyBoardFilters();
+        this.loadBoardSupport();
         const added = (b.sync && (b.sync.created || b.sync.upgraded)) || 0;
         if (added) this.toast(`Новых карточек на доске: ${added}`, 'success');
+    },
+
+    /**
+     * ==== Корзина писем (модуль 040) ====
+     *
+     * Удалить можно любое письмо, и любое можно вернуть: до сих пор удаление
+     * было окончательным, и «удалить» приходилось выбирать как приговор.
+     * Здесь письмо лежит целиком, со своими файлами, пока корзину не очистят.
+     */
+    async pageMailTrash() {
+        document.getElementById('app').innerHTML = this.mailShellHtml('trash', `
+            <button class="btn btn--outline btn--sm btn--danger" onclick="App.purgeTrash()">
+                Очистить корзину</button>`);
+        const box = document.getElementById('mailBody');
+        box.innerHTML = '<div class="loading">Загрузка корзины...</div>';
+        try {
+            const d = await this.api('mail.php?action=trash');
+            const items = d.items || [];
+            box.innerHTML = `
+                <div class="card card--flush">
+                    <div class="mlist">
+                        ${items.map(t => `
+                            <div class="mrow">
+                                <div class="mrow__main">
+                                    <div class="mrow__subject">${this.esc(t.subject) || '<em>без темы</em>'}</div>
+                                    <div class="mrow__meta">${this.esc(t.direction === 'in'
+                                        ? 'от ' + (t.from_email || '') : 'кому ' + (t.to_emails || ''))}
+                                        · удалено ${this.fmtDate(t.deleted_at)}
+                                        ${t.deleted_by_name ? '· ' + this.esc(t.deleted_by_name) : ''}</div>
+                                </div>
+                                <div class="mrow__date">${this.fmtDate(t.date_at)}</div>
+                                <div class="flex" style="gap:6px">
+                                    <button class="btn btn--outline btn--sm"
+                                            onclick="App.restoreFromTrash(${t.id})">↩ Вернуть</button>
+                                    <button class="btn btn--outline btn--sm btn--danger"
+                                            onclick="App.purgeTrash(${t.id})">🗑 Насовсем</button>
+                                </div>
+                            </div>`).join('')}
+                        ${items.length ? '' : '<div class="mlist__empty">Корзина пуста</div>'}
+                    </div>
+                </div>`;
+        } catch (err) {
+            box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async restoreFromTrash(id) {
+        try {
+            const r = await this.api('mail.php?action=trash_restore', {method: 'POST', body: {id}});
+            this.toast('Письмо вернулось в почту', 'success');
+            if (r.thread_key) location.hash = 'mail/t/' + encodeURIComponent(r.thread_key);
+            else this.pageMailTrash();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /** Без id — вся корзина. Вот это уже насовсем, вместе с файлами. */
+    async purgeTrash(id = 0) {
+        const what = id ? 'Удалить это письмо насовсем? Вернуть его будет нельзя.'
+                        : 'Очистить корзину? Все письма в ней удалятся насовсем, вместе с файлами.';
+        if (!confirm(what)) return;
+        try {
+            const r = await this.api('mail.php?action=trash_purge', {method: 'POST', body: id ? {id} : {}});
+            this.toast(`Удалено насовсем: ${r.purged}`, 'success');
+            this.pageMailTrash();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     /**
@@ -6390,6 +7572,7 @@ const App = {
             </span>
             <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
             <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
+            <a href="#mail/trash" class="btn btn--outline btn--sm">🗑 Корзина</a>
         `);
         const b = this.board || await this.api('boards.php?action=get&sync=0');
         this.board = b;
@@ -6519,6 +7702,32 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
         this.archivePicked = new Set();
         this.loadArchiveList();
+    },
+
+    /**
+     * Обращения менеджеров на доске «Письма» (issue #60) — только у
+     * администратора и только те, что ждут ревью. Пусто — полосы нет.
+     */
+    async loadBoardSupport() {
+        const box = document.getElementById('boardSupport');
+        if (!box || !(this.manager && this.manager.is_admin)) return;
+        try {
+            const d = await this.api('support.php?action=list&status=new');
+            const items = d.items || [];
+            if (!items.length || !box.isConnected) { box.innerHTML = ''; return; }
+            const kinds = d.kinds || {};
+            box.innerHTML = `
+                <div class="card card--inline board-support">
+                    <strong>🛟 Обращения менеджеров на ревью: ${items.length}</strong>
+                    ${items.slice(0, 5).map(t => `
+                        <a class="board-support__row" href="#settings/support">
+                            <span class="chip">${this.esc(kinds[t.kind] || t.kind)}</span>
+                            ${this.esc(t.title)}
+                            <span class="muted">· ${this.esc(t.manager_name || '')} · ${this.fmtDate(t.created_at)}</span>
+                        </a>`).join('')}
+                    ${items.length > 5 ? `<a href="#settings/support">и ещё ${items.length - 5} →</a>` : ''}
+                </div>`;
+        } catch { box.innerHTML = ''; }
     },
 
     /**
@@ -6743,9 +7952,14 @@ const App = {
                     <span class="bcol__title" onclick="App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')">${this.esc(c.title)}</span>
                     ${c.kind === 'inbox' ? '<span class="bcol__kind" title="Сюда сами падают новые письма">авто</span>' : ''}
                     ${c.kind === 'work' ? '<span class="bcol__kind" title="Сюда сама встаёт карточка письма, которое пишут">черновики</span>' : ''}
-                    <span class="bcol__count">${c.cards.length}</span>
+                    ${c.kind === 'closed' ? '<span class="bcol__kind" title="Переписка карточек этой колонки не читается — только счётчики">закрыто</span>' : ''}
+                    <span class="bcol__count" title="Показано карточек в колонке${c.card_limit ? ' (лимит ' + c.card_limit + ')' : ''}"
+                          onclick="App.boardSetColumnLimit(${c.id}, ${c.card_limit || 0})">${c.cards.length}${c.card_limit ? '/⚙' : ''}</span>
                     <button class="bcol__x" title="Удалить колонку" onclick="App.boardDeleteColumn(${c.id})">×</button>
                 </div>
+                ${c.kind === 'inbox' ? `
+                    <a class="bcol__new" href="#mail/new"
+                       title="Запрос принесли не почтой: мессенджер, звонок, файл">+ Запрос не из почты</a>` : ''}
                 <div class="bcol__cards" data-drop="${c.id}">
                     ${c.cards.map(card => this.boardCard(card)).join('')}
                 </div>
@@ -7126,6 +8340,15 @@ const App = {
         this.pageMailBoard();
     },
 
+    // Сколько карточек показывать в колонке — не грузить интерфейс лишним (issue #60)
+    async boardSetColumnLimit(id, current) {
+        const raw = prompt('Сколько карточек показывать в колонке? Пусто или 0 — без ограничения', current || '');
+        if (raw === null) return;
+        const card_limit = parseInt(raw, 10) || 0;
+        await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, id, card_limit}});
+        this.pageMailBoard();
+    },
+
     async boardDeleteColumn(id) {
         if (!confirm('Удалить колонку вместе с карточками?')) return;
         await this.api('boards.php?action=column_delete', {method: 'POST', body: {id}});
@@ -7161,10 +8384,20 @@ const App = {
         else this.pageMailBoard();
     },
 
+    /**
+     * Убрать карточку — и, если попросят, удалить насовсем (модуль 040).
+     *
+     * «Убрать» помнит, где карточка стояла, и возвращает её, когда компания
+     * напишет снова. Карточку, за которой не осталось ни одного письма, это
+     * не убирало насовсем — и удалить её было нечем.
+     */
     async boardCardDelete(id) {
         if (!confirm('Убрать карточку с доски? Письма останутся в почте, '
                    + 'а карточка вернётся сама, когда компания напишет снова.')) return;
-        await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
+        const r = await this.api('boards.php?action=card_delete', {method: 'POST', body: {id}});
+        // Карточка, за которой не осталось ни писем, ни запроса, ни заметки,
+        // удаляется совсем: возвращаться ей неоткуда и незачем
+        if (r.purged) this.toast('Карточка была пустой — удалена совсем', 'success');
         this.pageMailBoard();
     },
 
@@ -7239,7 +8472,7 @@ const App = {
             if (r.thread_empty) {
                 const cp = this.openCompanyId();
                 if (cp) this.loadCompanyThreads(cp);
-                else this.goAfterDelete('mail/inbox');
+                else this.goAfterDelete('mail');
                 return;
             }
             const box = o.thread ? document.getElementById('th_' + this.threadDomId(o.thread)) : null;
@@ -7259,7 +8492,7 @@ const App = {
         try {
             const r = await this.api('mail.php?action=delete_thread', {method: 'POST', body: {thread_key: key}});
             this.toast(r.warning || `Удалено писем: ${r.deleted}`, r.warning ? 'error' : 'success');
-            this.goAfterDelete('mail/inbox');
+            this.goAfterDelete('mail');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -7288,7 +8521,7 @@ const App = {
             this.toast(r.warning || `В архив убрано писем: ${r.archived}`, r.warning ? 'error' : 'success');
             const cp = this.openCompanyId();
             if (cp) this.loadCompanyThreads(cp);
-            else this.goAfterDelete('mail/inbox');
+            else this.goAfterDelete('mail');
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -7374,9 +8607,18 @@ const App = {
             table{border-collapse:collapse;max-width:100%;table-layout:fixed}
             td,th{border:1px solid #ddd;padding:4px 6px;font-size:12px;text-align:left}
             a{color:#8a2a24}
-            </style></head><body>${innerHtml}</body></html>`;
+            </style></head><body>${this.lazyImages(innerHtml)}</body></html>`;
         return `<iframe class="html-frame" data-maxh="${maxHeight}" sandbox="allow-same-origin allow-popups"
-                    onload="App.sizeFrame(this)" srcdoc="${this.esc(doc)}"></iframe>`;
+                    loading="lazy" onload="App.sizeFrame(this)" srcdoc="${this.esc(doc)}"></iframe>`;
+    },
+
+    /**
+     * Картинки письма грузятся, когда до них доходит прокрутка (issue #60):
+     * длинная переписка с десятком писем и логотипов в подписях не тянет всё
+     * разом. Атрибут работает и без скриптов — рамка письма их не исполняет.
+     */
+    lazyImages(html) {
+        return String(html || '').replace(/<img\b(?![^>]*\bloading=)/gi, '<img loading="lazy" decoding="async"');
     },
 
     /**
@@ -7653,6 +8895,7 @@ const App = {
                         <a href="#settings/llm" class="btn btn--outline btn--sm">Настроить</a>
                     </div>
                 </div>
+                ${this.setupCard(d)}
                 ${this.changesCard(d)}
                 <div class="card">
                     <div class="card__title">База знаний (вики)${this.hint('knowledge')}</div>
@@ -7740,6 +8983,26 @@ const App = {
             this.testOut(`Товары: ${yes(p.products)} · Контрагенты: ${yes(p.counterparties)} · Заказы: ${yes(p.orders_write)}
                           · Счета: ${yes(p.invoices)} · Вебхуки: ${yes(p.webhooks)}`, '');
         } catch (err) { this.testOut(this.esc(err.message), 'no'); }
+    },
+
+    /**
+     * Список организаций МойСклад в поле настройки (модуль 041).
+     *
+     * Поле требовало «ID организации» — 36 знаков, которые брали из адресной
+     * строки МойСклад и переписывали руками. Теперь это список имён с ИНН;
+     * МойСклад недоступен — поле остаётся с тем, что в нём стоит, и его
+     * по-прежнему можно вписать.
+     */
+    async loadOrganizations(selectId, current) {
+        try {
+            const d = await this.api('admin.php?action=moysklad_organizations');
+            const sel = document.getElementById(selectId);
+            if (!sel || !(d.items || []).length) return;
+            sel.innerHTML = `<option value="">(первая организация аккаунта)</option>`
+                + d.items.map(o => `<option value="${this.esc(o.id)}" ${o.id === current ? 'selected' : ''}>
+                        ${this.esc(o.name)}${o.inn ? ' · ИНН ' + this.esc(o.inn) : ''}</option>`).join('');
+            sel.value = current || '';
+        } catch { /* нет связи с МойСклад — остаётся то, что уже выбрано */ }
     },
 
     async testLlm(provider) {
@@ -8015,6 +9278,14 @@ const App = {
                         <button type="button" class="btn btn--outline btn--sm" onclick="App.playSoundPreview('${id}')">▶ Послушать</button>
                     </span>`;
                 }
+                // Организация выбирается из списка МойСклад, а не переписывается
+                // идентификатором из адресной строки (модуль 041)
+                if (it.type === 'organization') {
+                    this.loadOrganizations(id, String(it.value));
+                    return `<select id="${id}">
+                        <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первая организация аккаунта)'}</option>
+                    </select>`;
+                }
                 // Списки синонимов и текст блока дисциплины — многострочные
                 if (it.type === 'textarea') return `<textarea id="${id}" rows="6">${this.esc(it.value)}</textarea>`;
                 return `<input type="text" id="${id}" value="${this.esc(it.value)}">`;
@@ -8044,6 +9315,7 @@ const App = {
                                 <label for="set_${it.key}">${this.esc(it.label)}</label>
                                 <div class="muted"><code>${it.key}</code> ${badge(it)}
                                     ${it.hint ? '· ' + this.esc(it.hint) : ''}</div>
+                                ${this.settingLink(it)}
                             </div>
                             <div class="setting__field">${field(it)}</div>
                             <div class="setting__actions">
@@ -8064,6 +9336,22 @@ const App = {
                 <div class="flex flex--end"><button class="btn btn--primary" onclick="App.saveSettings()">Сохранить настройки</button></div>
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    /**
+     * «Где взять» — ссылкой, а не советом поискать (issue #60).
+     *
+     * Значение, которое выдаёт другой сервис, объясняется не только словами:
+     * рядом с полем стоит ссылка ровно на ту страницу, где токен создаётся, —
+     * и в настройках, и в мастере. Ссылка на свой же экран (`#…`) открывается
+     * в этой вкладке, чужая — в новой.
+     */
+    settingLink(it) {
+        const l = it && it.link;
+        if (!l || !l.url) return '';
+        return l.url.startsWith('#')
+            ? `<div class="setting__link"><a href="${this.esc(l.url)}">${this.esc(l.label)}</a></div>`
+            : `<div class="setting__link"><a href="${this.esc(l.url)}" target="_blank" rel="noopener">↗ ${this.esc(l.label)}</a></div>`;
     },
 
     /** Наполнить выбор звуков тем, что реально лежит в папке sounds/. */
@@ -8185,6 +9473,9 @@ const App = {
                             <input type="number" id="set_LLM_TIMEOUT_SEC" value="${this.esc(val('LLM_TIMEOUT_SEC'))}"></div>
                         <div class="form-group"><label>Температура по умолчанию</label>
                             <input type="text" id="set_LLM_TEMPERATURE" value="${this.esc(val('LLM_TEMPERATURE'))}"></div>
+                        <div class="form-group"><label>Предел длины ответа, токенов</label>
+                            <input type="number" id="set_LLM_MAX_TOKENS" value="${this.esc(val('LLM_MAX_TOKENS'))}"
+                                   title="Ограничивает ответ Yandex. Если в журнале «ответ оборвался по пределу длины» — увеличьте"></div>
                         <div class="form-group"><label>Выбор модели в окне ответа</label>
                             <select id="set_LLM_MODEL_PICKER">
                                 <option value="1" ${val('LLM_MODEL_PICKER') === '1' ? 'selected' : ''}>Показывать</option>
@@ -8247,10 +9538,13 @@ const App = {
                        его список моделей (Models API) и вычёркивает то, чего в вашем Folder ID не оказалось —
                        дальше такой слаг в запрос не уходит, вместо него отвечает YandexGPT. Модели, которых нет
                        в списке ниже, а в облаке есть, добавляются в выбор. Если Models API не ответил, список
-                       проверяется по-старому — по одному короткому запросу на слаг.</p>
+                       проверяется по-старому — по одному короткому запросу на слаг.
+                       Маршрут запоминается отдельно: открытые модели отвечают не на общем адресе, а на
+                       OpenAI-совместимом, и запросы к ним уходят туда сами.</p>
                     <p class="muted">${yx.synced_at
                         ? `Проверено ${this.fmtDate(yx.synced_at)}: отвечает <strong class="ok">${yx.ok}</strong>,
-                           нет в облаке <strong class="${yx.missing ? 'no' : ''}">${yx.missing}</strong> из ${yx.total}.`
+                           нет в облаке <strong class="${yx.missing ? 'no' : ''}">${yx.missing}</strong> из ${yx.total}${
+                           yx.openai ? `; по OpenAI-совместимому API — <strong>${yx.openai}</strong>` : ''}.`
                         : 'Каталог ещё не проверялся — список ниже показывает кандидатов, а не факт.'}</p>
                     <div class="flex flex--wrap">
                         <button class="btn btn--outline" onclick="App.verifyYandexModels()">Проверить каталог Yandex</button>
@@ -8319,6 +9613,8 @@ const App = {
             out.innerHTML = `
                 <p class="muted">${how}</p>
                 <p class="ok">Отвечает: ${(r.ok || []).join(', ') || '— ни одна'}</p>
+                ${(r.openai || []).length ? `<p class="muted">Только по OpenAI-совместимому API
+                    (запросы уходят туда сами): ${this.esc(r.openai.join(', '))}</p>` : ''}
                 ${(r.missing || []).length ? `<p class="no">Нет в этом облаке: ${this.esc(r.missing.join(', '))}</p>` : ''}
                 ${(r.unclear || []).length ? `<p class="muted">Не удалось выяснить (ответ не про модель):<br>
                     ${r.unclear.map(x => this.esc(x)).join('<br>')}</p>` : ''}`;
@@ -9160,7 +10456,15 @@ const App = {
                                     <td>${m.is_admin ? '<span class="badge badge--confirmed">админ</span>' : 'менеджер'}</td>
                                     <td class="num">${m.mailboxes}</td>
                                     <td class="num">${m.requests}</td>
-                                    <td><button class="btn btn--sm btn--outline" onclick="App.editManager(${m.id})">Изменить</button></td>
+                                    <td class="flex flex--wrap">
+                                        <button class="btn btn--sm btn--outline" onclick="App.editManager(${m.id})">Изменить</button>
+                                        <!-- «Админ может обнулить логин» (issue #60): все сессии
+                                             этого человека закрываются, где бы они ни были открыты -->
+                                        <button class="btn btn--sm btn--outline" onclick="App.resetManagerLogin(${m.id}, this)"
+                                                title="Закрыть все открытые сессии этого менеджера — ему придётся войти заново">Обнулить вход</button>
+                                        <button class="btn btn--sm btn--outline" onclick="App.showManagerLogins(${m.id})"
+                                                title="Последние входы: когда и с какого адреса">Входы</button>
+                                    </td>
                                 </tr>`).join('')}
                         </tbody>
                     </table>
@@ -9170,6 +10474,39 @@ const App = {
                 <div id="managerForm"></div>
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    /** Обнулить вход менеджера — issue #60. */
+    async resetManagerLogin(id, btn) {
+        if (!confirm('Закрыть все сессии этого менеджера? Ему придётся войти заново.')) return;
+        btn.disabled = true;
+        try {
+            await this.api('admin.php?action=manager_logout', {method: 'POST', body: {id}});
+            this.toast('Вход обнулён — сессии закрыты', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
+    },
+
+    /** Последние входы менеджера: когда и откуда. */
+    async showManagerLogins(id) {
+        const box = document.getElementById('managerForm');
+        if (!box) return;
+        box.innerHTML = '<div class="card"><div class="loading">Смотрим входы...</div></div>';
+        try {
+            const d = await this.api(`admin.php?action=manager_logins&id=${id}`);
+            box.innerHTML = `
+                <div class="card">
+                    <div class="card__title">Последние входы</div>
+                    ${(d.items || []).length ? `<table class="table">
+                        <thead><tr><th>Когда</th><th>Адрес</th><th>Браузер</th></tr></thead>
+                        <tbody>${d.items.map(r => `<tr>
+                            <td>${this.esc(r.created_at)}</td>
+                            <td><code>${this.esc(r.ip) || '—'}</code></td>
+                            <td class="muted">${this.esc(r.user_agent) || '—'}</td>
+                        </tr>`).join('')}</tbody></table>`
+                      : '<p class="muted">Входов пока не записано.</p>'}
+                </div>`;
+        } catch (err) { box.innerHTML = `<div class="card"><p class="no">${this.esc(err.message)}</p></div>`; }
     },
 
     editManager(id) {
@@ -9390,10 +10727,13 @@ const App = {
     async adminPrompts() {
         try {
             const d = await this.api('admin.php?action=prompts');
+            const llm = await this.loadLlmModels();
+            this.promptKeys = (d.items || []).map(p => ({key: p.key, title: p.title}));
             document.getElementById('adminBody').innerHTML = `
                 <div class="card"><div class="card__title">Промпты${this.hint('prompts')}</div>
                    <p>Системные промпты, с которыми сервис обращается к нейросети.
                    Пустое поле вернёт встроенный текст. Плейсхолдеры <code>{{...}}</code> подставляются кодом — не удаляйте их.</p></div>
+                ${this.rethinkCard(llm)}
                 ${d.items.map(p => `
                     <div class="card">
                         <div class="flex flex--between">
@@ -9408,10 +10748,83 @@ const App = {
                             <button class="btn btn--primary btn--sm" onclick="App.savePrompt('${p.key}')">Сохранить</button>
                             ${p.is_custom ? `<button class="btn btn--outline btn--sm" onclick="App.resetPrompt('${p.key}')">Вернуть встроенный</button>` : ''}
                             ${p.history ? `<button class="btn btn--outline btn--sm" onclick="App.promptHistory('${p.key}')">История (${p.history})</button>` : ''}
+                            ${p.content.includes('ИЗ ПРАВОК МЕНЕДЖЕРОВ')
+                                ? '<span class="badge badge--confirmed">есть блок из правок</span>' : ''}
                         </div>
                     </div>`).join('')}
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    /**
+     * ==== Промпты учатся на правках (модуль 041) ====
+     *
+     * Правок набирается сотня, и читать их подряд некому. Модель — её выбирают
+     * здесь же, можно взять поумнее — читает их и пишет короткий свод правил.
+     * Свод не уходит в промпт сам: его читает человек и подмешивает кнопкой,
+     * в тот промпт, который сам и выберет. Неудачно — откат из истории.
+     */
+    rethinkCard(llm) {
+        return `
+            <div class="card">
+                <div class="card__title">Переосмыслить правки нейросетью${this.hint('rethink')}</div>
+                <p class="muted">Модель прочитает последние правки и отправленные письма и напишет
+                   короткий свод правил — его можно подмешать в любой промпт одной кнопкой.</p>
+                <div class="flex flex--wrap" style="gap:8px">
+                    <select id="rethinkKind" title="По каким правкам учиться">
+                        <option value="sent">Отправленные письма</option>
+                        <option value="reply">Правки ответов</option>
+                        <option value="category">Правки классификации</option>
+                        <option value="answer">Правки подбора</option>
+                        <option value="kp">Правки текста КП</option>
+                    </select>
+                    <select id="rethinkLimit" title="Сколько последних правок прочитать">
+                        <option value="20">20 последних</option>
+                        <option value="40" selected>40 последних</option>
+                        <option value="80">80 последних</option>
+                    </select>
+                    ${this.replyModelSelect(llm).replace('id="cmpModel"', 'id="rethinkModel"')}
+                    <button class="btn btn--primary btn--sm" onclick="App.rethinkLearning(this)">Переосмыслить</button>
+                </div>
+                <div id="rethinkOut" style="margin-top:10px"></div>
+            </div>`;
+    },
+
+    async rethinkLearning(btn) {
+        const out = document.getElementById('rethinkOut');
+        btn.disabled = true;
+        out.innerHTML = '<div class="loading">Модель читает правки — это занимает до минуты...</div>';
+        try {
+            const r = await this.api('admin.php?action=learning_rethink', {method: 'POST', body: {
+                kind:  document.getElementById('rethinkKind').value,
+                limit: Number(document.getElementById('rethinkLimit').value) || 40,
+                model: (document.getElementById('rethinkModel') || {}).value || '',
+            }});
+            out.innerHTML = `
+                <p class="muted">Прочитано правок: ${r.samples} · модель ${this.esc(r.model)}</p>
+                <textarea id="rethinkText" rows="10">${this.esc(r.text)}</textarea>
+                <div class="flex flex--wrap" style="margin-top:8px;gap:8px">
+                    <select id="rethinkTarget" title="В какой промпт подмешать">
+                        ${(this.promptKeys || []).map(p =>
+                            `<option value="${this.esc(p.key)}">${this.esc(p.title)}</option>`).join('')}
+                    </select>
+                    <button class="btn btn--primary btn--sm" onclick="App.mergeIntoPrompt(this)">Подмешать в промпт</button>
+                </div>`;
+        } catch (err) {
+            out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        } finally { btn.disabled = false; }
+    },
+
+    async mergeIntoPrompt(btn) {
+        const key = document.getElementById('rethinkTarget').value;
+        const block = document.getElementById('rethinkText').value;
+        if (!confirm('Подмешать этот блок в промпт? Прежний текст останется в истории — откат возможен.')) return;
+        btn.disabled = true;
+        try {
+            await this.api('admin.php?action=prompt_append', {method: 'POST', body: {key, block}});
+            this.toast('Блок подмешан в промпт', 'success');
+            this.adminPrompts();
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
     },
 
     async savePrompt(key) {
@@ -9431,13 +10844,51 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
+    /**
+     * История промпта: видно, ЧЕМ версия отличается от нынешней, и её можно
+     * вернуть (модуль 041). Раньше это был список текстов для чтения: чтобы
+     * откатить неудачную правку, её выделяли и копировали руками.
+     */
     async promptHistory(key) {
         const d = await this.api(`admin.php?action=prompt_history&key=${encodeURIComponent(key)}`);
-        this.modal('История промпта', d.items.map(h => `
+        this.modal('История промпта', (d.items || []).map(h => `
             <div class="card" style="margin-bottom:8px">
-                <div class="muted">${this.fmtDate(h.created_at)} ${h.manager_name ? '· ' + this.esc(h.manager_name) : ''}</div>
-                <pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto">${this.esc(h.content)}</pre>
+                <div class="flex flex--between">
+                    <div class="muted">${this.fmtDate(h.created_at)} ${h.manager_name ? '· ' + this.esc(h.manager_name) : ''}</div>
+                    <button class="btn btn--outline btn--sm"
+                            onclick="App.restorePrompt('${this.jsStr(key)}', ${h.id})">Вернуть эту версию</button>
+                </div>
+                <pre class="diff">${this.diffHtml(h.content || '', d.current || '')}</pre>
             </div>`).join('') || '<p class="muted">Пока пусто</p>');
+    },
+
+    /**
+     * Построчная разница: что было в этой версии и чего нет сейчас — красным,
+     * что появилось с тех пор — зелёным. Сравнение по строкам, а не по словам:
+     * промпт читают абзацами, и строка целиком — правильная единица правки.
+     */
+    diffHtml(oldText, newText) {
+        const was = new Set(String(oldText).split('\n').map(l => l.trim()));
+        const now = new Set(String(newText).split('\n').map(l => l.trim()));
+        return String(oldText).split('\n').map(line => {
+            const t = line.trim();
+            if (t !== '' && !now.has(t)) return `<span class="diff--gone">${this.esc(line)}</span>`;
+            return this.esc(line);
+        }).join('\n') + (
+            String(newText).split('\n').filter(l => l.trim() !== '' && !was.has(l.trim())).length
+                ? `\n<span class="diff--new">— и появилось с тех пор: `
+                  + this.esc(String(newText).split('\n').filter(l => l.trim() !== '' && !was.has(l.trim())).length)
+                  + ` строк(и)</span>` : '');
+    },
+
+    async restorePrompt(key, historyId) {
+        if (!confirm('Вернуть эту версию промпта? Нынешний текст тоже попадёт в историю.')) return;
+        try {
+            await this.api('admin.php?action=prompt_restore', {method: 'POST', body: {key, history_id: historyId}});
+            this.closeModal();
+            this.toast('Версия промпта возвращена', 'success');
+            this.adminPrompts();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // ---- Error log ----
@@ -9851,6 +11302,541 @@ Object.assign(App, {
         try { await this.deferredInstall.userChoice; } catch { /* */ }
         this.deferredInstall = null;
         this.renderInstallCard();
+    },
+});
+
+// ==== Мастер настройки, обратная связь и проверочное КП (модуль 038) ====
+//
+// Три просьбы из одного обращения: чтобы менеджер мог пожаловаться прямо с
+// экрана, чтобы запуск с нуля не был устной традицией и чтобы после настройки
+// сервис проверили на живом запросе, а не на первом письме клиента.
+Object.assign(App, {
+
+    // ---- Обратная связь ----
+
+    /**
+     * Жалоба пишется ТАМ, где её увидели: модал открывается с любого экрана и
+     * сам запоминает адрес страницы. Уходит она не в GitHub, а администратору
+     * на ревью — публичный трекер не место для «у меня всё пропало».
+     */
+    supportModal(kind = 'bug') {
+        this.supportFiles = [];
+        this.modal('Написать в поддержку', `
+            <div class="form-group">
+                <label>О чём</label>
+                <select id="supKind">
+                    ${Object.entries({bug: 'Не работает', idea: 'Предложение', question: 'Вопрос'}).map(
+                        ([k, l]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Коротко</label>
+                <input type="text" id="supTitle" placeholder="Например: не отправляется КП из карточки">
+            </div>
+            <div class="form-group">
+                <label>Что случилось</label>
+                <textarea id="supBody" rows="6" onpaste="App.supportPaste(event)"
+                          placeholder="Что делали, что ожидали увидеть и что увидели. Скриншот можно вставить сюда — Ctrl+V"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Файлы</label>
+                <input type="file" id="supFiles" multiple onchange="App.supportAttach(this)">
+                <div class="flex flex--wrap" id="supFileList" style="gap:6px;margin-top:6px"></div>
+                <div class="muted">Картинки, документы, видео — всё, что можно приложить к issue.</div>
+            </div>
+            <p class="muted">Экран: <code>${this.esc(location.hash || '#mail')}</code> — уйдёт вместе с обращением.
+               Администратор посмотрит и заведёт issue в репозитории.</p>
+            <div class="flex flex--end" style="gap:8px">
+                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
+                <button class="btn btn--primary" onclick="App.supportSend(this)">Отправить</button>
+            </div>`);
+    },
+
+    async supportAttach(input) {
+        for (const file of [...(input.files || [])]) await this.supportUpload(file);
+        input.value = '';
+    },
+
+    supportPaste(ev) {
+        const items = [...((ev.clipboardData || {}).items || [])].filter(i => i.kind === 'file');
+        if (!items.length) return;
+        ev.preventDefault();
+        items.forEach(i => {
+            const file = i.getAsFile();
+            if (file) this.supportUpload(file);
+        });
+    },
+
+    async supportUpload(file) {
+        const fd = new FormData();
+        fd.append('file', file, file.name || ('снимок-' + Date.now() + '.png'));
+        try {
+            const res = await fetch('/api/support.php?action=upload', {method: 'POST', body: fd, credentials: 'same-origin'});
+            const d = await res.json();
+            if (!res.ok || d.error) throw new Error(d.error || 'Файл не загрузился');
+            (this.supportFiles = this.supportFiles || []).push(d.file);
+            const box = document.getElementById('supFileList');
+            if (box) box.innerHTML = (this.supportFiles || []).map((f, i) => `
+                <span class="chip">📎 ${this.esc(f.filename)}
+                    <a onclick="App.supportDrop(${i})" title="Убрать">×</a></span>`).join('');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    supportDrop(i) {
+        (this.supportFiles || []).splice(i, 1);
+        const box = document.getElementById('supFileList');
+        if (box) box.innerHTML = (this.supportFiles || []).map((f, n) => `
+            <span class="chip">📎 ${this.esc(f.filename)}
+                <a onclick="App.supportDrop(${n})" title="Убрать">×</a></span>`).join('');
+    },
+
+    async supportSend(btn) {
+        const title = document.getElementById('supTitle').value.trim();
+        const body  = document.getElementById('supBody').value.trim();
+        if (!title && !body) return this.toast('Опишите, что случилось', 'error');
+        btn.disabled = true;
+        try {
+            await this.api('support.php?action=submit', {method: 'POST', body: {
+                kind:  document.getElementById('supKind').value,
+                title, body,
+                page:  location.hash || '#mail',
+                files: (this.supportFiles || []).map(f => f.name),
+            }});
+            this.closeModal();
+            this.toast('Отправили администратору — ответ придёт в уведомления', 'success');
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+
+    /** Список обращений: менеджер видит свои, администратор — все и с кнопками. */
+    async settingsSupport() {
+        try {
+            const d = await this.api('support.php?action=list');
+            this.supportData = d;
+            const admin = !!d.is_admin;
+            const warn = [];
+            if (!d.enabled) warn.push('Обратная связь выключена в «Настройках → Все параметры» (SUPPORT_ENABLED).');
+            if (admin && !d.repo) warn.push('Не указан репозиторий (SUPPORT_REPO) — обращения останутся в панели.');
+            if (admin && !d.token_set) warn.push('Нет токена GitHub с правом Issues: Write — issue завести не получится.');
+
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="card__title">Обратная связь${this.hint('support')}</div>
+                    <p>Что-то сломалось или мешает — напишите отсюда или кнопкой «Поддержка» в шапке.
+                       Обращение уходит администратору${admin ? '' : ' и вернётся ответом в уведомления'}.</p>
+                    ${warn.map(w => `<p class="no">${this.esc(w)}</p>`).join('')}
+                    <div class="flex flex--wrap" style="gap:8px">
+                        <button class="btn btn--primary" onclick="App.supportModal('bug')">Написать в поддержку</button>
+                        <button class="btn btn--outline" onclick="App.supportModal('idea')">Предложить улучшение</button>
+                    </div>
+                </div>
+                ${(d.items || []).length ? (d.items || []).map(t => this.supportRow(t, admin)).join('')
+                    : '<div class="card"><p class="muted">Обращений пока нет.</p></div>'}
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    supportRow(t, admin) {
+        const badge = {new: 'badge--new', approved: 'badge--sent', declined: 'badge--draft'}[t.status] || 'badge--new';
+        const label = {new: 'на ревью', approved: 'в GitHub', declined: 'отклонено'}[t.status] || t.status;
+        const kinds = (this.supportData || {}).kinds || {};
+        return `
+            <div class="card" data-ticket="${t.id}">
+                <div class="flex flex--between flex--wrap" style="gap:8px">
+                    <div class="card__title" style="margin:0">${this.esc(t.title)}</div>
+                    <div><span class="badge ${badge}">${label}</span>
+                         <span class="badge badge--draft">${this.esc(kinds[t.kind] || t.kind)}</span></div>
+                </div>
+                <div class="muted">${this.esc(t.manager_name || 'менеджер')} · ${this.fmtDate(t.created_at)}
+                    ${t.page ? ' · экран <code>' + this.esc(t.page) + '</code>' : ''}
+                    ${t.model ? ' · модель <code>' + this.esc(t.model) + '</code>' : ''}
+                    ${t.rating ? ' · ' + (t.rating === 'up' ? '👍' : '👎') : ''}</div>
+                ${t.body ? `<p style="white-space:pre-wrap;margin-top:8px">${this.esc(t.body)}</p>` : ''}
+                ${(t.files || []).length ? `<div class="flex flex--wrap" style="gap:8px;margin-top:8px">
+                    ${(t.files || []).map(f => (f.mime || '').startsWith('image/')
+                        ? `<a href="/api/support.php?action=file&id=${f.id}" target="_blank" rel="noopener">
+                             <img loading="lazy" src="/api/support.php?action=file&id=${f.id}" alt="${this.esc(f.filename)}"
+                                  style="max-height:120px;border:1px solid var(--border);border-radius:4px"></a>`
+                        : `<a class="chip" href="/api/support.php?action=file&id=${f.id}" target="_blank" rel="noopener">📎 ${this.esc(f.filename)}</a>`
+                    ).join('')}</div>` : ''}
+                ${t.issue_url ? `<p class="ok" style="margin-top:8px">Issue
+                    <a href="${this.esc(t.issue_url)}" target="_blank" rel="noopener">#${t.issue_number}</a></p>` : ''}
+                ${t.status === 'declined' && t.review_note ? `<p class="muted" style="margin-top:8px">Причина: ${this.esc(t.review_note)}</p>` : ''}
+                ${admin && t.status === 'new' ? `
+                    <div class="flex flex--wrap" style="gap:8px;margin-top:10px">
+                        <button class="btn btn--primary btn--sm" onclick="App.supportApprove(${t.id}, this)">Завести issue</button>
+                        <button class="btn btn--outline btn--sm" onclick="App.supportDecline(${t.id})">Отклонить</button>
+                    </div>` : ''}
+            </div>`;
+    },
+
+    async supportApprove(id, btn) {
+        const t = ((this.supportData || {}).items || []).find(i => i.id === id) || {};
+        const title = prompt('Заголовок issue:', t.title || '');
+        if (title === null) return;
+        btn.disabled = true;
+        try {
+            const r = await this.api('support.php?action=approve', {method: 'POST', body: {id, title}});
+            this.toast('Issue #' + r.number + ' заведён' + (r.failed && r.failed.length
+                ? '; файлы не ушли: ' + r.failed.join('; ') : ''), r.failed && r.failed.length ? 'error' : 'success');
+            this.settingsSupport();
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+
+    async supportDecline(id) {
+        const note = prompt('Почему отклоняем? Автор увидит эту строку:');
+        if (note === null) return;
+        try {
+            await this.api('support.php?action=decline', {method: 'POST', body: {id, note}});
+            this.toast('Отклонено', 'success');
+            this.settingsSupport();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    // ---- Мастер настройки ----
+
+    /**
+     * Карточка на «Обзоре»: чего не хватает для запуска и кто чего просит.
+     * Пока всё закрыто — одна строка, а не блок на пол-экрана.
+     */
+    setupCard(d) {
+        const s = d.setup || {};
+        const sup = d.support || {};
+        const waiting = (s.waiting || []);
+        if (!waiting.length && !sup.pending) {
+            return `<div class="card">
+                <div class="card__title">Настройка и обратная связь</div>
+                <p class="ok">Всё обязательное настроено${s.finished ? ', мастер пройден' : ''};
+                   обращений на ревью нет.</p>
+                <div class="flex flex--wrap" style="gap:8px">
+                    <a href="#settings/setup" class="btn btn--outline btn--sm">Мастер настройки</a>
+                    <a href="#settings/support" class="btn btn--outline btn--sm">Обращения</a>
+                </div>
+            </div>`;
+        }
+        return `<div class="card card--alert">
+            <div class="card__title">Настройка и обратная связь${this.hint('setup')}</div>
+            ${waiting.length ? `<p class="no">Не настроено: ${this.esc(waiting.join(', '))}
+                <span class="muted">· пройдено ${s.done} из ${s.total}</span></p>` : ''}
+            ${sup.pending ? `<p>Обращений ждут ревью: <strong>${sup.pending}</strong>
+                ${sup.repo ? '' : '<span class="muted">· репозиторий для issue не указан</span>'}</p>` : ''}
+            <div class="flex flex--wrap" style="gap:8px">
+                ${waiting.length ? '<a href="#settings/setup" class="btn btn--primary btn--sm">Открыть мастер</a>' : ''}
+                ${sup.pending ? '<a href="#settings/support" class="btn btn--outline btn--sm">Разобрать обращения</a>' : ''}
+            </div>
+        </div>`;
+    },
+
+    /**
+     * Мастер спрашивает то же, что «Все параметры», но по одному делу за раз и
+     * со ссылкой, где взять ключ. Состояние шага считает сервер — по факту
+     * (есть ящик, отвечает провайдер, загружен логотип), а не по «поле заполнено».
+     */
+    async settingsSetup() {
+        try {
+            const d = await this.api('setup.php?action=state');
+            this.setupData = d;
+            const bar = Math.round(100 * (d.total ? d.done / d.total : 1));
+            document.getElementById('adminBody').innerHTML = `
+                <div class="card">
+                    <div class="card__title">Мастер настройки${this.hint('setup')}</div>
+                    <p>Всё, что нужно сервису для старта с нуля: ключи, ящик, логотип и люди.
+                       Шаг считается пройденным, только когда он реально работает.</p>
+                    <div class="setup-bar"><span style="width:${bar}%"></span></div>
+                    <p class="muted">Пройдено ${d.done} из ${d.total}${d.state && d.state.done_at
+                        ? ' · мастер завершён ' + this.fmtDate(d.state.done_at) : ''}</p>
+                    <div class="flex flex--wrap" style="gap:8px">
+                        <button class="btn btn--outline btn--sm" onclick="App.setupRestart()">Пройти заново</button>
+                        ${d.ready && !(d.state || {}).done_at
+                            ? '<button class="btn btn--primary btn--sm" onclick="App.setupFinish()">Всё готово</button>' : ''}
+                    </div>
+                </div>
+                ${(d.steps || []).map((s, i) => this.setupStep(s, i, d)).join('')}
+            `;
+        } catch (err) { this.adminFail(err); }
+    },
+
+    setupStep(s, i, d) {
+        const ok = (s.state || {}).status === 'ok';
+        const open = !ok && !s.skipped && s.key === d.next;
+        return `
+            <div class="card setup-step ${ok ? 'setup-step--ok' : ''}" id="setupStep_${s.key}">
+                <div class="flex flex--between flex--wrap" style="gap:8px;cursor:pointer"
+                     onclick="App.setupToggle('${s.key}')">
+                    <div class="card__title" style="margin:0">
+                        ${ok ? '✅' : (s.skipped ? '⏭' : '▫️')} ${i + 1}. ${this.esc(s.title)}
+                        ${s.optional ? '<span class="badge badge--draft">по желанию</span>' : ''}
+                    </div>
+                    <div class="muted">${this.esc((s.state || {}).note || '')}</div>
+                </div>
+                <div class="setup-step__body" id="setupBody_${s.key}" ${open ? '' : 'hidden'}>
+                    <p class="muted">${this.esc(s.why)}</p>
+                    ${(s.links || []).map(l => `
+                        <p>${l.url.startsWith('#')
+                            ? `<a href="${this.esc(l.url)}">${this.esc(l.label)}</a>`
+                            : `<a href="${this.esc(l.url)}" target="_blank" rel="noopener">${this.esc(l.label)} ↗</a>`}
+                           ${l.note ? '<br><span class="muted">' + this.esc(l.note) + '</span>' : ''}</p>`).join('')}
+                    ${(s.fields || []).map(f => `
+                        <div class="setting">
+                            <div class="setting__label">
+                                <label for="wz_${f.key}">${this.esc(f.label)}</label>
+                                <div class="muted"><code>${f.key}</code>${f.hint ? ' · ' + this.esc(f.hint) : ''}</div>
+                                ${this.settingLink(f)}
+                            </div>
+                            <div class="setting__field">${this.setupField(f)}</div>
+                        </div>`).join('')}
+                    ${s.key === 'trial' ? this.setupTrial(d) : ''}
+                    <div class="flex flex--wrap" style="gap:8px;margin-top:10px">
+                        ${(s.fields || []).length
+                            ? `<button class="btn btn--primary btn--sm" onclick="App.setupSave('${s.key}')">Сохранить</button>` : ''}
+                        ${s.test ? `<button class="btn btn--outline btn--sm" onclick="App.setupTest('${s.test}', this)">Проверить связь</button>` : ''}
+                        ${ok ? '' : `<button class="btn btn--outline btn--sm" onclick="App.setupSkip('${s.key}')">Пропустить пока</button>`}
+                    </div>
+                    <div class="test-out" id="setupOut_${s.key}"></div>
+                </div>
+            </div>`;
+    },
+
+    setupField(f) {
+        const id = 'wz_' + f.key;
+        if (f.secret) return `<input type="password" id="${id}" placeholder="${f.filled
+            ? 'задан ' + this.esc(f.tail) + ' — оставьте пустым, чтобы не менять' : 'не задан'}">`;
+        if (f.type === 'bool') return `<select id="${id}">
+            <option value="1" ${String(f.value) === '1' ? 'selected' : ''}>Да</option>
+            <option value="0" ${String(f.value) !== '1' ? 'selected' : ''}>Нет</option></select>`;
+        if (f.type === 'int') return `<input type="number" id="${id}" value="${this.esc(f.value)}">`;
+        if (f.type === 'textarea') return `<textarea id="${id}" rows="4">${this.esc(f.value)}</textarea>`;
+        return `<input type="text" id="${id}" value="${this.esc(f.value)}">`;
+    },
+
+    setupToggle(key) {
+        const body = document.getElementById('setupBody_' + key);
+        if (body) body.hidden = !body.hidden;
+    },
+
+    async setupSave(key) {
+        const step = ((this.setupData || {}).steps || []).find(s => s.key === key);
+        if (!step) return;
+        const values = {};
+        (step.fields || []).forEach(f => {
+            const el = document.getElementById('wz_' + f.key);
+            if (el) values[f.key] = el.value;
+        });
+        try {
+            await this.api('setup.php?action=save', {method: 'POST', body: {step: key, values}});
+            this.toast('Сохранено', 'success');
+            this.settingsSetup();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async setupSkip(key) {
+        try {
+            await this.api('setup.php?action=skip', {method: 'POST', body: {step: key}});
+            this.settingsSetup();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async setupRestart() {
+        if (!confirm('Пройти мастер заново? Настройки останутся на месте — обнулится только отметка «пройдено».')) return;
+        try {
+            await this.api('setup.php?action=restart', {method: 'POST'});
+            this.toast('Мастер сброшен', 'success');
+            this.settingsSetup();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async setupFinish() {
+        try {
+            await this.api('setup.php?action=finish', {method: 'POST'});
+            this.toast('Настройка завершена', 'success');
+            this.settingsSetup();
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /**
+     * Проверки связи — те же, что на вкладках «МойСклад» и «Нейросети».
+     * Мастер не изобретает вторую проверку: он зовёт ту же ручку и печатает
+     * ответ словами, а не «ok: true».
+     */
+    async setupTest(action, btn) {
+        const key = btn.closest('.setup-step').id.replace('setupStep_', '');
+        const out = document.getElementById('setupOut_' + key);
+        btn.disabled = true;
+        if (out) out.innerHTML = '<div class="loading">Проверяем…</div>';
+        try {
+            if (action === 'test_llm') {
+                const lines = [];
+                for (const p of ['yandex', 'openrouter']) {
+                    try {
+                        const r = await this.api('admin.php?action=test_llm', {method: 'POST', body: {provider: p}});
+                        const d = r.result || {};
+                        lines.push(`<p class="ok">${this.esc(p)} · ${this.esc(d.model || '')} ответил за ${d.ms} мс: «${this.esc(d.answer || '')}»</p>`);
+                    } catch (err) {
+                        lines.push(`<p class="no">${this.esc(p)}: ${this.esc(err.message)}</p>`);
+                    }
+                }
+                if (out) out.innerHTML = lines.join('');
+            } else {
+                const r = await this.api('admin.php?action=' + action, {method: 'POST', body: {}});
+                const perms = r.permissions || {};
+                const names = {products: 'товары', counterparties: 'контрагенты', orders_read: 'заказы (чтение)',
+                               orders_write: 'заказы (запись)', stock: 'остатки', invoices: 'счета', webhooks: 'вебхуки'};
+                const list = Object.entries(perms).map(([k, v]) =>
+                    `${v ? '✅' : '❌'} ${names[k] || k}`).join(' · ');
+                if (out) out.innerHTML = Object.keys(perms).length
+                    ? `<p class="${r.ok_any ? 'ok' : 'no'}">${this.esc(list)}</p>`
+                    : `<p class="ok">${this.esc(r.message || 'Проверка прошла')}</p>`;
+            }
+        } catch (err) {
+            if (out) out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+        btn.disabled = false;
+    },
+
+    // ---- Проверочные КП и письмо ----
+
+    /**
+     * Последний шаг мастера: не «всё заполнено», а «вот КП и письмо, годится?».
+     * Палец вниз — это не просто цифра: он уходит в обращения вместе с моделью,
+     * которой это сделано, и панель тут же предлагает модель подороже.
+     */
+    setupTrial(d) {
+        const st = d.state || {};
+        const votes = st.trial_votes || {};
+        const link = st.trial_counterparty_id
+            ? '#mail/company/' + st.trial_counterparty_id
+            : (st.trial_request_id ? '#mail/request/' + st.trial_request_id : '');
+        return `
+            <div class="note note--choice">
+                ${st.trial_request_id ? `
+                    <p>Проверочный запрос #${st.trial_request_id} создан — он стоит карточкой в «В работе».
+                       <a href="${this.esc(link)}">Открыть карточку</a>: там соберите КП и черновик письма.</p>
+                    ${this.trialVoteHtml(votes)}
+                    <p class="muted" style="margin-top:8px">Нужен ещё один —
+                       <a href="#mail/new/trial" onclick="App.trialAgain()">создать заново</a>.</p>
+                ` : `
+                    <p>Создайте проверочный запрос: сервис разберёт текст, подберёт позиции по каталогу
+                       и даст собрать КП и письмо.</p>
+                    <textarea id="trialText" rows="7">${this.esc(d.trial_text || '')}</textarea>
+                    <button class="btn btn--primary btn--sm" style="margin-top:8px"
+                            onclick="App.trialStart(this)">Создать проверочный запрос</button>
+                `}
+            </div>`;
+    },
+
+    /** Текст примера живёт в ответе сервера — в обработчик его вставлять нечего:
+        перевод строки внутри onclick — это сломанный JS, а не многострочный текст. */
+    trialAgain() {
+        this.trialText = ((this.setupData || {}).trial_text) || '';
+    },
+
+    trialVoteHtml(votes) {
+        const row = (what, label) => {
+            const v = votes[what] || '';
+            return `<div class="flex flex--wrap" style="gap:8px;align-items:center;margin-top:6px">
+                <span>${label}:</span>
+                <button class="btn btn--sm ${v === 'up' ? 'btn--primary' : 'btn--outline'}"
+                        onclick="App.trialVote('${what}','up',this)">👍 хорошо</button>
+                <button class="btn btn--sm ${v === 'down' ? 'btn--primary' : 'btn--outline'}"
+                        onclick="App.trialVote('${what}','down',this)">👎 плохо</button>
+                ${v ? '<span class="muted">оценено</span>' : ''}
+            </div>`;
+        };
+        return `<div id="trialVotes">
+            ${row('kp', 'Качество КП')}
+            ${row('letter', 'Качество письма')}
+            <div id="trialModels"></div>
+        </div>`;
+    },
+
+    async trialStart(btn) {
+        const text = (document.getElementById('trialText') || {}).value || '';
+        btn.disabled = true; btn.textContent = 'Создаём…';
+        try {
+            const r = await this.api('requests.php?action=create', {method: 'POST', body: {text, trial: true}});
+            this.trialWatch(r.hash);
+            location.hash = r.hash || ('mail/request/' + r.id);
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false; btn.textContent = 'Создать проверочный запрос';
+        }
+    },
+
+    /** Карточку проверочного запроса помним до оценки — она переживает перезагрузку. */
+    trialWatch(hash) {
+        try { sessionStorage.setItem('trialCard', hash || ''); } catch { /* приватный режим */ }
+    },
+
+    trialForget() {
+        try { sessionStorage.removeItem('trialCard'); } catch { /* */ }
+    },
+
+    /**
+     * Полоска над карточкой, на которую увёл мастер: человек пришёл сюда
+     * проверять качество, и возвращаться за оценкой ему незачем.
+     */
+    trialStrip(hash) {
+        let want = '';
+        try { want = sessionStorage.getItem('trialCard') || ''; } catch { /* */ }
+        if (!want || want !== hash) return;
+        const app = document.getElementById('app');
+        if (!app || document.getElementById('trialStrip')) return;
+        const box = document.createElement('div');
+        box.id = 'trialStrip';
+        box.className = 'card card--alert';
+        box.innerHTML = `
+            <div class="card__title">Проверка сервиса</div>
+            <p>Соберите здесь КП и черновик письма, а потом скажите, годится ли качество.</p>
+            ${this.trialVoteHtml(((this.setupData || {}).state || {}).trial_votes || {})}
+            <div class="flex flex--wrap" style="gap:8px;margin-top:8px">
+                <a class="btn btn--outline btn--sm" href="#settings/setup">К мастеру настройки</a>
+                <button class="btn btn--outline btn--sm" onclick="App.trialForget();document.getElementById('trialStrip').remove()">Убрать</button>
+            </div>`;
+        app.prepend(box);
+    },
+
+    async trialVote(what, vote, btn) {
+        const comment = vote === 'down'
+            ? (prompt('Что именно не так? Строка уйдёт в обращения поддержки:') || '')
+            : '';
+        if (btn) btn.disabled = true;
+        try {
+            const r = await this.api('setup.php?action=vote', {method: 'POST', body: {what, vote, comment}});
+            this.setupData = Object.assign(this.setupData || {}, r);
+            this.toast(vote === 'up' ? 'Спасибо!' : 'Записали — подберём модель получше', 'success');
+            const box = document.getElementById('trialModels');
+            if (vote === 'down' && box) box.innerHTML = this.trialModelsHtml(r.pricier || [], r.current || {});
+            else if (box) box.innerHTML = '';
+        } catch (err) { this.toast(err.message, 'error'); }
+        if (btn) btn.disabled = false;
+    },
+
+    trialModelsHtml(models, current) {
+        if (!models.length) return `<p class="muted" style="margin-top:8px">Моделей дороже нынешней
+            (<code>${this.esc((current.provider || '') + ':' + (current.model || ''))}</code>) в каталоге нет.
+            Обновите каталог OpenRouter или добавьте ключ второго провайдера в «Настройках → Нейросети».</p>`;
+        return `
+            <div style="margin-top:10px">
+                <p>Сейчас работает <code>${this.esc((current.provider || '') + ':' + (current.model || ''))}</code>.
+                   Возьмите модель подороже — она отвечает лучше:</p>
+                <div class="flex flex--wrap" style="gap:8px">
+                    ${models.map(m => `
+                        <button class="btn btn--outline btn--sm" onclick="App.trialPickModel('${this.jsStr(m.spec)}', this)"
+                                title="${this.esc(m.group || '')}">${this.esc(m.label)}</button>`).join('')}
+                </div>
+                <p class="muted" style="margin-top:6px">Выбранная станет моделью по умолчанию —
+                   её можно поменять в «Настройках → Нейросети».</p>
+            </div>`;
+    },
+
+    async trialPickModel(spec, btn) {
+        btn.disabled = true;
+        try {
+            const r = await this.api('setup.php?action=model', {method: 'POST', body: {spec}});
+            this.toast('Теперь отвечает ' + (r.current || {}).model, 'success');
+            const box = document.getElementById('trialModels');
+            if (box) box.innerHTML = `<p class="ok" style="margin-top:8px">Модель по умолчанию:
+                <code>${this.esc(spec)}</code>. Соберите КП и письмо ещё раз и сравните.</p>`;
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
     },
 });
 

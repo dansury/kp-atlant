@@ -196,6 +196,7 @@ final class Html2Docx {
             'b', 'strong' => $this->inlineChildren($n, $style + ['b' => true]),
             'i', 'em'     => $this->inlineChildren($n, $style + ['i' => true]),
             'u'           => $this->inlineChildren($n, $style + ['u' => true]),
+            's', 'del', 'strike' => $this->inlineChildren($n, $style + ['strike' => true]),
             'a'           => $this->inlineChildren($n, ['color' => 'C00000'] + $style),
             default       => $this->inlineChildren($n, $style),
         };
@@ -217,6 +218,7 @@ final class Html2Docx {
         $p = '';
         if (!empty($s['b'])) $p .= '<w:b/>';
         if (!empty($s['i'])) $p .= '<w:i/>';
+        if (!empty($s['strike'])) $p .= '<w:strike/>';
         if (!empty($s['color'])) $p .= '<w:color w:val="' . $s['color'] . '"/>';
         if (!empty($s['size'])) $p .= '<w:sz w:val="' . (int)$s['size'] . '"/><w:szCs w:val="' . (int)$s['size'] . '"/>';
         if (!empty($s['u'])) $p .= '<w:u w:val="single"/>';
@@ -242,13 +244,15 @@ final class Html2Docx {
      */
     private function styleOf(DOMElement $n, array $inherited): array {
         $style = $inherited;
-        unset($style['b'], $style['i'], $style['u']);   // emphasis is per-element
+        unset($style['b'], $style['i'], $style['u'], $style['strike']);   // emphasis is per-element
         $classes = preg_split('/\s+/', (string)$n->getAttribute('class')) ?: [];
         foreach ($classes as $class) {
             $style = match ($class) {
                 'title'        => ['b' => true, 'size' => 32, 'align' => 'center', 'after' => 200] + $style,
-                'entity-name'  => ['b' => true, 'size' => 22] + $style,
-                'header'       => ['size' => 18, 'after' => 20] + $style,
+                // Шапка: текст справа, знак слева (issue #60). В Word это
+                // надо сказать явно — `text-align` из CSS сюда не доезжает
+                'entity-name'  => ['b' => true, 'size' => 22, 'align' => 'right'] + $style,
+                'header'       => ['size' => 18, 'after' => 20, 'align' => 'right'] + $style,
                 'match__title', 'upsell__title', 'req__title', 'card__name', 'card__subtitle'
                                => ['b' => true, 'size' => 22, 'after' => 60] + $style,
                 'total-row'    => ['b' => true, 'size' => 24, 'align' => 'right'] + $style,
@@ -257,17 +261,27 @@ final class Html2Docx {
                                => ['size' => 18, 'after' => 20] + $style,
                 'swap', 'stock-warning', 'accent'
                                => ['color' => 'C00000'] + $style,
-                // Чем клиент называл позицию: курсив серым над нашим названием
-                // (модуль 036) — в Word теми же словами и тем же начертанием
-                'analog-of'    => ['i' => true, 'color' => '6B6B6B', 'size' => 17] + $style,
+                // Чем клиент называл позицию: жирным серым над нашим названием
+                // (модуль 036, начертание сменено на жирное — issue #60)
+                'analog-of'    => ['b' => true, 'color' => '6B6B6B', 'size' => 17] + $style,
                 'sign-name'    => ['b' => true] + $style,
-                'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'right'] + $style,
+                // «Не наша номенклатура»: серым, название жирным (модуль 045)
+                'out-of-scope' => ['color' => '8A8A8A'] + $style,
+                'out-of-scope__name' => ['i' => true, 'color' => '8A8A8A'] + $style,
+                // Скидка (issue #67): старая цена зачёркнута, процент серым
+                'was'          => ['strike' => true, 'color' => '777777'] + $style,
+                'disc'         => ['color' => '8A8A8A'] + $style,
+                'card__qr-note' => ['size' => 17, 'color' => '666666'] + $style,
+                // Выравнивание текста — слева (issue #60)
+                'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'left'] + $style,
                 'appendix__subtitle' => ['b' => true, 'size' => 24, 'align' => 'center'] + $style,
                 default        => $style,
             };
         }
-        if (str_contains(mb_strtolower((string)$n->getAttribute('style')), 'text-align:center')) {
-            $style['align'] = 'center';
+        // Выравнивание, прописанное в самом элементе, — сильнее класса
+        $inline = str_replace(' ', '', mb_strtolower((string)$n->getAttribute('style')));
+        foreach (['center', 'right', 'left'] as $side) {
+            if (str_contains($inline, 'text-align:' . $side)) { $style['align'] = $side; break; }
         }
         return $style;
     }
@@ -291,11 +305,21 @@ final class Html2Docx {
         $widths = $this->columnWidths($rows, $cols);
         $width = (int)floor(self::CONTENT_TWIPS / $cols);
 
+        // Таблица-раскладка (шапка, QR рядом со ссылкой — модуль 046) рамок не
+        // печатает: это вёрстка, а не данные. У шапки остаётся нижняя черта.
+        $classes = ' ' . (string)$table->getAttribute('class') . ' ';
+        $layout = str_contains($classes, ' layout ');
+        $border = fn(string $side, bool $on) => '<w:' . $side . ($on
+            ? ' w:val="single" w:sz="4" w:color="BBBBBB"/>' : ' w:val="nil"/>');
+        $borders = $layout
+            ? $border('top', false) . $border('left', false)
+              . (str_contains($classes, ' header-grid ')
+                  ? '<w:bottom w:val="single" w:sz="12" w:color="333333"/>' : $border('bottom', false))
+              . $border('right', false) . $border('insideH', false) . $border('insideV', false)
+            : $border('top', true) . $border('left', true) . $border('bottom', true)
+              . $border('right', true) . $border('insideH', true) . $border('insideV', true);
         $xml = '<w:tbl><w:tblPr><w:tblW w:w="' . self::CONTENT_TWIPS . '" w:type="dxa"/>'
-             . '<w:tblBorders>'
-             . '<w:top w:val="single" w:sz="4" w:color="BBBBBB"/><w:left w:val="single" w:sz="4" w:color="BBBBBB"/>'
-             . '<w:bottom w:val="single" w:sz="4" w:color="BBBBBB"/><w:right w:val="single" w:sz="4" w:color="BBBBBB"/>'
-             . '<w:insideH w:val="single" w:sz="4" w:color="BBBBBB"/><w:insideV w:val="single" w:sz="4" w:color="BBBBBB"/>'
+             . '<w:tblBorders>' . $borders
              . '</w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>';
         foreach ($widths as $w) $xml .= '<w:gridCol w:w="' . $w . '"/>';
         $xml .= '</w:tblGrid>';
@@ -370,6 +394,11 @@ final class Html2Docx {
         foreach ($classes as $class) {
             $w = match ($class) {
                 'num', 'unit' => 0.8,
+                // Раскладки: знак | реквизиты, QR | ссылка (модуль 046)
+                'header-grid__logo' => 1.3,
+                'header'      => 3.0,
+                'site-line__qr' => 0.9,
+                'site-line__link' => 5.0,
                 'qty'         => 1.0,
                 'price', 'sum', 'state' => 1.8,
                 default       => 0.0,
@@ -470,15 +499,29 @@ final class Html2Docx {
         // Фотография товара по умолчанию: справа, описание обтекает её слева
         $spec = ['max_w' => self::px('KP_PHOTO_WIDTH', 225), 'max_h' => 0,
                  'wrap' => 'square', 'align' => 'right', 'behind' => 0, 'offset_v' => 0];
+        // Несколько фото одного товара — обычные `<img>` без класса внутри
+        // `.gallery`, которая целиком уходит в ОДИН абзац (`block()` кладёт
+        // инлайн-детей в один `<w:p>`). Без разного вертикального смещения все
+        // они анкерятся в одну и ту же точку и в Word видно только последнюю —
+        // фотографии буквально ложатся друг на друга (issue #60). Каждое
+        // следующее фото сдвигается вниз на высоту, зарезервированную под
+        // предыдущие (потолок из CSS `.card .gallery img { max-height: 240px }`).
+        if (!$classes || $classes === ['']) {
+            $offset = $this->photoIndex($img) * 240 * self::EMU_PER_PX;
+            if ($offset > 0) $spec['offset_v'] = $offset;
+        }
         foreach ($classes as $class) {
             if ($class === 'logo') {
                 // Знак слева, реквизиты поставщика — справа от него
+                // Знак стоит в своей ячейке шапки (модуль 046) — в строке
                 $spec = ['max_w' => self::px('KP_LOGO_WIDTH', 160), 'max_h' => 0,
-                         'wrap' => 'square', 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
+                         'wrap' => null, 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
             }
             if ($class === 'qr') {
+                // QR — слева от ссылки на сайт, тем же порядком, что в PDF (issue #60)
+                // В своей ячейке слева от ссылки (модуль 046) — в строке
                 $spec = ['max_w' => 110, 'max_h' => 110,
-                         'wrap' => 'square', 'align' => 'right', 'behind' => 0, 'offset_v' => 0];
+                         'wrap' => null, 'align' => 'left', 'behind' => 0, 'offset_v' => 0];
             }
             if ($class === 'sign-img') {
                 // Подпись ложится ПОВЕРХ строки подписи, не раздвигая текст,
@@ -491,6 +534,18 @@ final class Html2Docx {
             }
         }
         return $spec;
+    }
+
+    /** Который это по счёту «обычное» фото товара среди своих соседей — 0, 1, 2… */
+    private function photoIndex(DOMElement $img): int {
+        $index = 0;
+        for ($node = $img->previousSibling; $node !== null; $node = $node->previousSibling) {
+            if ($node instanceof DOMElement && strtolower($node->tagName) === 'img'
+                && trim((string)$node->getAttribute('class')) === '') {
+                $index++;
+            }
+        }
+        return $index;
     }
 
     /** Размер из настроек в пикселях, с разумными границами. */

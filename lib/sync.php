@@ -322,6 +322,135 @@ class MsSync {
         return ['ok' => true, 'created' => $created, 'updated' => $updated, 'kept' => $kept, 'url' => $url];
     }
 
+    // ---------------------------------------------------------- webhook events
+
+    /** Attempts one event gets before it is given up on, and how long it is kept. */
+    private const HOOK_RETRIES = 5;
+    private const HOOK_KEEP_DAYS = 3;
+
+    /**
+     * One webhook event — the work the receiver used to do inline.
+     *
+     * It lives here so the cron can repeat exactly the same work for an event
+     * that failed: MoySklad delivers a webhook once, and an order lost to a rate
+     * limit was synced only if its company already had documents (that is all
+     * `cron/sync_moysklad.php` looks at). The first order of a new company was
+     * lost until someone opened the card by hand.
+     *
+     * Returns the line written into `webhook_log.result`; throws when the event
+     * is worth another attempt.
+     */
+    public static function handleWebhookEvent(array $event): string {
+        $href = $event['meta']['href'] ?? '';
+        $entityType = (string)($event['meta']['type'] ?? '');
+        $msId = $href ? basename(parse_url($href, PHP_URL_PATH) ?: '') : '';
+
+        if (!$msId) return 'no id';
+
+        if ($entityType === 'customerorder') {
+            $localId = self::upsertOrder($msId);
+            if (!$localId) return 'order not linked to any company';
+            self::syncInvoicesForOrder($localId);
+            return "order #$localId synced";
+        }
+
+        if ($entityType === 'invoiceout') {
+            self::init();
+            $inv = MoySklad::getInvoice($msId);
+            if (!$inv) return 'invoice not found';
+            $localOrder = !empty($inv['order_id'])
+                ? Db::one("SELECT id, counterparty_id FROM orders WHERE moysklad_id=?", [$inv['order_id']])
+                : null;
+            $cpId = $localOrder['counterparty_id'] ?? self::localCounterparty($inv['agent_id'] ?? '');
+            if ($localOrder && empty($localOrder['counterparty_id'])) {
+                // Order arrived before the company link — refresh it
+                self::upsertOrder($inv['order_id']);
+            }
+            $id = self::upsertInvoice($inv, $localOrder ? (int)$localOrder['id'] : null, $cpId ? (int)$cpId : null);
+            return "invoice #$id synced";
+        }
+
+        return "unsupported entity: $entityType";
+    }
+
+    /**
+     * Run one event and write down what came of it. `$logId` — the row to update
+     * when this is a repeat rather than a first delivery.
+     */
+    public static function runWebhookEvent(array $event, string $raw, ?int $logId = null): string {
+        $attempt = $logId === null
+            ? 1
+            : (int)(Db::val("SELECT attempts FROM webhook_log WHERE id=?", [$logId]) ?: 0) + 1;
+
+        try {
+            $result = self::handleWebhookEvent($event);
+            $status = 'ok';
+        } catch (Throwable $e) {
+            $result = 'error: ' . $e->getMessage();
+            $status = 'error';
+            $ctx = [
+                'entity'      => $event['meta']['type'] ?? '',
+                'action'      => $event['action'] ?? '',
+                'moysklad_id' => $event['meta']['href'] ?? '',
+                'attempt'     => $attempt,
+            ];
+            // The first failure and the last one are errors — the admin hears
+            // about them. The repeats in between are warnings: one event must
+            // not ring the same bell five times.
+            if ($attempt === 1 || $attempt >= self::HOOK_RETRIES) {
+                Logger::exception('moysklad', $e, $ctx);
+            } else {
+                Logger::warning('moysklad', "Вебхук МойСклад не прошёл, попытка $attempt: " . $e->getMessage(), $ctx);
+            }
+        }
+
+        $fields = ['result' => $result, 'status' => $status, 'attempts' => $attempt];
+        if ($logId !== null) {
+            Db::update('webhook_log', $fields, 'id=?', [$logId]);
+            return $result;
+        }
+
+        $href = $event['meta']['href'] ?? '';
+        Db::insert('webhook_log', $fields + [
+            'entity_type' => $event['meta']['type'] ?? '',
+            'action'      => $event['action'] ?? '',
+            'moysklad_id' => $href ? basename(parse_url($href, PHP_URL_PATH) ?: '') : '',
+            'payload'     => mb_substr($raw, 0, 4000),
+            'event_json'  => json_encode($event, JSON_UNESCAPED_UNICODE),
+        ]);
+        return $result;
+    }
+
+    /**
+     * Events that failed, run again — the cron calls this every five minutes.
+     * A rate limit passes in seconds, so the second attempt usually succeeds.
+     */
+    public static function retryFailedWebhooks(int $limit = 50): array {
+        $rows = Db::all(
+            "SELECT id, event_json FROM webhook_log
+             WHERE status='error' AND attempts < ? AND event_json IS NOT NULL
+               AND created_at > datetime('now', ?)
+             ORDER BY id LIMIT ?",
+            [self::HOOK_RETRIES, '-' . self::HOOK_KEEP_DAYS . ' days', $limit]
+        );
+
+        $done = 0; $failed = 0;
+        foreach ($rows as $row) {
+            $event = json_decode((string)$row['event_json'], true);
+            if (!is_array($event)) {
+                Db::update('webhook_log', ['status' => 'skipped', 'result' => 'event json broken'], 'id=?', [$row['id']]);
+                continue;
+            }
+            $result = self::runWebhookEvent($event, '', (int)$row['id']);
+            str_starts_with($result, 'error:') ? $failed++ : $done++;
+        }
+        if ($done || $failed) {
+            Logger::info('moysklad', "Повторная обработка вебхуков: удалось $done, снова не вышло $failed",
+                         ['done' => $done, 'failed' => $failed]);
+        }
+        return ['done' => $done, 'failed' => $failed];
+    }
+
     // Remove this installation's webhooks
     public static function removeWebhooks(): int {
         self::init();

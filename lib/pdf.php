@@ -9,6 +9,7 @@ require_once __DIR__ . '/requisites.php';
 require_once __DIR__ . '/signatures.php';
 require_once __DIR__ . '/terms.php';
 require_once __DIR__ . '/kp_terms.php';
+require_once __DIR__ . '/delivery_share.php';
 
 class PdfGenerator {
 
@@ -115,6 +116,13 @@ class PdfGenerator {
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
         if (!$proposal) throw new RuntimeException("Proposal $proposalId not found");
 
+        // КП, поправленное руками в предпросмотре (модуль 045): PDF и Word
+        // собираются из него, пока менеджер не вернёт автоматическую сборку
+        if (trim((string)($proposal['html_override'] ?? '')) !== '') {
+            require_once __DIR__ . '/kp_editor.php';
+            return KpEditor::internalize((string)$proposal['html_override']);
+        }
+
         // Свёрнутые позиции в документ не печатаются: ни строкой таблицы, ни
         // карточкой, ни рублём в «Итого». Названы они отдельным блоком —
         // `KpContent::unmatchedRows()` забирает их себе (модуль 020).
@@ -127,10 +135,12 @@ class PdfGenerator {
         // подписывали; сегодняшние изменения в МойСклад его не переписывают.
         $requisites = Requisites::forProposal($proposalId);
 
-        // Таблица соответствия: запрос клиента слева, наш ответ справа.
-        // Появляется, когда запрос пришёл таблицей, — решение принято по письму.
-        $showMatchTable = KpContent::showMatchTable($proposal);
-        $matchTable = $showMatchTable ? KpContent::matchTableRows($proposalId) : [];
+        // Таблица соответствия запросу в документе больше не печатается — её
+        // заменило курсивное (теперь жирное) название под нашей позицией
+        // (issue #60). Настройка и данные для неё остаются в базе нетронутыми,
+        // печать просто больше её не запрашивает.
+        $showMatchTable = false;
+        $matchTable = [];
         $matchTableNote = (string)($proposal['match_table_note'] ?? '');
 
         // Позиции запроса, на которые каталог не ответил (module 018). Печатаются
@@ -215,15 +225,63 @@ class PdfGenerator {
         $hasAppendix = false;
         foreach ($items as $row) { if (!empty($row['has_card'])) { $hasAppendix = true; break; } }
 
-        // Доставка отдельной строкой: она не входит в цену товара
+        // Доставка — отдельной строкой (не входит в цену товара) либо
+        // распределена по позициям (issue #60). Включённая в стоимость, она
+        // входит в ЦЕНУ за единицу, а не только в сумму строки: «цена × кол-во»
+        // в таблице обязана сходиться с «Суммой» (модуль 045). Те же доли
+        // получают текст КП в письме и счёт — `DeliveryShare`.
         $delivery = null;
         if ((int)($proposal['delivery_on'] ?? 0) === 1) {
             $delivery = [
                 'name'  => trim((string)($proposal['delivery_name'] ?? '')) ?: 'Доставка',
                 'price' => (float)($proposal['delivery_price'] ?? 0),
             ];
-            $total += $delivery['price'];
+            if (DeliveryShare::included($proposal) && $items) {
+                $items = array_values($items);
+                $shares = DeliveryShare::perUnit(array_map(
+                    fn($r) => ['unit' => (float)$r['effective_price'], 'qty' => (float)$r['quantity']], $items),
+                    $delivery['price']);
+                if (array_sum($shares) > 0) {
+                    foreach ($items as $k => &$row) {
+                        if ($shares[$k] <= 0) continue;
+                        $keep = 1 - Terms::totalDiscount($row) / 100;
+                        $row['effective_price'] = round($row['effective_price'] + $shares[$k], 2);
+                        $row['price'] = $keep > 0 && $keep < 1
+                            ? round($row['effective_price'] / $keep, 2) : $row['effective_price'];
+                        if ($row['effective_price_max'] > 0) {
+                            $row['effective_price_max'] = round($row['effective_price_max'] + $shares[$k], 2);
+                            $row['price_max'] = $keep > 0 && $keep < 1
+                                ? round($row['effective_price_max'] / $keep, 2) : $row['effective_price_max'];
+                        }
+                        $row['sum'] = $row['effective_price'] * (float)$row['quantity'];
+                        $row['sum_max'] = $row['effective_price_max'] * (float)$row['quantity'];
+                    }
+                    unset($row);
+                    // Учтена в позициях — отдельной строкой таблицы не печатается
+                    $delivery = null;
+                }
+            }
         }
+        // Вилка печатается, только когда модификации стоят по-разному: max ==
+        // price — это один товар, «от 600 до 600» (issue #67)
+        foreach ($items as &$row) {
+            $row['price_top'] = KpContent::hasRange((float)$row['price'], (float)($row['price_max'] ?? 0))
+                ? (float)$row['price_max'] : 0.0;
+            if (!KpContent::hasRange((float)$row['effective_price'], (float)$row['effective_price_max'])) {
+                $row['effective_price_max'] = 0.0;
+            }
+        }
+        unset($row);
+        $discountColumn = self::discountColumn($items);
+
+        $total = 0.0;
+        foreach ($items as $row) $total += (float)$row['sum'];
+        if ($delivery) $total += $delivery['price'];
+
+        // «Не наша номенклатура» (issue #60): строка клиента печатается в
+        // таблице серым жирным, с прочерками — видно, что её прочитали
+        $outOfScope = KpContent::outOfScopeRows($proposal);
+        $tableRows = KpContent::interleave($items, $outOfScope);
 
         // The rate is МойСклад's answer, not a house default: the организация
         // says whether we charge VAT at all, and the catalog says at what rate.
@@ -236,10 +294,7 @@ class PdfGenerator {
         // Default intro
         // Короткое имя, а не «ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ …»: так
         // названа компания в шапке документа и в образце КП (модуль 034)
-        $introText = $proposal['intro_text'] ?: sprintf(
-            'По Вашему запросу %s имеет возможность поставить следующее вещевое имущество:',
-            trim((string)($legal['short_name'] ?? '')) ?: (string)$legal['full_name']
-        );
+        $introText = $proposal['intro_text'] ?: self::defaultIntro($requisites, $legal);
 
         // Условия поставки — один правимый блок (модуль 026). КП, собранное до
         // него, печатает те же четыре абзаца, что и печатало: документ,
@@ -295,6 +350,8 @@ class PdfGenerator {
             'preTableText' => $proposal['pre_table_text'] ?? '',
             'postTableText' => $proposal['post_table_text'] ?? '',
             'items' => $items,
+            'tableRows' => $tableRows,
+            'discountColumn' => $discountColumn,
             'total' => $total,
             // Подпись колонки цены и строки под таблицей — одним куском оттуда,
             // где налог посчитан: документ не складывает его во второй раз
@@ -307,6 +364,7 @@ class PdfGenerator {
             'matchTable' => $matchTable,
             'matchTableNote' => $matchTableNote,
             'unmatched' => $unmatched,
+            'outOfScope' => $outOfScope,
             'unmatchedNote' => (string)Settings::get('KP_UNMATCHED_NOTE',
                 'По этим позициям запроса мы уточняем наличие, сроки и цену и вернёмся с ответом отдельно.'),
             'showSiteLink' => $showSiteLink,
@@ -332,6 +390,34 @@ class PdfGenerator {
         ob_start();
         include ROOT . '/templates/kp.html';
         return (string)ob_get_clean();
+    }
+
+    /**
+     * Столбец «Со скидкой» (issue #67): печатается, только если скидка есть;
+     * одна на все строки — процент в заголовке, разные — в каждой ячейке.
+     * @return array{show:bool,uniform:string}
+     */
+    public static function discountColumn(array $items): array {
+        $found = [];
+        foreach ($items as $row) {
+            $d = (string)($row['discount_shown'] ?? '');
+            if ($d !== '') $found[$d] = true;
+        }
+        return ['show' => (bool)$found, 'uniform' => count($found) === 1 ? (string)array_key_first($found) : ''];
+    }
+
+    /**
+     * «{Продавец} по запросу {покупатель} имеет возможность…» (issue #67):
+     * продавец — из снимка МойСклад, покупатель — юрлицо клиента из него же.
+     */
+    public static function defaultIntro(array $requisites, array $legal): string {
+        $seller = $requisites['seller'] ?? [];
+        $sellerName = trim((string)(($seller['short_name'] ?? '') ?: ($legal['short_name'] ?? '')))
+            ?: trim((string)(($seller['full_name'] ?? '') ?: ($legal['full_name'] ?? '')));
+        $buyer = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? '')));
+        return $buyer !== ''
+            ? sprintf('%s по запросу %s имеет возможность поставить следующее вещевое имущество:', $sellerName, $buyer)
+            : sprintf('%s по Вашему запросу имеет возможность поставить следующее вещевое имущество:', $sellerName);
     }
 
     /**

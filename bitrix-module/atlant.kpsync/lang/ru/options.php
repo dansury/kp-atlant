@@ -20,3 +20,7 @@ $MESS['ATLANT_KPSYNC_OPT_SITE_URL']       = 'Адрес сайта для ссы
 $MESS['ATLANT_KPSYNC_HINT_SITE_URL']      = 'Например https://atlant-armour.ru — без слеша в конце. Пусто — берётся из запроса';
 $MESS['ATLANT_KPSYNC_OPT_EXPORT_LIMIT']   = 'Товаров в одной странице выгрузки';
 $MESS['ATLANT_KPSYNC_HINT_EXPORT_LIMIT']  = 'По умолчанию 500. Меньше — если хостинг не успевает отдать страницу';
+$MESS['ATLANT_KPSYNC_EXPORT']             = 'Выгрузка каталога';
+$MESS['ATLANT_KPSYNC_EXPORT_BTN']         = 'Экспорт товаров в Excel';
+$MESS['ATLANT_KPSYNC_EXPORT_HINT']        = 'Файл .xlsx: внешний код, название, модификации с характеристиками, описание, ссылка на сайте. Те же инфоблоки и «только активные», что ниже';
+$MESS['ATLANT_KPSYNC_EXPORT_FAIL']        = 'Выгрузка не собралась:';

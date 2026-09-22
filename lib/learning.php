@@ -27,6 +27,10 @@ final class Learning {
         'reply'    => 'Ответ на письмо',
         'answer'   => 'Проверка подбора',
         'kp'       => 'Текст КП',
+        // Каждое отправленное письмо — пара «письмо клиента → наш ответ»
+        // (модуль 041). Это не исправление ошибки, а образец того, как мы
+        // отвечаем на самом деле: из этого и вырастают промпты.
+        'sent'     => 'Отправленное письмо',
         'prompt'   => 'Промпт',
         'knowledge'=> 'База знаний',
         'tov'      => 'Tone of Voice',
@@ -72,6 +76,92 @@ final class Learning {
         ]);
         Logger::info('learning', 'Правка сохранена: ' . self::label($kind), ['id' => $id]);
         return $id;
+    }
+
+    /**
+     * Отправленное письмо — в пару к письму клиента (модуль 041).
+     *
+     * Отличается от `record()` тем, что пишется ВСЕГДА: письмо, отправленное
+     * без правки черновика, — тоже образец, а «правки не было» здесь значит
+     * «модель написала верно», и это самое ценное, что можно подмешать в промпт.
+     */
+    public static function recordSent(array $data): int {
+        $sent = trim((string)($data['correct_answer'] ?? ''));
+        if ($sent === '') return 0;
+        $question = self::clip((string)($data['question'] ?? ''), 8000);
+
+        $twin = Db::val("SELECT id FROM learning_samples WHERE kind='sent' AND question=? AND correct_answer=? LIMIT 1",
+                        [$question, self::clip($sent, 8000)]);
+        if ($twin) return 0;
+
+        $id = (int)Db::insert('learning_samples', [
+            'kind'           => 'sent',
+            'subject'        => self::clip((string)($data['subject'] ?? ''), 300),
+            'question'       => $question,
+            'auto_answer'    => self::clip((string)($data['auto_answer'] ?? ''), 8000),
+            'correct_answer' => self::clip($sent, 8000),
+            'comment'        => '',
+            'context_json'   => !empty($data['context']) ? json_encode($data['context'], JSON_UNESCAPED_UNICODE) : null,
+            'manager_id'     => !empty($data['manager_id']) ? (int)$data['manager_id'] : null,
+        ]);
+        return $id;
+    }
+
+    /**
+     * ==== Переосмыслить правки моделью (модуль 041) ====
+     *
+     * Правок набирается сотня, и читать их подряд некому. Модель — можно
+     * выбрать поумнее прямо на дашборде промптов — читает их и пишет короткий
+     * свод правил: что мы на самом деле отвечаем и чем это отличается от того,
+     * что предлагала она. Свод НЕ сохраняется сам: его показывают человеку, и
+     * он одной кнопкой подмешивает его в промпт.
+     *
+     * @return array{text:string,samples:int,model:string}
+     */
+    public static function rethink(string $kind, int $limit = 40, string $modelSpec = ''): array {
+        if (!isset(self::KINDS[$kind])) throw new InvalidArgumentException('Неизвестный вид правок');
+        $rows = Db::all("SELECT subject, question, auto_answer, correct_answer, comment
+                         FROM learning_samples WHERE kind=? ORDER BY id DESC LIMIT ?", [$kind, max(1, $limit)]);
+        if (!$rows) throw new RuntimeException('По этому виду правок пока нечего читать');
+
+        require_once __DIR__ . '/llm.php';
+        if ($modelSpec !== '') LLM::useModelSpec($modelSpec);
+
+        $user = '';
+        foreach ($rows as $i => $r) {
+            $user .= "
+===== ПРИМЕР " . ($i + 1) . " =====
+";
+            if (trim((string)$r['subject']) !== '')  $user .= "Тема: {$r['subject']}
+";
+            if (trim((string)$r['question']) !== '') $user .= "ПИСЬМО КЛИЕНТА:
+" . self::clip((string)$r['question'], 1500) . "
+";
+            if (trim((string)$r['auto_answer']) !== '') $user .= "ЧТО ПРЕДЛОЖИЛА МОДЕЛЬ:
+" . self::clip((string)$r['auto_answer'], 1500) . "
+";
+            $user .= "ЧТО УШЛО НА САМОМ ДЕЛЕ:
+" . self::clip((string)$r['correct_answer'], 1500) . "
+";
+            if (trim((string)$r['comment']) !== '') $user .= "КОММЕНТАРИЙ МЕНЕДЖЕРА: {$r['comment']}
+";
+        }
+
+        $system = <<<'TXT'
+Ты разбираешь, чем реальные ответы менеджеров отличаются от того, что предлагала нейросеть.
+На входе — примеры: письмо клиента, предложенный ответ и ответ, который ушёл на самом деле.
+
+Верни КОРОТКИЙ свод правил на русском, который можно дописать в системный промпт:
+- только то, что повторяется в нескольких примерах, а не разовая особенность одного письма;
+- формулируй правилами в повелительном наклонении: «Пиши…», «Не обещай…», «Всегда указывай…»;
+- не больше 12 пунктов, каждый — одна строка, начинается с «- »;
+- никаких предисловий, объяснений и выводов: только список правил;
+- имён клиентов, адресов, номеров счетов и цен в правилах быть не должно.
+TXT;
+        $text = trim(LLM::chatText($system, $user, 0.2));
+        $used = LLM::currentModel();
+        return ['text' => $text, 'samples' => count($rows),
+                'model' => $used['provider'] . ':' . $used['model']];
     }
 
     /** Список для панели. `$filter`: kind, only_new, page, per_page. */
@@ -190,7 +280,7 @@ final class Learning {
                ON CONFLICT(key) DO UPDATE SET value=excluded.value",
               [$now . ' · ' . $archive['name'] . ' · ' . count($rows)]);
 
-        Logger::info('learning', 'Правки выгружены в репозиторий: ' . $name,
+        Logger::info('learning', 'Правки выгружены в репозиторий: ' . $archive['name'],
                      ['count' => count($rows), 'repo' => $target['repo'], 'manager_id' => $managerId]);
 
         return [
@@ -319,7 +409,6 @@ final class Learning {
         $resp = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err  = curl_error($ch);
-        curl_close($ch);
 
         if ($resp === false) throw new RuntimeException("GitHub недоступен: $err");
         if ($code === 404 && $soft) return null;

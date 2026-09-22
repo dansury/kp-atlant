@@ -28,6 +28,10 @@
     --shadow-lg: 0 12px 28px rgba(16,24,40,.14);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* `hidden` — это скрыто, чем бы элемент ни был. Без этого правила любой
+   `display` в классе побеждает атрибут: поле «в КП над нашим названием»
+   висело открытым без галочки «аналог», потому что `.analog` — flex. */
+[hidden] { display: none !important; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
        background: var(--bg); color: var(--text); line-height: 1.5; font-size: 14px;
        -webkit-font-smoothing: antialiased; }
@@ -58,6 +62,11 @@ h2 { font-size: 20px; }
 .header__user { font-size: 13px; white-space: nowrap; color: var(--text-muted); }
 .header__user a { color: var(--text-muted); margin-left: 10px; cursor: pointer; }
 .header__user a:hover { color: var(--accent-ink); }
+.header__support { margin-right: 6px; }
+/* Обращения на доске «Письма» (модуль 045) */
+.board-support { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 4px; margin-bottom: 10px; }
+.board-support__row { color: var(--text); text-decoration: none; font-size: 13px; }
+.board-support__row:hover { text-decoration: underline; }
 
 /* Layout */
 /* Wide enough for five board columns and a letter card with its positions
@@ -163,16 +172,14 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 .toast-container { position: fixed; top: 60px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
 .toast { padding: 11px 16px; border-radius: var(--radius); color: #fff; font-size: 13px;
          animation: slideIn .3s; max-width: 350px; box-shadow: var(--shadow-lg);
-         cursor: pointer; pointer-events: auto; }
+         pointer-events: auto; }
 .toast--success { background: var(--success); }
 .toast--error { background: var(--danger); }
 .toast--info { background: #14161a; }
-/* Ошибку читают и копируют, а не провожают взглядом (модуль 029): текст
-   переносится целиком, подсказка про копирование стоит под ним */
+/* Ошибку читают, не провожают взглядом (модуль 029): текст переносится целиком,
+   а уходит уведомление, когда курсор с него убрали (issue #60) */
 .toast__text { display: block; white-space: pre-wrap; word-break: break-word; }
-.toast__hint { display: block; margin-top: 4px; font-size: 11px; opacity: .75; }
 .toast:hover { filter: brightness(1.08); }
-.toast--copied { outline: 2px solid #fff; outline-offset: -2px; }
 .toast--error { max-width: 460px; max-height: 50vh; overflow: auto; }
 @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
 
@@ -314,6 +321,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .setting__label label { font-weight: 600; display: block; }
 .setting__label .muted { margin-top: 2px; }
 .setting__actions { min-width: 90px; text-align: right; }
+/* «Где взять токен» — ссылка под пояснением поля (issue #60) */
+.setting__link { margin-top: 3px; font-size: 0.85rem; }
+/* «⬇Word» / «⬇PDF» — ссылки, а не кнопки: кнопка под подбором одна, и это
+   сборка документа (issue #60) */
+.kp-file { cursor: pointer; color: var(--accent, #c00); text-decoration: none; font-size: 0.9rem; align-self: center; }
+.kp-file:hover { text-decoration: underline; }
+/* Отложенная отправка: подсказки и очередь под полем письма (issue #60) */
+.composer__schedule { margin-top: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.sched-item { display: inline-block; margin-right: 10px; }
+.sched-item a { cursor: pointer; color: #c00; margin-left: 4px; }
+.setting__link a { color: var(--accent, #c00); text-decoration: none; }
+.setting__link a:hover { text-decoration: underline; }
 
 /* Counter next to a nav item */
 .pill { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--surface-3);
@@ -371,6 +390,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .kp-preview { width: 100%; height: 60vh; min-height: 200px; border: 1px solid var(--border);
               border-radius: var(--radius); margin-top: 10px; resize: vertical; overflow: auto; display: block; }
 .kp-open { resize: vertical; overflow: auto; min-height: 160px; }
+/* Страница A4, которую можно править (модуль 045) */
+.kp-modes { display: flex; gap: 6px; margin: 8px 0; }
+.kp-page { width: 100%; height: 60vh; min-height: 200px; border: 1px solid var(--border); background: #e9e9e9; }
+.kp-page-note { gap: 8px; align-items: center; margin-bottom: 6px; font-size: 12px; }
 .kp-size { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
 .kp-size input[type="range"] { width: 120px; }
 
@@ -403,6 +426,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .match-extra__money input[type="number"] { width: 62px; }
 .match-extra__comment { width: 100%; font-size: 13px; }
 .match-row__tools { display: flex; gap: 4px; align-items: center; }
+.match-row__tools--bottom { flex: 1 1 100%; justify-content: flex-start; }
+.match-row__src { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.match-row__src .muted { flex: 0 1 auto; min-width: 0; }
+.match-row__nameline { position: relative; display: flex; gap: 4px; align-items: center; }
+.match-row__nameline input { flex: 1 1 auto; min-width: 0; }
 .match-row--moved { background: var(--surface-3); transition: background .4s; }
 
 /* Строка подбора живёт в колонке шириной 420px — и в ней же на телефоне.
@@ -414,10 +442,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
              padding-bottom: 10px; margin-bottom: 10px;
              border-bottom: 1px solid var(--border); }
 .match-row input[type="text"], .match-row input[type="number"] { width: 100%; }
-.match-row > input[data-field="quantity"] { flex: 0 1 72px; }
+.match-row > .qty-cell                    { flex: 0 1 72px; min-width: 0; display: flex; align-items: center; gap: 3px; }
 .match-row > input[data-field="unit"]     { flex: 0 1 62px; }
 .match-row > .price-cell                  { flex: 0 1 96px; min-width: 0; }
 .match-row > .price-opts-slot             { flex: 0 1 auto; min-width: 0; }
+/* Товара меньше, чем просит клиент — красный «!» рядом с количеством (issue #60) */
+.qty-warn { color: var(--danger, #d33); font-weight: 700; cursor: help; flex: 0 0 auto; }
+/* «Ждать»/«за ожидание»/«предоплата» — видны только когда включено «под заказ» */
+.match-extra__wait { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 /* Вилка цен: в поле низ, под ним верх — товар без своей цены стоит по-разному
    в модификациях, и строка не имеет права молчать об этом (модуль 036) */
 .price-range { display: block; font-size: 11px; line-height: 1.3; margin-top: 2px; white-space: nowrap; }
@@ -462,6 +494,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
                   border-bottom: 1px solid var(--border); }
 .suggest__item { padding: 6px 10px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
 .suggest__item--variant { padding-left: 18px; }
+/* Товар целиком — первой строкой семьи: выбирают и его, с вилкой цен */
+.suggest__item--group { font-weight: 600; }
+/* Фотографии позиции в таблице подбора (модуль 040) */
+.match-extra__photos { margin: 6px 0; }
+.match-photos { margin-top: 6px; }
+/* Разница версий промпта (модуль 041): что ушло и сколько появилось */
+.diff { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflow: auto; }
+.diff--gone { background: #fdeaea; color: var(--danger); text-decoration: line-through; }
+.diff--new { color: var(--text-muted); font-style: italic; }
 .suggest__item:last-child { border-bottom: none; }
 .suggest__item:hover { background: var(--surface-2); }
 
@@ -718,29 +759,45 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .conv:last-child { border-bottom: 0; }
 .conv--open { background: var(--surface); box-shadow: inset 3px 0 0 var(--primary); }
 
-.conv__head { display: flex; align-items: flex-start; gap: 10px;
-              padding: 10px 16px; cursor: pointer; }
-.conv__head:hover { background: var(--surface-2); }
-.conv__dir { flex: 0 0 auto; font-size: 14px; line-height: 1.4; }
+.conv__head { display: flex; align-items: center; gap: 12px;
+              padding: 8px 16px; cursor: pointer; position: relative; }
+.conv__head:hover { background: var(--surface-2); box-shadow: inset 0 -1px 0 var(--border-strong); }
+/* Строка как в Gmail (модуль 045): отправитель · тема — начало письма · дата */
+.conv__who { flex: 0 0 190px; min-width: 0; display: flex; align-items: center; gap: 6px;
+             font-size: 13px; white-space: nowrap; }
+.conv__name { overflow: hidden; text-overflow: ellipsis; }
+.conv__dir { flex: 0 0 auto; font-size: 13px; line-height: 1.4; }
 .conv__main { flex: 1 1 auto; min-width: 0; }
 .conv__date { flex: 0 0 auto; font-size: 12px; white-space: nowrap; }
 
-.conv__subject { font-size: 13px; display: flex; align-items: center; gap: 6px;
-                 flex-wrap: wrap; overflow-wrap: anywhere; }
-.conv--wait .conv__subject { font-weight: 700; }
+.conv__line { display: flex; gap: 4px; min-width: 0; font-size: 13px; white-space: nowrap; }
+.conv__subject { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.conv__preview { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
+.conv--wait .conv__subject, .conv--unread .conv__subject, .conv--unread .conv__name { font-weight: 700; }
 .conv--done .conv__subject { color: var(--text-muted); font-weight: 400; }
 .conv__count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 2px;
                background: var(--border); color: var(--text-muted); font-size: 11px;
                text-align: center; font-weight: 600; }
 .conv__meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
               margin-top: 3px; font-size: 12px; color: var(--text-muted); }
-.conv__preview { margin-top: 2px; font-size: 12px; color: var(--text-muted);
-                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv--done .conv__preview, .conv--done .conv__meta { opacity: .8; }
 .conv--unread { background: #fffaf8; }
+/* Действия всплывают на месте даты при наведении */
+.conv__acts { display: none; gap: 2px; flex: 0 0 auto; }
+.conv__head:hover .conv__acts { display: flex; }
+.conv__head:hover .conv__date { display: none; }
+.conv__act { border: 0; background: none; cursor: pointer; font-size: 15px; padding: 2px 6px;
+             border-radius: var(--radius-sm); line-height: 1; }
+.conv__act:hover { background: var(--surface-3); }
+@media (max-width: 640px) {
+    .conv__head { flex-wrap: wrap; gap: 4px 10px; }
+    .conv__who { flex: 1 1 auto; }
+    .conv__main { flex: 1 1 100%; order: 3; }
+    /* На телефоне наведения нет — действия видны всегда */
+    .conv__acts { display: flex; order: 2; }
+    .conv__head:hover .conv__date { display: inline; }
+}
 
-.conv__tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-               padding: 0 16px 10px; font-size: 12px; }
 /* Лента и поле ответа: под шапкой, во всю ширину строки, без своей прокрутки */
 .conv__open { padding: 4px 16px 16px; border-top: 1px solid var(--border); }
 .conv__open[hidden] { display: none; }
@@ -749,7 +806,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    The catalog positions of the request and the reply box live under the
    conversation, in that order — read, price, answer, without a dialog and
    without leaving the company. */
-.card--items { margin: 10px 0 0; background: var(--surface-2); border-color: var(--border); }
+.card--items { margin: 10px 0 12px; background: var(--surface-2); border-color: var(--border); }
+/* Свёрнутый подбор (модуль 045): видна только шапка с кнопкой «Развернуть» */
+.card--folded > :not(.card__title) { display: none !important; }
+.card--items > .card__title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.card--folded > .card__title { margin-bottom: 0; }
+.card__fold { margin-left: auto; }
 .card--items .match-row { border-bottom-color: var(--border-strong); }
 
 .composer { margin-top: 10px; border: 1px solid var(--border-strong); border-radius: var(--radius);
@@ -757,6 +819,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .composer__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .composer__title { font-weight: 650; font-size: 13px; }
 .composer__head select { width: auto; margin-left: auto; font-size: 12px; padding: 5px 8px; }
+
+/* Подпись письма (модуль 039): видно, чем письмо закончится, и это снимается
+   галочкой. Снятая — приглушена, но текст остаётся на экране. */
+.composer__sign { display: flex; align-items: center; gap: 6px; font-size: 12px; width: 100%; }
+.composer__sign [data-cmp-sign-text] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer__sign--off { opacity: .5; text-decoration: line-through; }
+.sig-preview { white-space: pre-wrap; font: inherit; background: var(--surface-2);
+               border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; }
 .composer input[type="text"], .composer input[type="email"] { margin-bottom: 6px; }
 .composer textarea { min-height: 104px; }
 .composer__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
@@ -816,6 +886,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
                      padding: 9px 8px; border-bottom: none; border-top: 2px solid transparent; }
     .header__nav a.active { border-top-color: var(--primary); }
     .header__user { margin-left: auto; }
+    .header__support-text { display: none; }
     .toast-container { bottom: 68px; top: auto; }
 
     /* A table never forces the page to scroll — it scrolls inside its own box */
@@ -1051,3 +1122,77 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
                 width: 26px; height: 26px; border: none; background: none; cursor: pointer;
                 color: var(--text-muted); font-size: 18px; line-height: 1; padding: 0; }
 .searchbox__x:hover { color: var(--accent-ink); }
+
+/* ==== Мастер настройки, обратная связь, проверочный запрос (модуль 038) ==== */
+
+/* Ссылка «запрос не из почты» стоит НАД карточками «Входящих»: запрос из
+   мессенджера приходит туда же, куда почта, и искать для него отдельный экран
+   в меню менеджеру незачем */
+.bcol__new { display: block; margin: 0 0 6px; padding: 6px; border-radius: var(--radius);
+             border: 1px dashed var(--border-strong); color: var(--text-muted);
+             font-size: 12px; text-align: center; cursor: pointer; }
+.bcol__new:hover { background: var(--surface-3); color: var(--accent-ink); border-color: var(--primary); }
+
+/* Полоска пройденного: одна цифра «6 из 8» не показывает, много ли осталось */
+.setup-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin: 10px 0 6px; }
+.setup-bar > span { display: block; height: 100%; background: var(--primary); transition: width .3s; }
+
+/* Пройденный шаг гасится: на экране должно быть видно то, что ещё не сделано */
+.setup-step__body { margin-top: 10px; }
+.setup-step--ok .card__title { color: var(--text-muted); }
+.setup-step .setting { grid-template-columns: minmax(0, 1fr) 320px; }
+.setup-step .setting__label { min-width: 0; }
+
+/* Ответ проверки связи — под кнопкой, а не тостом: его читают и сравнивают */
+.test-out:not(:empty) { margin-top: 10px; font-size: 13px; }
+
+@media (max-width: 720px) {
+    .setup-step .setting { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ==== Блоки письма: свой оттенок, сворачиваются, на телефоне по порядку (модуль 046, issue #67) ====
+   Оттенок — полоса слева и чуть тонированный заголовок: блок узнаётся по
+   цвету, не читая названия. Цвета спокойные, текст на них остаётся --text. */
+:root {
+    --tint-thread: #3b82f6; --tint-items: #16a34a; --tint-composer: #d97706;
+    --tint-kp: #7c3aed; --tint-info: #0891b2; --tint-events: #64748b; --tint-ms: #db2777;
+}
+[data-block="thread"]   { --tint: var(--tint-thread); }
+[data-block="items"]    { --tint: var(--tint-items); }
+[data-block="composer"] { --tint: var(--tint-composer); }
+[data-block="kp"]       { --tint: var(--tint-kp); }
+[data-block="info"]     { --tint: var(--tint-info); }
+[data-block="events"]   { --tint: var(--tint-events); }
+[data-block="ms"]       { --tint: var(--tint-ms); }
+[data-block] { border-left: 4px solid var(--tint) !important; }
+[data-block].card > .card__title, [data-block] > .lblock__head, [data-block] > .invdock__title,
+[data-block] > .composer__head {
+    background: color-mix(in srgb, var(--tint) 9%, transparent);
+}
+[data-block].card > .card__title { padding: 6px 10px; border-radius: var(--radius-sm); }
+.lblock { margin-bottom: 12px; border-radius: var(--radius); }
+.lblock__head, .invdock__title { padding: 8px 12px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+                                 font-weight: 650; font-size: 14px; margin-bottom: 8px; }
+.invdock[data-block] { padding-left: 8px; }
+.block-head { display: flex; align-items: center; gap: 6px; }
+.block-fold { margin-left: auto; border: 1px solid var(--border-strong); background: var(--surface);
+              border-radius: var(--radius-sm); width: 30px; height: 28px; cursor: pointer;
+              color: var(--text-muted); font-size: 14px; line-height: 1; flex: 0 0 auto; }
+.block-fold:hover { color: var(--text); border-color: var(--text-muted); }
+/* Свёрнутый блок — один заголовок */
+[data-block].is-folded > :not(.block-head) { display: none !important; }
+[data-block].is-folded > .block-head { margin-bottom: 0; }
+[data-block].card.is-folded { padding-top: 10px; padding-bottom: 10px; }
+
+/* Полоса фото: «Сбросить выбор» рядом со счётчиком */
+.photos__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.kp-oos { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+
+@media (max-width: 640px) {
+    /* Телефон: переписка → подбор → письмо → КП → информация; «Этап» — в самом
+       низу страницы (issue #67) */
+    #app:has(> .letter) { display: flex; flex-direction: column; }
+    #app:has(> .letter) > #threadPlacement, #app:has(> .letter) > #cardPlacement { order: 10; margin-top: 12px; }
+}
+.kp-zoom { display: inline-flex; gap: 2px; margin-left: auto; align-items: center; }
+.kp-zoom [data-kp-zoom-label] { min-width: 58px; }

@@ -8,6 +8,7 @@
  *   ?token=…&article=ABC-1                 one product, best match first
  *   ?token=…&action=export&offset=0        a page of the catalog
  *   ?token=…&action=ping                   what the module sees from here
+ *   ?token=…&action=export_xlsx            the catalog as an Excel file
  *
  * Nothing here writes. The whole module is read-only against the shop, which
  * is why it is safe to point a cron at it.
@@ -66,6 +67,15 @@ switch ($action) {
             'next'   => ($next < $page['total'] && $page['items']) ? $next : null,
             'url'    => '',
         ]);
+        break;
+
+    case 'export_xlsx':
+        // Каталог в Excel: код, название, модификации, описание, ссылка (issue #67)
+        try {
+            \Atlant\KpSync\Export::download();
+        } catch (\Throwable $e) {
+            Response::fail('Выгрузка не собралась: ' . $e->getMessage(), 500);
+        }
         break;
 
     case 'find':

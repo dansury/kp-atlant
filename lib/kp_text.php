@@ -18,6 +18,8 @@ require_once __DIR__ . '/kp_content.php';
 require_once __DIR__ . '/requisites.php';
 require_once __DIR__ . '/terms.php';
 require_once __DIR__ . '/kp_terms.php';
+require_once __DIR__ . '/delivery_share.php';
+require_once __DIR__ . '/mail_text.php';
 
 final class KpText {
 
@@ -32,19 +34,29 @@ final class KpText {
         $requisites = Requisites::forProposal($proposalId);
         $lines = [];
 
+        // Доставка, включённая в стоимость, входит в цену за единицу — теми же
+        // долями, что в файле и в счёте (модуль 045)
+        $items = array_values($items);
+        $shares = DeliveryShare::included($proposal)
+            ? DeliveryShare::perUnit(array_map(fn($i) => ['unit' => Terms::price($i), 'qty' => (float)$i['quantity']], $items),
+                                     (float)$proposal['delivery_price'])
+            : array_fill(0, count($items), 0.0);
+        $spread = array_sum($shares) > 0;
+
         $n = 0;
         $total = 0.0;
         // Хоть одна вилка — и «Итого» называется «от»: сумма низов вилок и есть
         // то, с чего начинается предложение (модуль 036)
         $totalIsFrom = false;
-        foreach ($items as $item) {
+        foreach ($items as $k => $item) {
             $n++;
-            $price = Terms::price($item);
+            $price = round(Terms::price($item) + $shares[$k], 2);
             $sum = $price * (float)$item['quantity'];
             $total += $sum;
             // Та же вилка, что и в файле (модуль 036): письмо и документ не
             // имеют права назвать клиенту разные цены
             $top = Terms::priceTop($item);
+            if ($top > 0) $top = round($top + $shares[$k], 2);
             if ($top > 0 || !empty($item['price_from'])) $totalIsFrom = true;
 
             $lines[] = sprintf('%d. %s — %s %s × %s = %s',
@@ -57,6 +69,12 @@ final class KpText {
                          : self::money($sum)
             );
 
+            // Скидка — словами, как столбец «Со скидкой» в файле (issue #60)
+            $discount = Terms::totalDiscount($item);
+            $manual = (float)($item['discount_percent'] ?? 0);
+            if ($manual > 0) $lines[] = '   скидка ' . self::pct($manual) . '%';
+            elseif ($discount > 0 && Terms::note($item) === '') $lines[] = '   скидка ' . self::pct($discount) . '%';
+
             foreach ([$item['notes'] ?? '', Terms::note($item)] as $note) {
                 $note = trim((string)$note);
                 if ($note !== '') $lines[] = '   ' . $note;
@@ -67,18 +85,25 @@ final class KpText {
             $comment = trim(Markup::toPlainText((string)($item['comment_text'] ?? '')));
             if ($comment === '') $comment = trim(Markup::toPlainText((string)($item['description_text'] ?? '')));
             if ($comment !== '') $lines[] = '   ' . mb_substr($comment, 0, 600);
-            // Ссылка на товар остаётся: в письме она нажимается, в отличие от бумаги
-            if (trim((string)($item['site_url'] ?? '')) !== '') $lines[] = '   ' . (string)$item['site_url'];
+            // Ссылка на товар — словами «см. на сайте» (issue #60): в HTML-части
+            // письма они становятся ссылкой, `MailText::textToHtml()`
+            if (trim((string)($item['site_url'] ?? '')) !== '') {
+                $lines[] = '   ' . MailText::SITE_LINK_LABEL . ': ' . trim((string)$item['site_url']);
+            }
         }
 
-        // Доставка отдельной строкой — как и в файле (модуль 026): в цену
-        // товара она не входит, и в письме это должно быть видно цифрой
-        if ((int)($proposal['delivery_on'] ?? 0) === 1) {
+        // Доставка отдельной строкой — когда она не разложена по позициям
+        if ((int)($proposal['delivery_on'] ?? 0) === 1 && !$spread) {
             $deliveryPrice = (float)($proposal['delivery_price'] ?? 0);
             $total += $deliveryPrice;
             $lines[] = sprintf('%d. %s — %s', $n + 1,
                 trim((string)($proposal['delivery_name'] ?? '')) ?: 'Доставка',
                 self::money($deliveryPrice));
+        }
+
+        // «Не наша номенклатура» — как в таблице файла, с прочерком (issue #60)
+        foreach (KpContent::outOfScopeRows($proposal) as $row) {
+            $lines[] = '— ' . $row['requested'] . ' — не поставляем';
         }
 
         $body = [];
@@ -120,11 +145,15 @@ final class KpText {
         }
 
         $text = implode("\n", $body);
-        return ['text' => $text, 'html' => '<p>' . nl2br(htmlspecialchars($text)) . '</p>'];
+        return ['text' => $text, 'html' => MailText::textToHtml($text)];
+    }
+
+    private static function pct(float $v): string {
+        return rtrim(rtrim(number_format($v, 2, ',', ''), '0'), ',');
     }
 
     private static function money(float $v): string {
-        return number_format($v, 2, ',', ' ') . ' руб.';
+        return KpContent::rub($v) . ' руб.';
     }
 
     /** 3.0 → «3», 2.5 → «2,5»: количество в письме читает человек. */

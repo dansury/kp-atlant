@@ -9,6 +9,8 @@ require_once ROOT . '/lib/managers.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/mailsync.php';
 require_once ROOT . '/lib/branding.php';
+require_once ROOT . '/lib/support.php';
+require_once ROOT . '/lib/setup_wizard.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -29,6 +31,9 @@ const MANAGER_ACTIONS = [
     'tov', 'tov_save', 'tov_reset',
     'learning', 'learning_save', 'learning_add',
     'signature', 'signature_reset',
+    // Свой звук уведомления выбирает каждый — значит, и список звуков
+    // должен открываться каждому (issue #60)
+    'sounds',
 ];
 
 $admin = in_array($action, MANAGER_ACTIONS, true) ? requireAuth() : requireAdmin();
@@ -175,6 +180,8 @@ try {
                 'missing'   => $payload['missing'],
                 'unclear'   => $payload['unclear'],
                 'source'    => $payload['source'] ?? 'probe',
+                // Слаги, которые отвечают только по OpenAI-совместимому маршруту
+                'openai'    => $payload['openai'] ?? [],
                 'synced_at' => $payload['synced_at'],
             ]);
 
@@ -289,7 +296,9 @@ try {
 
         case 'mailbox_sync':
             $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
-            jsonOk(['report' => MailSync::run($id ?: null)]);
+            // Проверка ящика руками из настроек — единственное место, где
+            // выключенный ящик всё-таки опрашивается: так его и проверяют
+            jsonOk(['report' => MailSync::run($id ?: null, ['force' => $id > 0])]);
 
         // ---------- Full archive download ----------
 
@@ -450,6 +459,28 @@ try {
         case 'manager_delete':
             jsonOk(['result' => Managers::delete((int)($input['id'] ?? $_GET['id'] ?? 0), (int)$admin['id'])]);
 
+        /**
+         * Обнулить вход менеджера (issue #60).
+         *
+         * Чужая сессия перестаёт открываться сразу, где бы она ни была открыта:
+         * на своём телефоне, на компьютере в офисе, на чужом ноутбуке.
+         */
+        case 'manager_logout': {
+            $id = (int)($input['id'] ?? $_GET['id'] ?? 0);
+            if (!Db::one("SELECT id FROM managers WHERE id=?", [$id])) jsonError('Менеджер не найден', 404);
+            $epoch = Auth::resetSessions($id);
+            Logger::info('auth', 'Вход менеджера обнулён', ['manager_id' => $id, 'by' => $admin['id']]);
+            jsonOk(['epoch' => $epoch]);
+        }
+
+        // Последние входы менеджера: когда и откуда (issue #60)
+        case 'manager_logins': {
+            $id = (int)($_GET['id'] ?? 0);
+            jsonData(['items' => Db::all(
+                "SELECT id, ip, user_agent, created_at FROM manager_logins
+                 WHERE manager_id=? ORDER BY id DESC LIMIT 20", [$id])]);
+        }
+
         // ---------- Prompts ----------
 
         case 'prompts':
@@ -463,8 +494,54 @@ try {
             Prompts::reset((string)($input['key'] ?? $_GET['key'] ?? ''), (int)$admin['id']);
             jsonOk();
 
-        case 'prompt_history':
-            jsonData(['items' => Prompts::history((string)($_GET['key'] ?? ''))]);
+        /**
+         * ==== Промпты учатся на правках (модуль 041) ====
+         *
+         * Правок набирается сотня, читать их подряд некому. Модель — её
+         * выбирают прямо на дашборде промптов, можно поумнее — читает их и
+         * пишет короткий свод правил. Свод не сохраняется сам: его видит
+         * человек и одной кнопкой подмешивает в нужный промпт.
+         */
+        case 'learning_rethink': {
+            require_once ROOT . '/lib/learning.php';
+            try {
+                $res = Learning::rethink(
+                    (string)($input['kind'] ?? 'sent'),
+                    (int)($input['limit'] ?? 40),
+                    (string)($input['model'] ?? '')
+                );
+            } catch (Throwable $e) {
+                jsonError($e->getMessage());
+            }
+            Logger::info('learning', 'Правки переосмыслены моделью',
+                         ['kind' => (string)($input['kind'] ?? 'sent'), 'manager_id' => $admin['id']]);
+            jsonData($res);
+        }
+
+        case 'prompt_append':
+            try {
+                $content = Prompts::append((string)($input['key'] ?? ''), (string)($input['block'] ?? ''),
+                                           (int)$admin['id']);
+            } catch (Throwable $e) {
+                jsonError($e->getMessage());
+            }
+            jsonOk(['content' => $content]);
+
+        case 'prompt_restore':
+            try {
+                $content = Prompts::restore((string)($input['key'] ?? ''), (int)($input['history_id'] ?? 0),
+                                            (int)$admin['id']);
+            } catch (Throwable $e) {
+                jsonError($e->getMessage());
+            }
+            jsonOk(['content' => $content]);
+
+        case 'prompt_history': {
+            $key = (string)($_GET['key'] ?? '');
+            // Нынешний текст едет вместе с историей: панель подсвечивает,
+            // ЧЕМ версия отличается от того, что стоит сейчас (модуль 041)
+            jsonData(['items' => Prompts::history($key), 'current' => Prompts::text($key)]);
+        }
 
         // ---------- Knowledge base (module 005) ----------
 
@@ -639,6 +716,20 @@ try {
             }
             jsonData(['items' => $stores, 'selected' => MoySklad::selectedStores()]);
 
+        /**
+         * Организации МойСклад (модуль 041): их выбирают из списка, а не
+         * переписывают идентификатор руками из адресной строки МойСклад.
+         */
+        case 'moysklad_organizations':
+            require_once ROOT . '/lib/moysklad.php';
+            MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+            try {
+                $orgs = MoySklad::getOrganizations();
+            } catch (Throwable $e) {
+                jsonError('Организации не получены: ' . $e->getMessage());
+            }
+            jsonData(['items' => $orgs, 'selected' => (string)Settings::get('MOYSKLAD_ORG_ID', '')]);
+
         case 'moysklad_stock_refresh':
             require_once ROOT . '/lib/moysklad.php';
             MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
@@ -719,6 +810,10 @@ try {
                 ],
                 // Логотип КП: «загружен» и «печатается» — не одно и то же
                 'logo'       => ['warning' => Branding::documentWarning('kp')],
+                // Чего не хватает для запуска и что просят менеджеры (модуль 038)
+                'setup'      => setupSummary(),
+                'support'    => ['pending' => Support::pending(), 'repo' => Support::repo(),
+                                 'token_set' => Support::token() !== ''],
             ]);
 
         default:
@@ -729,6 +824,17 @@ try {
 } catch (Throwable $e) {
     Logger::exception('admin', $e, ['action' => $action]);
     jsonError($e->getMessage(), 500);
+}
+
+/** Мастер настройки на «Обзоре»: сколько шагов закрыто и на каком встали. */
+function setupSummary(): array {
+    $p = SetupWizard::progress();
+    $waiting = [];
+    foreach ($p['steps'] as $step) {
+        if (empty($step['optional']) && ($step['state']['status'] ?? '') !== 'ok') $waiting[] = (string)$step['title'];
+    }
+    return ['done' => $p['done'], 'total' => $p['total'], 'next' => $p['next'],
+            'waiting' => $waiting, 'finished' => !empty($p['state']['done_at'])];
 }
 
 /** Options for the deploy check: the switch from the panel, the creds from pull-config.php. */
@@ -788,6 +894,7 @@ function yandexCatalogStats(): array {
     return [
         'ok'        => count(array_filter($checked, fn($v) => $v === 'ok')),
         'missing'   => count(array_filter($checked, fn($v) => $v === 'missing')),
+        'openai'    => count(array_filter((array)($cache['routes'] ?? []), fn($v) => $v === 'openai')),
         // Кандидаты из кода плюс модели, которые облако назвало само.
         'total'     => count(LLM::catalog('yandex')),
         'synced_at' => $cache['synced_at'] ?? null,

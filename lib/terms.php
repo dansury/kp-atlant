@@ -79,14 +79,23 @@ final class Terms {
      * с разными покупателями, и «розница» одного не должна молча становиться
      * условием другого. Не выбрано ничего — отвечают настройки, как и раньше.
      *
+     * За КОНТРАГЕНТОМ — приоритет выше, чем просто за менеджером (issue #60):
+     * у постоянного покупателя условия свои и не должны сбиваться тем, что
+     * менеджер перед этим считал КП кому-то ещё.
+     *
      * @return array{price_type:string,discount:float,wait_on:int,wait_months:int,wait_discount:float,wait_prepay:int}
      */
-    public static function conditions(?int $managerId = null): array {
+    public static function conditions(?int $managerId = null, ?int $counterpartyId = null): array {
         $d = self::defaults();
         $saved = [];
         if ($managerId && Db::hasColumn('managers', 'kp_terms_json')) {
             $json = (string)(Db::val("SELECT kp_terms_json FROM managers WHERE id=?", [$managerId]) ?: '');
             $saved = $json !== '' ? (json_decode($json, true) ?: []) : [];
+        }
+        if ($counterpartyId && Db::hasColumn('counterparties', 'kp_terms_json')) {
+            $json = (string)(Db::val("SELECT kp_terms_json FROM counterparties WHERE id=?", [$counterpartyId]) ?: '');
+            $cpSaved = $json !== '' ? (json_decode($json, true) ?: []) : [];
+            if ($cpSaved) $saved = $cpSaved + $saved;
         }
         return [
             'price_type'    => (string)($saved['price_type'] ?? Settings::get('CATALOG_DEFAULT_PRICE_TYPE', '')),
@@ -95,12 +104,29 @@ final class Terms {
             'wait_months'   => max(0, (int)($saved['wait_months'] ?? $d['months'])),
             'wait_discount' => self::clampPercent((float)($saved['wait_discount'] ?? $d['discount'])),
             'wait_prepay'   => (int)self::clampPercent((float)($saved['wait_prepay'] ?? $d['prepay'])),
+            // Сколько фотографий печатать у каждой позиции этого КП (issue #60).
+            // null — «как в настройках»: решает KP_MAX_IMAGES_PER_ITEM
+            'photos'        => self::photoLimit($saved['photos'] ?? null),
         ];
     }
 
-    /** Запомнить выбор за менеджером. Приходит то же, что отдаёт `conditions()`. */
-    public static function remember(?int $managerId, array $c): array {
-        $clean = self::conditions($managerId);
+    /**
+     * «Количество фото — на все позиции»: число 0…12 или null.
+     *
+     * Пустая строка и отсутствие значения — одно и то же: «как в настройках».
+     * Ноль — это решение («фотографий в КП не будет»), а не пустота.
+     */
+    public static function photoLimit(mixed $v): ?int {
+        if ($v === null || $v === '' || $v === false) return null;
+        return max(0, min(12, (int)$v));
+    }
+
+    /**
+     * Запомнить выбор — за менеджером, и за контрагентом, если он известен
+     * (issue #60). Приходит то же, что отдаёт `conditions()`.
+     */
+    public static function remember(?int $managerId, array $c, ?int $counterpartyId = null): array {
+        $clean = self::conditions($managerId, $counterpartyId);
         foreach (array_keys($clean) as $key) {
             if (!array_key_exists($key, $c)) continue;
             $clean[$key] = match ($key) {
@@ -109,10 +135,14 @@ final class Terms {
                 'wait_on'       => !empty($c[$key]) ? 1 : 0,
                 'wait_months'   => max(0, (int)$c[$key]),
                 'wait_prepay'   => (int)self::clampPercent((float)$c[$key]),
+                'photos'        => self::photoLimit($c[$key]),
             };
         }
         if ($managerId && Db::hasColumn('managers', 'kp_terms_json')) {
             Db::update('managers', ['kp_terms_json' => json_encode($clean, JSON_UNESCAPED_UNICODE)], 'id=?', [$managerId]);
+        }
+        if ($counterpartyId && Db::hasColumn('counterparties', 'kp_terms_json')) {
+            Db::update('counterparties', ['kp_terms_json' => json_encode($clean, JSON_UNESCAPED_UNICODE)], 'id=?', [$counterpartyId]);
         }
         return $clean;
     }
@@ -279,7 +309,7 @@ final class Terms {
         return rtrim(rtrim(number_format($v, 2, ',', ''), '0'), ',');
     }
 
-    private static function clampPercent(float $v): float {
+    public static function clampPercent(float $v): float {
         return max(0.0, min(100.0, $v));
     }
 }

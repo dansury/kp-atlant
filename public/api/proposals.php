@@ -14,6 +14,7 @@ require_once ROOT . '/lib/kp_text.php';
 require_once ROOT . '/lib/outbox.php';
 require_once ROOT . '/lib/docx.php';
 require_once ROOT . '/lib/kp_content.php';
+require_once ROOT . '/lib/kp_requirements.php';
 require_once ROOT . '/lib/markup.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/notifier.php';
@@ -22,6 +23,7 @@ require_once ROOT . '/lib/request_shape.php';
 require_once ROOT . '/lib/requisites.php';
 require_once ROOT . '/lib/kp_terms.php';
 require_once ROOT . '/lib/kp_set.php';
+require_once ROOT . '/lib/kp_editor.php';
 
 /**
  * SC-005 with teeth (module 018).
@@ -93,6 +95,9 @@ function kpPreviewError(int $id, string $title, string $detail, int $code): neve
 }
 
 $action = $_GET['action'] ?? '';
+// Тело POST-запроса — одно на все действия. `doc_text_save` читал `$input`,
+// которого нигде не было, и правки текста КП не сохранялись (модуль 045)
+$input = in_array($_SERVER['REQUEST_METHOD'] ?? 'GET', ['POST', 'PUT'], true) ? getInput() : [];
 
 switch ($action) {
     case 'get':
@@ -142,6 +147,22 @@ switch ($action) {
         $req = Db::one("SELECT * FROM requests WHERE id=?", [$requestId]);
         if (!$req) jsonError('Request not found', 404);
 
+        // «Сформировать КП» никогда не заводит второй документ на тот же запрос —
+        // это работа отдельной кнопки «+ Ещё одно КП» (issue #60). Повторный клик
+        // (двойной клик, повтор запроса сетью) просто возвращает то, что уже есть.
+        $existingId = (int)(Db::val("SELECT id FROM proposals WHERE request_id=? ORDER BY id DESC LIMIT 1", [$requestId]) ?: 0);
+        if ($existingId) {
+            $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$existingId]);
+            jsonData([
+                'id' => $existingId,
+                'status' => $proposal['status'],
+                'items' => Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$existingId]),
+                'addons' => Db::all("SELECT * FROM proposal_addons WHERE proposal_id=? ORDER BY position", [$existingId]),
+                'cover_letter' => $proposal['cover_letter'],
+                'pdf_preview_url' => "/api/proposals.php?action=preview&id=$existingId",
+            ]);
+        }
+
         // Ensure MoySklad is initialized
         MoySklad::init($cfg['MOYSKLAD_TOKEN'] ?? '');
 
@@ -171,6 +192,10 @@ switch ($action) {
         foreach ($matched as $i => $m) {
             Db::insert('proposal_items', KpSet::itemRow($m, $i + 1) + ['proposal_id' => $proposalId]);
         }
+
+        // Клиент просил указать что-то в самом КП — абзац документа на это
+        // (модуль 046). Сбой модели КП не отменяет: абзаца просто не будет
+        KpRequirements::apply($proposalId);
 
         // Generate cover letter
         $tov = Tov::read();
@@ -267,8 +292,14 @@ switch ($action) {
                   // Условия одним блоком и доставка отдельной строкой (модуль 026)
                   'terms_text', 'delivery_on', 'delivery_name', 'delivery_price',
                   // Сколько фото печатать в ЭТОМ КП; пусто — общая настройка
-                  'photos_per_item'] as $f) {
+                  'photos_per_item',
+                  // «Показать в КП отсутствующую номенклатуру» (модуль 046)
+                  'show_out_of_scope'] as $f) {
             if (array_key_exists($f, $input)) $fields[$f] = $input[$f];
+        }
+        if (array_key_exists('show_out_of_scope', $fields)) {
+            $v = $fields['show_out_of_scope'];
+            $fields['show_out_of_scope'] = $v === null || $v === '' ? null : ((int)$v === 1 ? 1 : 0);
         }
         if (array_key_exists('cover_letter_final', $input)) {
             $fields['cover_letter_final'] = $input['cover_letter_final'];
@@ -344,6 +375,14 @@ switch ($action) {
         // Остатки перечитываются перед пересборкой: «под заказ» в документе
         // должно отвечать сегодняшнему складу, а не дню сборки КП (модуль 026)
         KpContent::refreshStock($id);
+
+        // Сохранение полного редактора — это сборка документа из базы заново:
+        // ручная правка страницы A4 (модуль 045) снимается. Одно сопроводительное
+        // письмо документ не меняет — его правка страницу не трогает.
+        if (array_diff(array_keys($fields), ['cover_letter_final'])
+            || array_key_exists('items', $input) || array_key_exists('addons', $input)) {
+            Db::update('proposals', ['html_override' => null, 'html_override_at' => null], 'id=?', [$id]);
+        }
 
         // Regenerate PDF
         PdfGenerator::generate($id);
@@ -451,6 +490,12 @@ switch ($action) {
         }
 
         if (isset($fields['terms_text'])) KpTerms::remember((string)$fields['terms_text']);
+        // Правка текста по полям — это новая сборка документа: ручная правка
+        // страницы (модуль 045) её бы перекрыла, поэтому она снимается
+        if ($changed) {
+            $fields['html_override'] = null;
+            $fields['html_override_at'] = null;
+        }
         if ($fields) {
             $fields['updated_at'] = date('Y-m-d H:i:s');
             Db::update('proposals', $fields, 'id=?', [$id]);
@@ -469,6 +514,83 @@ switch ($action) {
         PdfGenerator::generate($id);
 
         jsonOk(['changed' => $changed, 'pdf_preview_url' => "/api/proposals.php?action=preview&id=$id"]);
+    }
+
+    /**
+     * ==== КП страницей A4, которую можно править (модуль 045, issue #60) ====
+     *
+     * `html` — страница для редактора (фото — короткими ссылками `kp_img`),
+     * `html_save` — сохранить правку, из неё соберутся PDF и Word,
+     * `html_reset` — вернуть автоматическую сборку из базы.
+     */
+    case 'html': {
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        $p = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
+        if (!$p) jsonError('КП не найдено', 404);
+        try {
+            $page = KpEditor::page($id);
+        } catch (Throwable $e) {
+            Logger::exception('kp', $e, ['proposal_id' => $id, 'stage' => 'html_editor']);
+            jsonError('КП не собралось: ' . $e->getMessage(), 500);
+        }
+        jsonData([
+            'id'          => $id,
+            'html'        => $page,
+            'editable'    => KpEditor::editable($p),
+            'override_at' => $p['html_override_at'],
+            // Галочка «Показать в КП отсутствующую номенклатуру» (модуль 046):
+            // есть ли такие строки у запроса и печатаются ли они в этом КП
+            // Что клиент просил указать в КП — менеджер сверяет с листом (модуль 046)
+            'requirements' => KpRequirements::of((int)$p['request_id']),
+            'out_of_scope' => [
+                'count' => $p['request_id']
+                    ? (int)Db::val("SELECT COUNT(*) FROM request_items WHERE request_id=? AND COALESCE(is_out_of_scope,0)=1",
+                                   [$p['request_id']]) : 0,
+                'shown' => (bool)KpContent::outOfScopeRows($p),
+            ],
+        ]);
+    }
+
+    case 'html_save': {
+        $manager = requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        $p = Db::one("SELECT id, status FROM proposals WHERE id=?", [$id]);
+        if (!$p) jsonError('КП не найдено', 404);
+        if (!KpEditor::editable($p)) jsonError('КП уже отправлено клиенту — отправленный документ не правится', 409);
+        try {
+            KpEditor::save($id, (string)($input['html'] ?? ''));
+        } catch (InvalidArgumentException $e) {
+            jsonError($e->getMessage());
+        } catch (Throwable $e) {
+            Logger::exception('kp', $e, ['proposal_id' => $id, 'stage' => 'html_save']);
+            jsonError('Правка сохранилась, но PDF не собрался: ' . $e->getMessage(), 500);
+        }
+        ContentLog::record('kp', "proposal.$id", "КП #$id поправлено на странице A4",
+                           (int)$manager['id'], '', 'ручная правка документа');
+        jsonOk(['id' => $id, 'override_at' => date('Y-m-d H:i:s')]);
+    }
+
+    case 'html_reset': {
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        $p = Db::one("SELECT id, status FROM proposals WHERE id=?", [$id]);
+        if (!$p) jsonError('КП не найдено', 404);
+        if (!KpEditor::editable($p)) jsonError('КП уже отправлено клиенту — отправленный документ не правится', 409);
+        KpEditor::reset($id);
+        jsonOk(['id' => $id]);
+    }
+
+    // Фото страницы-редактора: файл по хешу содержимого, неизменяемый
+    case 'kp_img': {
+        requireAuth();
+        $img = KpEditor::image((string)($_GET['h'] ?? ''));
+        if (!$img) { http_response_code(404); exit; }
+        header('Content-Type: ' . $img['type']);
+        header('Cache-Control: private, max-age=31536000, immutable');
+        header('X-Content-Type-Options: nosniff');
+        echo $img['bin'];
+        exit;
     }
 
     case 'preview':
@@ -718,8 +840,10 @@ switch ($action) {
 
         // Файлы, которые менеджер приложил сам: он мог переделать документ
         // руками и прислать свой (модуль 023)
-        foreach (Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']) as $path) {
-            $attachments[] = $path;
+        // `resolve()` отдаёт пару «путь + имя в письме»: приставка, под которой
+        // файл лежит на диске, клиенту не показывается (модуль 040)
+        foreach (Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']) as $file) {
+            $attachments[] = $file;
         }
 
         $subject = $input['subject'] ?? 'Коммерческое предложение от Atlant Armour';
@@ -728,7 +852,9 @@ switch ($action) {
             $kp = KpText::render($id);
             $body = trim($body) !== '' ? rtrim($body) . "\n\n" . $kp['text'] : $kp['text'];
         }
-        $htmlBody = '<p>' . nl2br(htmlspecialchars($body)) . '</p>';
+        // «см. на сайте» — ссылкой со словами, а не голым адресом (модуль 045)
+        require_once ROOT . '/lib/mail_text.php';
+        $htmlBody = MailText::textToHtml($body);
 
         // Goes out through the manager's mailbox and lands in the mail archive
         Mailer::send([

@@ -33,8 +33,8 @@ final class KpTerms {
      * она считается строкой в таблице (см. «Доставка» в редакторе КП).
      */
     public const FACTORY_TEXT = <<<'TEXT'
-Стоимость включает расходы на упаковку, маркировку, хранение, погрузку, подготовку и передачу документов. Доставка в стоимость не включена и считается отдельно.
-Сроки выполнения условий договора {execution_term} с момента получения предоплаты.
+Стоимость включает расходы на упаковку, маркировку, хранение, {delivery_in_price}подготовку и передачу документов.
+{delivery_separate_clause}Сроки выполнения условий договора {execution_term} с момента получения предоплаты.
 Предлагаемая цена продукции является твёрдой и не подлежит изменению в течение {validity_days} дней с даты настоящего предложения.
 TEXT;
 
@@ -136,10 +136,17 @@ TEXT;
         $term = self::executionTerm($proposal);
         $text = (string)preg_replace(
             '/\{execution_days\}\s*календарн\w+\s+(?:дн\w+|день)/u', $term, $text);
+        // Доставка включена в цену товара или печатается отдельной строкой —
+        // это решает настройка, а условия говорят об этом тем же текстом,
+        // что печатает документ (issue #60)
+        $included = (string)Settings::get('KP_DELIVERY_MODE', 'included') === 'included';
         return strtr($text, [
             '{execution_term}' => $term,
             '{execution_days}' => (string)(int)($proposal['execution_days'] ?? 30),
             '{validity_days}'  => (string)(int)($proposal['validity_days'] ?? 14),
+            '{delivery_in_price}' => $included ? 'доставку, ' : '',
+            '{delivery_separate_clause}' => $included ? ''
+                : "Доставка в стоимость не включена и оплачивается при получении по тарифам СДЭК.\n",
         ]);
     }
 

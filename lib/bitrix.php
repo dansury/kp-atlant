@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/markup.php';
 /**
  * Link to the product page on atlant-armour.ru (module 013).
  *
@@ -204,7 +205,7 @@ final class Bitrix {
      * answer is `NAME`/`DETAIL_PAGE_URL` and a hand-written one is usually
      * `name`/`url`.
      *
-     * @return array{items:array<int,array{article:string,code:string,name:string,url:string}>,next:?int}
+     * @return array{items:array<int,array{article:string,code:string,name:string,url:string,description:string}>,next:?int}
      */
     public static function parseExport(string $body): array
     {
@@ -225,6 +226,8 @@ final class Bitrix {
                 'code'    => trim((string)($row['CODE'] ?? $row['code'] ?? '')),
                 'name'    => trim((string)($row['NAME'] ?? $row['name'] ?? '')),
                 'url'     => self::absolute($url),
+                // Описание на сайте (модуль 046): запасной источник к МойСклад
+                'description' => trim((string)($row['DESCRIPTION'] ?? $row['description'] ?? '')),
             ];
         }
 
@@ -258,6 +261,10 @@ final class Bitrix {
                 Db::q("UPDATE products_cache SET site_url=?, site_url_source='webhook', site_url_synced_at=datetime('now')
                        WHERE moysklad_id=?",
                       [$item['url'], (string)$row['moysklad_id']]);
+                if (($item['description'] ?? '') !== '') {
+                    Db::q("UPDATE products_cache SET site_description=? WHERE moysklad_id=?",
+                          [Markup::toMarkdown($item['description']), (string)$row['moysklad_id']]);
+                }
             }
             return true;
         }
@@ -391,7 +398,6 @@ final class Bitrix {
         ]);
         curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         // Битрикс commonly answers a missing element with 200 + a «404» page;
         // that is the site's business. Everything outside 2xx is a definite no.
@@ -410,7 +416,6 @@ final class Bitrix {
         $body = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-        curl_close($ch);
 
         if ($code < 200 || $code >= 300 || !is_string($body) || $body === '') {
             Logger::warning('bitrix', 'Сайт не ответил по товару (HTTP ' . $code . ')',

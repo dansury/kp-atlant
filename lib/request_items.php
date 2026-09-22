@@ -18,6 +18,7 @@ require_once __DIR__ . '/variants.php';
 require_once __DIR__ . '/terms.php';
 require_once __DIR__ . '/markup.php';
 require_once __DIR__ . '/kp_content.php';
+require_once __DIR__ . '/mail_text.php';
 
 final class RequestItems {
 
@@ -188,6 +189,7 @@ final class RequestItems {
                 ]);
             }
 
+            self::resetImagesOnProductChange((int)$row['id'], (string)$alt['moysklad_id']);
             Db::update('request_items', [
                 'moysklad_product_id' => $alt['moysklad_id'],
                 'product_name'        => $alt['name'],
@@ -254,27 +256,25 @@ final class RequestItems {
         if (!$ids) return [];
 
         $ph = implode(',', array_fill(0, count($ids), '?'));
-        $rows = Db::all("SELECT moysklad_id, description, parent_id FROM products_cache WHERE moysklad_id IN ($ph)", $ids);
+        $rows = Db::all("SELECT moysklad_id, description, site_description, parent_id FROM products_cache WHERE moysklad_id IN ($ph)", $ids);
 
-        $out = [];
-        $orphans = [];   // модификация без своего описания → id родителя
-        foreach ($rows as $r) {
-            $id = (string)$r['moysklad_id'];
-            $text = trim((string)($r['description'] ?? ''));
-            if ($text !== '') { $out[$id] = $text; continue; }
-            if (trim((string)($r['parent_id'] ?? '')) !== '') $orphans[$id] = (string)$r['parent_id'];
-        }
-
-        if ($orphans) {
-            $parentIds = array_values(array_unique($orphans));
+        // Модификация без своего описания берёт описание товара — и из
+        // МойСклад, и с сайта; какое из двух идёт, решает настройка (issue #67)
+        $parentIds = array_values(array_unique(array_filter(array_map(fn($r) => (string)($r['parent_id'] ?? ''), $rows))));
+        $byParent = [];
+        if ($parentIds) {
             $ph = implode(',', array_fill(0, count($parentIds), '?'));
-            $byParent = [];
-            foreach (Db::all("SELECT moysklad_id, description FROM products_cache WHERE moysklad_id IN ($ph)", $parentIds) as $r) {
-                $byParent[(string)$r['moysklad_id']] = trim((string)($r['description'] ?? ''));
+            foreach (Db::all("SELECT moysklad_id, description, site_description FROM products_cache WHERE moysklad_id IN ($ph)", $parentIds) as $r) {
+                $byParent[(string)$r['moysklad_id']] = $r;
             }
-            foreach ($orphans as $id => $parentId) {
-                if (trim((string)($byParent[$parentId] ?? '')) !== '') $out[$id] = $byParent[$parentId];
-            }
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            $parent = $byParent[(string)($r['parent_id'] ?? '')] ?? [];
+            $ms   = trim((string)($r['description'] ?? '')) ?: trim((string)($parent['description'] ?? ''));
+            $site = trim((string)($r['site_description'] ?? '')) ?: trim((string)($parent['site_description'] ?? ''));
+            $text = KpContent::pickDescription($ms, $site);
+            if ($text !== '') $out[(string)$r['moysklad_id']] = $text;
         }
 
         foreach ($out as $id => $text) {
@@ -431,6 +431,8 @@ final class RequestItems {
                 'variant_label'       => (string)($row['variant_label'] ?? ''),
             ], $counterpartyId) : [];
 
+            self::resetImagesOnProductChange((int)$row['id'],
+                $variant['moysklad_product_id'] ?? ($best['moysklad_id'] ?? null));
             Db::update('request_items', self::keepManualPrice($row, [
                 'moysklad_product_id' => $variant['moysklad_product_id'] ?? ($best['moysklad_id'] ?? null),
                 'product_name'        => $variant['product_name'] ?? ($best['name'] ?? null),
@@ -481,8 +483,12 @@ final class RequestItems {
         // подбор поставил бы другой товар, а описание осталось бы от прежнего.
         // Сравнивается и с описанием товара, который на строке БЫЛ: строку
         // переставили на другую позицию, а поле ещё держит прежний текст.
-        $was = Db::all("SELECT id, moysklad_product_id FROM request_items WHERE request_id=?", [$requestId]);
+        $was = Db::all("SELECT id, moysklad_product_id, selected_images FROM request_items WHERE request_id=?", [$requestId]);
         $wasProduct = array_column($was, 'moysklad_product_id', 'id');
+        $wasImages  = array_column($was, 'selected_images', 'id');
+        // Строки, у которых поменялся товар: их выбор фотографий больше не
+        // относится ни к чему (см. ниже, «фото от предыдущего товара»)
+        $repicked = [];
         $catalog = self::catalogDescriptions(array_merge(array_column($rows, 'moysklad_product_id'),
                                                          array_values($wasProduct)));
         $keep = [];
@@ -515,6 +521,11 @@ final class RequestItems {
                 'wait_discount'       => isset($row['wait_discount']) && $row['wait_discount'] !== '' ? max(0.0, min(100.0, (float)$row['wait_discount'])) : null,
                 'wait_prepay'         => isset($row['wait_prepay']) && $row['wait_prepay'] !== '' ? max(0, min(100, (int)$row['wait_prepay'])) : null,
                 'stock'               => isset($row['stock']) && $row['stock'] !== '' ? (int)$row['stock'] : null,
+                // Выбранные фотографии: строка JSON с ключами, `null` —
+                // «выбор не делали», и в КП идут все найденные (модуль 040).
+                // Считается ниже: таблица подбора этого поля не присылает, и
+                // затирать им выбор менеджера нельзя (issue #60)
+                'selected_images'     => null,
                 'is_confirmed'        => !empty($row['is_confirmed']) ? 1 : 0,
                 // A row the manager saved is answered: the choice prompt goes away
                 'needs_choice'        => (!empty($row['is_confirmed']) || $prodName !== '') ? 0 : (int)($row['needs_choice'] ?? 0),
@@ -533,15 +544,45 @@ final class RequestItems {
                 'updated_at'          => date('Y-m-d H:i:s'),
             ];
 
+            /**
+             * ==== Фотографии не отстают от товара (issue #60) ====
+             *
+             * `selected_images` — это КЛЮЧИ картинок МойСклад. Две вещи шли не
+             * так. Во-первых, таблица подбора это поле не присылает вовсе
+             * (галочки живут в полосе фотографий, а не в `[data-field]`), и
+             * каждое сохранение затирало выбор менеджера в `null`. Во-вторых,
+             * при смене товара на строке ключи оставались от ПРЕЖНЕГО: полоса
+             * показывала «0 из N», а уже собранное КП продолжало печатать
+             * фотографии предыдущего товара.
+             *
+             * Поэтому: поле берётся у строки, какое было, а при смене товара
+             * сбрасывается в `null` — «выбор не делали, печатаем все».
+             */
             $id = (int)($row['id'] ?? 0);
+            $known = $id && array_key_exists($id, $wasProduct);
+            $productChanged = $known
+                && trim((string)($wasProduct[$id] ?? '')) !== trim((string)($data['moysklad_product_id'] ?? ''));
+            if ($known && !$productChanged) {
+                // Прислали поле явно — верим ему, иначе держим сохранённое
+                $data['selected_images'] = array_key_exists('selected_images', $row)
+                    ? self::imageChoice($row) : ($wasImages[$id] ?? null);
+            } elseif (!$known) {
+                $data['selected_images'] = self::imageChoice($row);
+            }
+
             if ($id && Db::one("SELECT id FROM request_items WHERE id=? AND request_id=?", [$id, $requestId])) {
                 unset($data['request_id']);
                 Db::update('request_items', $data, 'id=?', [$id]);
             } else {
                 $id = Db::insert('request_items', $data);
             }
+            if ($productChanged) $repicked[] = $id;
             $keep[] = $id;
         }
+
+        // Строка поехала на другой товар — снять её фотографии и с тех КП,
+        // которые ещё не ушли клиенту: тот же каскад, что у `item_images_save`
+        foreach ($repicked as $itemId) self::forgetImages($itemId);
 
         // Rows the editor no longer sends were deleted in the browser
         $all = Db::all("SELECT id FROM request_items WHERE request_id=?", [$requestId]);
@@ -579,6 +620,86 @@ final class RequestItems {
     }
 
     /** Сохранить строку доставки. Пришло null — строку убрали крестиком. */
+    /**
+     * Выбор фотографий строки: массив ключей → JSON, пусто → NULL.
+     *
+     * NULL и пустой массив — разные вещи: первое значит «не выбирали, печатать
+     * все», второе — «выбрали ни одной, фотографий в КП не будет».
+     */
+    private static function imageChoice(array $row): ?string {
+        if (!array_key_exists('selected_images', $row)) return null;
+        $v = $row['selected_images'];
+        if ($v === null || $v === '') return null;
+        if (is_string($v)) {
+            $decoded = json_decode($v, true);
+            $v = is_array($decoded) ? $decoded : null;
+        }
+        if (!is_array($v)) return null;
+        return json_encode(array_values(array_map('strval', $v)), JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Товар на строке поменялся — значит, и фотографии другие (issue #60).
+     *
+     * `selected_images` хранит КЛЮЧИ картинок МойСклад: от прежнего товара они
+     * не значат ничего. Зовётся ВЕЗДЕ, где строке меняют товар — выбором
+     * равнозначного, подстановкой аналога, повторным подбором, — иначе КП
+     * продолжает печатать фотографии предыдущей позиции.
+     */
+    public static function resetImagesOnProductChange(int $itemId, ?string $newProductId): void {
+        $was = trim((string)(Db::val("SELECT moysklad_product_id FROM request_items WHERE id=?", [$itemId]) ?? ''));
+        if ($was === trim((string)$newProductId)) return;
+        self::forgetImages($itemId);
+    }
+
+    /**
+     * Забыть выбор фотографий строки — и в неотправленных КП тоже.
+     *
+     * `null` значит «выбор не делали»: в документ пойдут все фотографии
+     * НОВОГО товара, а не ноль штук и не картинки прежнего.
+     */
+    public static function forgetImages(int $itemId): void {
+        Db::update('request_items', ['selected_images' => null], 'id=?', [$itemId]);
+        Db::q("UPDATE proposal_items SET selected_images=NULL
+               WHERE request_item_id=? AND proposal_id IN (
+                   SELECT id FROM proposals WHERE status NOT IN ('sent','order_created'))", [$itemId]);
+    }
+
+    /**
+     * ==== «Количество фото — на все позиции» (issue #60) ====
+     *
+     * Предел фотографий стоял в настройках КП, один на весь сервис, и менялся
+     * двумя переходами от таблицы подбора. Здесь это поле общих условий:
+     * каждой строке проставляются ПЕРВЫЕ N её фотографий — ровно то, что
+     * менеджер и делал бы галочками, только не сорок раз подряд.
+     *
+     * $limit === null — «как в настройках»: выбор снимается вовсе, и в КП
+     * снова идёт столько, сколько разрешает `KP_MAX_IMAGES_PER_ITEM`.
+     *
+     * @return int сколько строк тронуто
+     */
+    public static function applyPhotoLimit(int $requestId, ?int $limit): int {
+        require_once ROOT . '/lib/kp_content.php';
+        $rows = Db::all("SELECT id, moysklad_product_id FROM request_items WHERE request_id=?", [$requestId]);
+        $touched = 0;
+        foreach ($rows as $row) {
+            $itemId = (int)$row['id'];
+            if ($limit === null) { self::forgetImages($itemId); $touched++; continue; }
+
+            $msId = trim((string)($row['moysklad_product_id'] ?? ''));
+            $keys = $msId === '' ? [] : array_column(KpContent::productImageList($msId), 'key');
+            $keys = $limit > 0 ? array_slice($keys, 0, $limit) : [];
+            $json = json_encode(array_values($keys), JSON_UNESCAPED_UNICODE);
+            Db::update('request_items', ['selected_images' => $json], 'id=?', [$itemId]);
+            Db::q("UPDATE proposal_items SET selected_images=?
+                   WHERE request_item_id=? AND proposal_id IN (
+                       SELECT id FROM proposals WHERE status NOT IN ('sent','order_created'))",
+                  [$json, $itemId]);
+            $touched++;
+        }
+        return $touched;
+    }
+
     public static function saveDelivery(int $requestId, ?array $d): array {
         Db::update('requests', [
             'delivery_on'    => $d === null ? 0 : 1,
@@ -623,6 +744,9 @@ final class RequestItems {
                 'variants'     => $row['variants'] ?? [],
                 'is_alternative' => (int)($row['is_alternative'] ?? 0) === 1,
                 'alt_of'         => $row['alt_of'] ?? null,
+                // Фотографии, выбранные в таблице подбора, едут в КП вместе с
+                // позицией: заново их там не выбирают (модуль 040)
+                'selected_images' => $row['selected_images'] ?? null,
                 'alt_specs'      => $row['alternative'] ?? null,
                 'match'        => $hasProduct ? [
                     'moysklad_id' => $row['moysklad_product_id'] ?? null,
@@ -699,6 +823,8 @@ final class RequestItems {
         if (!$p) throw new RuntimeException('Позиция каталога не найдена');
 
         $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
+        // Выбрали другой товар — фотографии прежнего больше не наши (issue #60)
+        self::resetImagesOnProductChange($itemId, (string)$p['moysklad_id']);
         Db::update('request_items', [
             'moysklad_product_id' => $p['moysklad_id'],
             'product_name'        => $p['name'],
@@ -803,12 +929,23 @@ final class RequestItems {
 
             $price = (float)($row['effective_price'] ?? $row['price'] ?? 0);
             if ($price > 0) $line .= ', ' . number_format($price, 2, ',', ' ') . ' руб. за ед.';
+            // Скидка — в письме так же, как в КП (issue #60). Скидка за
+            // ожидание стоит ниже, в условиях ожидания
+            $discount = Terms::clampPercent((float)($row['discount_percent'] ?? 0));
+            if ($price > 0 && $discount > 0) {
+                $line .= ' (цена до скидки ' . number_format((float)$row['price'], 2, ',', ' ')
+                       . ' руб., скидка ' . rtrim(rtrim(number_format($discount, 2, ',', ''), '0'), ',') . '%)';
+            }
 
-            $stock = $row['stock'] === null ? null : (int)$row['stock'];
-            if ($stock !== null) $line .= $stock > 0 ? ", в наличии $stock" : ', под заказ';
+            // Наличие словами, без остатка цифрой (issue #60): клиенту не нужно
+            // знать, сколько у нас на складе
+            $line .= self::stockWords($row['stock'] ?? null, (float)($row['quantity'] ?? 0));
 
             $wait = trim((string)($row['wait_note'] ?? ''));
             if ($wait !== '') $line .= ' (' . $wait . ')';
+
+            $url = self::siteUrl((string)($row['moysklad_product_id'] ?? ''));
+            if ($url !== '') $line .= "\n  " . MailText::SITE_LINK_LABEL . ': ' . $url;
 
             $lines[] = $line;
         }
@@ -817,8 +954,29 @@ final class RequestItems {
         return "\n===== ЧТО МЫ ПРЕДЛАГАЕМ ПО ЭТОМУ ЗАПРОСУ =====\n"
              . "Это уже подобрано и проверено менеджером. Назови в ответе ИМЕННО эти позиции, "
              . "эти количества и эти цены — не придумывай других и не меняй цифры. "
+             . "Скидки, срок ожидания и предоплату назови так же, как они указаны здесь. "
+             . "Остаток на складе числом не называй — только «в наличии» или «под заказ». "
+             . "Строку «" . MailText::SITE_LINK_LABEL . ": адрес» ставь под своей позицией дословно, адрес не меняй. "
              . "Описания товаров в письмо не переписывай: они напечатаны в КП.\n"
              . implode("\n", $lines) . "\n";
+    }
+
+    /** «в наличии» / «в наличии частично» / «под заказ» — без цифры остатка. */
+    public static function stockWords($stock, float $quantity): string {
+        if ($stock === null || $stock === '') return '';
+        $stock = (int)$stock;
+        if ($stock <= 0) return ', под заказ';
+        if ($quantity > 0 && $stock < $quantity) return ', в наличии не всё количество — остальное под заказ';
+        return ', в наличии';
+    }
+
+    /** Ссылка на товар на сайте из кэша каталога — без обращения к сайту. */
+    public static function siteUrl(string $productId): string {
+        if ($productId === '') return '';
+        return trim((string)(Db::val(
+            "SELECT COALESCE(NULLIF(p.site_url, ''),
+                    (SELECT NULLIF(site_url, '') FROM products_cache WHERE moysklad_id = p.parent_id))
+             FROM products_cache p WHERE p.moysklad_id = ?", [$productId]) ?: ''));
     }
 
     public static function unmatchedBlock(array $unmatched): string {

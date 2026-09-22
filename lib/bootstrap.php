@@ -1656,6 +1656,230 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '35')");
         $current = 35;
     }
+
+    // v36 — модуль 038: обращение в поддержку с файлами, мастер настройки и
+    // проверочный запрос, по которому оценивают качество КП и письма.
+    if ($current < 36) {
+        // Жалоба менеджера. В GitHub она уходит только после ревью админа,
+        // поэтому у строки есть и своё состояние, и номер заведённого issue.
+        Db::pdo()->exec("
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER REFERENCES managers(id),
+            kind TEXT NOT NULL DEFAULT 'bug',
+            title TEXT NOT NULL,
+            body TEXT,
+            page TEXT,
+            rating TEXT,
+            model TEXT,
+            status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','approved','declined')),
+            reviewed_by INTEGER REFERENCES managers(id),
+            reviewed_at TEXT,
+            review_note TEXT,
+            issue_number INTEGER,
+            issue_url TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_support_status ON support_tickets(status, id);
+
+        CREATE TABLE IF NOT EXISTS support_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id INTEGER NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            path TEXT NOT NULL,
+            mime TEXT,
+            size INTEGER,
+            remote_url TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_support_files ON support_files(ticket_id);
+        ");
+
+        // Проверочный запрос мастера. Отметка нужна, чтобы «Ромашка» из примера
+        // не выглядела клиентом, которому забыли ответить.
+        Db::ensureColumn('requests', 'is_trial', 'INTEGER', '0');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '36')");
+        $current = 36;
+    }
+
+    // v37 — модули 039–041: подбор по любой переписке и подпись менеджера,
+    // фотографии в таблице подбора, корзина писем и обучение промптов.
+    if ($current < 37) {
+        // Подпись в письмах — своя у каждого. Пусто — общая подпись компании
+        // из настроек, а её нет — имя и телефон из карточки менеджера.
+        Db::ensureColumn('managers', 'email_signature', 'TEXT');
+
+        // Выбор фотографий переехал в таблицу подбора (модуль 040): картинки
+        // выбирают сразу после того, как определились с товаром, и КП уносит
+        // этот выбор с собой. NULL — «выбор не делали», в КП идут все фото.
+        Db::ensureColumn('request_items', 'selected_images', 'TEXT');
+
+        // Сколько раз модель не смогла разобрать письмо: после трёх неудач
+        // запрос заводится правилами, а не теряется молча (модуль 040)
+        Db::ensureColumn('mail_messages', 'triage_attempts', 'INTEGER', '0');
+
+        /**
+         * Корзина писем (модуль 040).
+         *
+         * Удаление было безвозвратным: строка письма исчезала, файлы стирались
+         * с диска. Удалить можно ЛЮБОЕ письмо — и вернуть его тоже, пока
+         * корзину не очистили. Письмо лежит здесь целиком, вместе со списком
+         * своих файлов: восстановление — это та же строка обратно в архив.
+         */
+        Db::q("
+        CREATE TABLE IF NOT EXISTS mail_trash (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_key   TEXT,
+            subject      TEXT,
+            from_email   TEXT,
+            to_emails    TEXT,
+            direction    TEXT,
+            date_at      TEXT,
+            deleted_at   TEXT NOT NULL,
+            deleted_by   INTEGER,
+            server_state TEXT,
+            payload_json TEXT NOT NULL,
+            files_json   TEXT
+        )");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_mail_trash_deleted ON mail_trash(deleted_at)");
+
+        // Чем ответила модель на это письмо: отправленное письмо встаёт с этим
+        // в пару в «Исправлениях» и кормит промпты (модуль 041)
+        Db::ensureColumn('mail_messages', 'model_draft_text', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '37')");
+        $current = 37;
+    }
+
+    // v38 — issue #60: доска не грузит письма закрытых карточек, лимит карточек
+    // на колонку, условия подбора запоминаются и за контрагентом.
+    if ($current < 38) {
+        // «Закрыто» — такая же названная колонка, как «Входящие»/«В работе»:
+        // по ней узнают колонку, чьи карточки не стоит грузить целиком.
+        Db::ensureColumn('board_columns', 'kind', 'TEXT');
+        Db::q("UPDATE board_columns SET kind='closed' WHERE kind IS NULL AND title='Закрыто'");
+
+        // Сколько карточек показывать в колонке — не грузить лишнее, если
+        // менеджеру нужны только последние N (issue #60)
+        Db::ensureColumn('board_columns', 'card_limit', 'INTEGER');
+
+        // «Цены и условия — на все позиции» запоминаются и за контрагентом —
+        // это приоритет перед просто последними условиями менеджера (issue #60)
+        Db::ensureColumn('counterparties', 'kp_terms_json', 'TEXT');
+
+        // Доставка по умолчанию включается в цену товара, а не печатается
+        // отдельной строкой — заводской текст условий переписывается тем же
+        // способом, что и в v33: только там, где его никто не трогал руками.
+        // Отправленный документ не переписывается ни при каких условиях.
+        $oldTerms37 = "Стоимость включает расходы на упаковку, маркировку, хранение, погрузку, "
+                    . "подготовку и передачу документов. Доставка в стоимость не включена и считается отдельно.\n"
+                    . "Сроки выполнения условий договора {execution_term} с момента получения предоплаты.\n"
+                    . "Предлагаемая цена продукции является твёрдой и не подлежит изменению в течение "
+                    . "{validity_days} дней с даты настоящего предложения.";
+        Db::q("UPDATE settings SET value=? WHERE key='default_terms_text' AND value=?",
+              [KpTerms::FACTORY_TEXT, $oldTerms37]);
+        Db::q("UPDATE proposals SET terms_text=? WHERE terms_text=? AND status NOT IN ('sent','order_created')",
+              [KpTerms::FACTORY_TEXT, $oldTerms37]);
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '38')");
+        $current = 38;
+    }
+
+    // v39 — module 043: a webhook event that failed is kept and repeated.
+    // MoySklad delivers each event once; one lost to a rate limit used to leave
+    // the order unsynced until someone opened the card by hand.
+    if ($current < 39) {
+        Db::ensureColumn('webhook_log', 'status', 'TEXT', "'ok'");
+        Db::ensureColumn('webhook_log', 'attempts', 'INTEGER', '1');
+        // The one event, apart from the whole delivered body: that is what a
+        // repeat needs — a body can carry several events at once
+        Db::ensureColumn('webhook_log', 'event_json', 'TEXT');
+        // Rows written before this migration have nothing to repeat — count them done
+        Db::q("UPDATE webhook_log SET status='ok' WHERE status IS NULL");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_webhook_retry ON webhook_log(status, id)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '39')");
+        $current = 39;
+    }
+
+    // v40 — модуль 044 (issue #60): свой звук уведомления, вход под контролем,
+    // отложенная отправка письма.
+    if ($current < 40) {
+        // Звук нового письма и его громкость — у каждого свои. NULL — «как в
+        // настройках сервиса»: общий звук остаётся значением по умолчанию
+        Db::ensureColumn('managers', 'notify_sound', 'TEXT');
+        Db::ensureColumn('managers', 'notify_volume', 'INTEGER');
+
+        /**
+         * «Постоянно слетает авторизация» (issue #60).
+         *
+         * Кука жила ровно `SESSION_LIFETIME` от входа и не продлевалась, а
+         * сборщик мусора PHP убирал файл сессии через свои 24 минуты. Теперь
+         * кука продлевается на каждом заходе, а администратор может обнулить
+         * чужой вход: `session_epoch` растёт, и сессии со старым номером
+         * перестают открываться.
+         */
+        Db::ensureColumn('managers', 'session_epoch', 'INTEGER', '0');
+
+        // Входы: кто, когда и откуда. По ним же видно вход с нового адреса —
+        // о нём администратор получает уведомление
+        Db::q("CREATE TABLE IF NOT EXISTS manager_logins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER NOT NULL REFERENCES managers(id),
+            ip TEXT,
+            user_agent TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_manager_logins ON manager_logins(manager_id, id)");
+
+        /**
+         * Отложенная отправка (issue #60).
+         *
+         * Письмо, которому назначили время, лежит здесь целиком — тем самым
+         * телом, которое собрал менеджер. Отправляет его тот же код, что и
+         * кнопка «Отправить»: отложенное письмо не должно отличаться от
+         * обычного ничем, кроме минуты отправки.
+         */
+        Db::q("CREATE TABLE IF NOT EXISTS mail_scheduled (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER NOT NULL REFERENCES managers(id),
+            send_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            subject TEXT,
+            to_addr TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            sent_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_mail_scheduled_due ON mail_scheduled(status, send_at)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '40')");
+        $current = 40;
+    }
+
+    // v41 — модуль 045 (issue #60): КП, поправленное руками в предпросмотре.
+    // Пока поле не пусто, PDF и Word собираются из него, а не из шаблона.
+    if ($current < 41) {
+        Db::ensureColumn('proposals', 'html_override', 'TEXT');
+        Db::ensureColumn('proposals', 'html_override_at', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '41')");
+        $current = 41;
+    }
+
+    // v42 — модуль 046 (issue #67): «Показать в КП отсутствующую номенклатуру»
+    // у каждого КП; NULL — как в настройке KP_SHOW_OUT_OF_SCOPE
+    if ($current < 42) {
+        Db::ensureColumn('proposals', 'show_out_of_scope', 'INTEGER');
+        // Описание товара с сайта — запасной источник к МойСклад (issue #67)
+        Db::ensureColumn('products_cache', 'site_description', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '42')");
+        $current = 42;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
@@ -1824,24 +2048,64 @@ function syncManagersFromConfig(array $cfg): void {
     }
 }
 
+/**
+ * Сколько живёт вход, в секундах (issue #60).
+ *
+ * Настройка `SESSION_LIFETIME` читается и до того, как `$GLOBALS['cfg']`
+ * собран: сессия стартует раньше многих вещей. Потолок — год, как и просили;
+ * меньше пяти минут не бывает, иначе опечатка в поле выкидывает всех.
+ */
+function sessionLifetime(): int {
+    $raw = $GLOBALS['cfg']['SESSION_LIFETIME'] ?? null;
+    if ($raw === null && class_exists('Settings')) $raw = Settings::get('SESSION_LIFETIME', 86400);
+    return max(300, min(31536000, (int)($raw ?? 86400)));
+}
+
 // Start the PHP session with consistent cookie flags. Safe to call repeatedly.
 function startSession(): void {
     if (PHP_SAPI === 'cli') return;                       // cron/CLI has no session
     if (session_status() === PHP_SESSION_ACTIVE) return;
     if (headers_sent()) return;
     $https = isHttps();
+    $lifetime = sessionLifetime();
     // Never adopt an id we did not issue: after the session storage is wiped a
     // stale cookie would otherwise keep an unwritable session alive.
     ini_set('session.use_strict_mode', '1');
+    // «Постоянно слетает авторизация» (issue #60): кука жила месяц, а файл
+    // сессии убирал сборщик мусора PHP через свои 24 минуты. Живут они теперь
+    // одинаково долго.
+    ini_set('session.gc_maxlifetime', (string)$lifetime);
     session_name(SESSION_COOKIE);
     session_set_cookie_params([
-        'lifetime' => (int)($GLOBALS['cfg']['SESSION_LIFETIME'] ?? 86400),
+        'lifetime' => $lifetime,
         'path'     => '/',
         'httponly' => true,
         'secure'   => $https,   // must be false on plain HTTP, or the cookie is dropped
         'samesite' => 'Lax',    // Strict drops the cookie on external return links
     ]);
     session_start();
+    renewSessionCookie($lifetime, $https);
+}
+
+/**
+ * Продлить куку входа — не чаще раза в сутки.
+ *
+ * Без этого «месяц» означал месяц ОТ ПЕРВОГО ВХОДА: менеджер, работающий
+ * каждый день, всё равно в один день оказывался на форме входа. Продление
+ * стоит денег ровно в один заголовок, и его незачем слать при каждом запросе.
+ */
+function renewSessionCookie(int $lifetime, bool $https): void {
+    if (empty($_SESSION['manager_id']) || headers_sent()) return;
+    $last = (int)($_SESSION['cookie_renewed'] ?? 0);
+    if ($last > time() - 86400) return;
+    $_SESSION['cookie_renewed'] = time();
+    setcookie(session_name(), session_id(), [
+        'expires'  => time() + $lifetime,
+        'path'     => '/',
+        'httponly' => true,
+        'secure'   => $https,
+        'samesite' => 'Lax',
+    ]);
 }
 
 // Request came over TLS (directly or through a proxy)
@@ -1868,11 +2132,21 @@ function currentManager(): ?array {
     startSession();
     $id = $_SESSION['manager_id'] ?? null;
     if (!$id) return null;
-    return Db::one(
-        "SELECT id, login, name, email, phone, is_admin, moysklad_uid FROM managers
+    $m = Db::one(
+        "SELECT id, login, name, email, phone, is_admin, moysklad_uid, session_epoch FROM managers
          WHERE id=? AND COALESCE(is_active, 1) = 1",
         [$id]
     );
+    if (!$m) return null;
+
+    // Администратор обнулил вход (issue #60): номер поколения в карточке
+    // ушёл вперёд, и сессии, выданные до этого, больше не открываются
+    if ((int)($m['session_epoch'] ?? 0) !== (int)($_SESSION['epoch'] ?? 0)) {
+        $_SESSION = [];
+        return null;
+    }
+    unset($m['session_epoch']);
+    return $m;
 }
 
 /**

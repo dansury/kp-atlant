@@ -125,6 +125,8 @@ final class KpSet {
             'wait_months'         => $m['wait_months'] ?? null,
             'wait_discount'       => $m['wait_discount'] ?? null,
             'wait_prepay'         => $m['wait_prepay'] ?? null,
+            // Фото выбраны в таблице подбора — документ печатает их же
+            'selected_images'     => $m['selected_images'] ?? null,
             'is_alternative'      => !empty($m['is_alternative']) ? 1 : 0,
             // Слова КЛИЕНТА про то, вместо чего стоит наша позиция: КП печатает
             // их над её названием. Менеджер их правит, поэтому это не

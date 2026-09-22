@@ -313,8 +313,10 @@ Terms::prepareProposal($kpId);
 Db::q("UPDATE proposal_items SET wait_on=1 WHERE proposal_id=?", [$kpId]);
 $waited = PdfGenerator::html($kpId);
 ok('в таблице появились условия ожидания', str_contains($waited, 'скидка за ожидание 10%'));
-ok('и цена «до» зачёркнута рядом', str_contains($waited, 'class="was"'));
-ok('позиция на 100 руб. напечатана по 90', str_contains($waited, '90,00 руб.'), 'см. таблицу позиций');
+// Исходная цена и цена со скидкой теперь в двух разных колонках, а не
+// зачёркиванием в одной (issue #60)
+ok('цена со скидкой — в своей колонке', str_contains($waited, 'class="price discount">90 руб.'));
+ok('позиция на 100 руб. напечатана по 90', str_contains($waited, '90 руб.'), 'см. таблицу позиций');
 
 // Лимит фотографий — на самом КП, а не только в настройках
 Db::update('proposals', ['photos_per_item' => 2], 'id=?', [$kpId]);
@@ -443,8 +445,11 @@ $accepted = Outbox::accept(['name' => '../../Счёт №5/2026.pdf', 'tmp_name'
 ok('имя файла обезврежено', !str_contains($accepted['filename'], '/') && !str_contains($accepted['filename'], '..'),
    $accepted['filename']);
 ok('человеческое имя сохранено', str_contains($accepted['filename'], 'Счёт'), $accepted['filename']);
-$paths = Outbox::resolve([$accepted['name']], $mgr);
+$paths = array_column(Outbox::resolve([$accepted['name']], $mgr), 'path');
 ok('файл находится по своему имени', count($paths) === 1 && is_file($paths[0]));
+ok('а в письмо уходит человеческое имя, без служебной приставки',
+   Outbox::displayName($accepted['name']) === $accepted['filename'],
+   Outbox::displayName($accepted['name']));
 ok('чужой путь не достать', Outbox::resolve(['../../../etc/passwd'], $mgr) === []);
 ok('и файл другого менеджера тоже', Outbox::resolve([$accepted['name']], $mgr + 1) === []);
 array_map('unlink', $paths);

@@ -217,12 +217,12 @@ ok('совпавшие концы вилкой не считаются',
    Terms::priceTop(['price' => 12000, 'price_max' => 12000]) === 0.0);
 
 $html = PdfGenerator::html($proposalId);
-ok('документ печатает вилку', str_contains($html, 'от 12 000,00 до 15 000,00 руб.'),
+ok('документ печатает вилку', str_contains($html, 'от 12 000 до 15 000 руб.'),
    (string)(strstr($html, 'от 12 000,00') ? 'нашлось' : 'нет'));
-ok('и «Итого» при этом называется «от»', str_contains($html, 'Итого') && str_contains($html, 'от 120 000,00'));
+ok('и «Итого» при этом называется «от»', str_contains($html, 'Итого') && str_contains($html, 'от 120 000'));
 
 $letter = KpText::render($proposalId)['text'];
-ok('письмо называет ту же вилку', str_contains($letter, 'от 12 000,00 руб. до 15 000,00 руб.'), $letter);
+ok('письмо называет ту же вилку', str_contains($letter, 'от 12 000 руб. до 15 000 руб.'), $letter);
 ok('и тот же итог «от»', str_contains($letter, ': от '), $letter);
 
 echo "\n5. Общие условия КП: один выбор на все позиции, и он запоминается\n";
@@ -295,8 +295,8 @@ $row = Db::one("SELECT * FROM proposal_items WHERE proposal_id=?", [$kp2]);
 ok('слова клиента доехали до КП', (string)$row['alt_of'] === 'Костюм летний полевой, обр. 2020');
 
 $html2 = PdfGenerator::html($kp2);
-ok('и печатаются курсивом серым над нашим названием',
-   str_contains($html2, '<div class="analog-of"><em>Костюм летний полевой, обр. 2020</em></div>'));
+ok('и печатаются жирным серым над нашим названием (issue #60)',
+   str_contains($html2, '<div class="analog-of">Костюм летний полевой, обр. 2020</div>'));
 ok('именно над названием, а не после него',
    strpos($html2, 'Костюм летний полевой, обр. 2020') < strpos($html2, 'Костюм тактический Ратник'));
 

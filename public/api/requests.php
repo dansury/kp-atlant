@@ -119,8 +119,9 @@ switch ($action) {
         // Доставка — такая же строка подбора, как позиция (модуль 034)
         $req['delivery'] = RequestItems::delivery($id);
         // Цены и условия, которыми менеджер закрыл прошлое КП: панель над
-        // таблицей подбора открывается ими, а не пустым выбором (модуль 036)
-        $req['conditions']  = Terms::conditions((int)$manager['id']);
+        // таблицей подбора открывается ими, а не пустым выбором (модуль 036).
+        // У постоянного контрагента — свои условия, и они в приоритете (issue #60)
+        $req['conditions']  = Terms::conditions((int)$manager['id'], $req['counterparty_id'] ? (int)$req['counterparty_id'] : null);
         $req['price_types'] = Catalog::priceTypes();
         jsonData($req);
 
@@ -129,13 +130,16 @@ switch ($action) {
     case 'items': {
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
-        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $reqRow = Db::one("SELECT counterparty_id FROM requests WHERE id=?", [$id]);
+        if (!$reqRow) jsonError('Not found', 404);
+        $cpId = $reqRow['counterparty_id'] ? (int)$reqRow['counterparty_id'] : null;
         jsonData([
             'items'      => RequestItems::ensure($id),
             'delivery'   => RequestItems::delivery($id),
             // Цены и условия, которыми менеджер закрыл прошлое КП: следующее
-            // открывается ими же, а не пустым выбором заново (модуль 036)
-            'conditions' => Terms::conditions((int)$manager['id']),
+            // открывается ими же, а не пустым выбором заново (модуль 036).
+            // Условия контрагента — в приоритете, если он у запроса есть (issue #60)
+            'conditions' => Terms::conditions((int)$manager['id'], $cpId),
             'price_types'=> Catalog::priceTypes(),
         ]);
     }
@@ -148,13 +152,24 @@ switch ($action) {
     case 'items_conditions': {
         $manager = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
-        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        $reqRow = Db::one("SELECT counterparty_id FROM requests WHERE id=?", [$id]);
+        if (!$reqRow) jsonError('Not found', 404);
+        $cpId = $reqRow['counterparty_id'] ? (int)$reqRow['counterparty_id'] : null;
         $input = getInput();
-        $conditions = Terms::remember((int)$manager['id'], (array)($input['conditions'] ?? []));
+        $conditions = Terms::remember((int)$manager['id'], (array)($input['conditions'] ?? []), $cpId);
+        $photos = 0;
+        if (!empty($input['apply'])) {
+            // «Количество фото — на все позиции» (issue #60): каждой строке
+            // проставляются ПЕРВЫЕ N её фотографий, как если бы менеджер
+            // прошёл галочками по всей таблице
+            if (array_key_exists('photos', (array)($input['conditions'] ?? []))) {
+                $photos = RequestItems::applyPhotoLimit($id, $conditions['photos']);
+            }
+        }
         $items = !empty($input['apply']) ? RequestItems::applyConditions($id, $conditions) : RequestItems::all($id);
         // Тот же срок ожидания — в уже собранные КП запроса (модуль 037)
         if (!empty($input['apply'])) KpSet::syncWaitFromRequest($id);
-        jsonData(['items' => $items, 'conditions' => $conditions]);
+        jsonData(['items' => $items, 'conditions' => $conditions, 'photos_applied' => $photos]);
     }
 
     case 'items_save':
@@ -172,6 +187,49 @@ switch ($action) {
         // документы держали прежний срок, пока их никто не сводил (модуль 037)
         $rebuilt = KpSet::syncWaitFromRequest($id);
         jsonData(['items' => $items, 'delivery' => $delivery, 'kp_rebuilt' => $rebuilt]);
+
+    /**
+     * Фотографии позиции подбора (модуль 040).
+     *
+     * Картинки выбирают там же, где определились с товаром, — в таблице
+     * подбора, а не в уже собранном КП. Выбор едет в документ вместе с
+     * позицией. `null` в `selected` — «выбор не делали»: печатаются все.
+     */
+    case 'item_images': {
+        requireAuth();
+        $itemId = (int)($_GET['item_id'] ?? 0);
+        $item = Db::one("SELECT id, moysklad_product_id, selected_images FROM request_items WHERE id=?", [$itemId]);
+        if (!$item) jsonError('Позиция не найдена', 404);
+        require_once ROOT . '/lib/kp_content.php';
+
+        $msId = trim((string)($item['moysklad_product_id'] ?? ''));
+        $available = $msId === '' ? [] : array_map(fn($img) => [
+            'key' => $img['key'],
+            'url' => '/api/products.php?action=image&id=' . rawurlencode($msId) . '&key=' . rawurlencode($img['key']),
+        ], KpContent::productImageList($msId));
+
+        $selected = json_decode((string)($item['selected_images'] ?? ''), true);
+        jsonData(['available' => $available, 'selected' => is_array($selected) ? $selected : null]);
+    }
+
+    case 'item_images_save': {
+        requireAuth();
+        $itemId = (int)($_GET['item_id'] ?? 0);
+        if (!Db::one("SELECT id FROM request_items WHERE id=?", [$itemId])) jsonError('Позиция не найдена', 404);
+        $input = getInput();
+        $keys = $input['selected'] ?? null;
+        Db::update('request_items', [
+            'selected_images' => is_array($keys)
+                ? json_encode(array_values(array_map('strval', $keys)), JSON_UNESCAPED_UNICODE) : null,
+        ], 'id=?', [$itemId]);
+        // Уже собранные КП этого запроса печатают тот же выбор
+        $moved = (int)Db::q("UPDATE proposal_items SET selected_images=(
+                     SELECT selected_images FROM request_items WHERE id=?)
+                 WHERE request_item_id=? AND proposal_id IN (
+                     SELECT id FROM proposals WHERE status NOT IN ('sent','order_created'))",
+                 [$itemId, $itemId])->rowCount();
+        jsonOk(['kp_items' => $moved]);
+    }
 
     case 'items_choose':
         // The manager answered «какая из равнозначных» — the line stops asking
@@ -210,11 +268,30 @@ switch ($action) {
         // the same on screen as «нашлось всё» (module 018)
         jsonData(RequestItems::rematchReport($id, $useLlm) + ['delivery' => RequestItems::delivery($id)]);
 
+    /**
+     * Запрос, который принесли мимо почты (модуль 038).
+     *
+     * Клиент написал в мессенджер, позвонил или прислал файл — до сих пор это
+     * значило «перепечатать руками и потерять вложение». Форма принимает текст
+     * И ФАЙЛЫ, а запрос кладётся карточкой в «В работе»: он уже в работе, раз
+     * его завели руками, и ждать, пока кто-то перетащит его из «Входящих», не
+     * должен. Браузер получает адрес этой карточки и уходит на неё.
+     */
     case 'create':
         $manager = requireAuth();
         $input = getInput();
         $text = trim($input['text'] ?? '');
-        if (!$text) jsonError('Text is required');
+        $files = array_values((array)($input['files'] ?? []));
+        if (!$text && !$files) jsonError('Вставьте текст запроса или приложите файл');
+
+        // Текст письма может быть и в файле: спецификация в .xlsx, запрос
+        // сканом. Разбирать нечего, пока вложения не прочитаны.
+        require_once ROOT . '/lib/outbox.php';
+        $staged = [];
+        foreach (Outbox::resolve($files, (int)$manager['id']) as $path) {
+            $staged[] = ['path' => $path, 'name' => preg_replace('/^[0-9a-f]{16}__/', '', basename($path))];
+        }
+        if ($text === '') $text = '(запрос во вложении: ' . implode(', ', array_column($staged, 'name')) . ')';
 
         // Parse via LLM
         $parsed = RequestParser::parse($text);
@@ -235,6 +312,9 @@ switch ($action) {
         }
 
         $type = ($parsed['request_type'] ?? 'kp_request') === 'order' ? 'order' : 'kp_request';
+        // Проверочный запрос заводит мастер настройки, а он админский: иначе
+        // «тихий» запрос без уведомления мог бы создать кто угодно
+        $isTrial = !empty($input['trial']) && !empty($manager['is_admin']);
         $requestId = Db::insert('requests', [
             'source' => 'manual',
             'raw_text' => $text,
@@ -244,7 +324,21 @@ switch ($action) {
             'status' => 'processing',
             'type' => $type,
             'type_source' => 'llm',
+            'is_trial' => $isTrial ? 1 : 0,
         ]);
+
+        // Вложения — на запрос и на компанию: текст из них идёт в подбор
+        // позиций так же, как текст из письма
+        foreach ($staged as $file) {
+            try {
+                Attachments::store(
+                    ['filename' => $file['name'], 'content' => (string)file_get_contents($file['path'])],
+                    ['request_id' => $requestId, 'counterparty_id' => $counterpartyId]
+                );
+            } catch (Throwable $e) {
+                Logger::exception('requests', $e, ['request_id' => $requestId, 'file' => $file['name']]);
+            }
+        }
 
         // Manual paste is still an inbound message in the company feed
         Crm::logEvent($counterpartyId, 'in', $text, [
@@ -256,11 +350,47 @@ switch ($action) {
         // Pre-fill the matched-positions table right away — no model call here
         RequestItems::ensure($requestId);
 
-        // Notify
-        require_once ROOT . '/lib/notifier.php';
-        Notifier::notify('new_request', "Новый запрос на КП" . ($orgName ? " от $orgName" : ''), null, 'request', $requestId);
+        // Карточка сразу в «В работе»: запрос, заведённый руками, уже разбирают
+        require_once ROOT . '/lib/boards.php';
+        $cardId = 0;
+        try {
+            $board = Boards::singleton();
+            $work  = Boards::workColumn((int)$board['id']);
+            if ($work) {
+                $cardId = Boards::addCard((int)$work['id'], [
+                    'counterparty_id' => $counterpartyId,
+                    'request_id'      => $requestId,
+                    'title'           => (string)($orgName ?: 'Запрос #' . $requestId),
+                    'manager_id'      => (int)$manager['id'],
+                ]);
+            }
+        } catch (Throwable $e) {
+            Logger::exception('requests', $e, ['request_id' => $requestId]);
+        }
 
-        jsonData(['id' => $requestId, 'status' => 'processing', 'type' => $type]);
+        // Проверочный запрос мастера настройки — чтобы мастер знал, что оценивать
+        if ($isTrial) {
+            require_once ROOT . '/lib/support.php';
+            require_once ROOT . '/lib/setup_wizard.php';
+            SetupWizard::rememberTrial($requestId, (int)$counterpartyId);
+        }
+
+        // Notify — кроме проверочного: «Ромашка» из примера не клиент
+        if (!$isTrial) {
+            require_once ROOT . '/lib/notifier.php';
+            Notifier::notify('new_request', "Новый запрос на КП" . ($orgName ? " от $orgName" : ''), null, 'request', $requestId);
+        }
+
+        jsonData([
+            'id'     => $requestId,
+            'status' => 'processing',
+            'type'   => $type,
+            'counterparty_id' => $counterpartyId,
+            'card_id' => $cardId,
+            'files'   => count($staged),
+            // Куда уходит браузер: на карточку, которую только что положили на доску
+            'hash'    => $counterpartyId ? 'mail/company/' . $counterpartyId : 'mail/request/' . $requestId,
+        ]);
 
     case 'assign':
         $manager = requireAuth();

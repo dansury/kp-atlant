@@ -7,11 +7,18 @@
        и различаться они могут только шрифтом. Кириллицу во всех начертаниях в
        mPDF умеет DejaVu Sans, поэтому имя шрифта здесь своё (модуль 035). */
     body { font-family: DejaVu Sans, sans-serif; font-size: 10pt; color: #222; line-height: 1.45; margin: 0; padding: 20px 40px; }
-    .header { text-align: right; font-size: 9pt; color: #555; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; min-height: 62px; }
-    .header .entity-name { font-weight: bold; font-size: 10pt; color: #222; }
+    /* Шапка — таблицей без рамок: знак слева, реквизиты справа (issue #67).
+       Плавающую картинку mPDF не обтекает строками, и под первой строкой
+       шапки оставался разрыв. */
+    table.header-grid { width: 100%; border-collapse: collapse; border-bottom: 2px solid #333; margin-bottom: 14px; }
+    table.header-grid td { vertical-align: top; padding: 0 0 8px; border: 0; }
+    td.header-grid__logo { width: 170px; }
+    .header { text-align: right; font-size: 9pt; color: #555; }
+    .entity-name { font-weight: bold; font-size: 10pt; color: #222; }
     /* Знак — слева вверху, до всего остального: реквизиты отправителя стоят
        справа от него и в Word ложатся следующим абзацем (модуль 020) */
-    .logo { float: left; max-height: 62px; margin: 0 15px 6px 0; }
+    .logo { max-height: 62px; }
+    .title-gap { margin: 0; font-size: 10pt; line-height: 1.45; }
     .title { text-align: center; font-size: 16pt; font-weight: bold; margin: 30px 0 20px; text-transform: uppercase; letter-spacing: 1px; }
     .intro { margin-bottom: 15px; }
     .block { margin: 15px 0; }
@@ -30,6 +37,8 @@
     .conditions p { margin: 5px 0; }
     /* Дата, подпись и расшифровка — ОДНОЙ строкой, как в образце: картинка
        подписи стоит поверх линии, а не отдельным абзацем (модуль 035) */
+    .out-of-scope td { color: #8a8a8a; }
+    .out-of-scope__name { color: #8a8a8a; font-style: italic; }
     .signature { margin-top: 36px; font-size: 10pt; }
     .signature__date { margin-right: 6px; }
     .signature__line { letter-spacing: 0; }
@@ -39,10 +48,12 @@
     .note { font-size: 9pt; color: #666; }
     /* Чем клиент называл позицию, вместо которой стоит наша (модуль 036).
        Серый на белом 4.6:1 — WCAG AA для мелкого текста */
-    .analog-of { font-size: 8.5pt; color: #6b6b6b; font-style: italic; }
+    .analog-of { font-size: 8.5pt; color: #6b6b6b; font-weight: bold; }
     /* Приложение: описания товаров за таблицей цен (модуль 034) */
     .appendix { page-break-before: always; margin-bottom: 10px; }
-    .appendix__title { font-size: 13pt; font-weight: bold; text-align: right; }
+        /* Выравнивание текста — слева (issue #60). Справа остаются только шапка
+       отправителя и денежные колонки таблицы: их так читают. */
+    .appendix__title { font-size: 13pt; font-weight: bold; text-align: left; }
     .appendix__subtitle { font-size: 12pt; font-weight: bold; text-align: center; margin-top: 10px; }
 
     /* Product card: description, photo gallery, specs, kit contents */
@@ -50,9 +61,11 @@
     .card--break { page-break-before: always; }
     .card__end { clear: both; }
     /* Цена «до скидки» рядом с ценой «после» — клиент должен видеть, за что платит меньше */
-    .was { font-size: 8pt; color: #777; text-decoration: line-through; }
+    /* Скидка (issue #67): зачёркнута только старая цена, процент — серым */
+    .was { color: #777; text-decoration: line-through; }
+    .disc { color: #8a8a8a; }
     .card__name { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
-    .card__desc { font-size: 10pt; text-align: justify; }
+    .card__desc { font-size: 10pt; text-align: left; }
     .card__subtitle { font-size: 10pt; font-weight: bold; margin: 12px 0 4px; }
     .card__list { font-size: 10pt; margin: 0; }
     /* Описание приходит из МойСклад размеченным и печатается разметкой, а не
@@ -61,11 +74,13 @@
     .card__desc li, .card__list li { margin: 0 0 2px; }
     .card__desc p, .card__list p { margin: 0 0 5px; }
     .gallery { margin: 10px 0; text-align: center; }
-    .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; }
+    /* Фотографии не слипаются с текстом (issue #60): рамка отступа вокруг
+       каждой и поле между галереей и колонкой описания */
+    .gallery img { max-width: 84%; max-height: 240px; margin: 6px 0; padding: 4px; }
     /* В приложении фотография стоит СПРАВА, а описание обтекает её слева —
        так собран образец, по которому КП уходит клиенту (модуль 035) */
-    .card .gallery { float: right; width: 225px; margin: 0 0 8px 12px; text-align: right; }
-    .card .gallery img { max-width: 225px; max-height: 240px; }
+    .card .gallery { float: right; width: 225px; margin: 0 0 14px 20px; text-align: left; }
+    .card .gallery img { max-width: 225px; max-height: 240px; margin: 0 0 8px; padding: 0; }
     .disclaimer { font-size: 8.5pt; color: #666; font-style: italic; margin-top: 8px; }
 
     /* Correspondence table: what was asked for vs what we answer with */
@@ -89,13 +104,13 @@
     .fits { font-size: 8.5pt; color: #333; margin-top: 2px; }
     .fits li { margin: 0; }
     .card__link { font-size: 9.5pt; margin-top: 6px; }
-    .card__link a { color: #c00; text-decoration: none; }
+    .card__link a, a.card__url { color: #c00; text-decoration: none; }
     /* The same address as a picture: on paper the link above is not clickable.
        Kept small and beside the text, never a block of its own — the card is
        about the product, and the QR is a convenience on the way out. */
-    /* QR стоит справа, под фотографией, и текст обтекает его — как в образце */
-    .card__qr { float: right; clear: right; margin: 8px 0 4px 12px; text-align: right; }
-    .card__qr img { vertical-align: middle; }
+    /* QR стоит слева от ссылки на сайт (issue #60) */
+    table.site-line { border-collapse: collapse; margin-top: 4px; }
+    table.site-line td { border: 0; padding: 0 12px 0 0; vertical-align: middle; }
     .card__qr-note { font-size: 8.5pt; color: #666; }
 
     /* Requisites: the block that must be right, not plausible */
@@ -116,10 +131,6 @@
 </head>
 <body>
 
-<!-- Logo + Header -->
-<?php if ($logo): ?>
-<img src="<?= $logo ?>" class="logo" alt="Atlant Armour">
-<?php endif; ?>
 
 <?php
     // The seller as the КП was signed: the frozen snapshot wins, and the live
@@ -134,7 +145,9 @@
     ];
     $sellerName = $seller['short_name'] !== '' ? $seller['short_name'] : $seller['full_name'];
 ?>
-<div class="header">
+<table class="header-grid layout"><tr>
+<td class="header-grid__logo"><?php if ($logo): ?><img src="<?= $logo ?>" class="logo" alt="Atlant Armour"><?php endif; ?></td>
+<td class="header">
     <div class="entity-name">от: <?= htmlspecialchars($sellerName) ?></div>
     <div>ИНН <?= htmlspecialchars($seller['inn']) ?><?= $seller['kpp'] !== '' ? ' / КПП ' . htmlspecialchars($seller['kpp']) : '' ?></div>
     <?php if ($seller['ogrnip'] !== ''): ?>
@@ -156,9 +169,13 @@
     <?php if (!empty($showRequisites) && !empty($seller['bank']['line'])): ?>
     <div>Банк: <?= htmlspecialchars($seller['bank']['line']) ?></div>
     <?php endif; ?>
-</div>
+</td>
+</tr></table>
 
-<div style="clear:both"></div>
+<!-- Пустая строка перед заголовком (issue #60). В PDF это отступ, а в Word —
+     НАСТОЯЩИЙ пустой абзац: поля CSS Word схлопывает, и шапка упиралась
+     прямо в «Коммерческое предложение». -->
+<p class="title-gap">&nbsp;</p>
 
 <!-- Title -->
 <div class="title">Коммерческое предложение</div>
@@ -234,68 +251,91 @@
 <?php endif; ?>
 
 <!-- Items table -->
+<?php $rub = fn($v) => KpContent::rub((float)$v); ?>
+<?php $showDisc = !empty($discountColumn['show']); ?>
 <table class="items">
 <thead>
 <tr>
     <th>№</th>
     <th>Наименование</th>
-    <th>Ед.изм.</th>
-    <th>Кол-во</th>
+    <th>Кол-во, шт</th>
     <th>Цена за ед., <?= htmlspecialchars($vatStatement) ?></th>
+    <?php /* Одна скидка на всё — процент в заголовке, разные — в ячейках (issue #67) */ ?>
+    <?php if ($showDisc): ?>
+    <th>Со скидкой<?= ($discountColumn['uniform'] ?? '') !== '' ? ' ' . htmlspecialchars($discountColumn['uniform']) . '%' : '' ?></th>
+    <?php endif; ?>
     <th>Сумма</th>
 </tr>
 </thead>
 <tbody>
-<?php foreach ($items as $i => $item): ?>
+<?php $n = 0; ?>
+<?php foreach (($tableRows ?? []) as $tr): ?>
+<?php if ($tr['kind'] === 'out'): ?>
+<?php /* «Не наша номенклатура» (issue #67): на своём месте в порядке подбора,
+         название клиента серым курсивом, в остальных ячейках прочерк. */ ?>
+<tr class="out-of-scope">
+    <td class="num">—</td>
+    <td><em class="out-of-scope__name"><?= htmlspecialchars((string)$tr['row']['requested']) ?></em></td>
+    <td class="qty">—</td>
+    <td class="price">—</td>
+    <?php if ($showDisc): ?><td class="price discount">—</td><?php endif; ?>
+    <td class="sum">—</td>
+</tr>
+<?php continue; endif; ?>
+<?php $item = $tr['row']; $n++; ?>
 <tr>
-    <td class="num"><?= $i + 1 ?></td>
+    <td class="num"><?= $n ?></td>
     <td>
         <?php /* ==== Аналог: чем это называл клиент (модуль 036) ====
                  Над названием НАШЕГО товара стоит строка из письма или из
-                 таблицы клиента — курсивом, серым: закупщик находит в нашем
-                 предложении свою собственную позицию, не сверяя два документа
-                 глазами. Печатается только по галочке «аналог»: без неё это
-                 наш товар под нашим же именем, и вторая строка — шум. */ ?>
+                 таблицы клиента — жирным, серым: закупщик находит в нашем
+                 предложении свою собственную позицию. Печатается только по
+                 галочке «аналог». */ ?>
         <?php $analogOf = trim((string)($item['analog_of'] ?? '')); ?>
         <?php if ($analogOf !== ''): ?>
-        <div class="analog-of"><em><?= htmlspecialchars($analogOf) ?></em></div>
+        <div class="analog-of"><?= htmlspecialchars($analogOf) ?></div>
         <?php endif; ?>
         <?= htmlspecialchars($item['product_name']) ?>
-        <?php /* Примечание менеджера. Автоматическое «под заказ» сюда не
-                 печатается, когда ниже идут условия ожидания: они начинаются
-                 теми же словами, и в документ уходило «под заказ  под заказ,
-                 срок ожидания 3 месяца» (модуль 034). */ ?>
+        <?php /* Примечание менеджера; авто-«под заказ» не повторяется перед
+                 условиями ожидания (модуль 034) */ ?>
         <?php if (!empty($item['notes'])): ?>
         <br><span class="stock-warning"><?= htmlspecialchars($item['notes']) ?></span>
         <?php endif; ?>
         <?php if (!empty($item['wait_note'])): ?>
-        <!-- Условия ожидания позиции, которой нет на складе (модуль 023):
-             срок, скидка за ожидание и предоплата — в одной строке -->
         <br><span class="stock-warning"><?= htmlspecialchars($item['wait_note']) ?></span>
         <?php endif; ?>
     </td>
-    <td class="qty"><?= htmlspecialchars($item['unit']) ?></td>
     <td class="qty"><?= !empty($item['qty_from']) ? 'от ' . $item['quantity'] : $item['quantity'] ?></td>
-<?php /* Вилка цен (модуль 036): у общего товара своей цены нет, она стоит на
-         модификациях и они стоят по-разному. Совпали — печатается одна цена. */ ?>
-<?php $priceTop = (float)($item['effective_price_max'] ?? 0); ?>
-    <td class="price"><?php if (!empty($item['discount_shown'])): ?><span class="was"><?= number_format($item['price'], 2, ',', ' ') ?> руб. −<?= htmlspecialchars($item['discount_shown']) ?>%</span><br><?php endif;
-        ?><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['effective_price'], 2, ',', ' ') ?><?php
-        if ($priceTop > 0) echo ' до ' . number_format($priceTop, 2, ',', ' '); ?> руб.</td>
-    <td class="sum"><?= ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= number_format($item['sum'], 2, ',', ' ') ?><?php
-        if ($priceTop > 0) echo ' до ' . number_format((float)($item['sum_max'] ?? 0), 2, ',', ' '); ?> руб.</td>
+<?php /* Вилка цен — только у общего товара, чьи модификации стоят по-разному
+         (модуль 036, issue #67): одинаковые цены печатаются одной */ ?>
+<?php $priceTop = (float)($item['price_top'] ?? 0); ?>
+<?php $discPriceTop = (float)($item['effective_price_max'] ?? 0); ?>
+<?php $hasDisc = !empty($item['discount_shown']); ?>
+<?php $from = ($priceTop > 0 || !empty($item['price_from'])) ? 'от ' : ''; ?>
+<?php $old = $from . $rub($item['price']) . ($priceTop > 0 ? ' до ' . $rub($priceTop) : '') . ' руб.'; ?>
+    <?php /* «Цена за ед.» — исходная цена; при скидке она зачёркнута, а цена
+             со скидкой стоит в соседнем столбце (issue #60, #67) */ ?>
+    <td class="price"><?= $hasDisc ? '<span class="was">' . htmlspecialchars($old) . '</span>' : htmlspecialchars($old) ?></td>
+    <?php if ($showDisc): ?>
+    <td class="price discount"><?php if ($hasDisc): ?><?php
+        if (($discountColumn['uniform'] ?? '') === ''): ?><span class="disc">-<?= htmlspecialchars($item['discount_shown']) ?>%</span><br><?php endif;
+        ?><?= ($discPriceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= $rub($item['effective_price']) ?><?php
+        if ($discPriceTop > 0) echo ' до ' . $rub($discPriceTop); ?> руб.<?php endif; ?></td>
+    <?php endif; ?>
+    <td class="sum"><?= ($discPriceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= $rub($item['sum']) ?><?php
+        if ($discPriceTop > 0) echo ' до ' . $rub((float)($item['sum_max'] ?? 0)); ?> руб.</td>
 </tr>
 <?php endforeach; ?>
 <?php if (!empty($delivery)): ?>
 <!-- Доставка отдельной строкой (модуль 026): она не входит в стоимость товара,
      и клиент должен видеть её ценой, а не оговоркой в условиях -->
 <tr>
-    <td class="num"><?= count($items) + 1 ?></td>
+    <td class="num"><?= $n + 1 ?></td>
     <td><?= htmlspecialchars($delivery['name']) ?></td>
-    <td class="qty">усл.</td>
     <td class="qty">1</td>
-    <td class="price"><?= number_format($delivery['price'], 2, ',', ' ') ?> руб.</td>
-    <td class="sum"><?= number_format($delivery['price'], 2, ',', ' ') ?> руб.</td>
+    <td class="price"><?= $rub($delivery['price']) ?> руб.</td>
+    <?php if ($showDisc): ?><td class="price discount"></td><?php endif; ?>
+    <td class="sum"><?= $rub($delivery['price']) ?> руб.</td>
 </tr>
 <?php endif; ?>
 </tbody>
@@ -307,7 +347,7 @@
      чтобы документ и письмо не назвали клиенту разных сумм -->
 <?php foreach ($vatLines as $line): ?>
 <div class="<?= $line['total'] ? 'total-row' : 'vat-row' ?>"><?= htmlspecialchars($line['label']) ?><?php
-    if ($line['amount'] !== null): ?>: <?= $totalIsFrom ? 'от ' : '' ?><?= number_format($line['amount'], 2, ',', ' ') ?> руб.<?php endif; ?></div>
+    if ($line['amount'] !== null): ?>: <?= $totalIsFrom ? 'от ' : '' ?><?= KpContent::rub((float)$line['amount']) ?> руб.<?php endif; ?></div>
 <?php endforeach; ?>
 
 <!-- Positions we could not match to the catalog (module 018).
@@ -366,26 +406,12 @@
      (модуль 022): в шапке он и остаётся, а сюда попадает только то, чего там
      не было, — банк, договор и адресат. Ничего в этом блоке никогда не пишет
      модель: это снимок из МойСклад, замороженный на КП (модуль 013). -->
-<?php $hasBuyerLine = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? ''))) !== ''; ?>
-<?php if (!empty($showRequisites) && (!empty($requisites['contract']) || $hasBuyerLine)): ?>
+<?php /* Договор — то, чего в шапке нет. Блок «Покупатель» из конца документа
+         убран (issue #67): клиент назван во вступлении. */ ?>
+<?php if (!empty($showRequisites) && !empty($requisites['contract'])): ?>
 <div class="req">
-    <?php /* Банк печатается в шапке первой страницы (модуль 034) — здесь остаются
-             только договор и адресат */ ?>
-    <?php if (!empty($requisites['contract'])): ?>
     <div class="req__row">Договор: <?= htmlspecialchars($requisites['contract']['name']) ?><?php
         if ($requisites['contract']['date'] !== '') echo ' от ' . htmlspecialchars($requisites['contract']['date']); ?></div>
-    <?php endif; ?>
-
-    <?php $buyerName = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? ''))); ?>
-    <?php if (!empty($requisites['buyer']) && $buyerName !== ''): ?>
-    <div class="req__title" style="margin-top:8px">Покупатель</div>
-    <div class="req__row"><?= htmlspecialchars($buyerName) ?><?php
-        if (($requisites['buyer']['inn'] ?? '') !== '') echo ', ИНН ' . htmlspecialchars($requisites['buyer']['inn']);
-        if (($requisites['buyer']['kpp'] ?? '') !== '') echo ', КПП ' . htmlspecialchars($requisites['buyer']['kpp']); ?></div>
-    <?php if (($requisites['buyer']['legal_address'] ?? '') !== ''): ?>
-    <div class="req__row"><?= htmlspecialchars($requisites['buyer']['legal_address']) ?></div>
-    <?php endif; ?>
-    <?php endif; ?>
 </div>
 <?php endif; ?>
 
@@ -412,7 +438,7 @@
             <?php endif; ?>
         </td>
         <td class="unit"><?= htmlspecialchars($addon['unit']) ?></td>
-        <td class="price"><?= $addon['price'] > 0 ? number_format($addon['price'], 2, ',', ' ') . ' руб.' : 'по запросу' ?></td>
+        <td class="price"><?= $addon['price'] > 0 ? KpContent::rub((float)$addon['price']) . ' руб.' : 'по запросу' ?></td>
     </tr>
     <?php endforeach; ?>
     </tbody>
@@ -505,27 +531,28 @@
     <div class="card__list"><?= Markup::markdownToHtml((string)$item['included_text']) ?></div>
     <?php endif; ?>
 
-    <?php if (!empty($showSiteLink) && !empty($item['site_url'])): ?>
-    <!-- The product's own page on the shop, verified before it was cached -->
-    <div class="card__link">Подробнее на сайте:
-        <a href="<?= htmlspecialchars($item['site_url']) ?>"><?= htmlspecialchars($item['site_url']) ?></a>
-    </div>
-    <?php if (!empty($item['site_qr'])): ?>
-    <!-- The same link for a printed copy. class="qr" is what tells the Word
-         converter this is not a photograph and must stay small. -->
-    <div class="card__qr">
-        <img class="qr" src="<?= $item['site_qr'] ?>"
-             width="<?= (int)($qrSize ?? 90) ?>" height="<?= (int)($qrSize ?? 90) ?>"
-             alt="QR-код страницы товара на сайте">
-        <?php if (($qrHint ?? '') !== ''): ?>
-        <span class="card__qr-note">&nbsp;<?= htmlspecialchars($qrHint) ?></span>
-        <?php endif; ?>
-    </div>
-    <?php endif; ?>
-    <?php endif; ?>
-    <?php /* Обтекание фотографии закрывается здесь: без этого следующая
-             карточка начиналась бы сбоку от предыдущей (модуль 035) */ ?>
+    <?php /* Обтекание фотографии закрывается до ссылки: дальше пустая строка и
+             QR слева от ссылки на сайт (issue #60, #67) */ ?>
     <div class="card__end"></div>
+    <?php if (!empty($showSiteLink) && !empty($item['site_url'])): ?>
+    <p class="title-gap">&nbsp;</p>
+    <table class="site-line layout"><tr>
+        <?php if (!empty($item['site_qr'])): ?>
+        <!-- class="qr" tells the Word converter this is not a photograph -->
+        <td class="site-line__qr"><img class="qr" src="<?= $item['site_qr'] ?>"
+             width="<?= (int)($qrSize ?? 90) ?>" height="<?= (int)($qrSize ?? 90) ?>"
+             alt="QR-код страницы товара на сайте"></td>
+        <?php endif; ?>
+        <td class="site-line__link">
+            <div class="card__link">Подробнее на сайте:
+                <a class="card__url" href="<?= htmlspecialchars($item['site_url']) ?>"><?= htmlspecialchars($item['site_url']) ?></a>
+            </div>
+            <?php if (!empty($item['site_qr']) && ($qrHint ?? '') !== ''): ?>
+            <div class="card__qr-note"><?= htmlspecialchars($qrHint) ?></div>
+            <?php endif; ?>
+        </td>
+    </tr></table>
+    <?php endif; ?>
 </div>
 <?php endif; ?>
 <?php endforeach; ?>

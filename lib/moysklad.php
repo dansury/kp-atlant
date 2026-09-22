@@ -23,29 +23,29 @@ class MoySklad {
         self::$diag = [];
 
         // Products — required
-        $r = self::get('/entity/product?limit=1');
+        $r = self::tryGet('/entity/product?limit=1');
         $perms['products'] = ($r !== null);
         self::$diag['products'] = self::$lastHttp;
 
         // Counterparties — required
-        $r = self::get('/entity/counterparty?limit=1');
+        $r = self::tryGet('/entity/counterparty?limit=1');
         $perms['counterparties'] = ($r !== null);
         self::$diag['counterparties'] = self::$lastHttp;
 
         // Orders read
-        $r = self::get('/entity/customerorder?limit=1');
+        $r = self::tryGet('/entity/customerorder?limit=1');
         $perms['orders_read'] = ($r !== null);
 
         // Stock
-        $r = self::get('/report/stock/all?limit=1');
+        $r = self::tryGet('/report/stock/all?limit=1');
         $perms['stock'] = ($r !== null);
 
         // Invoices read (module 002)
-        $r = self::get('/entity/invoiceout?limit=1');
+        $r = self::tryGet('/entity/invoiceout?limit=1');
         $perms['invoices'] = ($r !== null);
 
         // Webhooks (module 002) — read access implies the scope is granted
-        $r = self::get('/entity/webhook?limit=1');
+        $r = self::tryGet('/entity/webhook?limit=1');
         $perms['webhooks'] = ($r !== null);
 
         // Orders write — try with dry check (HEAD or tiny POST would fail gracefully)
@@ -138,7 +138,12 @@ class MoySklad {
                         name=excluded.name, name_normalized=excluded.name_normalized,
                         article=excluded.article, code=excluded.code, price=excluded.price,
                         prices_json=excluded.prices_json,
-                        stock=excluded.stock, reserved=excluded.reserved,
+                        -- Остаток здесь НЕ трогается. `/entity/product` его не
+                        -- отдаёт, `mapProduct()` ставит ноль-заглушку, и запись
+                        -- этого нуля переводила весь каталог в «под заказ»
+                        -- до следующего удачного отчёта — а если у токена нет
+                        -- прав на отчёт, то навсегда (модуль 040). Остаток
+                        -- пишет только `refreshStock()`.
                         unit=excluded.unit, description=excluded.description,
                         category=excluded.category, is_addon=excluded.is_addon,
                         vat=COALESCE(excluded.vat, products_cache.vat),
@@ -262,6 +267,19 @@ class MoySklad {
             }
         }
 
+        // Отчёт ответил, но про МОДИФИКАЦИИ в нём ни строчки, а в каталоге они
+        // есть: у части аккаунтов «Остатки» отдают только товары, и все размеры
+        // оставались с нулём, хотя лежат на полке. Спрашиваем ассортимент —
+        // он знает и модификации — и дополняем им отчёт, а не заменяем его.
+        if ($totals && self::hasVariants() && !self::touchesVariants($totals)) {
+            try {
+                $rows += self::readAssortmentStock($totals);
+                $usedFallback = true;
+            } catch (Throwable $e) {
+                $errors[] = 'ассортимент (модификации): ' . $e->getMessage();
+            }
+        }
+
         $updated = 0;
         foreach ($totals as $id => $pair) {
             $updated += Db::q(
@@ -277,6 +295,11 @@ class MoySklad {
             'fallback' => $usedFallback,
             'error'    => $errors ? implode('; ', array_unique($errors)) : null,
         ];
+
+        // Когда остатки читались в последний раз — это видно в карточке
+        // каталога: «всё под заказ» из-за молча упавшего отчёта не должно
+        // выглядеть как пустой склад (модуль 040)
+        if ($updated > 0) Settings::set('catalog_stock_synced_at', date('Y-m-d H:i:s'));
 
         // Отчёт, который не нашёл НИ ОДНОЙ нашей позиции, — это поломка, а не
         // пустой склад: пусть она видна в логе и в ответе кнопки, а не только
@@ -351,6 +374,20 @@ class MoySklad {
         } while (count($data['rows']) === $limit);
 
         return $rows;
+    }
+
+    /** Есть ли в каталоге модификации вообще — иначе их нечего и искать. */
+    private static function hasVariants(): bool {
+        return (int)Db::val("SELECT COUNT(*) FROM products_cache WHERE product_type='variant'") > 0;
+    }
+
+    /** Попала ли в накопитель хоть одна модификация. */
+    private static function touchesVariants(array $totals): bool {
+        $ids = array_slice(array_keys($totals), 0, 900);
+        if (!$ids) return false;
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        return (int)Db::val("SELECT COUNT(*) FROM products_cache
+                             WHERE product_type='variant' AND moysklad_id IN ($ph)", $ids) > 0;
     }
 
     /** Остаток одной позиции, сложенный по всем прочитанным складам. */
@@ -484,8 +521,7 @@ class MoySklad {
             'unit'            => (string)($product['uom']['name'] ?? 'шт.'),
             'description'     => (string)($v['description'] ?? $product['description'] ?? ''),
             'category'        => (string)($product['productFolder']['name'] ?? ''),
-            'vat'             => array_key_exists('vat', $product)
-                                    ? ((($product['vatEnabled'] ?? true)) ? (int)$product['vat'] : 0) : null,
+            'vat'             => self::vatOf($product),
             'parent_id'       => $parentId ?: null,
             'characteristics' => $characteristics,
             'archived'        => !empty($v['archived']) ? 1 : 0,
@@ -614,9 +650,10 @@ class MoySklad {
      * МойСклад либо не принимал, либо принимал не тот товар. Тип берётся из
      * каталога: там у модификации стоит `product_type = 'variant'` (модуль 026).
      */
-    private static function assortmentMeta(string $productId): array {
-        $type = (string)(Db::val("SELECT product_type FROM products_cache WHERE moysklad_id=?", [$productId]) ?: '');
-        $entity = $type === 'variant' ? 'variant' : 'product';
+    private static function assortmentMeta(string $productId, string $type = ''): array {
+        // A service (delivery line, module 045) is never in products_cache
+        if ($type === '') $type = (string)(Db::val("SELECT product_type FROM products_cache WHERE moysklad_id=?", [$productId]) ?: '');
+        $entity = in_array($type, ['variant', 'service'], true) ? $type : 'product';
         return ['meta' => [
             'href'      => self::$base . '/entity/' . $entity . '/' . $productId,
             'type'      => $entity,
@@ -662,9 +699,10 @@ class MoySklad {
 
         $positions = array_map(fn($p) => array_filter([
             'quantity' => $p['quantity'],
-            'price' => $p['price'] * 100, // MoySklad uses kopeks
+            'price' => round($p['price'] * 100), // MoySklad uses kopeks
+            'discount' => $p['discount'] ?? null,
             'vat' => $p['vat'] ?? null,
-            'assortment' => self::assortmentMeta((string)$p['product_id']),
+            'assortment' => self::assortmentMeta((string)$p['product_id'], (string)($p['type'] ?? '')),
         ], fn($v) => $v !== null), $data['positions']);
 
         $body = [
@@ -757,10 +795,10 @@ class MoySklad {
     public static function createInvoice(array $data): array {
         $positions = array_map(fn($p) => [
             'quantity'   => $p['quantity'],
-            'price'      => $p['price'] * 100,   // МойСклад считает в копейках
+            'price'      => round($p['price'] * 100),   // МойСклад считает в копейках
             'discount'   => $p['discount'] ?? 0,
             'vat'        => $p['vat'] ?? 0,
-            'assortment' => self::assortmentMeta((string)$p['product_id']),
+            'assortment' => self::assortmentMeta((string)$p['product_id'], (string)($p['type'] ?? '')),
         ], $data['positions']);
 
         $body = [
@@ -1040,12 +1078,35 @@ class MoySklad {
         return null;
     }
 
+    /**
+     * The print form the invoice is exported with (module 045).
+     *
+     * `MS_INVOICE_TEMPLATE` names it the way the «Печать» menu does — «Счет
+     * покупателю с печатью с QR и с подписью» by default: exact name first,
+     * then a name containing it; nothing matched — the first template, as
+     * before.
+     */
     private static function firstInvoiceTemplate(): ?array {
+        $rows = [];
         foreach (['customtemplate', 'embeddedtemplate'] as $kind) {
             $data = self::get("/entity/invoiceout/metadata/$kind");
-            if (!empty($data['rows'][0]['meta'])) return $data['rows'][0];
+            foreach ((array)($data['rows'] ?? []) as $row) {
+                if (!empty($row['meta'])) $rows[] = $row;
+            }
         }
-        return null;
+        return self::pickTemplate($rows, (string)Settings::get('MS_INVOICE_TEMPLATE', ''));
+    }
+
+    /** @param list<array> $rows templates as MoySklad lists them */
+    public static function pickTemplate(array $rows, string $wanted): ?array {
+        if (!$rows) return null;
+        $norm = fn(string $s) => str_replace('ё', 'е', mb_strtolower(trim(preg_replace('/\s+/u', ' ', $s))));
+        $wanted = $norm($wanted);
+        if ($wanted !== '') {
+            foreach ($rows as $r) if ($norm((string)($r['name'] ?? '')) === $wanted) return $r;
+            foreach ($rows as $r) if (str_contains($norm((string)($r['name'] ?? '')), $wanted)) return $r;
+        }
+        return $rows[0];
     }
 
     // ---- Webhooks (FR-028, FR-029) ----
@@ -1087,6 +1148,19 @@ class MoySklad {
     // HTTP helpers with retry
     private static function get(string $path): ?array {
         return self::request('GET', $path);
+    }
+
+    /**
+     * A probe, not a request: «did not answer» is an answer here. The permission
+     * check reads the codes itself and explains them better than the exception
+     * would (module 043 made an unreachable API throw instead of returning null).
+     */
+    private static function tryGet(string $path): ?array {
+        try {
+            return self::get($path);
+        } catch (MoySkladException $e) {
+            return null;
+        }
     }
 
     private static function post(string $path, array $body): array {
@@ -1167,17 +1241,41 @@ class MoySklad {
         return [$code, (string)$raw, $headers];
     }
 
-    private static function request(string $method, string $path, ?array $body = null): ?array {
-        $maxRetries = 3;
-        $delay = 1;
+    /**
+     * One API request with retries.
+     *
+     * MoySklad allows 45 requests per 3 seconds per token, and a webhook burst
+     * (one event per order) spends them in a moment. The refusal carries its own
+     * `X-RateLimit-Retry-After` — before module 043 it was never read, and three
+     * attempts with a 1-2-4 s backoff all landed inside the same window.
+     */
+    private const RETRIES = 5;
+    /**
+     * Wall clock the whole retry loop may take. A rate limit answers instantly,
+     * so five attempts fit easily; a host that hangs eats the budget on timeouts
+     * and stops after two or three — a page must not wait minutes either way.
+     */
+    private const RETRY_BUDGET_SEC = 45.0;
 
-        for ($i = 0; $i < $maxRetries; $i++) {
+    private static function request(string $method, string $path, ?array $body = null): ?array {
+        $delay = 1.0;
+        $started = microtime(true);
+        $attempt = 0;
+
+        for ($i = 1; $i <= self::RETRIES; $i++) {
+            $attempt = $i;
+            $headers = [];
             $ch = curl_init(self::$base . $path);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT => 15,
                 CURLOPT_ENCODING => 'gzip',
                 CURLOPT_HTTPHEADER => self::headers($body !== null),
+                CURLOPT_HEADERFUNCTION => function ($ch, $line) use (&$headers) {
+                    $parts = explode(':', $line, 2);
+                    if (count($parts) === 2) $headers[strtolower(trim($parts[0]))] = trim($parts[1]);
+                    return strlen($line);
+                },
             ]);
             if ($method !== 'GET') {
                 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
@@ -1189,6 +1287,8 @@ class MoySklad {
             $resp = curl_exec($ch);
             $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $curlErr = curl_error($ch);
+            // Let the handle go now: the retry backoff below sleeps for seconds
+            unset($ch);
 
             // Keep the last response for diagnostics
             self::$lastHttp = [
@@ -1200,15 +1300,36 @@ class MoySklad {
             if ($code === 401) return null; // invalid or revoked token
             if ($code === 403) return null; // permission denied — not an error to retry
             if ($code === 404) return null;
-            if ($code >= 200 && $code < 300) return json_decode($resp, true);
-            if ($code === 429 || $code >= 500) {
-                sleep($delay);
-                $delay *= 2;
-                continue;
-            }
-            return null;
+            if ($code >= 200 && $code < 300) return json_decode((string)$resp, true);
+            // Code 0 is «never connected»: a timeout or a dropped connection is
+            // worth repeating, and it used to be indistinguishable from «no such
+            // document» — the caller got null and the order counted as unlinked.
+            if (!($code === 0 || $code === 429 || $code >= 500)) return null;
+
+            $pause = self::retryPause($headers, $delay);
+            $spent = microtime(true) - $started;
+            if ($i === self::RETRIES || $spent + $pause >= self::RETRY_BUDGET_SEC) break;
+            usleep((int)round($pause * 1_000_000));
+            $delay = min(8.0, $delay * 2);
         }
-        throw new MoySkladException("MoySklad request failed after $maxRetries retries: $method $path");
+        throw new MoySkladException("MoySklad request failed after $attempt attempts: $method $path"
+                                    . self::lastErrorSuffix());
+    }
+
+    /**
+     * How long to wait before the next attempt. MoySklad names it itself in
+     * `X-RateLimit-Retry-After` (milliseconds); `Retry-After` (seconds) is the
+     * standard fallback. Without either — exponential backoff with jitter, so
+     * parallel webhook handlers do not come back all at once.
+     *
+     * Public because it is pure and the test checks it without a network.
+     */
+    public static function retryPause(array $headers, float $delay): float {
+        $ms = (float)($headers['x-ratelimit-retry-after'] ?? 0);
+        if ($ms > 0) return min(10.0, $ms / 1000);
+        $sec = (float)($headers['retry-after'] ?? 0);
+        if ($sec > 0) return min(10.0, $sec);
+        return $delay + random_int(0, 250) / 1000;
     }
 
     private static function mapProduct(array $p): array {
@@ -1242,10 +1363,20 @@ class MoySklad {
             'category' => $p['productFolder']['name'] ?? '',
             // The VAT of a КП line is the product's own, not a house default —
             // `vatEnabled: false` is «без НДС» and is not the same as a 0% rate
-            'vat' => array_key_exists('vat', $p)
-                ? (($p['vatEnabled'] ?? true) ? (int)$p['vat'] : 0)
-                : null,
+            'vat' => self::vatOf($p),
         ];
+    }
+
+    /**
+     * Ставка НДС товара. `effectiveVat` — ставка с учётом группы товара
+     * (`useParentVat`), её МойСклад присылает рядом с собственной (модуль 046).
+     */
+    public static function vatOf(array $p): ?int {
+        if (array_key_exists('effectiveVat', $p)) {
+            return ($p['effectiveVatEnabled'] ?? true) ? (int)$p['effectiveVat'] : 0;
+        }
+        if (!array_key_exists('vat', $p)) return null;
+        return ($p['vatEnabled'] ?? true) ? (int)$p['vat'] : 0;
     }
 
     private static function extractId(string $idOrHref): string {

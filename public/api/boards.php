@@ -57,7 +57,8 @@ try {
             if (!$boardId) jsonError('Не указана доска');
             $id = Boards::saveColumn($boardId, (int)($input['id'] ?? 0) ?: null,
                                      (string)($input['title'] ?? ''), $input['color'] ?? null,
-                                     !empty($input['kind']) ? (string)$input['kind'] : null);
+                                     !empty($input['kind']) ? (string)$input['kind'] : null,
+                                     array_key_exists('card_limit', $input) ? (int)$input['card_limit'] : null);
             jsonOk(['id' => $id]);
         }
 
@@ -107,8 +108,13 @@ try {
         // «Убрать с доски» — снятие, а не удаление: письма остаются в почте, а
         // карточка не возвращается сама следующим открытием доски (модуль 031)
         case 'card_delete':
-            Boards::dismissCard((int)($input['id'] ?? 0));
-            jsonOk();
+            // `purge` — удалить строку карточки насовсем (модуль 040). Снятие
+            // помнит, где карточка стояла, и возвращает её, когда компания
+            // напишет снова; удаление не возвращает ничего. Карточку, за
+            // которой не осталось ни одного письма, иначе было не убрать.
+            $cardId = (int)($input['id'] ?? 0);
+            if (!empty($input['purge'])) { Boards::deleteCard($cardId); jsonOk(['purged' => true]); }
+            jsonOk(['purged' => Boards::dismissCard($cardId)]);
 
         /**
          * Групповая операция над отмеченными карточками (прочитано, в архив,
