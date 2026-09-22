@@ -104,7 +104,21 @@ final class Terms {
             'wait_months'   => max(0, (int)($saved['wait_months'] ?? $d['months'])),
             'wait_discount' => self::clampPercent((float)($saved['wait_discount'] ?? $d['discount'])),
             'wait_prepay'   => (int)self::clampPercent((float)($saved['wait_prepay'] ?? $d['prepay'])),
+            // Сколько фотографий печатать у каждой позиции этого КП (issue #60).
+            // null — «как в настройках»: решает KP_MAX_IMAGES_PER_ITEM
+            'photos'        => self::photoLimit($saved['photos'] ?? null),
         ];
+    }
+
+    /**
+     * «Количество фото — на все позиции»: число 0…12 или null.
+     *
+     * Пустая строка и отсутствие значения — одно и то же: «как в настройках».
+     * Ноль — это решение («фотографий в КП не будет»), а не пустота.
+     */
+    public static function photoLimit(mixed $v): ?int {
+        if ($v === null || $v === '' || $v === false) return null;
+        return max(0, min(12, (int)$v));
     }
 
     /**
@@ -121,6 +135,7 @@ final class Terms {
                 'wait_on'       => !empty($c[$key]) ? 1 : 0,
                 'wait_months'   => max(0, (int)$c[$key]),
                 'wait_prepay'   => (int)self::clampPercent((float)$c[$key]),
+                'photos'        => self::photoLimit($c[$key]),
             };
         }
         if ($managerId && Db::hasColumn('managers', 'kp_terms_json')) {

@@ -293,11 +293,13 @@ ok('лента писем рисуется одной функцией на об
 ok('поле ответа отправляет и разметку, а не только текст',
    str_contains($js, 'const {text, html} = this.composerBody(c);'), 'app.js');
 
-$api = (string)file_get_contents(ROOT . '/public/api/mail.php');
+// Сборка письма переехала в `MailCompose` (модуль 044): тем же кодом уходит и
+// письмо по кнопке, и отложенное — цитата и фильтр разметки у них общие
+$api = (string)file_get_contents(ROOT . '/lib/mail_compose.php');
 ok('отправка приписывает цитату исходного письма',
-   str_contains($api, 'MailText::withQuote($text, $html, $source)'), 'mail.php');
+   str_contains($api, 'MailText::withQuote($text, $html, $source)'), 'mail_compose.php');
 ok('и прогоняет нашу разметку через тот же фильтр, что и входящую',
-   str_contains($api, "MailArchive::sanitizeHtml(\$html)"), 'mail.php');
+   str_contains($api, "MailArchive::sanitizeHtml(\$html)"), 'mail_compose.php');
 
 $boardsApi = (string)file_get_contents(ROOT . '/public/api/boards.php');
 ok('«убрать с доски» — снятие, а не удаление строки',

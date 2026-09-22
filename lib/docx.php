@@ -247,8 +247,10 @@ final class Html2Docx {
         foreach ($classes as $class) {
             $style = match ($class) {
                 'title'        => ['b' => true, 'size' => 32, 'align' => 'center', 'after' => 200] + $style,
-                'entity-name'  => ['b' => true, 'size' => 22] + $style,
-                'header'       => ['size' => 18, 'after' => 20] + $style,
+                // Шапка: текст справа, знак слева (issue #60). В Word это
+                // надо сказать явно — `text-align` из CSS сюда не доезжает
+                'entity-name'  => ['b' => true, 'size' => 22, 'align' => 'right'] + $style,
+                'header'       => ['size' => 18, 'after' => 20, 'align' => 'right'] + $style,
                 'match__title', 'upsell__title', 'req__title', 'card__name', 'card__subtitle'
                                => ['b' => true, 'size' => 22, 'after' => 60] + $style,
                 'total-row'    => ['b' => true, 'size' => 24, 'align' => 'right'] + $style,
@@ -261,13 +263,16 @@ final class Html2Docx {
                 // (модуль 036, начертание сменено на жирное — issue #60)
                 'analog-of'    => ['b' => true, 'color' => '6B6B6B', 'size' => 17] + $style,
                 'sign-name'    => ['b' => true] + $style,
-                'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'right'] + $style,
+                // Выравнивание текста — слева (issue #60)
+                'appendix__title'    => ['b' => true, 'size' => 26, 'align' => 'left'] + $style,
                 'appendix__subtitle' => ['b' => true, 'size' => 24, 'align' => 'center'] + $style,
                 default        => $style,
             };
         }
-        if (str_contains(mb_strtolower((string)$n->getAttribute('style')), 'text-align:center')) {
-            $style['align'] = 'center';
+        // Выравнивание, прописанное в самом элементе, — сильнее класса
+        $inline = str_replace(' ', '', mb_strtolower((string)$n->getAttribute('style')));
+        foreach (['center', 'right', 'left'] as $side) {
+            if (str_contains($inline, 'text-align:' . $side)) { $style['align'] = $side; break; }
         }
         return $style;
     }

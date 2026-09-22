@@ -767,16 +767,21 @@ const App = {
                подскажет локальная база товаров.</p>
             ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
                 выберите нужный, автоподбор сам не решает.</div>` : ''}
+            <!-- Кнопки подбора стоят НАД общими условиями (issue #60): сначала
+                 собирают позиции, потом назначают на них цены и сроки -->
+            <div class="flex flex--wrap" style="margin-bottom:8px">
+                <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
+                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
+                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
+                        title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
+            </div>
             <div data-conditions>${this.conditionsPanel(host)}</div>
             <div data-match-rows>${items.map((i, n) => this.matchRow(i, n)).join('')}</div>
             ${items.length ? '' : '<p class="muted" data-match-empty>Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
             <div data-delivery>${this.deliveryRow(opts.delivery)}</div>
             <div class="flex flex--wrap" style="margin-top:10px">
-                <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
-                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
-                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
-                        title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
-                <button class="btn btn--outline btn--sm" onclick="App.saveMatchedItems(this)">Сохранить</button>
+                <!-- «Сохранить» больше нет: правки сохраняются сами (issue #60) -->
+                <span class="muted" data-match-saved></span>
                 <span data-kp-buttons class="flex flex--wrap">${this.matchKpButton(requestId, opts.kp || {})}</span>
             </div>
             <div data-match-total class="muted" style="margin-top:8px"></div>
@@ -787,6 +792,8 @@ const App = {
         `;
         this.updateMatchTotal(host);
         this.bindMatchDnd(host);
+        this.bindMatchAutosave(host);
+        this.watchMatchPhotos(host);
         this.loadKpBoard(requestId, host);
     },
 
@@ -834,6 +841,10 @@ const App = {
                             <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
                         </label>
                     </span>
+                    <label title="Сколько фотографий печатать у каждой позиции. Пусто — сколько разрешают настройки КП">фото
+                        <input type="number" min="0" max="12" data-cond="photos" style="width:4.5em"
+                               placeholder="как в настройках" value="${c.photos === null || c.photos === undefined ? '' : Number(c.photos)}">
+                    </label>
                     <button class="btn btn--outline btn--sm" onclick="App.applyConditions(this)"
                             title="Проставить выбранное всем позициям и запомнить для следующих КП">Применить ко всем</button>
                 </div>
@@ -950,21 +961,19 @@ const App = {
      * единственном числе перестаёт что-либо значить.
      */
     matchKpButton(requestId, kp) {
-        // «Собрать КП в файл» — то, чего под таблицей подбора не хватало: КП
-        // собирается и сразу скачивается, без захода в редактор (модуль 023)
-        // Word и PDF — два равноправных выхода: до модуля 035 кнопка была одна и
-        // отдавала только Word, а PDF в карточке взять было негде
-        const files = `<button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'docx')"
-                       title="Собрать КП и скачать файлом Word">⬇ Собрать КП в Word</button>
-                <button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'pdf')"
-                       title="Собрать КП и скачать файлом PDF">⬇ …в PDF</button>`;
-        if (kp.proposal_id) {
-            return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId}, this)"
-                            title="Собрать ещё одно КП из этих позиций">Собрать КП заново</button>
-                    ${files}`;
+        // Скачать можно то, что собрано (issue #60): пока КП нет, «⬇Word» и
+        // «⬇PDF» обещали бы файл, которого не существует. Появляются они после
+        // «Сформировать КП» — и ссылками, а не кнопками: кнопка здесь одна, и
+        // это сборка документа.
+        if (!kp.proposal_id) {
+            return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId}, this)">Сформировать КП</button>`;
         }
-        return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId}, this)">Сформировать КП</button>
-                ${files}`;
+        return `<button class="btn btn--outline btn--sm" onclick="App.generateKP(${requestId}, this)"
+                        title="Собрать КП заново из этих позиций">🔄</button>
+                <a class="kp-file" onclick="App.buildKpFile(${requestId}, this, 'docx')"
+                   title="Собрать КП и скачать файлом Word">⬇Word</a>
+                <a class="kp-file" onclick="App.buildKpFile(${requestId}, this, 'pdf')"
+                   title="Собрать КП и скачать файлом PDF">⬇PDF</a>`;
     },
 
 
@@ -1012,13 +1021,19 @@ const App = {
             return;
         }
 
+        // Колонка «Позиции запроса» нужна ровно тогда, когда есть между чем
+        // раскладывать: после «+ Ещё одно КП» (issue #60). При одном КП это
+        // пустая колонка рядом с таблицей подбора, которая уже выше. Но если
+        // в ней что-то ЛЕЖИТ, она рисуется всегда: спрятанная позиция —
+        // потерянная позиция.
+        const showPool = proposals.length > 1 || pool.length > 0;
         box.innerHTML = `
             <div class="card__title" style="margin-top:14px">Коммерческие предложения${this.hint('kp-board')}</div>
             <p class="muted">Одному запросу можно собрать несколько КП — по одному на заявку клиента.
                КП идут списком сверху вниз; позиции перетаскиваются между ними мышью или переносятся
                выбором «перенести…»; счёт выставляется по конкретному КП.</p>
             <div class="kpboard" data-kp-dnd>
-                <div class="kpcol kpcol--pool" data-kp-drop="0">
+                ${showPool ? `<div class="kpcol kpcol--pool" data-kp-drop="0">
                     <div class="kpcol__head">
                         <span class="kpcol__title">Позиции запроса</span>
                         <span class="kpcol__count">${pool.length}</span>
@@ -1028,7 +1043,7 @@ const App = {
                             ? pool.map(r => this.kpPoolCard(r, proposals, requestId)).join('')
                             : '<div class="kpcol__empty">Все позиции разложены по КП</div>'}
                     </div>
-                </div>
+                </div>` : ''}
                 ${proposals.map(p => this.kpColumn(p, proposals, requestId)).join('')}
                 <button class="kpcol kpcol--add" onclick="App.kpAddProposal(${requestId}, this)">
                     + Ещё одно КП
@@ -1947,10 +1962,14 @@ const App = {
                     ${i.wait_note ? `<span class="muted">${this.esc(i.wait_note)}</span>` : ''}
                 </div>
                 <div class="match-extra__photos">
-                    <!-- Фото выбираются здесь, сразу после товара (модуль 040) -->
+                    <!-- Фото выбираются здесь, сразу после товара (модуль 040).
+                         Полоса открыта сразу (issue #60): выбор фотографий —
+                         часть подбора, а не спрятанная за кнопкой настройка.
+                         Кнопка осталась, чтобы длинную таблицу можно было
+                         свернуть. -->
                     <button class="btn btn--outline btn--sm" ${i.id ? '' : 'disabled title="Сначала сохраните строку"'}
-                            onclick="App.toggleMatchPhotos(this, ${i.id || 0})">🖼 Фото в КП</button>
-                    <div class="match-photos" data-match-photos hidden></div>
+                            onclick="App.toggleMatchPhotos(this, ${i.id || 0})">🖼 Фото в КП ▾</button>
+                    <div class="match-photos" data-match-photos data-item-id="${i.id || 0}"></div>
                 </div>
                 <textarea data-field="comment_text" rows="4" class="match-extra__comment"
                           data-from-catalog="${i.comment_from_catalog ? 1 : 0}" oninput="this.dataset.fromCatalog = 0"
@@ -2188,6 +2207,7 @@ const App = {
             }
             row.classList.remove('match-row--choice');
             btn.closest('.choice').remove();
+            this.reloadMatchPhotos(row);
             this.updateMatchTotal(host);
             return;
         }
@@ -2311,6 +2331,8 @@ const App = {
         if (slot) slot.innerHTML = this.priceOptsSelect(p.prices || {});
         const suggest = el.closest ? el.closest('.suggest') : null;
         if (suggest) suggest.hidden = true;
+        // Другой товар — другие фотографии (issue #60)
+        this.reloadMatchPhotos(row);
         this.updateMatchTotal();
     },
 
@@ -2372,6 +2394,88 @@ const App = {
     },
 
     // $from — any element of the table (a button of its own toolbar)
+    /**
+     * ==== Подбор сохраняется сам (issue #60) ====
+     *
+     * Кнопки «Сохранить» больше нет. Она была источником целого класса потерь:
+     * менеджер правил строки, нажимал что-нибудь, что перерисовывает таблицу с
+     * сервера, — и правки исчезали, потому что сохранить их он не успел.
+     *
+     * Слушатель один на весь блок подбора: строки перерисовываются, а
+     * `[data-match-host]` — нет. Правка откладывается на 1,2 секунды, чтобы
+     * набор названия не превратился в тридцать запросов подряд.
+     *
+     * Автосохранение НЕ перерисовывает таблицу — курсор остаётся там, где его
+     * оставили. Идентификаторы новых строк, которые придумал сервер,
+     * проставляются на месте: без них строке некуда сохранять фотографии.
+     */
+    bindMatchAutosave(host) {
+        if (!host || host.dataset.autosave === '1') return;
+        host.dataset.autosave = '1';
+        const schedule = e => {
+            // Фотографии сохраняются сами и своим запросом; общие условия
+            // проставляются кнопкой «Применить ко всем» — им автосейв не нужен
+            if (e.target.closest('[data-match-photos]') || e.target.closest('[data-conditions]')) return;
+            if (!e.target.closest('[data-match-row], [data-delivery-row]')) return;
+            clearTimeout(host._autosaveTimer);
+            host._autosaveTimer = setTimeout(() => this.autosaveMatch(host), 1200);
+        };
+        host.addEventListener('input', schedule);
+        host.addEventListener('change', schedule);
+    },
+
+    /** Тихое сохранение: без тоста и без перерисовки. */
+    async autosaveMatch(host) {
+        const requestId = Number(host && host.dataset.requestId);
+        if (!requestId) return;
+        const note = host.querySelector('[data-match-saved]');
+        if (note) note.textContent = 'сохраняем...';
+        try {
+            const res = await this.api(`requests.php?action=items_save&id=${requestId}`, {
+                method: 'POST', body: {items: this.collectMatchedItems(host), delivery: this.collectDelivery(host)},
+            });
+            this.adoptItemIds(host, res.items || []);
+            // Полосы, ждавшие сохранения нового товара, теперь спросят сервер и
+            // получат фотографии ЭТОГО товара, а не предыдущего (issue #60)
+            host.querySelectorAll('[data-match-photos][data-state="stale"]').forEach(box => {
+                box.dataset.state = '';
+                if (Number(box.dataset.itemId) > 0) this.loadMatchPhotos(box);
+                else box.innerHTML = '<div class="muted">Фотографии подтянутся после сохранения строки.</div>';
+            });
+            if (note) note.textContent = 'сохранено ' + new Date().toLocaleTimeString('ru-RU',
+                {hour: '2-digit', minute: '2-digit'});
+        } catch (err) {
+            if (note) note.textContent = 'не сохранилось: ' + err.message;
+        }
+    },
+
+    /**
+     * Проставить строкам идентификаторы, которые придумал сервер.
+     *
+     * Сопоставление по порядку — тот же порядок, в котором строки уезжали, —
+     * и только когда числа сошлись: сервер выбрасывает пустые строки, и при
+     * расхождении угадывать нельзя. Не сошлось — идентификаторы приедут со
+     * следующей полной перерисовкой.
+     */
+    adoptItemIds(host, items) {
+        const rows = [...host.querySelectorAll('[data-match-row]')];
+        if (rows.length !== items.length) return;
+        rows.forEach((row, n) => {
+            const idField = row.querySelector('[data-field="id"]');
+            const id = Number(items[n].id || 0);
+            if (!idField || !id || Number(idField.value) === id) return;
+            idField.value = id;
+            const box = row.querySelector('[data-match-photos]');
+            if (box && Number(box.dataset.itemId) === 0) {
+                box.dataset.itemId = id;
+                const btn = row.querySelector('.match-extra__photos .btn');
+                if (btn) { btn.disabled = false; btn.removeAttribute('title'); }
+                // Полосу со `state="stale"` догрузит общий проход ниже
+                if (box.dataset.state !== 'stale') this.loadMatchPhotos(box);
+            }
+        });
+    },
+
     async saveMatchedItems(from, silent = false) {
         const host = this.matchHost(from);
         if (!host) return [];
@@ -3066,14 +3170,52 @@ const App = {
      * стоит на строке подбора и едет в КП вместе с позицией; уже собранные
      * неотправленные КП этого запроса подхватывают его сразу.
      */
-    async toggleMatchPhotos(btn, itemId) {
+    toggleMatchPhotos(btn, itemId) {
         const box = btn.parentElement.querySelector('[data-match-photos]');
         if (!box || !itemId) return;
-        if (!box.hidden) { box.hidden = true; return; }
-        box.hidden = false;
+        box.hidden = !box.hidden;
+        btn.textContent = box.hidden ? '🖼 Фото в КП ▸' : '🖼 Фото в КП ▾';
+        if (!box.hidden) this.loadMatchPhotos(box);
+    },
+
+    /**
+     * ==== Фотографии грузятся по одной, и только когда нужны (issue #60) ====
+     *
+     * Таблица подбора на двадцать позиций открывала сотню картинок разом:
+     * браузер вставал, а менеджер смотрел на пустые рамки. Теперь полоса
+     * спрашивает список, только подъехав к экрану (`IntersectionObserver`), а
+     * внутри полосы миниатюры выстраиваются в очередь: `src` следующей
+     * ставится после `load` или `error` предыдущей. Первая фотография на
+     * экране, пока остальные ещё едут.
+     */
+    watchMatchPhotos(host) {
+        const boxes = [...(host || document).querySelectorAll('[data-match-photos]')]
+            .filter(b => !b.hidden && Number(b.dataset.itemId) > 0 && b.dataset.state !== 'done');
+        if (!boxes.length) return;
+        if (!('IntersectionObserver' in window)) { boxes.forEach(b => this.loadMatchPhotos(b)); return; }
+        if (!this.photoObserver) {
+            this.photoObserver = new IntersectionObserver(entries => {
+                entries.forEach(e => {
+                    if (!e.isIntersecting) return;
+                    this.photoObserver.unobserve(e.target);
+                    this.loadMatchPhotos(e.target);
+                });
+            }, {rootMargin: '300px'});
+        }
+        boxes.forEach(b => this.photoObserver.observe(b));
+    },
+
+    /** Список фотографий строки — один запрос, и он не повторяется впустую. */
+    async loadMatchPhotos(box) {
+        const itemId = Number(box && box.dataset.itemId);
+        // 'stale' — строка ждёт сохранения нового товара: спросить сервер сейчас
+        // значит снова получить фотографии предыдущего
+        if (!box || !itemId || ['loading', 'done', 'stale'].includes(box.dataset.state)) return;
+        box.dataset.state = 'loading';
         box.innerHTML = '<div class="loading">Загружаем фотографии...</div>';
         try {
             const d = await this.api(`requests.php?action=item_images&item_id=${itemId}`);
+            box.dataset.state = 'done';
             if (!d.available.length) {
                 box.innerHTML = '<div class="muted">Фотографий у позиции нет. Их приносит синхронизация '
                               + 'с МойСклад или импорт каталога из Excel.</div>';
@@ -3090,13 +3232,62 @@ const App = {
                                    ${chosen.includes(a.key) ? 'checked' : ''}
                                    onchange="this.closest('.photo').classList.toggle('photo--on', this.checked);
                                              App.saveMatchPhotos(this, ${itemId})">
-                            <img src="${this.esc(a.url)}" alt="" loading="lazy">
+                            <img data-src="${this.esc(a.url)}" alt="" loading="lazy">
                         </label>`).join('')}
                 </div>
                 <div class="muted" data-photo-saved></div>`;
+            this.chainPhotos(box);
         } catch (err) {
+            box.dataset.state = '';
             box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
         }
+    },
+
+    /** Миниатюры одной полосы — строго по очереди, а не все разом. */
+    chainPhotos(box) {
+        const imgs = [...box.querySelectorAll('img[data-src]')];
+        const next = () => {
+            const img = imgs.shift();
+            if (!img) return;
+            img.addEventListener('load', next, {once: true});
+            // Картинка, которой нет, не должна останавливать очередь
+            img.addEventListener('error', next, {once: true});
+            img.src = img.dataset.src;
+            img.removeAttribute('data-src');
+        };
+        next();
+    },
+
+    /**
+     * Товар на строке поменялся — полоса фотографий перечитывается (issue #60).
+     *
+     * Без этого на экране оставались картинки ПРЕДЫДУЩЕГО товара: полоса
+     * грузилась один раз и больше себя не спрашивала. У строки, которую ещё
+     * не сохранили, спрашивать нечего — там стоит просьба сохранить.
+     */
+    reloadMatchPhotos(row) {
+        const box = row && row.querySelector('[data-match-photos]');
+        if (!box) return;
+        // Спрашивать сервер прямо сейчас нельзя: новый товар стоит пока только
+        // на экране, и в ответ приедут фотографии ПРЕЖНЕГО. Полоса ждёт, пока
+        // автосохранение довезёт строку, и обновляется после него.
+        box.dataset.state = 'stale';
+        box.innerHTML = '<div class="muted">Обновляем фотографии...</div>';
+        this.touchMatch(row);
+    },
+
+    /**
+     * Строку правили не руками, а выбором из списка — сохранить её поскорее.
+     *
+     * Выбор товара мышью не поднимает `input`, а значит и автосохранение: без
+     * этого новая позиция висела бы несохранённой, пока менеджер не тронет
+     * какое-нибудь поле.
+     */
+    touchMatch(el) {
+        const host = this.matchHost(el);
+        if (!host) return;
+        clearTimeout(host._autosaveTimer);
+        host._autosaveTimer = setTimeout(() => this.autosaveMatch(host), 400);
     },
 
     /** Галочка на фотографии сохраняется сама — «Сохранить» для неё не нужно. */
@@ -3796,12 +3987,17 @@ const App = {
                         📎 Файл<input type="file" multiple hidden onchange="App.composerAttach('${this.jsStr(key)}', this)">
                     </label>
                     <button class="btn btn--primary btn--sm" onclick="App.threadSend('${this.jsStr(key)}', this)">Отправить</button>
+                    <!-- Отложенная отправка (issue #60): письмо, написанное ночью,
+                         приходит клиенту утром -->
+                    <button class="btn btn--outline btn--sm" title="Отправить позже — в выбранный день и час"
+                            onclick="App.scheduleMenu('${this.jsStr(key)}', this)">⏱ Отложить</button>
                     <button class="btn btn--outline btn--sm" data-cmp-draft
                             ${reply.reply_to_id ? '' : 'disabled title="Отвечать нечего: в переписке нет входящего письма"'}
                             onclick="App.threadDraft('${this.jsStr(key)}', this)">✨ Сгенерировать ответ</button>
                     <span class="muted" data-cmp-note></span>
                     <span class="muted" data-cmp-saved></span>
                 </div>
+                <div class="composer__schedule" data-cmp-schedule hidden></div>
                 <!-- Счета, выставленные по этому запросу, стоят ЗДЕСЬ, под
                      письмом, которым их и отправляют (модуль 029): посмотреть,
                      переименовать, приложить — не уходя с письма -->
@@ -4259,7 +4455,61 @@ const App = {
     },
 
 
-    async threadSend(key, btn) {
+    /**
+     * ==== Отложенная отправка (issue #60) ====
+     *
+     * Подсказки считает СЕРВЕР, в часовом поясе сервиса: «завтра в 09:00» у
+     * менеджера с часами на другом поясе означало бы не то время, которое
+     * увидит клиент. Своё время всегда можно выставить руками.
+     */
+    async scheduleMenu(key, btn) {
+        const c = this.composerOf(key);
+        const box = c && c.querySelector('[data-cmp-schedule]');
+        if (!box) return;
+        if (!box.hidden) { box.hidden = true; return; }
+        box.hidden = false;
+        box.innerHTML = '<div class="loading">Считаем время...</div>';
+        try {
+            const d = await this.api('mail.php?action=scheduled');
+            const mine = d.items || [];
+            box.innerHTML = `
+                <div class="flex flex--wrap">
+                    ${(d.presets || []).map(p => `<button class="btn btn--outline btn--sm"
+                        onclick="App.threadSend('${this.jsStr(key)}', this, '${this.jsStr(p.at)}')">${this.esc(p.label)}</button>`).join('')}
+                    <label>своё время
+                        <input type="datetime-local" data-cmp-when>
+                    </label>
+                    <button class="btn btn--primary btn--sm" onclick="App.threadSendAtCustom('${this.jsStr(key)}', this)">Отложить</button>
+                </div>
+                ${mine.length ? `<div class="muted" style="margin-top:6px">В очереди:
+                    ${mine.map(r => `<span class="sched-item">${this.esc(r.send_at)} — ${this.esc(r.to_addr || '')}
+                        <a onclick="App.cancelScheduled(${r.id}, '${this.jsStr(key)}')" title="Отменить отправку">×</a></span>`).join(' ')}
+                    </div>` : ''}`;
+        } catch (err) {
+            box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
+        }
+    },
+
+    /** Время, выставленное руками, — в том же виде, что и подсказки. */
+    threadSendAtCustom(key, btn) {
+        const c = this.composerOf(key);
+        const when = c && c.querySelector('[data-cmp-when]');
+        if (!when || !when.value) { this.toast('Выберите день и время', 'error'); return; }
+        // datetime-local отдаёт «2026-09-23T09:00» — сервер ждёт секунды
+        this.threadSend(key, btn, when.value.replace('T', ' ') + ':00');
+    },
+
+    async cancelScheduled(id, key) {
+        try {
+            await this.api('mail.php?action=schedule_cancel', {method: 'POST', body: {id}});
+            this.toast('Отправка отменена', 'success');
+            const c = this.composerOf(key);
+            const box = c && c.querySelector('[data-cmp-schedule]');
+            if (box) { box.hidden = true; }
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    async threadSend(key, btn, sendAt = null) {
         const c = this.composerOf(key);
         if (!c) return;
         const {text, html} = this.composerBody(c);
@@ -4267,6 +4517,8 @@ const App = {
         btn.disabled = true;
         try {
             const res = await this.api('mail.php?action=send', {method: 'POST', body: {
+                // Пусто — уходит сейчас; время — ложится в очередь (issue #60)
+                send_at:     sendAt || '',
                 to:          c.querySelector('[data-cmp-to]').value.trim(),
                 subject:     c.querySelector('[data-cmp-subject]').value.trim(),
                 text,
@@ -4281,6 +4533,13 @@ const App = {
                 // Галочка «подпись» снята — письмо уходит ровно как набрано
                 signature:   (c.querySelector('[data-cmp-sign]') || {checked: true}).checked ? 1 : 0,
             }});
+            // Отложенное письмо ещё не ушло — и говорить «отправлено» о нём нельзя
+            if (res.scheduled) {
+                this.toast('Письмо уйдёт ' + res.scheduled.send_at, 'success');
+                const sbox = c.querySelector('[data-cmp-schedule]');
+                if (sbox) sbox.hidden = true;
+                return;
+            }
             // «Отправлено» is only half the news when the copy never reached the
             // server's «Отправленные» — the manager hears it now, not in a month
             if (res.warning) this.toast(res.warning, 'error');
@@ -5859,6 +6118,8 @@ const App = {
         try {
             const d = await this.api('admin.php?action=signature');
             const mail = await this.api('settings.php?action=mail_signature');
+            // Звук уведомления — тоже личная настройка, и живёт рядом с подписью
+            const snd = await this.api('settings.php?action=my_sound').catch(() => null);
             card.innerHTML = `
                 <div class="card__title">Моя подпись${this.hint('signature')}</div>
                 <p class="muted">Ставится под теми КП, которые отправляете вы. Пусто — печатается подписант
@@ -5897,7 +6158,22 @@ const App = {
                 <pre class="sig-preview">${this.esc(mail.effective || '')}</pre>
                 <div class="flex flex--wrap">
                     <button class="btn btn--primary" onclick="App.saveMailSignature(this)">Сохранить подпись в письмах</button>
-                </div>`;
+                </div>
+
+                <!-- Звук уведомления — свой у каждого (issue #60): один сигнал
+                     на всю комнату означает, что на него перестают оборачиваться -->
+                ${snd ? `
+                <div class="card__title" style="margin-top:18px">Мой звук уведомления</div>
+                <p class="muted">Играет, когда приходит новое письмо. «Как в настройках» —
+                   общий звук сервиса${snd.common ? ': ' + this.esc(snd.common) : ' (сейчас не выбран)'}.</p>
+                <div class="flex flex--wrap">
+                    <select id="mySound"><option value="">(как в настройках)</option></select>
+                    <button type="button" class="btn btn--outline btn--sm" onclick="App.playSoundPreview('mySound')">▶ Послушать</button>
+                    <label>громкость <input type="number" id="myVolume" min="0" max="100" style="width:5em"
+                           placeholder="как в настройках" value="${this.esc(snd.volume)}"></label>
+                    <button class="btn btn--primary btn--sm" onclick="App.saveMySound(this)">Сохранить звук</button>
+                </div>` : ''}`;
+            if (snd) this.loadSoundOptions('mySound', snd.sound || '');
         } catch (err) {
             card.innerHTML = `<div class="card__title">Моя подпись</div><p class="no">${this.esc(err.message)}</p>`;
         }
@@ -5923,6 +6199,24 @@ const App = {
             this._mailSign = undefined;   // строка у поля ответа покажет новую
             this.toast('Подпись в письмах сохранена', 'success');
             this.loadSignature();
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
+    },
+
+    /** Свой звук уведомления (issue #60): пусто — как в настройках сервиса. */
+    async saveMySound(btn) {
+        btn.disabled = true;
+        try {
+            const r = await this.api('settings.php?action=my_sound', {method: 'POST', body: {
+                sound: document.getElementById('mySound').value,
+                volume: document.getElementById('myVolume').value,
+            }});
+            // Экран должен зазвонить по-новому сразу, не дожидаясь перезагрузки
+            this.ui.mail_sound = r.effective || '';
+            if (document.getElementById('myVolume').value !== '') {
+                this.ui.mail_sound_volume = Number(document.getElementById('myVolume').value);
+            }
+            this.toast('Звук сохранён', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
     },
@@ -8482,6 +8776,7 @@ const App = {
                                 <label for="set_${it.key}">${this.esc(it.label)}</label>
                                 <div class="muted"><code>${it.key}</code> ${badge(it)}
                                     ${it.hint ? '· ' + this.esc(it.hint) : ''}</div>
+                                ${this.settingLink(it)}
                             </div>
                             <div class="setting__field">${field(it)}</div>
                             <div class="setting__actions">
@@ -8502,6 +8797,22 @@ const App = {
                 <div class="flex flex--end"><button class="btn btn--primary" onclick="App.saveSettings()">Сохранить настройки</button></div>
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    /**
+     * «Где взять» — ссылкой, а не советом поискать (issue #60).
+     *
+     * Значение, которое выдаёт другой сервис, объясняется не только словами:
+     * рядом с полем стоит ссылка ровно на ту страницу, где токен создаётся, —
+     * и в настройках, и в мастере. Ссылка на свой же экран (`#…`) открывается
+     * в этой вкладке, чужая — в новой.
+     */
+    settingLink(it) {
+        const l = it && it.link;
+        if (!l || !l.url) return '';
+        return l.url.startsWith('#')
+            ? `<div class="setting__link"><a href="${this.esc(l.url)}">${this.esc(l.label)}</a></div>`
+            : `<div class="setting__link"><a href="${this.esc(l.url)}" target="_blank" rel="noopener">↗ ${this.esc(l.label)}</a></div>`;
     },
 
     /** Наполнить выбор звуков тем, что реально лежит в папке sounds/. */
@@ -9600,7 +9911,15 @@ const App = {
                                     <td>${m.is_admin ? '<span class="badge badge--confirmed">админ</span>' : 'менеджер'}</td>
                                     <td class="num">${m.mailboxes}</td>
                                     <td class="num">${m.requests}</td>
-                                    <td><button class="btn btn--sm btn--outline" onclick="App.editManager(${m.id})">Изменить</button></td>
+                                    <td class="flex flex--wrap">
+                                        <button class="btn btn--sm btn--outline" onclick="App.editManager(${m.id})">Изменить</button>
+                                        <!-- «Админ может обнулить логин» (issue #60): все сессии
+                                             этого человека закрываются, где бы они ни были открыты -->
+                                        <button class="btn btn--sm btn--outline" onclick="App.resetManagerLogin(${m.id}, this)"
+                                                title="Закрыть все открытые сессии этого менеджера — ему придётся войти заново">Обнулить вход</button>
+                                        <button class="btn btn--sm btn--outline" onclick="App.showManagerLogins(${m.id})"
+                                                title="Последние входы: когда и с какого адреса">Входы</button>
+                                    </td>
                                 </tr>`).join('')}
                         </tbody>
                     </table>
@@ -9610,6 +9929,39 @@ const App = {
                 <div id="managerForm"></div>
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    /** Обнулить вход менеджера — issue #60. */
+    async resetManagerLogin(id, btn) {
+        if (!confirm('Закрыть все сессии этого менеджера? Ему придётся войти заново.')) return;
+        btn.disabled = true;
+        try {
+            await this.api('admin.php?action=manager_logout', {method: 'POST', body: {id}});
+            this.toast('Вход обнулён — сессии закрыты', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
+    },
+
+    /** Последние входы менеджера: когда и откуда. */
+    async showManagerLogins(id) {
+        const box = document.getElementById('managerForm');
+        if (!box) return;
+        box.innerHTML = '<div class="card"><div class="loading">Смотрим входы...</div></div>';
+        try {
+            const d = await this.api(`admin.php?action=manager_logins&id=${id}`);
+            box.innerHTML = `
+                <div class="card">
+                    <div class="card__title">Последние входы</div>
+                    ${(d.items || []).length ? `<table class="table">
+                        <thead><tr><th>Когда</th><th>Адрес</th><th>Браузер</th></tr></thead>
+                        <tbody>${d.items.map(r => `<tr>
+                            <td>${this.esc(r.created_at)}</td>
+                            <td><code>${this.esc(r.ip) || '—'}</code></td>
+                            <td class="muted">${this.esc(r.user_agent) || '—'}</td>
+                        </tr>`).join('')}</tbody></table>`
+                      : '<p class="muted">Входов пока не записано.</p>'}
+                </div>`;
+        } catch (err) { box.innerHTML = `<div class="card"><p class="no">${this.esc(err.message)}</p></div>`; }
     },
 
     editManager(id) {
@@ -10683,6 +11035,7 @@ Object.assign(App, {
                             <div class="setting__label">
                                 <label for="wz_${f.key}">${this.esc(f.label)}</label>
                                 <div class="muted"><code>${f.key}</code>${f.hint ? ' · ' + this.esc(f.hint) : ''}</div>
+                                ${this.settingLink(f)}
                             </div>
                             <div class="setting__field">${this.setupField(f)}</div>
                         </div>`).join('')}

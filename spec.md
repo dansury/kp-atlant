@@ -42,6 +42,7 @@
 | Форма письма, организация из списка, промпты учатся на правках | `specs/041-letter-shape-and-prompt-learning/spec.md` | Implemented |
 | Область подбора не сбрасывает правки, доставка в цене товара, доска «Закрыто» без тела письма, документ без таблицы соответствия | `specs/042-scope-price-delivery-and-board-fixes/spec.md` | Implemented (partial — issue #60) |
 | Yandex по OpenAI-совместимому маршруту, JSON с поправкой, МойСклад не теряет заказ | `specs/043-llm-routes-json-and-moysklad-retries/spec.md` | Implemented |
+| Фото идут за товаром, настройки объясняют себя, письмо уходит по расписанию | `specs/044-photos-settings-hints-scheduled-send/spec.md` | Implemented (partial — issue #60) |
 
 ## Research
 | Вопрос | Файл |
@@ -77,6 +78,7 @@
 | Модуль 041: письмо нужной формы, промпты учатся на правках | `php tests/module_041.php` |
 | Модуль 042: область подбора не сбрасывает правки, доставка в цене товара, доска «Закрыто», без таблицы соответствия | `php tests/module_042.php` |
 | Модуль 043: маршрут модели Yandex, разбор JSON и повторная попытка, повторы МойСклад и вебхуков | `php tests/module_043.php` |
+| Модуль 044: фотографии за товаром, подсказки настроек, свой звук, вход и отложенная отправка | `php tests/module_044.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

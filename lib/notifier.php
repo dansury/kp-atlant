@@ -21,6 +21,8 @@ class Notifier {
         'app_error'    => 'system',
         // Обращение в поддержку и ответ на него (модуль 038)
         'support'      => 'system',
+        // Вход в чужой аккаунт с нового адреса — администратору (issue #60)
+        'new_login'    => 'system',
     ];
 
     /**
@@ -65,6 +67,7 @@ class Notifier {
             'proposal'     => '/#mail/proposal/' . $refId,
             'counterparty' => '/#mail/company/' . $refId,
             'log'          => '/#settings/logs/error',
+            'manager'      => '/#settings/managers',
             default        => '/',
         };
     }

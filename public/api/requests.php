@@ -157,10 +157,19 @@ switch ($action) {
         $cpId = $reqRow['counterparty_id'] ? (int)$reqRow['counterparty_id'] : null;
         $input = getInput();
         $conditions = Terms::remember((int)$manager['id'], (array)($input['conditions'] ?? []), $cpId);
+        $photos = 0;
+        if (!empty($input['apply'])) {
+            // «Количество фото — на все позиции» (issue #60): каждой строке
+            // проставляются ПЕРВЫЕ N её фотографий, как если бы менеджер
+            // прошёл галочками по всей таблице
+            if (array_key_exists('photos', (array)($input['conditions'] ?? []))) {
+                $photos = RequestItems::applyPhotoLimit($id, $conditions['photos']);
+            }
+        }
         $items = !empty($input['apply']) ? RequestItems::applyConditions($id, $conditions) : RequestItems::all($id);
         // Тот же срок ожидания — в уже собранные КП запроса (модуль 037)
         if (!empty($input['apply'])) KpSet::syncWaitFromRequest($id);
-        jsonData(['items' => $items, 'conditions' => $conditions]);
+        jsonData(['items' => $items, 'conditions' => $conditions, 'photos_applied' => $photos]);
     }
 
     case 'items_save':

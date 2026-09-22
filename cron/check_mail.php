@@ -61,6 +61,15 @@ foreach ($report as $r) {
     if (!empty($r['sent_error'])) echo "[{$r['name']}] Отправленные: {$r['sent_error']}\n";
 }
 
+// Отложенные письма (issue #60): на хостинге с одной записью в кроне
+// собственный `cron/send_scheduled.php` может быть не заведён — тогда письма
+// уходят отсюда, с точностью до периода этого крона
+require_once ROOT . '/lib/mail_schedule.php';
+$scheduled = MailSchedule::run();
+if ($scheduled['sent'] || $scheduled['failed']) {
+    echo "отложенные письма — отправлено: {$scheduled['sent']}, не удалось: {$scheduled['failed']}\n";
+}
+
 // Housekeeping: the log must not grow without bound on shared hosting
 Logger::prune();
 

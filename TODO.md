@@ -1,57 +1,33 @@
 # TODO
 
-Items from GitHub issue #60 not implemented in module 042 (see
-`specs/042-scope-price-delivery-and-board-fixes/spec.md` for what *was*
-done from that issue). Issue #60 listed 30+ distinct requests in one pass;
-this is the remainder, grouped by area, roughly in the order they appeared.
-
-## Photos / lazy loading
-- General lazy-loading for interface elements/photos beyond product photos
-  (issue only specifically asked for sequential photo loading; investigate
-  where else images load in bulk — mail attachments, board card thumbnails).
-- Photos should be open by default in the match-row photo picker (currently
-  behind a "🖼 Фото в КП" toggle).
-
-## Board
-- Per-board (not just per-column) settings surfaced more prominently in the
-  settings UI, with explanations.
+Items from GitHub issue #60 still not implemented. That issue listed 30+
+distinct requests in one pass; modules 042 and 044 took the first two batches
+(see `specs/042-scope-price-delivery-and-board-fixes/spec.md` and
+`specs/044-photos-settings-hints-scheduled-send/spec.md` for what each one
+did). This is the remainder, grouped by area.
 
 ## КП editor UX (bigger UI reorganisation — needs design review)
-- Move product-selection panel into the LEFT column, above the letter
+- Move the product-selection panel into the LEFT column, above the letter
   compose field; collapse it once the first КП has been sent, but keep it
-  always visible above the letter field.
-- Move "Подобрать по каталогу" / "Подобрать нейросетью" buttons to sit
-  directly above the "Цены и условия — на все позиции" table.
-- Add a "количество фото — на все позиции" field next to that table,
-  overriding the per-item default and picking the first N photos.
+  always visible above the letter field. (The buttons *inside* the panel were
+  reordered in module 044 — «Подобрать по каталогу»/«нейросетью» now sit above
+  the bulk conditions table — but the panel itself still lives in the right
+  column.)
 - Move the drag-handle (⠿) and ↑/↓ buttons to the bottom of the КП draft
-  card; move the "🚫 не наша номенклатура" button to sit to the right of
-  "из письма: ... · совпадение ...% · по описанию"; move the "×" remove
+  card; move the «🚫 не наша номенклатура» button to sit to the right of
+  «из письма: ... · совпадение ...% · по описанию»; move the «×» remove
   button to sit to the right of the product-name input.
-- Replace "Собрать КП в Word" / "…в PDF" buttons with "⬇Word"/"⬇PDF" links
-  that appear only after "Собрать КП" has been clicked; replace "Собрать КП
-  заново" with a "🔄" icon button.
-- Remove the "Сохранить" button entirely; autosave on every field change
-  (debounced). Requires auditing every current explicit-save call site
-  (`saveMatchedItems`, `saveKpEditor`, `saveProposal`) for what a debounced
-  autosave would need to preserve (error surfacing, race conditions between
-  autosave and manual re-match).
-- Hide "Позиции запроса" (the unassigned-items pool in the КП drag board)
-  until "+ Ещё одно КП" is clicked for a second document; currently it shows
-  automatically whenever a request has zero proposals yet.
 
-## КП document (cosmetic / layout — needs visual QA, can't verify without a
-   browser+Word round-trip in this pass)
-- Word header: sender text right-aligned, logo left-aligned; add a text line
-  before "Коммерческое предложение".
-- Photo padding/margin in the PDF gallery — photos currently sit flush
-  against surrounding text ("слиплись").
-- Text alignment should always be left (audit `.card__qr`, `.card__link`,
-  and any other `text-align: right/center` rules against this).
-- "Открыть" button should open an editable HTML A4 preview (not just a
-  read-only preview) that can then export to PDF/Word. This is a
-  significant new feature (a live in-browser document editor), not a small
-  fix — needs its own design pass.
+## КП document
+- Word header: the seller block is now right-aligned and the logo left-aligned
+  (module 044), but this was never checked against a real Word round-trip —
+  needs visual QA on a machine with Word.
+- «Открыть» should open an editable HTML A4 preview (not just a read-only
+  one) that can then export to PDF/Word. A significant new feature (a live
+  in-browser document editor), not a small fix — needs its own design pass.
+- Check in Word that the selected photos come out in the chosen NUMBER, not
+  one per position: module 042 fixed them lying on top of each other, and
+  nobody has opened the file in Word since.
 
 ## Delivery
 - Verify the invoice generation path (MoySklad order/invoice sync) doesn't
@@ -61,53 +37,35 @@ this is the remainder, grouped by area, roughly in the order they appeared.
   MoySklad sync should already be unaffected — but this wasn't verified
   against a live MoySklad instance).
 
-## Scheduled sending
-- Delayed send with a date/time picker and quick presets ("Завтра в 09:00",
-  "В понедельник в 09:00"), plus a custom time.
-
-## Notifications / signature
-- Per-user notification sound choice.
-- Per-user email/КП signature and "roспись" — check how much of this
-  already exists via `managers.email_signature` (added module 041) vs. what
-  the issue additionally wants.
-
 ## Correspondence UI
 - Make the correspondence card list look and behave more like Gmail.
 
-## Auth
-- Configurable cookie lifetime (issue asks for up to a year).
-- Notify admins when an already-logged-in account gets a new login
-  elsewhere, and let the admin force-reset a manager's login/session.
-
-## Plugins
-- Make the "Re:palin" plugin toggleable and swappable for different code —
-  investigate what this plugin currently is/does before deciding on an
-  interface for it.
-
-## Settings UI
-- Add an explanation + "where does this come from" + (where applicable) a
-  direct link to generate the needed token (GitHub, MoySklad, Yandex,
-  OpenRouter, etc.) to every settings field, in both the setup wizard and
-  the regular settings screens.
+## Photos / lazy loading
+- General lazy-loading beyond the match table's photo strip (module 044
+  covers that one): mail attachments and board card thumbnails still load in
+  bulk.
 
 ## MoySklad
-- Use MoySklad's own "Печать → Счет покупателю с печатью с QR и с подписью"
+- Use MoySklad's own «Печать → Счет покупателю с печатью с QR и с подписью»
   option for the invoice attached to outgoing mail, instead of (or as an
   option alongside) the current custom invoice generation.
 
 ## Bugs mentioned in issue #60 not yet confirmed fixed
-- "не наша номенклатура" data-loss bug is fixed for the specific path
-  described (marking scope, applying bulk conditions, choosing an already-
-  saved item's equal variant). The same *class* of bug (full-table
-  re-render discarding unsaved edits) might exist in other action handlers
-  that call `renderMatchedItems()` with server data — worth a broader audit
-  if it recurs.
+- «не наша номенклатура» data-loss bug is fixed for the specific path
+  described. The same *class* of bug (full-table re-render discarding unsaved
+  edits) is now much less likely — module 044 autosaves the match table — but
+  a broader audit of handlers that call `renderMatchedItems()` with server
+  data is still worth doing if it recurs.
 
-## Module 043 — left for a live check
+## Left for a live check (modules 043–044)
 - Run «Проверить каталог Yandex» against the real cloud: the OpenAI-compatible
   route is learned from the provider's own 400, but which open models actually
-  answer there was never verified without network access in this pass.
+  answer there was never verified without network access.
 - If MoySklad keeps answering 429 after the retry fix, add a client-side rate
   guard (45 requests / 3 s per token) instead of relying on the backoff alone.
 - `php tests/module_026.php` has one failing check («новое письмо поднимает
-  карточку обратно») that predates this module — not investigated here.
+  карточку обратно») that predates module 042 — still not investigated.
+- Scheduled sending (module 044) needs `cron/send_scheduled.php` in the host's
+  crontab for minute precision; without it letters go out with
+  `cron/check_mail.php`. Worth saying so in `DEPLOY.md` once someone sets it
+  up on the live host.
