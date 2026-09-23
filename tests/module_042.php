@@ -69,7 +69,7 @@ ok('applyConditions делает то же самое',
 ok('chooseMatch (сохранённая строка) — тоже',
    (bool)preg_match('/const requestId = Number\(host && host\.dataset\.requestId\);\s*try \{\s*.*?items_save.*?items_choose/s', $js));
 ok('выбор равнозначного варианта сразу подставляет описание',
-   str_contains($js, "comment.value = btn.dataset.description"));
+   str_contains($js, "this.fillCatalogComment(row, btn.dataset.description"));
 
 // =====================================================================  2
 
