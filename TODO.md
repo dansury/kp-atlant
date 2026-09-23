@@ -68,8 +68,11 @@ not have.
   `/entity/productfolder`, never called against a live account).
 
 ## Open
-- `php tests/module_026.php` has one failing check («новое письмо поднимает
-  карточку обратно») that predates module 042 — still not investigated.
 - The «не наша номенклатура» data-loss bug is fixed and the match table
   autosaves; if it ever recurs, audit every handler that calls
   `renderMatchedItems()` with server data.
+
+## Module 050 — check on a live board
+- The list view (`#mail/list`) sorts by the date of the last letter. Columns
+  with a «Лимит карточек» still cut their cards in the list too — if managers
+  expect the list to show every conversation, the limit must become board-only.

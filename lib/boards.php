@@ -1017,6 +1017,15 @@ final class Boards {
 
         $in = implode(',', array_fill(0, count($ids), '?'));
         $cards = Db::all("SELECT * FROM board_cards WHERE id IN ($in)", $ids);
+        // «Прочитано» запоминает дату последнего письма карточки, а не часы
+        // сервера: дата письма — это часы отправителя, и письмо, написанное до
+        // нажатия, а пришедшее после, иначе карточку не поднимало (модуль 050)
+        $lastAt = [];
+        if ($op === 'read') {
+            $seen = $cards;
+            self::decorateAll($seen);
+            foreach ($seen as $c) $lastAt[(int)$c['id']] = $c['last_at'] ?? null;
+        }
 
         $done = 0; $failed = 0; $errors = [];
         foreach ($cards as $card) {
@@ -1030,9 +1039,9 @@ final class Boards {
                         foreach (self::cardThreadKeys($card) as $key) MailThreads::markRead($key);
                         // Письма прочитаны — и карточка разобрана: иначе она
                         // остаётся жирной, потому что клиент всё ещё «писал
-                        // последним». Новое письмо придёт позже этой отметки и
-                        // поднимет карточку обратно.
-                        Db::update('board_cards', ['seen_at' => date('Y-m-d H:i:s')], 'id=?', [(int)$card['id']]);
+                        // последним». Письмо новее отмеченного поднимет карточку.
+                        Db::update('board_cards', ['seen_at' => $lastAt[(int)$card['id']] ?? date('Y-m-d H:i:s')],
+                                   'id=?', [(int)$card['id']]);
                         break;
 
                     case 'archive':

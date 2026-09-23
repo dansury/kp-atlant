@@ -151,6 +151,21 @@ const App = {
         return withTime ? d.toLocaleString('ru-RU') : d.toLocaleDateString('ru-RU');
     },
 
+    /** Дата строки списка, как в Gmail: сегодня — время, этот год — «12 сен», раньше — 12.09.24. */
+    fmtShort(v) {
+        if (!v) return '';
+        const d = new Date(String(v).replace(' ', 'T'));
+        if (isNaN(d)) return this.esc(v);
+        const now = new Date();
+        if (d.toDateString() === now.toDateString()) {
+            return d.toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'});
+        }
+        if (d.getFullYear() === now.getFullYear()) {
+            return d.toLocaleDateString('ru-RU', {day: 'numeric', month: 'short'}).replace('.', '');
+        }
+        return d.toLocaleDateString('ru-RU', {day: '2-digit', month: '2-digit', year: '2-digit'});
+    },
+
     fmtMoney(v) {
         return (Number(v) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' ₽';
     },
@@ -196,6 +211,8 @@ const App = {
     async init() {
         this.registerServiceWorker();
         this.watchBlocks();
+        this.bindA11y();
+        this.bindMenus();
         this.watchInstallPrompt();
         try {
             this.manager = await this.api('auth.php?action=me');
@@ -337,7 +354,7 @@ const App = {
             // непрочитанных оно не добавляет, а карточка после него уже другая.
             // Открытую переписку не трогаем: там может быть начатый ответ.
             const pulled = (r.report || []).some(x => Number(x.in || 0) + Number(x.out || 0) > 0);
-            if (pulled && (location.hash.slice(1) || 'mail') === 'mail') this.route();
+            if (pulled && /^mail(\/(board|list)(\/\d+)?)?$/.test(location.hash.slice(1) || 'mail')) this.route();
         } catch { /* недоступный ящик виден в «Настройки → Почта», а не поверх работы */ }
         finally { this.mailPulling = false; }
     },
@@ -376,9 +393,11 @@ const App = {
         // бы чужие счета под полем ответа и чужая серость в ленте (модуль 029)
         this.companyRequestId = '';
         this.closeModal();
+        // Гайд и подсказка прошлого экрана не висят над новым (модуль 050)
+        if (this.tourSteps) this.tourEnd(); else this.closeHint();
         // Доска канбан идёт во всю ширину экрана: пять колонок в 1280px не
         // помещались и уезжали в горизонтальную прокрутку (модуль 023)
-        const wide = page === 'mail' && (!params[0] || params[0] === 'board');
+        const wide = page === 'mail' && (!params[0] || params[0] === 'board' || params[0] === 'list');
         const main = app.closest('.main') || document.querySelector('.main');
         if (main) main.classList.toggle('main--wide', wide);
 
@@ -386,10 +405,14 @@ const App = {
             switch (page) {
                 case 'mail': {
                     const seg = params[0] || '';
-                    if (!seg || seg === 'board') {
-                        // Архив — тот же экран «Письма», переключённый ссылкой «Архив»
-                        return (this.boardFilters || {}).archived ? this.pageBoardArchive() : this.pageMailBoard();
+                    // Архив — тот же экран «Письма», переключённый ссылкой «Архив»
+                    if ((!seg || seg === 'board' || seg === 'list') && (this.boardFilters || {}).archived) {
+                        return this.pageBoardArchive();
                     }
+                    // Список как в Gmail или доска (модуль 050); голый #mail — тот
+                    // вид, которым пользовались на этом устройстве последним
+                    if (seg === 'list' || (!seg && this.mailView() === 'list')) return this.pageMailList(params[1] || '');
+                    if (!seg || seg === 'board') return this.pageMailBoard();
                     // Отдельной страницы «Архив писем» больше нет: она была
                     // вторым почтовым клиентом рядом с доской — со своим
                     // поиском, своими вкладками и всеми письмами подряд.
@@ -457,6 +480,91 @@ const App = {
             </div>`;
     },
 
+    // ==== Одна шапка экрана и меню «⋯» (модуль 050) ====
+
+    /**
+     * Шапка внутреннего экрана: ссылка назад над заголовком, справа действия
+     * (главное — последним и залитым), редкие и опасные — в меню «⋯».
+     */
+    pageHead({back = '#mail', backLabel = '← Письма', title = '', after = '', meta = '', actions = '', menu = []} = {}) {
+        return `
+            <div class="pagehead">
+                <div class="pagehead__main">
+                    ${back ? `<a class="pagehead__back" href="${this.esc(back)}">${this.esc(backLabel)}</a>` : ''}
+                    <div class="pagehead__line">
+                        <h2 class="pagehead__title">${title}</h2>${after}
+                    </div>
+                    ${meta ? `<div class="pagehead__meta">${meta}</div>` : ''}
+                </div>
+                <div class="pagehead__actions">${actions}${this.menuHtml(menu)}</div>
+            </div>`;
+    },
+
+    /**
+     * Меню «⋯»: `<details>`, так что открывается с клавиатуры само. Пункты
+     * `{label, href|onclick, title, danger}`; опасные — в конце, после черты.
+     */
+    menuHtml(items, {label = '⋯', aria = 'Ещё действия'} = {}) {
+        items = (items || []).filter(Boolean);
+        if (!items.length) return '';
+        const safe = items.filter(i => !i.danger), danger = items.filter(i => i.danger);
+        const item = i => {
+            const cls = 'menu__item' + (i.danger ? ' menu__item--danger' : '');
+            const title = i.title ? ` title="${this.esc(i.title)}"` : '';
+            return i.href
+                ? `<a role="menuitem" class="${cls}" href="${this.esc(i.href)}"${i.blank ? ' target="_blank" rel="noopener"' : ''}${title}>${this.esc(i.label)}</a>`
+                : `<button type="button" role="menuitem" class="${cls}"${title}
+                           onclick="this.closest('details').open=false;${i.onclick}">${this.esc(i.label)}</button>`;
+        };
+        return `
+            <details class="menu">
+                <summary class="btn btn--outline btn--sm menu__btn" aria-label="${this.esc(aria)}" title="${this.esc(aria)}">${this.esc(label)}</summary>
+                <div class="menu__list" role="menu">
+                    ${safe.map(item).join('')}
+                    ${safe.length && danger.length ? '<div class="menu__sep" role="separator"></div>' : ''}
+                    ${danger.map(item).join('')}
+                </div>
+            </details>`;
+    },
+
+    /** Открытое меню закрывается щелчком мимо и Escape. */
+    bindMenus() {
+        document.addEventListener('click', e => {
+            document.querySelectorAll('details.menu[open]').forEach(m => {
+                if (!m.contains(e.target)) m.open = false;
+            });
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key !== 'Escape') return;
+            document.querySelectorAll('details.menu[open]').forEach(m => {
+                m.open = false;
+                m.querySelector('summary')?.focus();
+            });
+        });
+    },
+
+    /**
+     * Текстовые действия `<a onclick>` без `href` не получали фокус с
+     * клавиатуры вовсе. Один наблюдатель делает их кнопками: Tab, Enter, пробел.
+     */
+    bindA11y() {
+        const fix = root => root.querySelectorAll?.('a[onclick]:not([href]):not([tabindex])').forEach(a => {
+            a.tabIndex = 0;
+            a.setAttribute('role', 'button');
+        });
+        fix(document);
+        new MutationObserver(list => list.forEach(m => m.addedNodes.forEach(n => {
+            if (n.nodeType === 1) { fix(n); if (n.matches?.('a[onclick]:not([href]):not([tabindex])')) fix(n.parentNode); }
+        }))).observe(document.body, {childList: true, subtree: true});
+        document.addEventListener('keydown', e => {
+            const a = e.target;
+            if ((e.key === 'Enter' || e.key === ' ') && a.matches?.('a[role="button"]:not([href])')) {
+                e.preventDefault();
+                a.click();
+            }
+        });
+    },
+
     // ==== «Письма»: one board, and nothing else to switch between ====
     // Companies, requests and letters used to be three lists that had to be
     // cross-checked by hand (module 011). They are one object now — a company
@@ -464,20 +572,68 @@ const App = {
     // page. The old lists stay reachable by URL for a link somebody saved, and
     // each of them opens with a way back to the board.
     mailShellHtml(active, extra = '') {
-        // Архив — это та же доска, открытая ссылкой «Архив», отсюда и заголовок:
-        // «Письма · архив», а не отдельный раздел «Архив писем»
-        const titles = {board: (this.boardFilters || {}).archived ? 'Письма · архив' : 'Письма',
-                        trash: 'Письма · корзина', requests: 'Запросы', companies: 'Компании'};
-        return `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:10px;gap:10px">
-                <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
-                    ${active === 'board' ? '' : '<a href="#mail" class="btn btn--outline btn--sm">← На доску</a>'}
-                    <h2 style="margin:0">${titles[active] || 'Письма'}${active === 'board' ? this.hint('board') : ''}</h2>
+        // Архив — это та же доска, открытая пунктом «Архив», отсюда и заголовок
+        const archived = !!(this.boardFilters || {}).archived;
+        const body = '<div id="mailBody"><div class="loading">Загрузка...</div></div>';
+        if (active === 'board' || active === 'list') {
+            return `
+                <div class="pagehead pagehead--mail">
+                    <div class="pagehead__main">
+                        ${archived ? `<a class="pagehead__back" href="#mail"
+                            onclick="App.setBoardFilter('archived', 0); return false;">← Письма</a>` : ''}
+                        <div class="pagehead__line">
+                            <h2 class="pagehead__title">${archived ? 'Архив' : 'Письма'}${this.hint('board')}</h2>
+                            ${archived ? '' : this.mailViewTabs(active)}
+                        </div>
+                    </div>
+                    <div class="pagehead__actions">${extra}</div>
                 </div>
-                <div class="flex flex--wrap" style="gap:8px;flex:1;justify-content:flex-end">${extra}</div>
-            </div>
-            <div id="mailBody"><div class="loading">Загрузка...</div></div>
-        `;
+                ${body}`;
+        }
+        const titles = {trash: 'Корзина', requests: 'Запросы', companies: 'Компании'};
+        return this.pageHead({title: titles[active] || 'Письма', actions: extra}) + body;
+    },
+
+    /** «Список | Доска» — два вида одних и тех же карточек (модуль 050). */
+    mailViewTabs(active) {
+        const tab = (v, label) => `<a href="#mail/${v}" class="vtab ${active === v ? 'vtab--active' : ''}"
+            ${active === v ? 'aria-current="page"' : ''}>${label}</a>`;
+        return `<nav class="vtabs" aria-label="Вид писем">${tab('list', '☰ Список')}${tab('board', '▦ Доска')}</nav>`;
+    },
+
+    mailView() {
+        try { return localStorage.getItem('mailView') === 'list' ? 'list' : 'board'; } catch { return 'board'; }
+    },
+
+    setMailView(v) {
+        try { localStorage.setItem('mailView', v); } catch { /* приватный режим — вид просто не запомнится */ }
+    },
+
+    /** Поиск, «Забрать почту», «Написать» и меню «Ещё» — одни на оба вида. */
+    mailToolbarHtml(view) {
+        const archived = !!(this.boardFilters || {}).archived;
+        return `
+            <span class="searchbox" role="search">
+                <input type="text" id="boardFilter" value="${this.esc(this.boardQuery || '')}"
+                       placeholder="${archived ? 'Поиск по архиву' : 'Поиск в почте'}: тема, адрес, текст, файл…"
+                       aria-label="Поиск по письмам"
+                       title="Ищет по всей почте: темам, телу писем, адресам, именам и вложениям — включая архив"
+                       oninput="App.${archived ? 'archiveSearch' : 'boardFilter'}(this.value)">
+                <button type="button" class="searchbox__x" title="Очистить поиск" aria-label="Очистить поиск"
+                        onclick="App.${archived ? 'archiveSearchClear' : 'boardFilterClear'}()">×</button>
+            </span>
+            <button class="btn btn--outline btn--sm btn--icon" onclick="App.boardSync()"
+                    aria-label="Забрать почту" title="Забрать почту">⟳</button>
+            <button class="btn btn--primary btn--sm" onclick="App.mailCompose()">✉ Написать</button>
+            ${this.menuHtml([
+                {href: '#mail/new', label: '+ Запрос не из почты',
+                 title: 'Запрос пришёл в мессенджер или по телефону — вставьте текст и файлы'},
+                view === 'board' && !archived ? {onclick: 'App.boardAddColumn()', label: '+ Колонка'} : null,
+                archived ? {onclick: "App.setBoardFilter('archived', 0)", label: '← К письмам'}
+                         : {onclick: "App.setBoardFilter('archived', 1)", label: '🗄 Архив',
+                            title: 'Переписки, убранные как «не наш профиль»'},
+                {href: '#mail/trash', label: '🗑 Корзина', title: 'Удалённые письма — их можно вернуть'},
+            ], {label: 'Ещё ▾'})}`;
     },
 
     // === Pages ===
@@ -540,10 +696,8 @@ const App = {
     pageNewRequest(opts = {}) {
         this.newReqFiles = [];
         document.getElementById('app').innerHTML = `
-            <div class="flex" style="margin-bottom:16px;gap:10px">
-                <a href="#mail" class="btn btn--outline btn--sm">← К доске</a>
-                <h2 style="margin:0">Новый запрос</h2>
-            </div>
+            ${this.pageHead({title: 'Новый запрос',
+                meta: 'Запрос пришёл не почтой — из мессенджера, по телефону, файлом. Карточка встанет в «В работе».'})}
             ${opts.trial ? `
             <div class="card card--alert">
                 <div class="card__title">Проверочный запрос</div>
@@ -553,20 +707,22 @@ const App = {
             <div class="card">
                 <form id="newRequestForm">
                     <div class="form-group">
-                        <label>Текст запроса</label>
+                        <label for="reqText">Текст запроса</label>
                         <textarea id="reqText" rows="8" placeholder="Вставьте текст запроса из мессенджера, email или заметок…"
+                                  aria-describedby="reqTextErr" oninput="App.fieldError('reqText', '')"
                                   onpaste="App.newRequestPaste(event)">${this.esc(opts.text || '')}</textarea>
+                        <div class="field-error" id="reqTextErr" role="alert"></div>
                         <div class="muted">Скриншот можно вставить прямо сюда — Ctrl+V.</div>
                     </div>
                     <div class="form-group">
-                        <label>Файлы</label>
+                        <label for="reqFiles">Файлы <span class="optional">необязательно</span></label>
                         <input type="file" id="reqFiles" multiple onchange="App.newRequestAttach(this)">
                         <div class="flex flex--wrap" id="reqFileList" style="gap:6px;margin-top:6px"></div>
                         <div class="muted">Спецификация, фотография переписки, скан — текст из них уходит в подбор позиций.</div>
                     </div>
                     <div class="form-group">
-                        <label>Контрагент (название организации)</label>
-                        <input type="text" id="reqCounterparty" placeholder="ООО Ромашка (необязательно — система определит из текста)">
+                        <label for="reqCounterparty">Контрагент (название организации) <span class="optional">необязательно</span></label>
+                        <input type="text" id="reqCounterparty" placeholder="ООО Ромашка — пусто: сервис определит из текста">
                     </div>
                     <input type="hidden" id="reqTrial" value="${opts.trial ? '1' : ''}">
                     <button type="submit" class="btn btn--primary btn--block">Создать карточку в «В работе»</button>
@@ -576,6 +732,17 @@ const App = {
         document.getElementById('newRequestForm').onsubmit = (e) => { e.preventDefault(); this.submitNewRequest(e.target); };
         // Проверочный текст открыли по закладке, мимо мастера — спросим его у сервера
         if (opts.trial && !(opts.text || '').trim()) this.fillTrialText();
+    },
+
+    /** Ошибка поля — под самим полем, а не всплывающим сообщением в углу (модуль 050). */
+    fieldError(id, text) {
+        const field = document.getElementById(id);
+        const out = document.getElementById(id + 'Err');
+        if (out) out.textContent = text;
+        if (field) {
+            field.toggleAttribute('aria-invalid', !!text);
+            if (text) field.focus();
+        }
     },
 
     async fillTrialText() {
@@ -589,7 +756,9 @@ const App = {
     async submitNewRequest(form) {
         const text = document.getElementById('reqText').value.trim();
         const files = this.newReqFiles || [];
-        if (!text && !files.length) return this.toast('Вставьте текст запроса или приложите файл', 'error');
+        if (!text && !files.length) {
+            return this.fieldError('reqText', 'Вставьте текст запроса или приложите файл ниже — без них подбирать нечего.');
+        }
         const trial = document.getElementById('reqTrial').value === '1';
         const btn = form.querySelector('button[type=submit]');
         btn.disabled = true; btn.textContent = 'Обработка…';
@@ -675,17 +844,14 @@ const App = {
                 ? `<button class="btn btn--primary" id="genBtn" onclick="App.generateKP(${req.id})">Сформировать КП</button>` : '');
 
         app.innerHTML = `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
-                <div class="flex flex--wrap" style="gap:10px">
-                    <a href="#mail" class="btn btn--outline btn--sm">← К доске</a>
-                    <h2 style="margin:0">${isOrder ? 'Заказ' : 'Запрос'} #${req.id} ${this.typeBadge(req.type)}</h2>
-                </div>
-                <div class="flex flex--wrap">
+            ${this.pageHead({
+                title: `${isOrder ? 'Заказ' : 'Запрос'} #${req.id}`,
+                after: this.typeBadge(req.type),
+                actions: `
                     ${!req.manager_id ? `<button class="btn btn--outline" onclick="App.assignRequest(${req.id})">Взять в работу</button>` : ''}
                     ${req.mail_message_id ? `<button class="btn btn--outline" onclick="App.mailCompose(${req.mail_message_id}, true)">Создать ответ</button>` : ''}
-                    ${actions}
-                </div>
-            </div>
+                    ${actions}`,
+            })}
 
             <div class="card card--inline">
                 <span>Тип запроса:</span>
@@ -2910,13 +3076,20 @@ const App = {
         }
         el.className = 'modal';
         el.innerHTML = `
-            <div class="modal__box card">
+            <div class="modal__box card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
                 <div class="flex flex--between" style="margin-bottom:12px">
-                    <strong>${this.esc(title)}</strong>
-                    <button class="btn btn--sm btn--outline" onclick="App.closeModal()">✕</button>
+                    <strong id="modalTitle">${this.esc(title)}</strong>
+                    <button class="btn btn--sm btn--outline" onclick="App.closeModal()" aria-label="Закрыть" title="Закрыть">✕</button>
                 </div>
                 ${html}
             </div>`;
+        if (!this._modalEsc) {
+            this._modalEsc = true;
+            document.addEventListener('keydown', e => {
+                if (e.key === 'Escape' && document.getElementById('modal')) this.closeModal();
+            });
+        }
+        el.querySelector('input, select, textarea, button:not([aria-label="Закрыть"])')?.focus();
     },
 
     closeModal() {
@@ -3016,8 +3189,8 @@ const App = {
             document.getElementById('app').innerHTML = `
                 <div class="card card--alert">
                     <div class="card__title">Ссылка на КП битая</div>
-                    <p>В адресе нет номера КП. Откройте КП с доски — кнопкой «Открыть КП» под таблицей позиций.</p>
-                    <a class="btn btn--primary btn--sm" href="#mail">← На доску</a>
+                    <p>В адресе нет номера КП. Откройте КП из письма — кнопкой «Открыть КП» под таблицей позиций.</p>
+                    <a class="btn btn--primary btn--sm" href="#mail">← К письмам</a>
                 </div>`;
             return;
         }
@@ -3027,7 +3200,7 @@ const App = {
                 <div class="card card--alert">
                     <div class="card__title">КП #${num} не найдено</div>
                     <p>Возможно, его удалили вместе с запросом.</p>
-                    <a class="btn btn--primary btn--sm" href="#mail">← На доску</a>
+                    <a class="btn btn--primary btn--sm" href="#mail">← К письмам</a>
                 </div>`;
             return;
         }
@@ -3037,16 +3210,15 @@ const App = {
         const addons = proposal.addons || [];
 
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
-                <div class="flex flex--wrap" style="gap:10px">
-                    ${proposal.request_id ? `<a href="#mail/request/${proposal.request_id}" class="btn btn--outline btn--sm">← Запрос #${proposal.request_id}</a>` : ''}
-                    <h2 style="margin:0">КП #${this.esc(proposal.number) || id}${this.hint('kp-editor')}</h2>
-                </div>
-                <div class="flex flex--wrap">
+            ${this.pageHead({
+                back: proposal.request_id ? `#mail/request/${proposal.request_id}` : '#mail',
+                backLabel: proposal.request_id ? `← Запрос #${proposal.request_id}` : '← Письма',
+                title: `КП #${this.esc(proposal.number) || id}`,
+                after: this.hint('kp-editor'),
+                actions: `
                     <button class="btn btn--outline" onclick="App.refreshPreview(${id})">Обновить PDF</button>
-                    <button class="btn btn--primary" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
-                </div>
-            </div>
+                    <button class="btn btn--primary" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>`,
+            })}
             ${this.proposalWarnings(proposal)}
             <div class="grid grid--2">
                 <div>
@@ -3830,21 +4002,18 @@ const App = {
         this.company = cp;
         this.foldKey = 'cp:' + id;
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
-                <div class="flex flex--wrap" style="gap:10px;align-items:baseline">
-                    <a href="#mail" class="btn btn--outline btn--sm">← На доску</a>
-                    <h2 style="margin:0">${this.esc(cp.name)}</h2>
-                    ${this.answerBadge(cp.answer_state)}
-                </div>
-                <div class="flex flex--wrap">
-                    ${(cp.senders_count || 0) > 1 ? `<button class="btn btn--outline btn--sm" id="splitBtn"
-                        title="В карточке ${cp.senders_count} разных отправителей — развести по своим компаниям"
-                        onclick="App.splitSenders(${cp.id}, ${cp.senders_count})">Разделить по отправителям (${cp.senders_count})</button>` : ''}
-                    <button class="btn btn--outline btn--sm" id="syncBtn" onclick="App.syncCompany(${cp.id})">Обновить из МойСклад</button>
-                    ${cp.moysklad_id ? `<a class="btn btn--outline btn--sm" target="_blank"
-                        href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">МойСклад ↗</a>` : ''}
-                </div>
-            </div>
+            ${this.pageHead({
+                title: this.esc(cp.name),
+                after: this.answerBadge(cp.answer_state),
+                actions: cp.moysklad_id ? `<a class="btn btn--outline btn--sm" target="_blank" rel="noopener"
+                    href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">МойСклад ↗</a>` : '',
+                menu: [
+                    {label: 'Обновить из МойСклад', onclick: `App.syncCompany(${cp.id})`},
+                    (cp.senders_count || 0) > 1 ? {label: `Разделить по отправителям (${cp.senders_count})`,
+                        title: `В карточке ${cp.senders_count} разных отправителей — развести по своим компаниям`,
+                        onclick: `App.splitSenders(${cp.id}, ${cp.senders_count})`} : null,
+                ],
+            })}
             <div id="cardPlacement"></div>
             <!-- Одна раскладка для письма, откуда его ни открой: переписка
                  слева, подбор позиций справа на десктопе и снизу на телефоне.
@@ -5343,6 +5512,8 @@ const App = {
 
         const btn = document.getElementById('syncBtn');
         if (btn && !silent) { btn.disabled = true; btn.textContent = 'Обновление...'; }
+        // Пункт меню «⋯» закрывается сразу — ход работы виден сообщением
+        else if (!silent) this.toast('Обновляем из МойСклад…', 'info');
         try {
             await this.api(`invoices.php?action=sync&counterparty_id=${id}`, {method: 'POST'});
             const cp = await this.api(`counterparties.php?action=get&id=${id}`);
@@ -5383,28 +5554,51 @@ const App = {
     // belongs on the page the manager opens when уведомления не приходят.
     async pageNotifications() {
         const data = await this.api('notifications.php?action=poll');
+        const items = data.items || [];
+        // Список — главное на экране, подписка на push — под ним (модуль 050)
         document.getElementById('app').innerHTML = `
-            <h2 style="margin-bottom:16px">Уведомления</h2>
-            <div class="card" id="pushCard"><div class="loading">Загрузка...</div></div>
-            <div class="card">
-                ${data.items.length ? data.items.map(n => `
+            ${this.pageHead({back: '', title: 'Уведомления',
+                after: items.length ? ` <span class="pill">${items.length}</span>` : '',
+                actions: items.length ? `<button class="btn btn--outline btn--sm" onclick="App.readAllNotifs(this)">✓ Прочитать все</button>` : ''})}
+            <div class="card" id="notifList">
+                ${items.length ? items.map(n => `
                     <!-- Оплата и отправка заказа ждут действия — выделены (модуль 047) -->
-                    <div class="flex flex--between ${['order_shipped', 'order_paid'].includes(n.type) ? 'notif--action' : ''}"
-                         style="padding:10px 0;border-bottom:1px solid var(--border)">
-                        <div>
+                    <div class="notif ${['order_shipped', 'order_paid'].includes(n.type) ? 'notif--action' : ''}" data-notif="${n.id}">
+                        <div class="notif__text">
                             <strong>${this.esc(n.title)}</strong>
-                            ${n.body ? `<p style="color:var(--text-muted);font-size:13px">${this.esc(n.body)}</p>` : ''}
-                            <small style="color:var(--text-muted)">${new Date(n.created_at).toLocaleString('ru-RU')}</small>
+                            ${n.body ? `<p class="notif__body">${this.esc(n.body)}</p>` : ''}
+                            <small class="muted">${new Date(String(n.created_at).replace(' ', 'T')).toLocaleString('ru-RU')}</small>
                         </div>
                         <div class="flex">
                             ${this.notifLink(n)}
-                            <button class="btn btn--sm btn--outline" onclick="App.readNotif(${n.id}, this)">✓</button>
+                            <button class="btn btn--sm btn--outline" onclick="App.readNotif(${n.id}, this)"
+                                    aria-label="Отметить прочитанным: ${this.esc(n.title)}">✓ Прочитано</button>
                         </div>
                     </div>
-                `).join('') : '<p style="color:var(--text-muted);text-align:center;padding:20px">Нет новых уведомлений</p>'}
+                `).join('') : this.notifEmpty()}
             </div>
+            <div class="card" id="pushCard"><div class="loading">Загрузка...</div></div>
         `;
         this.renderPushCard();
+    },
+
+    notifEmpty() {
+        return `<div class="empty">
+            <p><strong>Новых уведомлений нет.</strong></p>
+            <p class="muted">Здесь появятся новые письма, оплаты и отправки заказов, ошибки сервиса.
+               Чтобы узнавать о них, не держа вкладку открытой, включите push ниже.</p>
+        </div>`;
+    },
+
+    async readAllNotifs(btn) {
+        const ids = [...document.querySelectorAll('[data-notif]')].map(el => Number(el.dataset.notif));
+        if (!ids.length) return;
+        btn.disabled = true;
+        const done = await Promise.allSettled(ids.map(id =>
+            this.api(`notifications.php?action=read&id=${id}`, {method: 'POST'})));
+        const failed = done.filter(r => r.status === 'rejected').length;
+        if (failed) this.toast(`Не отметилось: ${failed}`, 'error');
+        this.pageNotifications();
     },
 
     // Where a notification leads: the target the server recorded (the letter
@@ -5417,8 +5611,12 @@ const App = {
     },
 
     async readNotif(id, btn) {
-        await this.api(`notifications.php?action=read&id=${id}`, {method:'POST'});
-        btn.closest('.flex').parentElement.remove();
+        try {
+            await this.api(`notifications.php?action=read&id=${id}`, {method:'POST'});
+        } catch (err) { this.toast(err.message, 'error'); return; }
+        btn.closest('[data-notif]').remove();
+        const list = document.getElementById('notifList');
+        if (list && !list.querySelector('[data-notif]')) this.pageNotifications();
     },
 
     // ==== Ликбез, разобранный по местам (модуль 022) ====
@@ -5439,6 +5637,7 @@ const App = {
     HINTS: {
         // Письма и ответ
         'board':        ['Доска «Письма»', 'Каждая карточка — КОМПАНИЯ, а не письмо: внутри вся её переписка, запросы и КП. Новые письма попадают сюда сами при открытии доски и по кнопке «Забрать почту» — и входящие, и те, что отправлены мимо сервиса, с телефона или из другого почтового клиента. Колонку карточке вы назначаете сами — сервис её никогда не двигает.'],
+        'mail-keys':    ['Список писем', 'Письма идут по дате последнего письма: пришло новое — строка поднимается наверх и на миг подсвечивается. Жирным — есть непрочитанные, красная точка — клиент ждёт ответа. Слева — статусы (это колонки доски) со своим цветом. Клавиши: j / k — вниз / вверх, o или Enter — открыть, x — отметить, e — в архив, Shift+I — прочитано, / — поиск.'],
         'events':       ['Заметки, заказы и счета', 'Заметки для коллег, вехи сделки, заказы и счета — одной лентой со ссылками в МойСклад. То, что не относится к открытой переписке, приглушено. Отправленные письма и ответы на них — слева, в «Переписке». Красная точка на вкладке — у компании есть заметки.'],
         'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Переписки идут по порядку: старые сверху, свежая — внизу, и она раскрыта. В строке видно, чьё в переписке последнее письмо. Любое одно письмо убирается корзиной в его заголовке — остальная переписка остаётся на месте. Убранные как «не наш профиль» стоят свёрнутым блоком «Архив компании» над списком.'],
         'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика. К ответу сам приписывается текст письма, на которое вы отвечаете, — клиенту не приходится вспоминать, о каком заказе речь.'],
@@ -5653,6 +5852,14 @@ const App = {
         ].filter(([, , adminOnly]) => admin || !adminOnly);
     },
 
+    /** Группы разделов настроек: по делу человека, а не по устройству сервиса. */
+    SETTINGS_GROUPS: [
+        ['Работа с КП',      ['guide', 'catalog', 'kp', 'signature', 'knowledge', 'tov', 'prompts']],
+        ['Интеграции',       ['moysklad', 'llm', 'mail', 'processing']],
+        ['Команда и сервис', ['overview', 'managers', 'branding', 'setup', 'support', 'device']],
+        ['Система',          ['learning', 'all', 'logs']],
+    ],
+
     pageSettings(tab, arg) {
         const tabs = this.settingsTabs();
         // «#settings/logs/error» — журнал, открытый сразу на нужном уровне:
@@ -5664,12 +5871,33 @@ const App = {
         // Без явной вкладки админ попадает в «Обзор» — он заходит сюда работать,
         // а менеджер в «Ликбез»: ему здесь нужно объяснение, а не тумблеры
         if (!tabs.some(([k]) => k === tab)) tab = (this.manager && this.manager.is_admin) ? 'overview' : 'guide';
+        // Двадцать вкладок в ряд не читались: четыре группы слева, на телефоне —
+        // один список (модуль 050). Адреса #settings/<вкладка> те же.
+        const have = new Map(tabs.map(([k, l]) => [k, l]));
+        const groups = this.SETTINGS_GROUPS
+            .map(([title, keys]) => [title, keys.filter(k => have.has(k))])
+            .filter(([, keys]) => keys.length);
         document.getElementById('app').innerHTML = `
-            <h2 style="margin-bottom:12px">Настройки</h2>
-            <div class="tabs">
-                ${tabs.map(([k, l]) => `<a href="#settings/${k}" class="tab ${tab === k ? 'tab--active' : ''}">${this.esc(l)}</a>`).join('')}
+            ${this.pageHead({back: '', title: 'Настройки'})}
+            <div class="settings">
+                <nav class="snav" aria-label="Разделы настроек">
+                    ${groups.map(([title, keys]) => `
+                        <div class="snav__group">
+                            <div class="snav__head">${this.esc(title)}</div>
+                            ${keys.map(k => `<a href="#settings/${k}" class="snav__item ${tab === k ? 'snav__item--on' : ''}"
+                                ${tab === k ? 'aria-current="page"' : ''}>${this.esc(have.get(k))}</a>`).join('')}
+                        </div>`).join('')}
+                </nav>
+                <label class="snav-select">
+                    <span class="sr-only">Раздел настроек</span>
+                    <select onchange="location.hash = 'settings/' + this.value">
+                        ${groups.map(([title, keys]) => `<optgroup label="${this.esc(title)}">
+                            ${keys.map(k => `<option value="${k}" ${tab === k ? 'selected' : ''}>${this.esc(have.get(k))}</option>`).join('')}
+                        </optgroup>`).join('')}
+                    </select>
+                </label>
+                <div class="settings__body" id="adminBody"><div class="loading">Загрузка...</div></div>
             </div>
-            <div id="adminBody"><div class="loading">Загрузка...</div></div>
         `;
         const render = {
             guide:      () => this.settingsGuide(),
@@ -7059,31 +7287,28 @@ const App = {
         const lastIn = [...(d.messages || [])].reverse().find(m => m.direction === 'in') || (d.messages || [])[0] || {};
         const sender = {name: lastIn.real_from_name || lastIn.from_name || '',
                         email: lastIn.real_from_email || lastIn.from_email || ''};
+        // В шапке карточки — компания, ОТПРАВИТЕЛЬ и тема, как они есть: по
+        // одной теме понять, чьё это письмо, нельзя (модуль 023)
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:12px;gap:10px">
-                <div>
-                    <!-- В шапке карточки — компания, ОТПРАВИТЕЛЬ и тема, как они
-                         есть: по одной теме понять, чьё это письмо, нельзя (модуль 023) -->
-                    <h2 style="margin-bottom:2px">${this.esc(t.counterparty_name || sender.name || sender.email || 'Без компании')}</h2>
+            ${this.pageHead({
+                title: this.esc(t.counterparty_name || sender.name || sender.email || 'Без компании'),
+                meta: `
                     <div class="thread-head__who">
                         ${sender.name || sender.email
                             ? `<span>${this.esc(sender.name || '')}${sender.email ? ` &lt;${this.esc(sender.email)}&gt;` : ''}</span>` : ''}
                         <span class="thread-head__subject">${this.esc(t.subject || 'Без темы')}</span>
                     </div>
-                    <div class="muted" style="font-size:12px">
+                    <div class="muted">
                         писем: ${t.count} · входящих ${t.in_count} · исходящих ${t.out_count}
                         ${(t.mailboxes || []).map(b => `<span class="chip chip--box">${this.esc(b.name)}</span>`).join('')}
                         ${t.counterparty_id ? ` · <a href="#mail/company/${t.counterparty_id}">${this.esc(t.counterparty_name)}</a>` : ''}
-                    </div>
-                </div>
-                <div class="flex flex--wrap">
-                    <a href="#mail" class="btn btn--outline btn--sm">← К доске</a>
-                    ${t.archived_at
-                        ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(key)}')">↩ Вернуть в работу</button>`
-                        : `<button class="btn btn--outline btn--sm" onclick="App.archiveThread('${this.jsStr(key)}', ${t.count})">🗄 В архив</button>`}
-                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteThread('${this.jsStr(key)}', ${t.count})">🗑 Удалить переписку</button>
-                </div>
-            </div>
+                    </div>`,
+                actions: t.archived_at
+                    ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(key)}')">↩ Вернуть в работу</button>`
+                    : `<button class="btn btn--outline btn--sm" onclick="App.archiveThread('${this.jsStr(key)}', ${t.count})">🗄 В архив</button>`,
+                menu: [{label: '🗑 Удалить переписку', danger: true,
+                        onclick: `App.deleteThread('${this.jsStr(key)}', ${t.count})`}],
+            })}
             <div id="threadPlacement"></div>
             <!-- Одна раскладка для всех писем: переписка слева, подбор справа на
                  десктопе и снизу на телефоне. Раньше «Подходящие позиции» стояли
@@ -7327,12 +7552,15 @@ const App = {
                             ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" title="Не наш профиль: письмо уйдёт в «Архив» на сервере"
                                 onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
                             ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
-                            ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
                             <button class="btn btn--outline btn--sm"
                                     title="Отправить это письмо целиком на другой адрес — со вложениями и шапкой «от кого»"
                                     onclick="App.forwardMail(${m.id})">↪ Перенаправить</button>
-                            <button class="btn btn--outline btn--sm btn--danger"
-                                    onclick="App.deleteMail(${m.id}, {thread: '${this.jsStr(key || '')}'})">🗑 Удалить письмо</button>
+                            <!-- Спам и удаление — не рядом с «Ответить»: в меню «⋯» (модуль 050) -->
+                            ${this.menuHtml([
+                                m.direction === 'in' ? {label: '🚫 Спам', danger: true, onclick: `App.markSpam(${m.id})`} : null,
+                                {label: '🗑 Удалить письмо', danger: true,
+                                 onclick: `App.deleteMail(${m.id}, {thread: '${this.jsStr(key || '')}'})`},
+                            ], {aria: 'Ещё действия с письмом'})}
                         </div>
                     </div>
                 </div>
@@ -7407,19 +7635,16 @@ const App = {
             return;
         }
         document.getElementById('app').innerHTML = `
-            <div class="flex flex--between flex--wrap" style="margin-bottom:16px;gap:10px">
-                <h2 style="margin:0">${this.esc(m.subject) || 'Без темы'}</h2>
-                <div class="flex flex--wrap">
-                    <a href="#mail" class="btn btn--outline btn--sm">← На доску</a>
-                    ${m.thread_key
-                        ? `<a href="#mail/t/${encodeURIComponent(m.thread_key)}" class="btn btn--primary btn--sm">Вся переписка и ответ →</a>`
-                        : `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>`}
-                    ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
-                    ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
-                    ${m.direction === 'in' ? `<button class="btn btn--outline btn--sm btn--danger" onclick="App.markSpam(${m.id})">🚫 Спам</button>` : ''}
-                    <button class="btn btn--outline btn--sm btn--danger" onclick="App.deleteMail(${m.id}, '${m.thread_key ? 'mail/t/' + encodeURIComponent(m.thread_key) : 'mail'}')">🗑 Удалить</button>
-                </div>
-            </div>
+            ${this.pageHead({
+                title: this.esc(m.subject) || 'Без темы',
+                actions: `<button class="btn btn--primary btn--sm" onclick="App.mailCompose(${m.id})">Ответить</button>`,
+                menu: [
+                    m.direction === 'in' && !m.archived_at ? {label: '🗄 В архив', onclick: `App.archiveMail(${m.id})`} : null,
+                    m.archived_at ? {label: '↩ Вернуть в работу', onclick: `App.unarchiveMail(${m.id})`} : null,
+                    m.direction === 'in' ? {label: '🚫 Спам', danger: true, onclick: `App.markSpam(${m.id})`} : null,
+                    {label: '🗑 Удалить', danger: true, onclick: `App.deleteMail(${m.id}, 'mail')`},
+                ],
+            })}
             <div class="card">
                 <p><strong>${m.direction === 'in' ? 'От' : 'Кому'}:</strong>
                    ${this.esc(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}
@@ -7459,22 +7684,8 @@ const App = {
     // the page opens; the manager only decides which column it moves on to.
 
     async pageMailBoard() {
-        document.getElementById('app').innerHTML = this.mailShellHtml('board', `
-            <span class="searchbox">
-                <input type="text" id="boardFilter" value="${this.esc(this.boardQuery || '')}"
-                       placeholder="Поиск: тема, адрес, текст, файл…"
-                       title="Ищет по всей почте: темам, телу писем, адресам, именам и вложениям — включая архив"
-                       oninput="App.boardFilter(this.value)">
-                <button type="button" class="searchbox__x" title="Очистить поиск"
-                        onclick="App.boardFilterClear()">×</button>
-            </span>
-            <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
-            <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
-            <a href="#mail/new" class="btn btn--outline btn--sm"
-               title="Запрос пришёл в мессенджер или по телефону — вставьте текст и файлы">+ Запрос</a>
-            <button class="btn btn--outline btn--sm" onclick="App.boardAddColumn()">+ Колонка</button>
-            <a href="#mail/trash" class="btn btn--outline btn--sm" title="Удалённые письма — их можно вернуть">🗑 Корзина</a>
-        `);
+        this.setMailView('board');
+        document.getElementById('app').innerHTML = this.mailShellHtml('board', this.mailToolbarHtml('board'));
         // action=get syncs first: the intake is not a button somebody remembers
         // to press, it is what opening the board means
         const b = await this.api('boards.php?action=get');
@@ -7494,6 +7705,225 @@ const App = {
         this.loadBoardSupport();
         const added = (b.sync && (b.sync.created || b.sync.upgraded)) || 0;
         if (added) this.toast(`Новых карточек на доске: ${added}`, 'success');
+    },
+
+    /**
+     * ==== «Письма» списком, как в Gmail (модуль 050) ====
+     *
+     * Те же карточки, что на доске, — одной лентой по дате последнего письма:
+     * новое письмо поднимает свою строку наверх. Колонки доски — статусы, они
+     * слева, со своим цветом и числом непрочитанных.
+     */
+    async pageMailList(colId = '') {
+        this.setMailView('list');
+        this.mailListCol = /^\d+$/.test(String(colId)) ? String(colId) : '';
+        document.getElementById('app').innerHTML = this.mailShellHtml('list', this.mailToolbarHtml('list'));
+        const b = await this.api('boards.php?action=get');
+        this.board = b;
+        this.boardPicked = new Set();
+        document.getElementById('mailBody').innerHTML = `
+            ${this.boardFiltersHtml(b, {list: true})}
+            <div id="boardSupport"></div>
+            <div id="boardSearchOut"></div>
+            <div class="mailbox">
+                <nav class="mailbox__side" id="mailSide" aria-label="Статусы писем"></nav>
+                <section class="mailbox__main" aria-label="Письма">
+                    <div class="mailbox__bar">
+                        <input type="checkbox" class="mailbox__all" id="mailAll" aria-label="Отметить все видимые"
+                               title="Отметить все видимые" onchange="App.boardPickAll(this.checked)">
+                        <button class="btn btn--ghost btn--sm btn--icon" onclick="App.boardSync()"
+                                aria-label="Забрать почту" title="Забрать почту">⟳</button>
+                        <div id="boardBulk" class="mailbox__bulk"></div>
+                        <span class="mailbox__count muted" data-list-shown></span>
+                        ${this.hint('mail-keys')}
+                    </div>
+                    <ul class="glist" id="mailList"></ul>
+                </section>
+            </div>`;
+        this.drawMailList();
+        this.bindMailKeys();
+        this.loadBoardSupport();
+        const added = (b.sync && (b.sync.created || b.sync.upgraded)) || 0;
+        if (added) this.toast(`Новых писем в списке: ${added}`, 'success');
+    },
+
+    /** Время строки: последнее письмо, у черновика — последняя правка. */
+    mailRowAt(card) {
+        return String(card.last_at || (card.draft && card.draft.updated_at) || '');
+    },
+
+    drawMailList() {
+        const list = document.getElementById('mailList');
+        if (!list || !this.board) return;
+        const cols = this.board.columns || [];
+        const colOf = new Map();
+        const all = [];
+        cols.forEach(c => (c.cards || []).forEach(card => { colOf.set(String(card.id), c); all.push(card); }));
+        this.drawMailSide(cols);
+
+        // Строка, поднявшаяся с прошлой отрисовки, на миг подсвечивается
+        const prev = this.mailStamps;
+        const risen = new Set();
+        all.forEach(card => {
+            const at = this.mailRowAt(card), was = prev && prev.get(String(card.id));
+            if (prev && at && (was === undefined || at > was)) risen.add(String(card.id));
+        });
+        this.mailStamps = new Map(all.map(card => [String(card.id), this.mailRowAt(card)]));
+
+        const rows = all
+            .filter(card => !this.mailListCol || String(colOf.get(String(card.id)).id) === this.mailListCol)
+            .sort((a, b) => {
+                const x = this.mailRowAt(a), y = this.mailRowAt(b);
+                return x === y ? b.id - a.id : (x < y ? 1 : -1);
+            });
+        list.innerHTML = rows.map(card =>
+            this.mailListRow(card, colOf.get(String(card.id)), risen.has(String(card.id)))).join('');
+        this.applyBoardFilters();
+        if (this.boardQuery) this.boardFilter(this.boardQuery);
+    },
+
+    drawMailSide(cols) {
+        const side = document.getElementById('mailSide');
+        if (!side) return;
+        const unread = cards => cards.filter(x => x.unread).length;
+        const allCards = cols.flatMap(c => c.cards || []);
+        const item = (href, label, cards, color, on) => {
+            const u = unread(cards);
+            return `
+                <a class="mside__item ${on ? 'mside__item--on' : ''}" href="${href}" ${on ? 'aria-current="page"' : ''}
+                   ${color ? `style="--col:${this.esc(color)}"` : ''}>
+                    <span class="mside__dot ${color ? '' : 'mside__dot--all'}" aria-hidden="true"></span>
+                    <span class="mside__name">${this.esc(label)}</span>
+                    <span class="mside__n ${u ? 'mside__n--unread' : ''}"
+                          title="${u ? 'непрочитанных' : 'всего'}">${u || cards.length || ''}<span class="sr-only">${u ? ' непрочитанных' : ' всего'}</span></span>
+                </a>`;
+        };
+        side.innerHTML = `
+            ${item('#mail/list', 'Все письма', allCards, '', !this.mailListCol)}
+            <div class="mside__head">Статусы</div>
+            ${cols.map(c => item('#mail/list/' + c.id, c.title, c.cards || [], c.color || '#8a8f98',
+                                 this.mailListCol === String(c.id))).join('')}
+            <div class="mside__sep" role="separator"></div>
+            <a class="mside__item" href="#mail" onclick="App.setBoardFilter('archived', 1); return false;">
+                <span class="mside__ico" aria-hidden="true">🗄</span><span class="mside__name">Архив</span></a>
+            <a class="mside__item" href="#mail/trash">
+                <span class="mside__ico" aria-hidden="true">🗑</span><span class="mside__name">Корзина</span></a>`;
+    },
+
+    mailListRow(card, col, risen) {
+        const c = card.company || {};
+        const t = card.thread || {};
+        const d = card.draft || null;
+        const id = card.id;
+        const href = card.counterparty_id
+            ? `#mail/company/${card.counterparty_id}`
+            : (card.thread_key ? `#mail/t/${encodeURIComponent(card.thread_key)}` : '');
+        const subject = (d && d.subject) || c.subject || t.subject || '';
+        const preview = (d && d.preview) || c.preview || '';
+        const letters = c.letters || t.count || 0;
+        const at = this.mailRowAt(card);
+        const cls = ['grow'];
+        if (card.unread) cls.push('grow--unread');
+        if (risen) cls.push('grow--risen');
+        const tags = [
+            `<span class="stag" style="--col:${this.esc(col.color || '#8a8f98')}">${this.esc(col.title)}</span>`,
+            card.attention ? '<span class="grow__draft">письмо готово</span>' : (d ? '<span class="grow__draft">Черновик</span>' : ''),
+            c.proposal_status ? this.proposalBadge(c.proposal_status) : '',
+            card.kind === 'thread' ? '<span class="chip chip--new" title="Отправитель ещё не привязан к компании">новый адрес</span>' : '',
+        ].join('');
+        const inner = `
+            <span class="grow__from">${this.esc(card.title || 'Без названия')}${letters > 1 ? `<span class="grow__n">${letters}</span>` : ''}</span>
+            <span class="grow__body">
+                <span class="grow__tags">${tags}</span>
+                <span class="grow__subj">${this.esc(subject) || (col.kind === 'closed' ? '' : '(без темы)')}</span>${preview
+                    ? `<span class="grow__prev"> — ${this.esc(preview)}</span>` : ''}
+                ${card.note ? `<span class="grow__note">✎ ${this.esc(card.note)}</span>` : ''}
+            </span>
+            ${c.has_attachment ? '<span class="grow__clip" title="Есть вложения">📎<span class="sr-only">Есть вложения.</span></span>' : ''}
+            <time class="grow__date" ${at ? `datetime="${this.esc(at.replace(' ', 'T'))}" title="${this.esc(this.fmtDate(at))}"` : ''}>${this.fmtShort(at)}</time>`;
+        return `
+            <li class="${cls.join(' ')}" data-card="${id}" style="--col:${this.esc(col.color || '#8a8f98')}">
+                <input type="checkbox" class="bcard__pick" aria-label="Отметить: ${this.esc(card.title)}"
+                       onchange="App.boardCardPick(${id}, this.checked)">
+                <span class="grow__wait">${card.unanswered
+                    ? '<span class="wait-dot" title="Ждёт ответа"><span class="sr-only">Ждёт ответа.</span></span>' : ''}</span>
+                ${href ? `<a class="grow__link" href="${href}">${inner}</a>` : `<span class="grow__link">${inner}</span>`}
+                <span class="grow__acts">
+                    ${card.unread || card.unanswered ? `<button type="button" class="grow__act" title="Прочитано (Shift+I)"
+                        aria-label="Отметить прочитанным" onclick="App.boardBulk('read', {}, ${id})">✓</button>` : ''}
+                    ${card.kind === 'company' || card.kind === 'thread' ? `<button type="button" class="grow__act" title="В архив (e)"
+                        aria-label="В архив" onclick="App.boardBulk('archive', {}, ${id})">🗄</button>` : ''}
+                    <button type="button" class="grow__act" title="Убрать из списка и с доски"
+                        aria-label="Убрать с доски" onclick="App.boardBulk('remove', {}, ${id})">✕</button>
+                </span>
+            </li>`;
+    },
+
+    /** Счётчик строк и пустое состояние — после каждого фильтра и поиска. */
+    mailListShown() {
+        const list = document.getElementById('mailList');
+        if (!list) return;
+        const rows = [...list.querySelectorAll('[data-card]')];
+        const shown = rows.filter(el => !el.hidden).length;
+        const out = document.querySelector('[data-list-shown]');
+        if (out) out.textContent = shown === rows.length ? `${rows.length} писем` : `${shown} из ${rows.length}`;
+        const all = document.getElementById('mailAll');
+        if (all) all.checked = shown > 0 && rows.every(el => el.hidden || (this.boardPicked || new Set()).has(el.dataset.card));
+        let empty = list.querySelector('.glist__empty');
+        if (shown) { if (empty) empty.remove(); return; }
+        const narrowed = rows.length || this.boardQuery || this.mailListCol
+            || Object.entries(this.boardFilters || {}).some(([k, v]) => k !== 'archived' && v);
+        if (!empty) { empty = document.createElement('li'); empty.className = 'glist__empty'; list.appendChild(empty); }
+        empty.innerHTML = narrowed
+            ? `<p>Под выбранные статус, фильтры и поиск писем нет.</p>
+               <button class="btn btn--outline btn--sm" onclick="App.mailListReset()">Показать все письма</button>`
+            : `<p>Писем пока нет. Новые появятся здесь сами — или заберите почту сейчас.</p>
+               <button class="btn btn--primary btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>`;
+    },
+
+    mailListReset() {
+        this.boardFilters = {period: '', state: '', mailbox: '', archived: 0};
+        this.boardQuery = '';
+        if (location.hash === '#mail/list') this.route(); else location.hash = 'mail/list';
+    },
+
+    /**
+     * Клавиши списка, как в Gmail: j/k — вниз/вверх, o или Enter — открыть,
+     * x — отметить, e — в архив, Shift+I — прочитано, / — поиск.
+     */
+    bindMailKeys() {
+        if (this._mailKeys) return;
+        this._mailKeys = true;
+        document.addEventListener('keydown', e => {
+            const list = document.getElementById('mailList');
+            if (!list || e.ctrlKey || e.metaKey || e.altKey) return;
+            const el = e.target;
+            if (el.closest && el.closest('input, textarea, select, [contenteditable="true"], .modal, details.menu[open]')) return;
+            if (document.getElementById('modal')) return;
+            if (e.key === '/') {
+                e.preventDefault();
+                document.getElementById('boardFilter')?.focus();
+                return;
+            }
+            const rows = [...list.querySelectorAll('[data-card]:not([hidden])')];
+            if (!rows.length) return;
+            const cur = el.closest ? el.closest('#mailList [data-card]') : null;
+            const i = rows.indexOf(cur);
+            const go = r => {
+                if (!r) return;
+                (r.querySelector('.grow__link[href]') || r.querySelector('.bcard__pick')).focus();
+                r.scrollIntoView({block: 'nearest'});
+            };
+            const id = cur && cur.dataset.card;
+            switch (e.key) {
+                case 'j': e.preventDefault(); go(rows[i + 1] || rows[i < 0 ? 0 : i]); break;
+                case 'k': e.preventDefault(); go(rows[i - 1] || rows[0]); break;
+                case 'o': if (cur) { e.preventDefault(); cur.querySelector('.grow__link[href]')?.click(); } break;
+                case 'x': if (cur) { e.preventDefault(); cur.querySelector('.bcard__pick')?.click(); } break;
+                case 'e': if (id) { e.preventDefault(); this.boardBulk('archive', {}, id); } break;
+                case 'I': if (id) { e.preventDefault(); this.boardBulk('read', {}, id); } break;
+            }
+        });
     },
 
     /**
@@ -7570,18 +8000,7 @@ const App = {
      * убранные как «не наш профиль», с теми же групповыми действиями.
      */
     async pageBoardArchive() {
-        document.getElementById('app').innerHTML = this.mailShellHtml('board', `
-            <span class="searchbox">
-                <input type="text" id="boardFilter" value="${this.esc(this.boardQuery || '')}"
-                       placeholder="Поиск по архиву: тема, адрес, текст, файл…"
-                       oninput="App.archiveSearch(this.value)">
-                <button type="button" class="searchbox__x" title="Очистить поиск"
-                        onclick="App.archiveSearchClear()">×</button>
-            </span>
-            <button class="btn btn--outline btn--sm" onclick="App.boardSync()">⟳ Забрать почту</button>
-            <button class="btn btn--outline btn--sm" onclick="App.mailCompose()">✉ Написать</button>
-            <a href="#mail/trash" class="btn btn--outline btn--sm">🗑 Корзина</a>
-        `);
+        document.getElementById('app').innerHTML = this.mailShellHtml('board', this.mailToolbarHtml('archive'));
         const b = this.board || await this.api('boards.php?action=get&sync=0');
         this.board = b;
         this.archivePicked = new Set();
@@ -7745,7 +8164,7 @@ const App = {
      * список: колонки остаются на месте, в них остаётся то, что подошло, и
      * счётчик в шапке колонки говорит, сколько это из скольких.
      */
-    boardFiltersHtml(b) {
+    boardFiltersHtml(b, {list = false} = {}) {
         const f = this.boardFilters = this.boardFilters
             || {period: '', state: '', mailbox: '', archived: 0};
         const sel = (name, value, options, title) => `
@@ -7757,8 +8176,10 @@ const App = {
             </label>`;
         // На телефоне фильтры сложены: развёрнутые, они съедали четверть экрана
         // ещё до первой карточки. На десктопе места хватает — стоят открытыми.
-        const open = window.innerWidth > 640 ? ' open' : '';
         const on = [f.period, f.state, f.mailbox].filter(Boolean).length;
+        // В списке фильтры сложены, пока ни один не выбран: над строками писем
+        // их держит поиск, как в Gmail (модуль 050)
+        const open = (list ? on > 0 : window.innerWidth > 640) ? ' open' : '';
         return `
             <details class="card card--inline bfilters"${open}>
                 <summary class="bfilters__summary">Фильтры${on ? ` <span class="pill">${on}</span>` : ''}</summary>
@@ -7772,16 +8193,13 @@ const App = {
                 ${sel('Ящик', 'mailbox', [['', 'все ящики'],
                         ...(b.mailboxes || []).map(m => [String(m.id), this.esc(m.name)])],
                       'Компании, писавшие в этот ящик')}
-                <!-- Ссылка, а не галочка (модуль 026): архив — это другой экран,
-                     а галочка в ряду фильтров читалась как ещё один фильтр. -->
-                <a class="bfilter bfilter--link" title="Переписки, убранные как «не наш профиль»"
-                   onclick="App.setBoardFilter('archived', ${f.archived ? 0 : 1})"
-                   >${f.archived ? '← К доске' : 'Архив'}</a>
+                <!-- «Архив» — в меню «Ещё» и в списке статусов (модуль 050): в ряду
+                     фильтров он читался как ещё один фильтр -->
                 <span class="flex flex--wrap" style="margin-left:auto">
-                    <button class="btn btn--outline btn--sm"
+                    ${list ? '' : `<button class="btn btn--outline btn--sm"
                             onclick="App.${f.archived ? 'archivePickAll' : 'boardPickAll'}(true)">Выбрать все</button>
                     <button class="btn btn--outline btn--sm"
-                            onclick="App.${f.archived ? 'archivePickAll' : 'boardPickAll'}(false)">Снять</button>
+                            onclick="App.${f.archived ? 'archivePickAll' : 'boardPickAll'}(false)">Снять</button>`}
                     <button class="btn btn--outline btn--sm" onclick="App.resetBoardFilters()">Сбросить фильтры</button>
                 </span>
                 ${f.archived ? '' : this.boardPickByStateHtml()}
@@ -7830,7 +8248,7 @@ const App = {
             (col.cards || []).forEach(card => byId.set(String(card.id), card)));
 
         let shown = 0, total = 0;
-        document.querySelectorAll('.bcard').forEach(el => {
+        document.querySelectorAll('[data-card]').forEach(el => {
             const card = byId.get(el.dataset.card);
             total++;
             const ok = !card || this.boardCardMatches(card);
@@ -7844,6 +8262,7 @@ const App = {
         this.boardSyncPicks();
         const out = document.querySelector('[data-board-shown]');
         if (out) out.textContent = shown === total ? `карточек: ${total}` : `показано ${shown} из ${total}`;
+        this.mailListShown();
     },
 
     // Fetch mail from the servers, then pull whatever arrived onto the board
@@ -7881,7 +8300,7 @@ const App = {
         this.boardQuery = q;
         const low = q.toLowerCase();
         let shown = 0;
-        document.querySelectorAll('.bcard').forEach(card => {
+        document.querySelectorAll('[data-card]').forEach(card => {
             // Поиск сужает то, что уже отобрали фильтры, а не отменяет их
             const hit = (!q || card.textContent.toLowerCase().includes(low))
                 && this.boardCardMatchesEl(card);
@@ -7889,6 +8308,7 @@ const App = {
             if (hit && q) shown++;
         });
         this.boardRecount();
+        this.mailListShown();
 
         // Заголовок карточки — это тема и компания, и только. Письмо ищут по
         // адресу, по фамилии, по имени файла — по всему, что в нём есть, и
@@ -7954,17 +8374,30 @@ const App = {
     },
 
     boardColumn(c) {
+        // Колонка — это статус, и у статуса свой цвет: им окрашена шапка и край
+        // каждой карточки колонки (модуль 050)
+        const kinds = {
+            inbox:    ['авто', 'Сюда сами падают новые письма'],
+            work:     ['черновики', 'Сюда сама встаёт карточка письма, которое пишут'],
+            closed:   ['закрыто', 'Переписка карточек этой колонки не читается — только счётчики'],
+            assembly: ['оплачено', 'Сюда сама встаёт карточка, чей заказ оплачен (Т-Банк или платёж в МойСклад)'],
+        };
+        const kind = kinds[c.kind];
         return `
             <div class="bcol" data-col="${c.id}" style="--col:${this.esc(c.color || '#8a8f98')}">
                 <div class="bcol__head">
-                    <span class="bcol__title" onclick="App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')">${this.esc(c.title)}</span>
-                    ${c.kind === 'inbox' ? '<span class="bcol__kind" title="Сюда сами падают новые письма">авто</span>' : ''}
-                    ${c.kind === 'work' ? '<span class="bcol__kind" title="Сюда сама встаёт карточка письма, которое пишут">черновики</span>' : ''}
-                    ${c.kind === 'closed' ? '<span class="bcol__kind" title="Переписка карточек этой колонки не читается — только счётчики">закрыто</span>' : ''}
-                    ${c.kind === 'assembly' ? '<span class="bcol__kind" title="Сюда сама встаёт карточка, чей заказ оплачен (Т-Банк или платёж в МойСклад)">оплачено</span>' : ''}
-                    <span class="bcol__count" title="Показано карточек в колонке${c.card_limit ? ' (лимит ' + c.card_limit + ')' : ''}"
-                          onclick="App.boardSetColumnLimit(${c.id}, ${c.card_limit || 0})">${c.cards.length}${c.card_limit ? '/⚙' : ''}</span>
-                    <button class="bcol__x" title="Удалить колонку" onclick="App.boardDeleteColumn(${c.id})">×</button>
+                    <span class="bcol__dot" aria-hidden="true"></span>
+                    <span class="bcol__title" title="Переименовать колонку"
+                          onclick="App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')">${this.esc(c.title)}</span>
+                    ${kind ? `<span class="bcol__kind" title="${this.esc(kind[1])}">${kind[0]}</span>` : ''}
+                    <span class="bcol__count" title="Показано карточек в колонке${c.card_limit ? ' (лимит ' + c.card_limit + ')' : ''}">${c.cards.length}</span>
+                    ${this.menuHtml([
+                        {label: 'Переименовать', onclick: `App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')`},
+                        {label: 'Цвет статуса…', onclick: `App.boardColumnColor(${c.id}, '${this.jsStr(c.color || '')}')`},
+                        {label: `Лимит карточек${c.card_limit ? ': ' + c.card_limit : ''}…`,
+                         onclick: `App.boardSetColumnLimit(${c.id}, ${c.card_limit || 0})`},
+                        {label: 'Удалить колонку', onclick: `App.boardDeleteColumn(${c.id})`, danger: true},
+                    ], {aria: 'Действия с колонкой «' + c.title + '»'})}
                 </div>
                 ${c.kind === 'inbox' ? `
                     <a class="bcol__new" href="#mail/new"
@@ -8005,6 +8438,7 @@ const App = {
                 <div class="bcard__title">
                     <input type="checkbox" class="bcard__pick" title="Отметить для группового действия"
                            onclick="event.stopPropagation()" onchange="App.boardCardPick(${card.id}, this.checked)">
+                    ${card.unanswered ? '<span class="wait-dot" title="Ждёт ответа"><span class="sr-only">Ждёт ответа.</span></span>' : ''}
                     ${href ? `<a href="${href}">${this.esc(card.title)}</a>` : this.esc(card.title)}
                     ${card.unread ? `<span class="pill pill--danger" title="непрочитанных писем">${card.unread}</span>` : ''}
                 </div>
@@ -8136,6 +8570,7 @@ const App = {
      */
     boardRedraw(board) {
         if (board) this.board = board;
+        if (document.getElementById('mailList')) { this.drawMailList(); return; }
         const box = document.getElementById('board');
         if (!box || !this.board) return;
         box.innerHTML = (this.board.columns || []).map(c => this.boardColumn(c)).join('');
@@ -8189,7 +8624,7 @@ const App = {
             (col.cards || []).forEach(card => byId.set(String(card.id), card)));
 
         let added = 0;
-        document.querySelectorAll('.bcard').forEach(el => {
+        document.querySelectorAll('[data-card]').forEach(el => {
             if (el.hidden) return;
             const card = byId.get(el.dataset.card);
             if (!card || !this.cardInState(card, state)) return;
@@ -8216,7 +8651,7 @@ const App = {
     /** Отметить или снять всё, что сейчас видно (скрытое фильтром — не трогаем). */
     boardPickAll(on) {
         this.boardPicked = this.boardPicked || new Set();
-        document.querySelectorAll('.bcard').forEach(el => {
+        document.querySelectorAll('[data-card]').forEach(el => {
             if (el.hidden) return;
             const box = el.querySelector('.bcard__pick');
             if (box) box.checked = on;
@@ -8228,13 +8663,14 @@ const App = {
     /** Галочки на карточках и панель действий — по одному состоянию. */
     boardSyncPicks() {
         const picked = this.boardPicked = this.boardPicked || new Set();
-        document.querySelectorAll('.bcard').forEach(el => {
+        document.querySelectorAll('[data-card]').forEach(el => {
             const on = picked.has(el.dataset.card);
             const box = el.querySelector('.bcard__pick');
             if (box) box.checked = on;
             el.classList.toggle('bcard--picked', on);
         });
 
+        this.mailListShown();
         const bar = document.getElementById('boardBulk');
         if (!bar) return;
         if (!picked.size) { bar.innerHTML = ''; return; }
@@ -8297,8 +8733,8 @@ const App = {
     },
 
     /** Применить групповое действие и перерисовать доску по факту, а не по надежде. */
-    async boardBulk(op, extra = {}) {
-        const ids = [...(this.boardPicked || [])].map(Number);
+    async boardBulk(op, extra = {}, only = 0) {
+        const ids = only ? [Number(only)] : [...(this.boardPicked || [])].map(Number);
         if (!ids.length) return;
         const ask = {
             archive: `Убрать в архив как «не наш профиль» — карточек: ${ids.length}?`,
@@ -8312,7 +8748,7 @@ const App = {
         if (bar) bar.innerHTML = '<div class="loading">Применяем...</div>';
         try {
             const r = await this.api('boards.php?action=bulk', {method: 'POST', body: {ids, op, ...extra}});
-            this.boardPicked = new Set();
+            if (only) (this.boardPicked || new Set()).delete(String(only)); else this.boardPicked = new Set();
             if (r.failed) {
                 this.toast(`Сделано: ${r.done}, не вышло: ${r.failed}. ${(r.errors || []).join('; ')}`, 'error');
             } else {
@@ -8342,14 +8778,42 @@ const App = {
         const title = prompt('Название колонки', 'Новая колонка');
         if (title === null) return;
         await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, title}});
-        this.pageMailBoard();
+        this.route();
     },
 
     async boardRenameColumn(id, current) {
         const title = prompt('Название колонки', current);
         if (title === null) return;
         await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, id, title}});
-        this.pageMailBoard();
+        this.route();
+    },
+
+    /** Цвет статуса: восемь готовых и любой свой (модуль 050). */
+    boardColumnColor(id, current) {
+        const swatches = ['#6b7fd7', '#e0a53c', '#4f9e57', '#b45cc0', '#2f8f8a', '#d9534f', '#3d8bd9', '#8a8f98'];
+        const cur = /^#[0-9a-f]{6}$/i.test(current) ? current.toLowerCase() : '#8a8f98';
+        this.modal('Цвет статуса', `
+            <div class="swatches" role="radiogroup" aria-label="Готовые цвета">
+                ${swatches.map(c => `
+                    <button type="button" class="swatch ${c === cur ? 'swatch--on' : ''}" style="--col:${c}"
+                            role="radio" aria-checked="${c === cur}" aria-label="Цвет ${c}"
+                            onclick="document.getElementById('colColor').value='${c}';
+                                     this.parentNode.querySelectorAll('.swatch').forEach(b => { b.classList.toggle('swatch--on', b === this); b.setAttribute('aria-checked', b === this); })"></button>`).join('')}
+            </div>
+            <label class="swatch-own">Свой цвет <input type="color" id="colColor" value="${cur}"></label>
+            <div class="flex flex--end" style="margin-top:14px">
+                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
+                <button class="btn btn--primary" onclick="App.saveColumnColor(${id})">Сохранить цвет</button>
+            </div>`);
+    },
+
+    async saveColumnColor(id) {
+        const color = (document.getElementById('colColor') || {}).value || '';
+        try {
+            await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, id, color}});
+            this.closeModal();
+            this.route();
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // Сколько карточек показывать в колонке — не грузить интерфейс лишним (issue #60)
@@ -8358,20 +8822,20 @@ const App = {
         if (raw === null) return;
         const card_limit = parseInt(raw, 10) || 0;
         await this.api('boards.php?action=column_save', {method: 'POST', body: {board_id: this.board.id, id, card_limit}});
-        this.pageMailBoard();
+        this.route();
     },
 
     async boardDeleteColumn(id) {
         if (!confirm('Удалить колонку вместе с карточками?')) return;
         await this.api('boards.php?action=column_delete', {method: 'POST', body: {id}});
-        this.pageMailBoard();
+        this.route();
     },
 
     async boardAddCard(columnId) {
         const title = prompt('Название карточки', '');
         if (title === null || !title.trim()) return;
         await this.api('boards.php?action=card_add', {method: 'POST', body: {column_id: columnId, title}});
-        this.pageMailBoard();
+        this.route();
     },
 
     /**
@@ -8393,7 +8857,7 @@ const App = {
         // Заметку правят с двух экранов — перерисовываем тот, на котором стоим
         const cp = this.openCompanyId();
         if (cp) this.loadCardPlacement(cp);
-        else this.pageMailBoard();
+        else this.route();
     },
 
     /**
@@ -8410,7 +8874,7 @@ const App = {
         // Карточка, за которой не осталось ни писем, ни запроса, ни заметки,
         // удаляется совсем: возвращаться ей неоткуда и незачем
         if (r.purged) this.toast('Карточка была пустой — удалена совсем', 'success');
-        this.pageMailBoard();
+        this.route();
     },
 
     // Model list for the reply window, loaded once per session
