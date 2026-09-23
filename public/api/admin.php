@@ -100,6 +100,24 @@ try {
                 'ok_any'      => (bool)array_filter($perms),
             ]);
 
+        // Т-Банк (модуль 047): состояние и «Проверить оплаты сейчас»
+        case 'bank_state':
+            require_once ROOT . '/lib/tbank.php';
+            jsonData([
+                'configured' => TBank::configured(),
+                'accounts'   => TBank::accounts(),
+                'last'       => json_decode((string)Db::val("SELECT value FROM settings WHERE key='tbank_last_check'"), true),
+                'recent'     => Db::all("SELECT p.operation_date, p.amount, p.payer_name, p.purpose, p.status, p.error,
+                                                i.name AS invoice_name
+                                         FROM bank_payments p LEFT JOIN invoices i ON i.id = p.invoice_id
+                                         ORDER BY p.id DESC LIMIT 10"),
+            ]);
+
+        case 'bank_check':
+            require_once ROOT . '/lib/payments.php';
+            MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+            jsonOk(['payments' => Payments::check(), 'shipments' => Fulfillment::checkShipments()]);
+
         // Реквизиты, НДС и договор из МойСклад в КП (module 013)
         case 'requisites_sync':
             require_once ROOT . '/lib/requisites.php';

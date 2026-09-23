@@ -1880,6 +1880,53 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '42')");
         $current = 42;
     }
+
+    // v43 — модуль 047: оплаты из Т-Банка, колонка «Сборка», письмо об отправке
+    if ($current < 43) {
+        Db::q("
+        CREATE TABLE IF NOT EXISTS bank_payments (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_id        TEXT NOT NULL UNIQUE,
+            account             TEXT,
+            operation_date      TEXT,
+            amount              REAL NOT NULL DEFAULT 0,
+            payer_inn           TEXT,
+            payer_name          TEXT,
+            purpose             TEXT,
+            doc_number          TEXT,
+            invoice_id          INTEGER REFERENCES invoices(id),
+            order_id            INTEGER REFERENCES orders(id),
+            counterparty_id     INTEGER REFERENCES counterparties(id),
+            moysklad_payment_id TEXT,
+            status              TEXT NOT NULL DEFAULT 'unmatched',
+            error               TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        )");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_bank_payments_invoice ON bank_payments(invoice_id)");
+
+        // Оплачен, отправлен, чем и под каким номером
+        Db::ensureColumn('orders', 'paid_at', 'TEXT');
+        Db::ensureColumn('invoices', 'paid_at', 'TEXT');
+        Db::ensureColumn('orders', 'ship_service', 'TEXT');
+        Db::ensureColumn('orders', 'ship_track', 'TEXT');
+        Db::ensureColumn('orders', 'shipped_notified_at', 'TEXT');
+        // Черновик «заказ отправлен» подсвечивает карточку на доске
+        Db::ensureColumn('mail_drafts', 'kind', 'TEXT');
+
+        // «Сборка» — после «Ждём оплату» на каждой доске
+        require_once __DIR__ . '/boards.php';
+        foreach (Db::all("SELECT id FROM boards") as $b) Boards::assemblyColumn((int)$b['id']);
+
+        // Уже отвеченные переписки больше не горят жирным: входящие письма,
+        // после которых в той же переписке есть наше, — прочитаны
+        Db::q("UPDATE mail_messages SET is_read=1
+               WHERE direction='in' AND is_read=0 AND thread_key IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM mail_messages o WHERE o.thread_key = mail_messages.thread_key
+                             AND o.direction='out' AND o.date_at >= mail_messages.date_at)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '43')");
+        $current = 43;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
@@ -2225,6 +2272,10 @@ function jsonData(mixed $data): never {
 function requireAuth(): array {
     $m = currentManager();
     if (!$m) jsonError('Unauthorized', 401);
+    // Сессия дальше только читается: снять блокировку, иначе долгий запрос
+    // («Сформировать КП» — до минуты) держит в очереди все остальные этой
+    // вкладки, и фото подбора висели до конца сборки (модуль 047)
+    if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
     return $m;
 }
 

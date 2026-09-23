@@ -143,6 +143,14 @@ class MsSync {
             if ($cpId && empty($existing['counterparty_id'])) $fields['counterparty_id'] = $cpId;
             Db::update('invoices', $fields, 'id=?', [$existing['id']]);
             $id = (int)$existing['id'];
+            // Оплату внесли в МойСклад руками — карточка едет в «Сборку» так же,
+            // как по выписке банка. Только переход «не оплачен → оплачен»: старые
+            // оплаченные счета при первой синхронизации никуда не двигают (модуль 047)
+            $sum = (float)$inv['sum'];
+            if ($sum > 0 && (float)$existing['payed_sum'] < $sum - 0.01 && (float)$inv['payed_sum'] >= $sum - 0.01) {
+                require_once __DIR__ . '/fulfillment.php';
+                Fulfillment::invoicePaid($id, 'moysklad');
+            }
         } else {
             try {
                 $id = Db::insert('invoices', array_merge($fields, [

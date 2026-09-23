@@ -870,7 +870,6 @@ switch ($action) {
         ]);
 
         // Feed entry — an outbound message clears the unanswered highlight (FR-038)
-        $manager = currentManager();
         Crm::logEvent($proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null, 'out', $body, [
             'request_id' => $proposal['request_id'],
             'subject'    => $subject,

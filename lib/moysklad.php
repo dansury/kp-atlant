@@ -532,7 +532,10 @@ class MoySklad {
     // storage/product_images/ and returns local file paths. MoySklad serves
     // image binaries from a signed downloadHref that still needs the token.
     public static function fetchProductImages(string $productId, int $limit = 6): array {
-        $data = self::get("/entity/product/$productId/images?limit=$limit");
+        // A modification has its own endpoint: /entity/product/{id} knows products only (module 047)
+        $type = Db::val("SELECT product_type FROM products_cache WHERE moysklad_id=?", [$productId]) === 'variant'
+            ? 'variant' : 'product';
+        $data = self::get("/entity/$type/$productId/images?limit=$limit");
         if (!$data || empty($data['rows'])) return [];
 
         $dir = ROOT . '/storage/product_images';
@@ -1003,7 +1006,72 @@ class MoySklad {
             // «Проведён» — то же самое, что «товар зарезервирован» (модуль 026)
             'applicable'  => (bool)($data['applicable'] ?? true),
             'positions'   => $positions,
+            // Доп. поля заказа по имени: «СЛУЖБА ДОСТАВКИ», «ТРЕК-НОМЕР» (модуль 047)
+            'attributes'  => self::attributeValues($data['attributes'] ?? []),
         ];
+    }
+
+    /** Доп. поля документа: имя → значение строкой (справочник отдаёт своё имя). */
+    public static function attributeValues(array $attrs): array {
+        $out = [];
+        foreach ($attrs as $a) {
+            $name = trim((string)($a['name'] ?? ''));
+            if ($name === '') continue;
+            $v = $a['value'] ?? '';
+            if (is_array($v)) $v = $v['name'] ?? '';
+            elseif (is_bool($v)) $v = $v ? 'да' : '';
+            $out[$name] = trim((string)$v);
+        }
+        return $out;
+    }
+
+    /**
+     * Входящий платёж по счёту (модуль 047) — как «на основании» счёта в
+     * МойСклад: организация, контрагент и заказ берутся у самого счёта, платёж
+     * привязан к счёту своей суммой.
+     *
+     * @param array $o purpose, number (номер платёжки), date (Y-m-d H:i:s)
+     * @return array{id:string,name:string}
+     */
+    public static function createPaymentIn(string $invoiceId, float $sum, array $o = []): array {
+        $inv = self::get("/entity/invoiceout/$invoiceId");
+        if (!$inv) throw new MoySkladException('Счёт не найден в МойСклад: ' . $invoiceId . self::lastErrorSuffix());
+        $kopecks = (int)round($sum * 100);
+        $date = (string)($o['date'] ?? '') ?: date('Y-m-d H:i:s');
+
+        $body = [
+            'organization' => ['meta' => $inv['organization']['meta']],
+            'agent'        => ['meta' => $inv['agent']['meta']],
+            'sum'          => $kopecks,
+            'moment'       => $date,
+            'operations'   => [['meta' => $inv['meta'], 'linkedSum' => $kopecks]],
+        ];
+        if (!empty($inv['organizationAccount']['meta'])) {
+            $body['organizationAccount'] = ['meta' => $inv['organizationAccount']['meta']];
+        }
+        if (!empty($inv['customerOrder']['meta'])) {
+            // Заказ виден и в самом платеже, а не только через счёт
+            $body['operations'][] = ['meta' => $inv['customerOrder']['meta'], 'linkedSum' => $kopecks];
+        }
+        if (($o['purpose'] ?? '') !== '') $body['paymentPurpose'] = mb_substr((string)$o['purpose'], 0, 255);
+        if (($o['number'] ?? '') !== '') {
+            $body['incomingNumber'] = (string)$o['number'];
+            $body['incomingDate']   = $date;
+        }
+        try {
+            $resp = self::post('/entity/paymentin', $body);
+        } catch (MoySkladException $e) {
+            // Не каждый аккаунт связывает платёж с заказом и счётом сразу —
+            // тогда платёж привязывается к одному счёту
+            if (count($body['operations']) < 2) throw $e;
+            $body['operations'] = [$body['operations'][0]];
+            $resp = self::post('/entity/paymentin', $body);
+        }
+        return ['id' => self::extractId($resp['id'] ?? $resp['meta']['href'] ?? ''), 'name' => (string)($resp['name'] ?? '')];
+    }
+
+    public static function paymentInUrl(string $id): string {
+        return "https://online.moysklad.ru/app/#paymentin/edit?id=$id";
     }
 
     // Invoices issued against one order (FR-030)

@@ -2609,10 +2609,7 @@ const App = {
             row.querySelector('[data-field="is_confirmed"]').checked = true;
             // Описание принадлежит товару и должно подставляться сразу — а не
             // только когда его подобрала нейросеть (issue #60)
-            const comment = row.querySelector('[data-field="comment_text"]');
-            if (comment && comment.dataset.fromCatalog === '1' && btn.dataset.description) {
-                comment.value = btn.dataset.description;
-            }
+            this.fillCatalogComment(row, btn.dataset.description || '');
             row.classList.remove('match-row--choice');
             btn.closest('.choice').remove();
             this.reloadMatchPhotos(row);
@@ -2732,8 +2729,7 @@ const App = {
         }
         // Описание принадлежит товару, а не строке: выбрали другую позицию —
         // в поле её описание. Написанное менеджером не трогаем (модуль 032).
-        const comment = row.querySelector('[data-field="comment_text"]');
-        if (comment && comment.dataset.fromCatalog === '1') comment.value = p.description || '';
+        this.fillCatalogComment(row, p.description || '');
         row.querySelector('[data-field="is_confirmed"]').checked = true;
         const slot = row.querySelector('.price-opts-slot');
         if (slot) slot.innerHTML = this.priceOptsSelect(p.prices || {});
@@ -2742,6 +2738,19 @@ const App = {
         // Другой товар — другие фотографии (issue #60)
         this.reloadMatchPhotos(row);
         this.updateMatchTotal();
+    },
+
+    /**
+     * Описание товара — в поле сразу при выборе (модуль 047). Пустое поле тоже
+     * считается «из каталога»: раньше оно заполнялось только после
+     * перерисовки таблицы. Текст, который писал менеджер, не трогаем.
+     */
+    fillCatalogComment(row, text) {
+        const comment = row.querySelector('[data-field="comment_text"]');
+        if (!comment) return;
+        if (comment.dataset.fromCatalog !== '1' && comment.value.trim() !== '') return;
+        comment.value = text;
+        comment.dataset.fromCatalog = '1';
     },
 
     pickVariant(el, json) {
@@ -4388,12 +4397,11 @@ const App = {
             const draw = req => {
                 const kp = {proposal_id: (req.proposals && req.proposals[0]) ? req.proposals[0].id : null};
                 host.dataset.kp = JSON.stringify(kp);
-                // Первое КП ушло клиенту — подбор свёрнут, но стоит на месте
-                // (issue #60). Раскрытый руками так и остаётся раскрытым.
+                // Подбор свёрнут всегда, кроме первого письма запроса КП/прайса
+                // (модуль 047). Раскрытый руками так и остаётся раскрытым.
                 if (host.dataset.foldFor !== String(requestId)) {
                     host.dataset.foldFor = String(requestId);
-                    const sent = (req.proposals || []).some(p => ['sent', 'order_created'].includes(p.status));
-                    host.dataset.folded = sent ? '1' : '0';
+                    host.dataset.folded = req.match_open ? '0' : '1';
                     // Свёрнутый или раскрытый руками — так и остаётся у этого письма (issue #67)
                     const own = this.foldGet('items');
                     if (own !== null) host.dataset.folded = own ? '1' : '0';
@@ -4426,13 +4434,6 @@ const App = {
                     <select data-cmp-box title="Из какого ящика отправить">
                         ${(mailboxes || []).map(b => `<option value="${b.id}" ${reply.mailbox_id === b.id ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
                     </select>
-                    <!-- Подпись (модуль 039): видно, чем письмо закончится, ещё
-                         до отправки — и её можно снять одной галочкой -->
-                    <label class="muted composer__sign" title="Ваша подпись допишется в конец письма">
-                        <input type="checkbox" data-cmp-sign checked
-                               onchange="App.toggleSignatureNote(this)"> подпись
-                        <span data-cmp-sign-text></span>
-                    </label>
                 </div>
                 <!-- У первого письма адресата ещё нет — его пишут здесь же, и
                      он попадает и в черновик, и в карточку (модуль 033) -->
@@ -4460,6 +4461,13 @@ const App = {
                      data-placeholder="Ответьте клиенту — или попросите черновик у нейросети"
                      oninput="App.composerChanged('${this.jsStr(key)}')"></div>
                 <textarea data-cmp-text hidden></textarea>
+                <!-- Подпись (модуль 039) — под полем письма, там, где она и
+                     встанет в тексте (модуль 047); снимается одной галочкой -->
+                <label class="muted composer__sign" title="Ваша подпись допишется в конец письма">
+                    <input type="checkbox" data-cmp-sign checked
+                           onchange="App.toggleSignatureNote(this)"> подпись
+                    <span data-cmp-sign-text></span>
+                </label>
                 <div class="composer__files" data-cmp-files></div>
                 <div class="composer__actions">
                     ${this.categorySelect(reply.category)}${this.hint('category')}
@@ -5336,7 +5344,7 @@ const App = {
             // Заказы и счета встают в ту же ленту по своей дате (модуль 029):
             // «заказ создан» и сам заказ со ссылкой на МойСклад — одна строка,
             // а не веха здесь и карточка с документом где-то ниже.
-            const rows = [...data.items, ...(data.docs || [])]
+            const rows = this.mergeDocEvents(data.items, data.docs || [])
                 .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 
             feed.innerHTML = rows.length ? rows.map(m => {
@@ -5375,13 +5383,33 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
+    /**
+     * «Заказ создан» / «счёт выставлен» и сам документ — одна строка (модуль 047).
+     * Веха уходит, документ берёт её время и её слова в заголовок; веха без
+     * документа (удалён в МойСклад) остаётся как была.
+     */
+    mergeDocEvents(items, docs) {
+        const MAP = {order_created: ['order', 'order_id'], invoice_created: ['invoice', 'invoice_id']};
+        const byKey = new Map(docs.map(d => [`${d.doc}:${d.id}`, d]));
+        const kept = items.filter(m => {
+            const rule = MAP[m.event_type];
+            const id = rule && m.meta ? Number(m.meta[rule[1]]) : 0;
+            const doc = id ? byKey.get(`${rule[0]}:${id}`) : null;
+            if (!doc) return true;
+            doc.event_label = App.eventLabels[m.event_type];
+            if (m.created_at) doc.created_at = m.created_at;
+            return false;
+        });
+        return [...kept, ...docs];
+    },
+
     /** Строка заказа или счёта в ленте: сумма, статус и ссылка в МойСклад. */
     chatDocRow(d) {
         const paid = d.doc === 'invoice' && Number(d.payed_sum) > 0;
         return `
             <div class="msg msg--doc" data-chat-req="${d.request_id || ''}">
                 <div class="msg__head">
-                    <span>${d.doc === 'order' ? 'заказ' : 'счёт'}</span>
+                    <span>${d.event_label || (d.doc === 'order' ? 'заказ' : 'счёт')}</span>
                     <span class="muted">${this.fmtDate(d.created_at)}</span>
                 </div>
                 <div class="msg__subject">
@@ -5427,6 +5455,7 @@ const App = {
         followup_sent: 'напоминание отправлено',
         order_created: 'заказ создан',
         invoice_created: 'счёт выставлен',
+        payment_received: 'оплата получена',
     },
 
     /**
@@ -5531,7 +5560,9 @@ const App = {
             <div class="card" id="pushCard"><div class="loading">Загрузка...</div></div>
             <div class="card">
                 ${data.items.length ? data.items.map(n => `
-                    <div class="flex flex--between" style="padding:10px 0;border-bottom:1px solid var(--border)">
+                    <!-- Оплата и отправка заказа ждут действия — выделены (модуль 047) -->
+                    <div class="flex flex--between ${['order_shipped', 'order_paid'].includes(n.type) ? 'notif--action' : ''}"
+                         style="padding:10px 0;border-bottom:1px solid var(--border)">
                         <div>
                             <strong>${this.esc(n.title)}</strong>
                             ${n.body ? `<p style="color:var(--text-muted);font-size:13px">${this.esc(n.body)}</p>` : ''}
@@ -6442,9 +6473,11 @@ const App = {
             </div>` : ''}
             <div class="card" id="msCard"><div class="loading">Проверяем доступ...</div></div>
             <div class="card" id="msStores"><div class="loading">Читаем список складов...</div></div>
+            ${this.manager.is_admin ? '<div class="card" id="bankCard"><div class="loading">Т-Банк...</div></div>' : ''}
         `;
         this.loadMoyskladSettings();
         this.loadStores();
+        if (this.manager.is_admin) this.loadBankCard();
         if (this.manager.is_admin) {
             this.api('admin.php?action=settings').then(s => {
                 this.settingsSpec = (s.items || []).filter(i => i.group === 'moysklad');
@@ -6452,6 +6485,52 @@ const App = {
                 const el = document.getElementById('set_MOYSKLAD_ORG_ID');
                 if (el && org) el.value = org.value || '';
             }).catch(() => {});
+        }
+    },
+
+    /**
+     * Т-Банк (модуль 047): оплата по счёту → «Входящий платёж» в МойСклад и
+     * карточка в «Сборку». Токен и счета — во «Все параметры» → «Банк».
+     */
+    async loadBankCard(result = null) {
+        const box = document.getElementById('bankCard');
+        if (!box) return;
+        try {
+            const d = await this.api('admin.php?action=bank_state');
+            const last = d.last;
+            const status = {matched: 'проведена', unmatched: 'счёт не найден', error: 'ошибка МойСклад'};
+            box.innerHTML = `
+                <div class="card__title">Т-Банк: входящие оплаты</div>
+                <p class="muted">Оплата по счёту проводится «Входящим платежом» в МойСклад, карточка компании
+                   встаёт в «Сборку», менеджеру приходит «Сообщить складу». Склад вписал трек-номер в заказ —
+                   готов черновик письма клиенту. Токен и номера счетов — в
+                   <a href="#settings/all">«Все параметры» → «Банк (Т-Банк)»</a>. Cron: <code>cron/check_payments.php</code> раз в 10 минут.</p>
+                <p>${d.configured ? `Счета: ${d.accounts.map(a => this.esc(a)).join(', ')}` : '<span class="no">Не настроен: нет токена или счёта</span>'}
+                   ${last ? `<span class="muted"> · последняя проверка ${this.fmtDate(last.at)}: новых ${last.new}, по счёту ${last.matched}, без счёта ${last.unmatched}</span>` : ''}</p>
+                ${result ? `<p class="${result.payments.errors.length ? 'no' : 'ok'}">Проверено: новых операций ${result.payments.new || 0},
+                    заказов в «Сборке» ${result.shipments.checked}, отправлено ${result.shipments.shipped}
+                    ${[...result.payments.errors, ...result.shipments.errors].map(e => '<br>' + this.esc(e)).join('')}</p>` : ''}
+                <button class="btn btn--outline btn--sm" onclick="App.bankCheck(this)">Проверить оплаты сейчас</button>
+                ${(d.recent || []).length ? `<table class="table" style="margin-top:10px"><tbody>
+                    ${d.recent.map(r => `<tr><td>${this.fmtDate(r.operation_date)}</td><td>${this.fmtMoney(r.amount)}</td>
+                        <td>${this.esc(r.payer_name || '')}</td><td>${r.invoice_name ? 'счёт ' + this.esc(r.invoice_name) : ''}</td>
+                        <td class="${r.status === 'matched' ? 'ok' : 'no'}" title="${this.esc(r.error || r.purpose || '')}">${status[r.status] || this.esc(r.status)}</td></tr>`).join('')}
+                </tbody></table>` : ''}`;
+        } catch (err) {
+            box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async bankCheck(btn) {
+        btn.disabled = true;
+        btn.textContent = 'Проверяем...';
+        try {
+            const r = await this.api('admin.php?action=bank_check', {method: 'POST', body: {}});
+            this.loadBankCard(r);
+        } catch (err) {
+            this.toast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Проверить оплаты сейчас';
         }
     },
 
@@ -7953,6 +8032,7 @@ const App = {
                     ${c.kind === 'inbox' ? '<span class="bcol__kind" title="Сюда сами падают новые письма">авто</span>' : ''}
                     ${c.kind === 'work' ? '<span class="bcol__kind" title="Сюда сама встаёт карточка письма, которое пишут">черновики</span>' : ''}
                     ${c.kind === 'closed' ? '<span class="bcol__kind" title="Переписка карточек этой колонки не читается — только счётчики">закрыто</span>' : ''}
+                    ${c.kind === 'assembly' ? '<span class="bcol__kind" title="Сюда сама встаёт карточка, чей заказ оплачен (Т-Банк или платёж в МойСклад)">оплачено</span>' : ''}
                     <span class="bcol__count" title="Показано карточек в колонке${c.card_limit ? ' (лимит ' + c.card_limit + ')' : ''}"
                           onclick="App.boardSetColumnLimit(${c.id}, ${c.card_limit || 0})">${c.cards.length}${c.card_limit ? '/⚙' : ''}</span>
                     <button class="bcol__x" title="Удалить колонку" onclick="App.boardDeleteColumn(${c.id})">×</button>
@@ -7979,6 +8059,8 @@ const App = {
         const cls = ['bcard'];
         if (card.hot) cls.push('bcard--hot');
         if (card.unanswered) cls.push('bcard--unanswered'); else cls.push('bcard--answered');
+        // Готово письмо «заказ отправлен» — карточка жирная, пока его не отправят (модуль 047)
+        if (card.attention) cls.push('bcard--attention');
         const href = card.counterparty_id
             ? `#mail/company/${card.counterparty_id}`
             : (card.thread_key ? `#mail/t/${encodeURIComponent(card.thread_key)}` : '');
@@ -8000,7 +8082,8 @@ const App = {
                 ${subject ? `<div class="bcard__subject">${d ? '✎ ' : ''}${this.esc(subject)}</div>` : ''}
                 ${card.note ? `<div class="bcard__note">${this.esc(card.note)}</div>` : ''}
                 <div class="bcard__meta">
-                    ${d ? `<span class="chip chip--work" title="Письмо пишут: ${this.esc(d.to || '')}">черновик</span>` : ''}
+                    ${card.attention ? `<span class="chip chip--ship" title="Склад вписал трек-номер: письмо клиенту готово, осталось отправить">отправлен: письмо готово</span>`
+                        : (d ? `<span class="chip chip--work" title="Письмо пишут: ${this.esc(d.to || '')}">черновик</span>` : '')}
                     ${letters ? `<span class="chip">писем ${letters}</span>` : ''}
                     ${c.requests_open ? `<span class="chip chip--work">запросов ${c.requests_open}</span>` : ''}
                     ${kp}

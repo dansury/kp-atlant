@@ -29,7 +29,7 @@ switch ($action) {
         }
         $items = Db::all(
             "SELECT moysklad_id, name, article, code, price, prices_json, stock, reserved, unit,
-                    characteristics, product_type, category
+                    characteristics, product_type, category, parent_id
              FROM products_cache
              WHERE " . implode(' AND ', $where) . "
              ORDER BY (stock > 0) DESC, length(name), name
