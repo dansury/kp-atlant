@@ -299,12 +299,6 @@ ok('кнопки «Сохранить» под подбором больше н�
 ok('правки сохраняются сами', str_contains($js, 'autosaveMatch(host)'));
 ok('автосохранение не перерисовывает таблицу под руками',
    str_contains($js, 'adoptItemIds(host, res.items || [])'));
-ok('«Собрать КП заново» стало значком', str_contains($js, '>🔄</button>'));
-ok('⬇Word и ⬇PDF — ссылки', str_contains($js, '>⬇Word</a>') && str_contains($js, '>⬇PDF</a>'));
-ok('и появляются только когда есть что скачивать',
-   strpos($js, 'if (!kp.proposal_id) {') < strpos($js, '>⬇Word</a>'));
-ok('«Позиции запроса» прячутся до второго КП',
-   str_contains($js, 'const showPool = proposals.length > 1 || pool.length > 0;'));
 
 // =====================================================================  9
 echo "\n9. Документ: шапка, первая строка, отступы у фотографий\n";

@@ -670,6 +670,19 @@ try {
             Signatures::forget($who);
             jsonOk(Signatures::describe($who));
 
+        // Общая подпись организации: расшифровка и картинка (модуль 048)
+        case 'company_signature':
+            require_once ROOT . '/lib/signatures.php';
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                Signatures::saveCompanyName((string)($input['signatory_name'] ?? ''));
+            }
+            jsonData(Signatures::describeCompany());
+
+        case 'company_signature_reset':
+            require_once ROOT . '/lib/signatures.php';
+            Signatures::forgetCompany();
+            jsonOk(Signatures::describeCompany());
+
         // ---------- Правки, на которых сервис учится (модуль 022) ----------
 
         case 'learning':

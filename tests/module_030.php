@@ -172,18 +172,5 @@ $flags = Requisites::msVatFlags(Db::one("SELECT * FROM proposals WHERE id=?", [$
 ok('не плательщик — документ без НДС вовсе', $flags['vat_enabled'] === false && $flags['vat_included'] === false,
    json_encode($flags));
 
-echo "\n9. Итог на доске КП — тот же, что в документе\n";
-require_once ROOT . '/lib/kp_set.php';
-Db::q("UPDATE legal_entities SET pays_vat=1");
-Requisites::freeze($proposalId);
-Settings::set('KP_VAT_MODE', 'added');
-$col = KpSet::board($requestId)['proposals'][0];
-ok('на доске стоит итог с налогом', abs($col['total'] - 2625.0) < 0.005, (string)$col['total']);
-ok('и сказано, сколько налога внутри', abs($col['vat']['amount'] - 125.0) < 0.005,
-   json_encode($col['vat'], JSON_UNESCAPED_UNICODE));
-Settings::set('KP_VAT_MODE', 'included');
-$col = KpSet::board($requestId)['proposals'][0];
-ok('«цена с НДС» — итог тот же, что сумма строк', abs($col['total'] - 2500.0) < 0.005, (string)$col['total']);
-
 echo "\n" . ($fail ? "ПРОВАЛОВ: $fail\n" : "ВСЁ ЗЕЛЁНОЕ\n");
 exit($fail ? 1 : 0);

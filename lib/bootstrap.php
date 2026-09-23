@@ -1927,6 +1927,27 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '43')");
         $current = 43;
     }
+
+    // v44 — module 048: old terms texts get the delivery placeholders
+    // (edited texts too, matched by pattern); a sent КП is never rewritten.
+    // Each product card always starts a page — the switch is gone.
+    if ($current < 44) {
+        require_once __DIR__ . '/kp_terms.php';
+        $stored = Db::val("SELECT value FROM settings WHERE key='default_terms_text'");
+        if ($stored !== null) {
+            Db::q("UPDATE settings SET value=? WHERE key='default_terms_text'",
+                  [KpTerms::upgradeLegacy((string)$stored)]);
+        }
+        foreach (Db::all("SELECT id, terms_text FROM proposals
+                          WHERE terms_text IS NOT NULL AND status NOT IN ('sent','order_created')") as $p) {
+            $up = KpTerms::upgradeLegacy((string)$p['terms_text']);
+            if ($up !== $p['terms_text']) Db::update('proposals', ['terms_text' => $up], 'id=?', [(int)$p['id']]);
+        }
+        Db::q("DELETE FROM settings WHERE key='cfg.KP_PAGE_BREAK'");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '44')");
+        $current = 44;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

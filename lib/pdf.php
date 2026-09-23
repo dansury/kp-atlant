@@ -370,7 +370,6 @@ class PdfGenerator {
             'showSiteLink' => $showSiteLink,
             'hasAppendix' => $hasAppendix,
             'qrHint' => trim((string)Settings::get('KP_QR_HINT', '')),
-            'pageBreakPerItem' => (int)Settings::get('KP_PAGE_BREAK', 1) === 1,
             'termsText' => $termsText,
             'delivery' => $delivery,
             'date' => date('d.m.Y') . 'г.',

@@ -59,14 +59,14 @@ mPDF / `Html2Docx`), so every rule below holds in both.
   A4 page of the КП (`App.kpToggleOutOfScope()` → `proposals.php?action=update`,
   which rebuilds the document and drops a hand edit). Shown only when the
   request has such rows. `KP_SHOW_OUT_OF_SCOPE` (default 0) is the value for a
-  КП whose checkbox was never touched — and then only the request's first КП.
+  КП whose checkbox was never touched.
 - `KpContent::outOfScopeRows($proposal)` → `{requested, quantity, unit, position}`.
 - `KpContent::interleave($items, $outOfScope)` → `[{kind: item|out, row}]`: each
   КП line is placed by the position of its request row (`request_item_id`);
   out-of-scope rows go before the first line whose position is greater, the
   rest at the end. The template numbers only real lines.
-- Printed: name grey italic (`<em class="out-of-scope__name">`), «—» in every
-  other cell, not in «Итого». Word: `out-of-scope__name` → italic, `8A8A8A`.
+- Printed: name grey, no italics (`<span class="out-of-scope__name">`), «—» in every
+  other cell, not in «Итого». Word: `out-of-scope__name` → `8A8A8A` (module 048).
 - `proposals.php?action=html` returns `out_of_scope: {count, shown}`.
 
 ## 3. The letter's blocks: collapsible, remembered, tinted

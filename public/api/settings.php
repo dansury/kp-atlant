@@ -53,12 +53,8 @@ switch ($action) {
         try {
             if ($scope === 'company') {
                 if (empty($manager['is_admin'])) jsonError('Общую подпись меняет администратор', 403);
-                $ext = strtolower(pathinfo((string)$_FILES['file']['name'], PATHINFO_EXTENSION));
-                if (!in_array($ext, ['png', 'jpg', 'jpeg'], true)) jsonError('Поддерживаются png и jpg');
-                $dest = Signatures::dir() . '/signature.' . ($ext === 'jpeg' ? 'jpg' : $ext);
-                if (!move_uploaded_file($_FILES['file']['tmp_name'], $dest)) jsonError('Файл не сохранился');
-                Db::q("UPDATE legal_entities SET signature_path=? WHERE is_active=1", [$dest]);
-                jsonOk(['path' => $dest, 'scope' => 'company']);
+                Signatures::storeCompany($_FILES['file']);
+                jsonOk(['scope' => 'company'] + Signatures::describeCompany());
             }
             $path = Signatures::store((int)$manager['id'], $_FILES['file']);
         } catch (Throwable $e) {
@@ -72,6 +68,17 @@ switch ($action) {
     case 'signature_image':
         $manager = requireAuth();
         $path = (string)(Db::val("SELECT signature_path FROM managers WHERE id=?", [(int)$manager['id']]) ?: '');
+        if ($path === '' || !is_file($path)) jsonError('Подпись не загружена', 404);
+        require_once ROOT . '/lib/branding.php';
+        header('Content-Type: ' . Branding::mime($path));
+        header('Cache-Control: private, max-age=60');
+        readfile($path);
+        exit;
+
+    // Общая подпись организации — только администратору (модуль 048)
+    case 'company_signature_image':
+        requireAdmin();
+        $path = (string)(Db::val("SELECT signature_path FROM legal_entities WHERE is_active=1 LIMIT 1") ?: '');
         if ($path === '' || !is_file($path)) jsonError('Подпись не загружена', 404);
         require_once ROOT . '/lib/branding.php';
         header('Content-Type: ' . Branding::mime($path));
@@ -192,11 +199,18 @@ switch ($action) {
             jsonData(generalSettings());
         }
         // PUT
-        $input = getInput();
+        // Только ключи этой страницы: иначе менеджер мог бы записать любую
+        // настройку, в том числе админскую `cfg.*` (модуль 048)
+        $input = array_intersect_key(getInput(), generalSettings());
         foreach ($input as $k => $v) {
             $was = (string)(Db::val("SELECT value FROM settings WHERE key=?", [$k]) ?: '');
             Db::q("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [$k, $v]);
             ContentLog::record('kp', (string)$k, 'Оформление КП: ' . $k, (int)$manager['id'], $was, (string)$v);
+        }
+        // Сменили папку модулей — каталог помечается сразу, а не со следующей синхронизацией
+        if (array_key_exists('addon_category', $input)) {
+            $folder = trim((string)$input['addon_category']);
+            Db::q("UPDATE products_cache SET is_addon = CASE WHEN ? <> '' AND category = ? THEN 1 ELSE 0 END", [$folder, $folder]);
         }
         jsonOk();
 
