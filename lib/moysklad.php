@@ -116,6 +116,7 @@ class MoySklad {
         $offset = 0;
         $limit = 1000;
         $count = 0;
+        self::$folderNames = null;
 
         do {
             $data = self::get("/entity/product?limit=$limit&offset=$offset&expand=salePrices");
@@ -413,6 +414,7 @@ class MoySklad {
      */
     public static function refreshVariantCache(): int {
         if ((int)Settings::get('MOYSKLAD_VARIANTS', 1) !== 1) return 0;
+        self::$folderNames = null;
 
         $offset = 0;
         $limit = 1000;
@@ -520,7 +522,7 @@ class MoySklad {
             'prices'          => $prices,
             'unit'            => (string)($product['uom']['name'] ?? 'шт.'),
             'description'     => (string)($v['description'] ?? $product['description'] ?? ''),
-            'category'        => (string)($product['productFolder']['name'] ?? ''),
+            'category'        => self::folderName($product['productFolder'] ?? null),
             'vat'             => self::vatOf($product),
             'parent_id'       => $parentId ?: null,
             'characteristics' => $characteristics,
@@ -1400,6 +1402,37 @@ class MoySklad {
         return $delay + random_int(0, 250) / 1000;
     }
 
+    /** @var array<string,string>|null id папки → имя; список не отдаёт имя папки */
+    private static ?array $folderNames = null;
+
+    /**
+     * Имя папки товара (модуль 048). В списке товаров `productFolder` — голая
+     * ссылка без имени, поэтому имя берётся из карты `/entity/productfolder`.
+     */
+    private static function folderName(?array $folder): string {
+        if (!$folder) return '';
+        $name = trim((string)($folder['name'] ?? ''));
+        if ($name !== '') return $name;
+        $id = self::extractId((string)($folder['id'] ?? $folder['meta']['href'] ?? ''));
+        if ($id === '') return '';
+        if (self::$folderNames === null) {
+            self::$folderNames = [];
+            try {
+                $offset = 0;
+                do {
+                    $data = self::get("/entity/productfolder?limit=1000&offset=$offset");
+                    foreach ($data['rows'] ?? [] as $f) {
+                        self::$folderNames[(string)($f['id'] ?? '')] = (string)($f['name'] ?? '');
+                    }
+                    $offset += 1000;
+                } while (count($data['rows'] ?? []) === 1000);
+            } catch (Throwable $e) {
+                Logger::warning('moysklad', 'Папки товаров не прочитались: ' . $e->getMessage());
+            }
+        }
+        return self::$folderNames[$id] ?? '';
+    }
+
     private static function mapProduct(array $p): array {
         // Every sale price MoySklad has for this product, by type name — a
         // product commonly carries several («Цена продажи», «Розничная цена»,
@@ -1428,7 +1461,7 @@ class MoySklad {
             'reserved' => 0,
             'unit' => $p['uom']['name'] ?? 'шт.',
             'description' => $p['description'] ?? '',
-            'category' => $p['productFolder']['name'] ?? '',
+            'category' => self::folderName($p['productFolder'] ?? null),
             // The VAT of a КП line is the product's own, not a house default —
             // `vatEnabled: false` is «без НДС» and is not the same as a 0% rate
             'vat' => self::vatOf($p),

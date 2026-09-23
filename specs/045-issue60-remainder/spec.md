@@ -66,8 +66,8 @@ Issue: «если мы отметили что-то как "не наша ном
 КП жирным серым цветом и прочерк (тире) во всех остальных ячейках».
 
 - `KpContent::outOfScopeRows(array $proposal)` — `RequestItems::outOfScope()` of
-  the request, only for the request's FIRST КП (a split request must not list
-  the refusal twice), and only with `KP_SHOW_OUT_OF_SCOPE = 1` (default).
+  the request, only with `KP_SHOW_OUT_OF_SCOPE = 1` (a request has one working
+  КП since module 048).
 - `templates/kp.html`: after the items, `<tr class="out-of-scope">` — «—» in №,
   quantity, price, discount and sum; the client's wording bold grey. Not in
   «Итого». Word: `out-of-scope`, `out-of-scope__name` in `Html2Docx::styleOf()`.
@@ -172,6 +172,6 @@ already mounted only when opened.
 
 `php tests/module_045.php`: `perUnit()` sums and kopecks, invoice positions
 (included / line / service / missing, wait discount kept), the КП table with the
-share in the unit price, out-of-scope rows (first КП only, setting off), letter
+share in the unit price, out-of-scope rows (setting off), letter
 blocks without stock numbers and with «см. на сайте», `textToHtml()`, template
 pick, the editor round trip (externalize → save → PDF source), sanitising, reset.

@@ -738,8 +738,8 @@ final class RequestItems {
             if ((int)($row['is_out_of_scope'] ?? 0) === 1) continue;
             $hasProduct = trim((string)($row['product_name'] ?? '')) !== '';
             $out[] = [
-                // Строка запроса, из которой выросла позиция КП: по ней видно,
-                // какие позиции запроса ещё не разложены по КП (модуль 027)
+                // Строка запроса, из которой выросла позиция КП: по ней КП
+                // сводит условия ожидания с подбором (модуль 037)
                 'request_item_id' => isset($row['id']) ? (int)$row['id'] : null,
                 'raw_name'     => (string)($row['raw_name'] ?? ''),
                 'quantity'     => (float)($row['quantity'] ?? 1),

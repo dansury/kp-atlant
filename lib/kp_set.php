@@ -1,20 +1,10 @@
 <?php
 /**
- * Несколько КП на один запрос (модуль 027).
+ * КП запроса (модуль 048: одно рабочее КП на запрос — самое новое).
  *
- * Клиент прислал письмо на восемь позиций, а платить за них собирается двумя
- * разными заявками: шлемы по одной, бронежилеты по другой. До сих пор у запроса
- * было ровно одно КП со всеми восемью строками — и менеджер собирал второй
- * документ руками, в Word, теряя связь с каталогом, ценами и счётом.
- *
- * Здесь запрос — это НАБОР КП. Их можно добавлять («+ Ещё одно КП»), называть
- * своими словами, а позиции — перетаскивать: из запроса в КП, из КП в КП,
- * из КП обратно в запрос. Счёт выставляется по конкретному КП, и счетов у
- * одного КП может быть несколько.
- *
- * Позиция живёт в одном месте: перетаскивание — это `UPDATE proposal_id`, а не
- * копия. Строка, оказавшаяся в двух документах сразу, — это счёт, выставленный
- * дважды за один товар.
+ * Здесь заводится КП, его позиции переводятся из таблицы подбора, КП
+ * пересобирается по подбору и убирается. Счетов у одного КП может быть
+ * несколько.
  */
 require_once __DIR__ . '/request_items.php';
 require_once __DIR__ . '/kp_content.php';
@@ -35,7 +25,7 @@ final class KpSet {
      * сегодняшними ИНН и банком, даже если открыть его через полгода
      * (модуль 013).
      */
-    public static function create(int $requestId, ?int $managerId = null, string $label = ''): int {
+    public static function create(int $requestId, ?int $managerId = null): int {
         $req = Db::one("SELECT * FROM requests WHERE id=?", [$requestId]);
         if (!$req) throw new RuntimeException('Запрос не найден');
 
@@ -43,7 +33,6 @@ final class KpSet {
             'request_id'      => $requestId,
             'counterparty_id' => $req['counterparty_id'],
             'manager_id'      => $managerId,
-            'label'           => trim($label) ?: null,
             'vat_rate'        => (int)(Db::val("SELECT value FROM settings WHERE key='default_vat_rate'") ?: 5),
             'execution_days'  => (int)(Db::val("SELECT value FROM settings WHERE key='default_execution_days'") ?: 30),
             'validity_days'   => (int)(Db::val("SELECT value FROM settings WHERE key='default_validity_days'") ?: 14),
@@ -62,8 +51,8 @@ final class KpSet {
     /**
      * Доставка из таблицы подбора — в поля КП (модуль 034).
      *
-     * Она правится строкой под позициями, а печатается строкой таблицы: у
-     * запроса КП бывает несколько, и доставка у них одна и та же.
+     * Она правится строкой под позициями, а печатается строкой таблицы или
+     * раскладывается по ценам позиций.
      */
     private static function deliveryFields(int $requestId): array {
         $d = RequestItems::delivery($requestId);
@@ -77,8 +66,8 @@ final class KpSet {
     /**
      * Позиция КП из строки «Подходящих позиций».
      *
-     * Один и тот же перевод строки подбора в строку документа для обоих путей:
-     * и для «Сформировать КП» целиком, и для одной перетащенной позиции.
+     * Один и тот же перевод строки подбора в строку документа для «Сформировать
+     * КП» и «🔄 Пересобрать».
      *
      * @param array $m строка в форме `RequestItems::toProposalItems()`
      */
@@ -139,79 +128,30 @@ final class KpSet {
     }
 
     /**
-     * Положить строку запроса в КП. Уже лежащую там не задваиваем.
-     *
-     * @return int id созданной позиции КП
+     * «🔄 Пересобрать» (модуль 048): позиции КП — заново из таблицы подбора,
+     * доставка — оттуда же. Правка листа A4 сбрасывается: документ снова
+     * собирается из данных. Отправленное КП сюда не попадает — по нему
+     * собирается новое (`proposals.php?action=rebuild`).
      */
-    public static function addFromRequest(int $proposalId, int $requestItemId, ?int $position = null): int {
-        $proposal = Db::one("SELECT id, request_id FROM proposals WHERE id=?", [$proposalId]);
-        if (!$proposal) throw new RuntimeException('КП не найдено');
-
-        $exists = Db::val("SELECT id FROM proposal_items WHERE proposal_id=? AND request_item_id=?",
-                          [$proposalId, $requestItemId]);
-        if ($exists) return (int)$exists;
-
-        $row = null;
-        foreach (RequestItems::all((int)$proposal['request_id']) as $r) {
-            if ((int)$r['id'] === $requestItemId) { $row = $r; break; }
+    public static function rebuildItems(int $proposalId): void {
+        $p = Db::one("SELECT id, request_id, status FROM proposals WHERE id=?", [$proposalId]);
+        if (!$p) throw new RuntimeException('КП не найдено');
+        if (in_array((string)$p['status'], ['sent', 'order_created'], true)) {
+            throw new RuntimeException('КП уже ушло клиенту — его не переписывают');
         }
-        if (!$row) throw new RuntimeException('Строка запроса не найдена');
-        // «Не наша номенклатура» в документ не идёт ни в каком виде (модуль 022)
-        if ((int)($row['is_out_of_scope'] ?? 0) === 1) {
-            throw new RuntimeException('Эта позиция отмечена как не наша номенклатура');
+        $requestId = (int)$p['request_id'];
+        $matched = RequestItems::toProposalItems(RequestItems::ensure($requestId));
+
+        Db::q("DELETE FROM proposal_items WHERE proposal_id=?", [$proposalId]);
+        foreach ($matched as $i => $m) {
+            Db::insert('proposal_items', self::itemRow($m, $i + 1) + ['proposal_id' => $proposalId]);
         }
-
-        $mapped = RequestItems::toProposalItems([$row]);
-        if (!$mapped) throw new RuntimeException('Строку запроса не удалось перевести в позицию КП');
-
-        $id = Db::insert('proposal_items',
-            self::itemRow($mapped[0], self::nextPosition($proposalId)) + ['proposal_id' => $proposalId]);
-        if ($position !== null) self::place($id, $proposalId, $position);
+        Db::update('proposals', self::deliveryFields($requestId) + [
+            'html_override'    => null,
+            'html_override_at' => null,
+            'updated_at'       => date('Y-m-d H:i:s'),
+        ], 'id=?', [$proposalId]);
         self::rebuild($proposalId);
-        return $id;
-    }
-
-    /**
-     * Перетащить позицию в другое КП (или на другое место в своём).
-     *
-     * Пересобираются ОБА документа: и тот, из которого ушла строка, и тот, в
-     * который она пришла, — иначе предпросмотр показывает вчерашний файл.
-     */
-    public static function moveItem(int $itemId, int $toProposalId, ?int $position = null): void {
-        $item = Db::one("SELECT * FROM proposal_items WHERE id=?", [$itemId]);
-        if (!$item) throw new RuntimeException('Позиция не найдена');
-        $from = (int)$item['proposal_id'];
-
-        $to = Db::one("SELECT id, request_id FROM proposals WHERE id=?", [$toProposalId]);
-        if (!$to) throw new RuntimeException('КП не найдено');
-        $fromRequest = (int)Db::val("SELECT request_id FROM proposals WHERE id=?", [$from]);
-        if ((int)$to['request_id'] !== $fromRequest) {
-            throw new RuntimeException('Позицию можно двигать только между КП одного запроса');
-        }
-
-        self::place($itemId, $toProposalId, $position ?? PHP_INT_MAX);
-        if ($from !== $toProposalId) {
-            // Строка ушла — в покинутом КП остаётся дыра в нумерации, и КП
-            // печатается с позициями «1, 3»
-            self::resequence($from);
-            self::rebuild($from);
-        }
-        self::rebuild($toProposalId);
-    }
-
-    /** Убрать позицию из КП — она возвращается в список позиций запроса. */
-    public static function removeItem(int $itemId): void {
-        $proposalId = (int)(Db::val("SELECT proposal_id FROM proposal_items WHERE id=?", [$itemId]) ?: 0);
-        if (!$proposalId) throw new RuntimeException('Позиция не найдена');
-        Db::q("DELETE FROM proposal_items WHERE id=?", [$itemId]);
-        self::resequence($proposalId);
-        self::rebuild($proposalId);
-    }
-
-    /** Имя КП, которое пишет менеджер. Пусто — КП зовётся своим номером. */
-    public static function rename(int $proposalId, string $label): void {
-        Db::update('proposals', ['label' => trim($label) ?: null, 'updated_at' => date('Y-m-d H:i:s')],
-                   'id=?', [$proposalId]);
     }
 
     /**
@@ -235,81 +175,22 @@ final class KpSet {
     }
 
     /**
-     * Раскладка запроса по КП — то, что рисует доска позиций.
-     *
-     * @return array{proposals:array<int,array>,pool:array<int,array>}
+     * Что нужно строке кнопок под таблицей подбора (модуль 048): статус, счета,
+     * правлен ли лист руками и можно ли убрать КП.
      */
-    public static function board(int $requestId): array {
-        $proposals = Db::all("SELECT * FROM proposals WHERE request_id=? ORDER BY id", [$requestId]);
-
-        $used = [];
-        $out = [];
-        foreach ($proposals as $n => $p) {
-            $items = Db::all(
-                "SELECT id, position, product_name, requested_name, unit, quantity, price,
-                        notes, request_item_id, is_excluded, discount_percent, wait_on,
-                        wait_months, wait_discount, moysklad_product_id
-                 FROM proposal_items WHERE proposal_id=? ORDER BY position, id", [(int)$p['id']]
-            );
-            $total = 0.0;
-            foreach ($items as &$it) {
-                $it['id'] = (int)$it['id'];
-                $it['effective_price'] = Terms::price($it);
-                $it['sum'] = $it['effective_price'] * (float)$it['quantity'];
-                if ((int)($it['is_excluded'] ?? 0) !== 1) $total += $it['sum'];
-                if ($it['request_item_id']) $used[(int)$it['request_item_id']] = true;
-            }
-            unset($it);
-
-            if ((int)($p['delivery_on'] ?? 0) === 1) $total += (float)($p['delivery_price'] ?? 0);
-
-            // На доске стоит тот же итог, что и в документе: при «цене + НДС»
-            // сумма строк — это ещё не то, что заплатит клиент (модуль 030)
-            $vat = Requisites::forProposal((int)$p['id'])['vat'] ?? [];
-            if (!array_key_exists('rate', $vat)) $vat['rate'] = (int)($p['vat_rate'] ?? 5);
-            $vatTotals = Requisites::vatTotals($total, $vat, Requisites::vatMode($p));
-
-            $out[] = [
-                'id'        => (int)$p['id'],
-                'title'     => self::title($p, $n + 1),
-                'label'     => $p['label'],
-                'number'    => $p['number'],
-                'status'    => $p['status'],
-                'sent_at'   => $p['sent_at'],
-                'items'     => $items,
-                'total'     => $vatTotals['total'],
-                // Что за налог сидит в этом итоге — теми же словами, что в документе
-                'vat'       => ['note'   => $vatTotals['note'],
-                                'amount' => $vatTotals['amount'],
-                                'mode'   => $vatTotals['mode']],
-                'delivery'  => (int)($p['delivery_on'] ?? 0) === 1 ? [
-                    'name'  => trim((string)($p['delivery_name'] ?? '')) ?: 'Доставка',
-                    'price' => (float)($p['delivery_price'] ?? 0),
-                ] : null,
-                'invoices'  => self::invoices((int)$p['id']),
-                'can_delete' => !in_array((string)$p['status'], ['sent', 'order_created'], true)
-                             && !Db::val("SELECT COUNT(*) FROM invoices WHERE proposal_id=?", [(int)$p['id']]),
-            ];
-        }
-
-        // Пул: строки запроса, которых нет ни в одном КП. «Не наша
-        // номенклатура» сюда не попадает — её и перетаскивать некуда.
-        $pool = [];
-        foreach (RequestItems::all($requestId) as $row) {
-            if ((int)($row['is_out_of_scope'] ?? 0) === 1) continue;
-            if (isset($used[(int)$row['id']])) continue;
-            $pool[] = [
-                'id'           => (int)$row['id'],
-                'raw_name'     => (string)($row['raw_name'] ?? ''),
-                'product_name' => (string)($row['product_name'] ?? ''),
-                'unit'         => (string)($row['unit'] ?: 'шт.'),
-                'quantity'     => (float)$row['quantity'],
-                'price'        => (float)($row['price'] ?? 0),
-                'notes'        => $row['notes'],
-            ];
-        }
-
-        return ['proposals' => $out, 'pool' => $pool];
+    public static function summary(int $proposalId): array {
+        $p = Db::one("SELECT id, number, status, html_override FROM proposals WHERE id=?", [$proposalId]);
+        if (!$p) throw new RuntimeException('КП не найдено');
+        $invoices = self::invoices($proposalId);
+        return [
+            'id'         => (int)$p['id'],
+            'number'     => $p['number'],
+            'status'     => $p['status'],
+            // Лист A4 правили руками — «Пересобрать» эту правку сбросит
+            'edited'     => trim((string)($p['html_override'] ?? '')) !== '',
+            'invoices'   => $invoices,
+            'can_delete' => !in_array((string)$p['status'], ['sent', 'order_created'], true) && !$invoices,
+        ];
     }
 
     /** Счета, выставленные по этому КП. Их может быть несколько. */
@@ -325,36 +206,6 @@ final class KpSet {
         }
         unset($r);
         return $rows;
-    }
-
-    /** Как КП называется на доске: имя менеджера, иначе номер, иначе «КП N». */
-    public static function title(array $proposal, int $ordinal): string {
-        $label = trim((string)($proposal['label'] ?? ''));
-        if ($label !== '') return $label;
-        $number = trim((string)($proposal['number'] ?? ''));
-        return $number !== '' ? 'КП ' . $number : 'КП ' . $ordinal;
-    }
-
-    // ------------------------------------------------------------- частности
-
-    /** Положить позицию в КП на заданное место и перенумеровать соседей. */
-    private static function place(int $itemId, int $proposalId, int $position): void {
-        $siblings = array_map('intval', array_column(Db::all(
-            "SELECT id FROM proposal_items WHERE proposal_id=? AND id<>? ORDER BY position, id",
-            [$proposalId, $itemId]), 'id'));
-        $position = max(0, min(count($siblings), $position));
-        array_splice($siblings, $position, 0, [$itemId]);
-
-        foreach ($siblings as $i => $id) {
-            $data = ['position' => $i + 1];
-            if ($id === $itemId) $data['proposal_id'] = $proposalId;
-            Db::update('proposal_items', $data, 'id=?', [$id]);
-        }
-    }
-
-    private static function nextPosition(int $proposalId): int {
-        return (int)Db::val("SELECT COALESCE(MAX(position), 0) + 1 FROM proposal_items WHERE proposal_id=?",
-                            [$proposalId]);
     }
 
     /**
@@ -412,19 +263,11 @@ final class KpSet {
         return count($touched);
     }
 
-    /** Убрать дыры в нумерации после удаления строки. */
-    public static function resequence(int $proposalId): void {
-        foreach (Db::all("SELECT id FROM proposal_items WHERE proposal_id=? ORDER BY position, id",
-                         [$proposalId]) as $i => $row) {
-            Db::update('proposal_items', ['position' => $i + 1], 'id=?', [(int)$row['id']]);
-        }
-    }
-
     /**
      * Пересобрать документ после правки позиций.
      *
-     * Best-effort: не собравшийся PDF не должен отменять перетаскивание —
-     * строка уже там, где её положил человек.
+     * Best-effort: не собравшийся PDF не отменяет правку позиций — она уже
+     * сохранена.
      */
     public static function rebuild(int $proposalId): void {
         try {

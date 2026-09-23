@@ -26,6 +26,117 @@ require_once ROOT . '/lib/kp_set.php';
 require_once ROOT . '/lib/kp_editor.php';
 
 /**
+ * Собрать новое КП запроса из таблицы подбора: позиции, письмо, карточки,
+ * реквизиты, PDF. Им пользуются «Сформировать КП» и «🔄 Пересобрать» по уже
+ * отправленному КП (модуль 048).
+ *
+ * @return array{0:int,1:string} id КП и сопроводительное письмо
+ */
+function buildProposal(array $req, array $manager): array {
+    $requestId = (int)$req['id'];
+    // Ensure MoySklad is initialized
+    MoySklad::init((string)Settings::get('MOYSKLAD_TOKEN', ''));
+
+    // Refresh product cache for fresh prices (Constitution II). Best-effort:
+    // with a dead token the catalog imported from Excel still stands, and a
+    // KP built on it beats no KP at all.
+    try {
+        MoySklad::refreshProductCache();
+    } catch (Throwable $e) {
+        Logger::warning('catalog', 'Каталог не обновился перед КП: ' . $e->getMessage());
+    }
+    ProductMatcher::forgetCatalog();
+
+    // The КП is built from «Подходящие позиции» — the table the manager
+    // checked on the request card. Nothing there yet: match on the spot.
+    $matched = RequestItems::toProposalItems(RequestItems::ensure($requestId, true));
+    if (!$matched) {
+        $parsed = $req['parsed_json'] ? json_decode($req['parsed_json'], true) : RequestParser::parse($req['raw_text']);
+        $matched = ProductMatcher::matchItems($parsed['items'] ?? []);
+    }
+
+    $proposalId = KpSet::create($requestId, (int)$manager['id']);
+
+    // Insert items
+    foreach ($matched as $i => $m) {
+        Db::insert('proposal_items', KpSet::itemRow($m, $i + 1) + ['proposal_id' => $proposalId]);
+    }
+
+    // Клиент просил указать что-то в самом КП — абзац документа на это
+    // (модуль 046). Сбой модели КП не отменяет: абзаца просто не будет
+    KpRequirements::apply($proposalId);
+
+    // Generate cover letter
+    $tov = Tov::read();
+    $corrections = Db::all(
+        "SELECT auto_text, manager_text FROM corrections WHERE field='cover_letter' ORDER BY created_at DESC LIMIT 5"
+    );
+    // How this office has explained an analogue before — the model repeats
+    // the manager's own wording instead of inventing a new apology
+    $pastSwaps = Db::all(
+        "SELECT auto_text, manager_text FROM corrections WHERE field='item_substitution' ORDER BY created_at DESC LIMIT 8"
+    );
+    $orgName = '';
+    if ($req['counterparty_id']) {
+        $cp = Db::one("SELECT name FROM counterparties WHERE id=?", [$req['counterparty_id']]);
+        $orgName = $cp['name'] ?? '';
+    }
+
+    $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
+    $swaps = KpContent::substitutions($items);
+    // The letter names the same products the table does, and says out loud
+    // what the catalog never answered (module 018)
+    $unmatched = KpContent::unmatchedRows($proposalId);
+    // Сопроводительное письмо пишет модель — и это единственная часть сборки,
+    // которой нужна сеть. Молчащий провайдер не должен отменять ДОКУМЕНТ:
+    // раньше `generate` падал целиком, и «Сформировать КП» выглядело как
+    // «ничего не происходит» (модуль 034). Письмо менеджер допишет сам.
+    $coverLetter = '';
+    try {
+        $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections, $swaps,
+                                                          $pastSwaps, $unmatched);
+    } catch (Throwable $e) {
+        Logger::warning('kp', 'КП собрано без сопроводительного письма: ' . $e->getMessage(),
+                        ['proposal_id' => $proposalId, 'request_id' => $requestId]);
+    }
+    Db::update('proposals', ['cover_letter' => $coverLetter], 'id=?', [$proposalId]);
+
+    // Pull descriptions, specs and photos for the product cards (FR-040, FR-042)
+    KpContent::enrichItems($proposalId);
+
+    // Позициям, которых нет на складе, проставляются срок ожидания, скидка
+    // за ожидание и предоплата — готовыми, но выключенными: цену они не
+    // двигают, пока менеджер их не включит (модуль 023)
+    Terms::prepareProposal($proposalId);
+
+    // Pre-fill the upsell table with modules from the addon folder (FR-044)
+    KpContent::seedAddons($proposalId);
+
+    // НДС, реквизиты, адреса, банк и договор — из МойСклад и ЗАМОРОЖЕНЫ на
+    // этом КП (module 013). Переоткрытый через полгода документ печатается с
+    // теми реквизитами, с которыми был подписан, а не с сегодняшними.
+    if ((int)Settings::get('REQUISITES_AUTOSYNC', 1) === 1) {
+        try {
+            Requisites::syncOrganization();
+            if ($req['counterparty_id']) Requisites::syncCounterparty((int)$req['counterparty_id']);
+        } catch (Throwable $e) {
+            // A dead token leaves the last synced copy in charge — a КП is
+            // never blocked by МойСклад being unreachable
+            Logger::warning('moysklad', 'Реквизиты не обновились перед КП: ' . $e->getMessage());
+        }
+    }
+    Requisites::freeze($proposalId);
+
+    // Generate PDF draft
+    PdfGenerator::generate($proposalId);
+
+    // Update request status
+    Db::update('requests', ['status' => 'draft_ready', 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$requestId]);
+
+    return [$proposalId, $coverLetter];
+}
+
+/**
  * SC-005 with teeth (module 018).
  *
  * «Ни одно КП не уходит клиенту без подтверждения менеджером» was a click, not
@@ -147,9 +258,9 @@ switch ($action) {
         $req = Db::one("SELECT * FROM requests WHERE id=?", [$requestId]);
         if (!$req) jsonError('Request not found', 404);
 
-        // «Сформировать КП» никогда не заводит второй документ на тот же запрос —
-        // это работа отдельной кнопки «+ Ещё одно КП» (issue #60). Повторный клик
-        // (двойной клик, повтор запроса сетью) просто возвращает то, что уже есть.
+        // У запроса одно рабочее КП — самое новое (модуль 048). Повторный клик
+        // (двойной клик, повтор запроса сетью) просто возвращает то, что уже есть;
+        // собрать заново из подбора — «🔄 Пересобрать» (action=rebuild).
         $existingId = (int)(Db::val("SELECT id FROM proposals WHERE request_id=? ORDER BY id DESC LIMIT 1", [$requestId]) ?: 0);
         if ($existingId) {
             $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$existingId]);
@@ -163,106 +274,7 @@ switch ($action) {
             ]);
         }
 
-        // Ensure MoySklad is initialized
-        MoySklad::init($cfg['MOYSKLAD_TOKEN'] ?? '');
-
-        // Refresh product cache for fresh prices (Constitution II). Best-effort:
-        // with a dead token the catalog imported from Excel still stands, and a
-        // KP built on it beats no KP at all.
-        try {
-            MoySklad::refreshProductCache();
-        } catch (Throwable $e) {
-            Logger::warning('catalog', 'Каталог не обновился перед КП: ' . $e->getMessage());
-        }
-        ProductMatcher::forgetCatalog();
-
-        // The КП is built from «Подходящие позиции» — the table the manager
-        // checked on the request card. Nothing there yet: match on the spot.
-        $matched = RequestItems::toProposalItems(RequestItems::ensure($requestId, true));
-        if (!$matched) {
-            $parsed = $req['parsed_json'] ? json_decode($req['parsed_json'], true) : RequestParser::parse($req['raw_text']);
-            $matched = ProductMatcher::matchItems($parsed['items'] ?? []);
-        }
-
-        // Шапка КП — одна на все пути: и «Сформировать КП», и «+ Ещё одно КП»
-        // заводят документ одинаково (модуль 027)
-        $proposalId = KpSet::create($requestId, (int)$manager['id'], (string)(getInput()['label'] ?? ''));
-
-        // Insert items
-        foreach ($matched as $i => $m) {
-            Db::insert('proposal_items', KpSet::itemRow($m, $i + 1) + ['proposal_id' => $proposalId]);
-        }
-
-        // Клиент просил указать что-то в самом КП — абзац документа на это
-        // (модуль 046). Сбой модели КП не отменяет: абзаца просто не будет
-        KpRequirements::apply($proposalId);
-
-        // Generate cover letter
-        $tov = Tov::read();
-        $corrections = Db::all(
-            "SELECT auto_text, manager_text FROM corrections WHERE field='cover_letter' ORDER BY created_at DESC LIMIT 5"
-        );
-        // How this office has explained an analogue before — the model repeats
-        // the manager's own wording instead of inventing a new apology
-        $pastSwaps = Db::all(
-            "SELECT auto_text, manager_text FROM corrections WHERE field='item_substitution' ORDER BY created_at DESC LIMIT 8"
-        );
-        $orgName = '';
-        if ($req['counterparty_id']) {
-            $cp = Db::one("SELECT name FROM counterparties WHERE id=?", [$req['counterparty_id']]);
-            $orgName = $cp['name'] ?? '';
-        }
-
-        $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
-        $swaps = KpContent::substitutions($items);
-        // The letter names the same products the table does, and says out loud
-        // what the catalog never answered (module 018)
-        $unmatched = KpContent::unmatchedRows($proposalId);
-        // Сопроводительное письмо пишет модель — и это единственная часть сборки,
-        // которой нужна сеть. Молчащий провайдер не должен отменять ДОКУМЕНТ:
-        // раньше `generate` падал целиком, и «Сформировать КП» выглядело как
-        // «ничего не происходит» (модуль 034). Письмо менеджер допишет сам.
-        $coverLetter = '';
-        try {
-            $coverLetter = RequestParser::generateCoverLetter($items, $orgName, $tov, $corrections, $swaps,
-                                                              $pastSwaps, $unmatched);
-        } catch (Throwable $e) {
-            Logger::warning('kp', 'КП собрано без сопроводительного письма: ' . $e->getMessage(),
-                            ['proposal_id' => $proposalId, 'request_id' => $requestId]);
-        }
-        Db::update('proposals', ['cover_letter' => $coverLetter], 'id=?', [$proposalId]);
-
-        // Pull descriptions, specs and photos for the product cards (FR-040, FR-042)
-        KpContent::enrichItems($proposalId);
-
-        // Позициям, которых нет на складе, проставляются срок ожидания, скидка
-        // за ожидание и предоплата — готовыми, но выключенными: цену они не
-        // двигают, пока менеджер их не включит (модуль 023)
-        Terms::prepareProposal($proposalId);
-
-        // Pre-fill the upsell table with modules from the addon folder (FR-044)
-        KpContent::seedAddons($proposalId);
-
-        // НДС, реквизиты, адреса, банк и договор — из МойСклад и ЗАМОРОЖЕНЫ на
-        // этом КП (module 013). Переоткрытый через полгода документ печатается с
-        // теми реквизитами, с которыми был подписан, а не с сегодняшними.
-        if ((int)Settings::get('REQUISITES_AUTOSYNC', 1) === 1) {
-            try {
-                Requisites::syncOrganization();
-                if ($req['counterparty_id']) Requisites::syncCounterparty((int)$req['counterparty_id']);
-            } catch (Throwable $e) {
-                // A dead token leaves the last synced copy in charge — a КП is
-                // never blocked by МойСклад being unreachable
-                Logger::warning('moysklad', 'Реквизиты не обновились перед КП: ' . $e->getMessage());
-            }
-        }
-        Requisites::freeze($proposalId);
-
-        // Generate PDF draft
-        PdfGenerator::generate($proposalId);
-
-        // Update request status
-        Db::update('requests', ['status' => 'draft_ready', 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$requestId]);
+        [$proposalId, $coverLetter] = buildProposal($req, $manager);
 
         // Return full proposal
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
@@ -651,84 +663,46 @@ switch ($action) {
         exit;
 
     /**
-     * ==== Несколько КП на один запрос (модуль 027) ====
+     * ==== Одно КП на запрос (модуль 048) ====
      *
-     * Клиент платит двумя заявками — значит и КП два, и счёт у каждого свой.
-     * Позиции между ними перетаскиваются, а не переписываются руками в Word.
+     * Кнопки под таблицей подбора: 🔄 Пересобрать · Открыть · ⬇ Word · ⬇ PDF ·
+     * 🧾 Счёт · Убрать. Здесь — то, что им нужно от сервера.
      */
 
-    /** Раскладка запроса по КП: колонки документов и позиции, не попавшие ни в одну. */
-    case 'board': {
-        requireAuth();
-        $requestId = (int)($_GET['request_id'] ?? 0);
-        if (!Db::val("SELECT 1 FROM requests WHERE id=?", [$requestId])) jsonError('Запрос не найден', 404);
-        jsonData(KpSet::board($requestId));
-    }
-
-    /** «+ Ещё одно КП» — пустое КП того же запроса. */
-    case 'add': {
-        $manager = requireAuth();
-        $requestId = (int)($_GET['request_id'] ?? 0);
-        if (!Db::val("SELECT 1 FROM requests WHERE id=?", [$requestId])) jsonError('Запрос не найден', 404);
-        $input = getInput();
-        try {
-            $id = KpSet::create($requestId, (int)$manager['id'], (string)($input['label'] ?? ''));
-        } catch (Throwable $e) {
-            jsonError($e->getMessage(), 400);
-        }
-        Logger::info('kp', "Заведено ещё одно КП #$id по запросу #$requestId",
-                     ['request_id' => $requestId, 'proposal_id' => $id, 'manager_id' => (int)$manager['id']]);
-        jsonOk(['id' => $id] + KpSet::board($requestId));
-    }
-
-    /** Перетащили позицию: в другое КП, на другое место или обратно в запрос. */
-    case 'move_item': {
-        requireAuth();
-        $input = getInput();
-        $itemId = (int)($input['item_id'] ?? 0);
-        $toProposal = (int)($input['to_proposal_id'] ?? 0);
-        $position = array_key_exists('position', $input) ? (int)$input['position'] : null;
-        $requestId = (int)($input['request_id'] ?? 0);
-
-        try {
-            if ($toProposal) {
-                KpSet::moveItem($itemId, $toProposal, $position);
-            } else {
-                // Уронили в колонку запроса — строка уходит из документа
-                KpSet::removeItem($itemId);
-            }
-        } catch (Throwable $e) {
-            jsonError($e->getMessage(), 400);
-        }
-        jsonOk($requestId ? KpSet::board($requestId) : []);
-    }
-
-    /** Перетащили строку запроса в КП. */
-    case 'add_item': {
-        requireAuth();
-        $input = getInput();
-        $proposalId = (int)($input['proposal_id'] ?? 0);
-        $requestItemId = (int)($input['request_item_id'] ?? 0);
-        $position = array_key_exists('position', $input) ? (int)$input['position'] : null;
-        $requestId = (int)($input['request_id'] ?? 0);
-
-        try {
-            KpSet::addFromRequest($proposalId, $requestItemId, $position);
-        } catch (Throwable $e) {
-            jsonError($e->getMessage(), 400);
-        }
-        jsonOk($requestId ? KpSet::board($requestId) : []);
-    }
-
-    /** Имя КП, которое пишет менеджер: «Шлемы», «Вторая партия». */
-    case 'rename': {
+    /** Счета и можно ли убрать — строка кнопок под таблицей подбора. */
+    case 'summary': {
         requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::val("SELECT 1 FROM proposals WHERE id=?", [$id])) jsonError('КП не найдено', 404);
-        $input = getInput();
-        KpSet::rename($id, (string)($input['label'] ?? ''));
-        $requestId = (int)Db::val("SELECT request_id FROM proposals WHERE id=?", [$id]);
-        jsonOk(KpSet::board($requestId));
+        jsonData(KpSet::summary($id));
+    }
+
+    /**
+     * «🔄 Пересобрать»: позиции КП — заново из таблицы подбора. Отправленное
+     * клиенту КП не переписывается: по подбору собирается новое, и рабочим
+     * становится оно.
+     */
+    case 'rebuild': {
+        $manager = requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
+        if (!$proposal) jsonError('КП не найдено', 404);
+        $req = Db::one("SELECT * FROM requests WHERE id=?", [(int)$proposal['request_id']]);
+        if (!$req) jsonError('Запрос не найден', 404);
+        try {
+            if (KpEditor::editable($proposal)) {
+                KpSet::rebuildItems($id);
+                $newId = $id;
+            } else {
+                [$newId] = buildProposal($req, $manager);
+            }
+        } catch (Throwable $e) {
+            Logger::exception('kp', $e, ['proposal_id' => $id, 'stage' => 'rebuild']);
+            jsonError('КП не пересобралось: ' . $e->getMessage(), 500);
+        }
+        Logger::info('kp', "КП #$newId пересобрано из подбора", ['proposal_id' => $newId, 'from' => $id,
+                                                                  'manager_id' => (int)$manager['id']]);
+        jsonOk(['id' => $newId, 'created' => $newId !== $id] + KpSet::summary($newId));
     }
 
     /** Убрать КП целиком — пока оно не ушло клиенту и по нему нет счёта. */
@@ -744,7 +718,7 @@ switch ($action) {
         }
         Logger::info('kp', "КП #$id убрано с карточки запроса #$requestId",
                      ['proposal_id' => $id, 'manager_id' => (int)$manager['id']]);
-        jsonOk(KpSet::board($requestId));
+        jsonOk(['request_id' => $requestId]);
     }
 
     case 'confirm':

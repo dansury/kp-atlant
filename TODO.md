@@ -57,6 +57,16 @@ not have.
   alone if MoySklad refuses the pair).
 - Add `cron/check_payments.php` (every 10 min) to the host's crontab.
 
+## Module 048 — needs a live system
+- Open a КП in real Word: the ending is terms → «Более подробное описание…» →
+  date + signature, with empty lines between; each product card of
+  «Приложение №1» on its own page. Checked by the .docx XML only.
+- A КП edited by hand on the A4 page keeps its old ending until «Вернуть
+  автоматическую сборку» or «🔄 Пересобрать».
+- «Папка модулей в МойСклад»: after the next catalog sync check that products
+  of the folder get `is_addon = 1` (the folder names now come from
+  `/entity/productfolder`, never called against a live account).
+
 ## Open
 - `php tests/module_026.php` has one failing check («новое письмо поднимает
   карточку обратно») that predates module 042 — still not investigated.

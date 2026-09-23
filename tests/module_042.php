@@ -78,7 +78,7 @@ echo "\n== 2. «Сформировать КП» не плодит второй �
 $api = (string)file_get_contents(ROOT . '/public/api/proposals.php');
 ok('generate проверяет уже существующее КП запроса перед созданием нового',
    (bool)preg_match(
-       "/case 'generate':.*?SELECT id FROM proposals WHERE request_id=\\? ORDER BY id DESC LIMIT 1.*?KpSet::create/s",
+       "/case 'generate':.*?SELECT id FROM proposals WHERE request_id=\\? ORDER BY id DESC LIMIT 1.*?buildProposal\\(/s",
        $api
    ));
 

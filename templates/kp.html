@@ -38,8 +38,9 @@
     /* Дата, подпись и расшифровка — ОДНОЙ строкой, как в образце: картинка
        подписи стоит поверх линии, а не отдельным абзацем (модуль 035) */
     .out-of-scope td { color: #8a8a8a; }
-    .out-of-scope__name { color: #8a8a8a; font-style: italic; }
-    .signature { margin-top: 36px; font-size: 10pt; }
+    .out-of-scope__name { color: #8a8a8a; }
+    .signature { margin-top: 0; font-size: 10pt; }
+    .appendix-ref { margin: 0; }
     .signature__date { margin-right: 6px; }
     .signature__line { letter-spacing: 0; }
     .signature img.sign-img { max-height: 46px; max-width: 115px; margin-bottom: -6px; }
@@ -272,10 +273,11 @@
 <?php foreach (($tableRows ?? []) as $tr): ?>
 <?php if ($tr['kind'] === 'out'): ?>
 <?php /* «Не наша номенклатура» (issue #67): на своём месте в порядке подбора,
-         название клиента серым курсивом, в остальных ячейках прочерк. */ ?>
+         название клиента серым (без курсива — как в Word, модуль 048),
+         в остальных ячейках прочерк. */ ?>
 <tr class="out-of-scope">
     <td class="num">—</td>
-    <td><em class="out-of-scope__name"><?= htmlspecialchars((string)$tr['row']['requested']) ?></em></td>
+    <td><span class="out-of-scope__name"><?= htmlspecialchars((string)$tr['row']['requested']) ?></span></td>
     <td class="qty">—</td>
     <td class="price">—</td>
     <?php if ($showDisc): ?><td class="price discount">—</td><?php endif; ?>
@@ -370,29 +372,6 @@
 <div class="block"><?= nl2br(htmlspecialchars($postTableText)) ?></div>
 <?php endif; ?>
 
-<!-- Дата и подпись.
-     Пустой строки под подпись здесь больше нет: место, оставленное «под
-     роспись», в подписанном документе читается как незаполненный бланк
-     (модуль 022).
-     Картинка — подпись МЕНЕДЖЕРА этого КП, расшифровка — его же; ничего своего
-     он не завёл — печатается подписант организации. -->
-<div class="signature">
-    <span class="signature__date"><?= $date ?></span>
-    <?php if ($signaturePath !== ''): ?>
-    <!-- Подпись ложится ПОВЕРХ строки, а не встаёт отдельной строкой между
-         датой и расшифровкой: class="sign-img" говорит конвертеру в Word, что
-         эту картинку текст не раздвигает (модуль 035) -->
-    <img class="sign-img" src="<?= $signaturePath ?>" alt="Подпись">
-    <?php endif; ?>
-    <span class="signature__line">_____________________________</span>
-    <span class="sign-name"><?= htmlspecialchars($signatoryName) ?></span>
-</div>
-
-<?php /* Ссылка на приложение: таблица на первой странице, описания — за ней */ ?>
-<?php if (!empty($hasAppendix)): ?>
-<div class="block">Более подробное описание товаров приведено в приложении №1.</div>
-<?php endif; ?>
-
 <!-- Условия поставки — один блок, который правит менеджер (модуль 026).
      Раньше здесь стояли четыре абзаца, написанные прямо в шаблоне: гарантия на
      год и «стоимость включает» были неправдой, а поправить их было негде. -->
@@ -458,6 +437,36 @@
 <?php endif; ?>
 
 
+<?php /* ==== Конец предложения: ссылка на приложение, дата и подпись (модуль 048) ==== */ ?>
+<?php /* Ссылка на приложение: таблица на первой странице, описания — за ней */ ?>
+<?php if (!empty($hasAppendix)): ?>
+<p class="title-gap">&nbsp;</p>
+<div class="appendix-ref">Более подробное описание товаров приведено в приложении №1.</div>
+<?php endif; ?>
+
+<!-- Дата и подпись — последняя строка перед приложением (модуль 048).
+     Пустые строки между условиями, ссылкой и подписью — настоящие абзацы:
+     поля CSS Word схлопывает.
+     Пустой строки под подпись здесь больше нет: место, оставленное «под
+     роспись», в подписанном документе читается как незаполненный бланк
+     (модуль 022).
+     Картинка — подпись МЕНЕДЖЕРА этого КП, расшифровка — его же; ничего своего
+     он не завёл — печатается подписант организации. -->
+<p class="title-gap">&nbsp;</p>
+<div class="signature">
+    <span class="signature__date"><?= $date ?></span>
+    <?php if ($signaturePath !== ''): ?>
+    <!-- Подпись ложится ПОВЕРХ строки, а не встаёт отдельной строкой между
+         датой и расшифровкой: class="sign-img" говорит конвертеру в Word, что
+         эту картинку текст не раздвигает (модуль 035) -->
+    <img class="sign-img" src="<?= $signaturePath ?>" alt="Подпись">
+    <?php endif; ?>
+    <span class="signature__line">_____________________________</span>
+    <span class="sign-name"><?= htmlspecialchars($signatoryName) ?></span>
+</div>
+
+
+
 <?php /* ==== Приложение №1: описание товаров (модуль 034) ==== */ ?>
 <?php if (!empty($hasAppendix)): ?>
 <div class="appendix">
@@ -474,10 +483,10 @@
          (модуль 034): «есть ли приложение» надо знать раньше, чем оно печатается */ ?>
 <?php $cardDesc = (string)($item['card_desc'] ?? ''); ?>
 <?php if (!empty($item['has_card'])): ?>
-<?php /* Каждая карточка товара — со своей страницы: иначе описание, фото и
-         характеристики рвутся ровно посередине (модуль 023). Первую не
-         отрываем — она идёт сразу за «Итого». */ ?>
-<div class="card<?= (!empty($pageBreakPerItem) && $printedCards > 0) ? ' card--break' : '' ?>">
+<?php /* Каждая карточка товара — со своей страницы, в PDF и в Word одинаково
+         (модуль 048). Первая идёт сразу за заголовком приложения — он сам
+         начинает страницу. */ ?>
+<div class="card<?= $printedCards > 0 ? ' card--break' : '' ?>">
 <?php $printedCards++; ?>
     <?php if (count($items) > 1): ?>
     <div class="card__name"><?= $i + 1 ?>. <?= htmlspecialchars($item['product_name']) ?></div>

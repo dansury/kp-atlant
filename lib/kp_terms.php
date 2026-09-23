@@ -150,6 +150,20 @@ TEXT;
         ]);
     }
 
+    /**
+     * Старые формулировки доставки → подстановки (модуль 048).
+     *
+     * Правится по образцу, а не слово в слово: текст бывал разбит на строки
+     * иначе, чем заводской, и точное сравнение его пропускало.
+     */
+    public static function upgradeLegacy(string $text): string {
+        $text = (string)preg_replace('/хранение,\s*погрузку,\s*подготовку/u',
+                                     'хранение, {delivery_in_price}подготовку', $text);
+        // Предложение о доставке — на своей строке, как в заводском тексте
+        return (string)preg_replace('/[ \t]*\n?[ \t]*Доставка в стоимость не включена и [^.\n]*\.[ \t]*(?:\r?\n)?/u',
+                                    "\n{delivery_separate_clause}", $text);
+    }
+
     /** Те самые четыре абзаца — для КП, собранных до модуля 026. */
     private static function legacyText(array $proposal): string {
         $parts = [];

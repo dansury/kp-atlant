@@ -118,7 +118,7 @@ $html = PdfGenerator::html($pid);
 $posHelmet = strpos($html, 'Шлем'); $posAxe = strpos($html, 'Топор пожарный'); $posVest = strpos($html, 'Жилет');
 ok('галочка КП включает строку', $posAxe !== false);
 ok('строка на своём месте: между шлемом и жилетом', $posHelmet < $posAxe && $posAxe < $posVest);
-ok('название курсивом', str_contains($html, '<em class="out-of-scope__name">Топор пожарный</em>'));
+ok('название серым, без курсива (модуль 048)', str_contains($html, '<span class="out-of-scope__name">Топор пожарный</span>'));
 ok('в «Итого» не вошла', str_contains($html, 'Итого: от 3 100 руб.'), 'итог');
 
 $docx = DocxGenerator::generate($pid);
@@ -126,7 +126,8 @@ $zip = new ZipArchive();
 $xml = $zip->open($docx) === true ? (string)$zip->getFromName('word/document.xml') : '';
 $zip->close(); @unlink($docx);
 ok('Word: шапка — таблица без рамок', str_contains($xml, '<w:top w:val="nil"/>'));
-ok('Word: «не наша номенклатура» курсивом серым', (bool)preg_match('#<w:i/><w:color w:val="8A8A8A"/>.{0,200}Топор#su', $xml));
+ok('Word: «не наша номенклатура» серым, без курсива',
+   (bool)preg_match('#<w:color w:val="8A8A8A"/>.{0,200}Топор#su', $xml) && !preg_match('#<w:i/>[^<]*(?:<(?!/w:r>)[^<]*)*Топор#su', $xml));
 Db::update('proposal_items', ['discount_percent' => 10], 'proposal_id=? AND position=1', [$pid]);
 $docx = DocxGenerator::generate($pid);
 $xml = $zip->open($docx) === true ? (string)$zip->getFromName('word/document.xml') : '';

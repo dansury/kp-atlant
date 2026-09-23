@@ -340,10 +340,6 @@ ok('а первый — нет', substr_count($html, 'class="card card--break"')
    (string)substr_count($html, 'class="card card--break"'));
 ok('подписи «Наведите камеру телефона» нет', !str_contains($html, 'Наведите камеру'));
 
-Settings::set('KP_PAGE_BREAK', '0');
-ok('настройка разрыва страниц выключается',
-   !str_contains(PdfGenerator::html($kpId), 'class="card card--break"'));
-Settings::set('KP_PAGE_BREAK', '1');
 
 // Условия ожидания печатаются и двигают цену
 Terms::prepareProposal($kpId);

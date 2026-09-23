@@ -267,7 +267,7 @@ final class Html2Docx {
                 'sign-name'    => ['b' => true] + $style,
                 // «Не наша номенклатура»: серым, название жирным (модуль 045)
                 'out-of-scope' => ['color' => '8A8A8A'] + $style,
-                'out-of-scope__name' => ['i' => true, 'color' => '8A8A8A'] + $style,
+                'out-of-scope__name' => ['color' => '8A8A8A'] + $style,
                 // Скидка (issue #67): старая цена зачёркнута, процент серым
                 'was'          => ['strike' => true, 'color' => '777777'] + $style,
                 'disc'         => ['color' => '8A8A8A'] + $style,

@@ -683,8 +683,7 @@ class KpContent {
      * The client's own wording of lines marked out of scope, with their
      * position in the match table. Printed when the КП's own toggle
      * «Показать в КП отсутствующую номенклатуру» (`proposals.show_out_of_scope`)
-     * is on; unset — `KP_SHOW_OUT_OF_SCOPE`, and then only in the request's
-     * FIRST КП, so a split request does not list the same refusal twice.
+     * is on; unset — `KP_SHOW_OUT_OF_SCOPE`.
      *
      * @return list<array{requested:string,quantity:mixed,unit:string,position:int}>
      */
@@ -694,8 +693,6 @@ class KpContent {
         $own = $proposal['show_out_of_scope'] ?? null;
         if ($own === null || $own === '') {
             if ((int)Settings::get('KP_SHOW_OUT_OF_SCOPE', 0) !== 1) return [];
-            $first = (int)Db::val("SELECT MIN(id) FROM proposals WHERE request_id=?", [$requestId]);
-            if ($first !== (int)$proposal['id']) return [];
         } elseif ((int)$own !== 1) {
             return [];
         }

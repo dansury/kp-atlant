@@ -183,9 +183,8 @@ where the rest of the per-manager preferences already live.
   unchanged: they still save synchronously before an action that re-renders.
 - «Подобрать по каталогу» / «Подобрать нейросетью» moved above the
   «Цены и условия — на все позиции» panel, where the issue asks for them.
-- «Позиции запроса» (the pool column of the КП board) is drawn only when the
-  request has MORE than one КП — i.e. after «+ Ещё одно КП» — or when the pool
-  is not empty, which is the only case where hiding it would hide positions.
+- The КП board with its «Позиции запроса» column was removed in module 048
+  (one КП per request).
 
 ## 10. The document: header, first line, photo margins, alignment
 
