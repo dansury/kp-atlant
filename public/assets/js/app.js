@@ -8969,8 +8969,8 @@ const App = {
             </div>`;
     },
 
-    testOut(html, cls = 'ok') {
-        const el = document.getElementById('testResult');
+    testOut(html, cls = 'ok', target = 'testResult') {
+        const el = document.getElementById(target);
         if (el) el.innerHTML = `<p class="${cls}">${html}</p>`;
     },
 
@@ -9005,13 +9005,26 @@ const App = {
         } catch { /* нет связи с МойСклад — остаётся то, что уже выбрано */ }
     },
 
-    async testLlm(provider) {
-        this.testOut('Спрашиваем модель...', 'muted');
+    // target: the provider card's own result box, so the answer shows next to its button
+    async testLlm(provider, target = 'testResult') {
+        const dirty = target !== 'testResult' && this.llmCardDirty(provider)
+            ? '<br><span class="muted">Проверяется сохранённая настройка — изменения на карточке сначала сохраните.</span>' : '';
+        this.testOut('Спрашиваем модель...', 'muted', target);
         try {
             const r = await this.api('admin.php?action=test_llm', {method: 'POST', body: {provider}});
             this.testOut(`${this.esc(provider)} — ответ за ${r.result.ms} мс, модель ${this.esc(r.result.model)}
-                          (${this.esc(r.result.route)}): «${this.esc(r.result.answer)}»`);
-        } catch (err) { this.testOut(this.esc(err.message), 'no'); }
+                          (${this.esc(r.result.route)}): «${this.esc(r.result.answer)}»${dirty}`, 'ok', target);
+        } catch (err) { this.testOut(this.esc(err.message) + dirty, 'no', target); }
+    },
+
+    // Unsaved edits on a provider card: the test runs on stored settings, not the form
+    llmCardDirty(provider) {
+        const keys = provider === 'yandex'
+            ? ['YANDEX_MODEL', 'YANDEX_API_KEY', 'YANDEX_FOLDER_ID'] : ['OPENROUTER_MODEL', 'OPENROUTER_API_KEY'];
+        return keys.some(k => {
+            const el = document.getElementById('set_' + k);
+            return el && el.value !== (this.llmFormInitial || {})[k];
+        });
     },
 
     // Separates «ключ не тот» from «запрос не дошёл»: a 403 written by a filter
@@ -9571,12 +9584,14 @@ const App = {
                             ${p.provider === 'yandex' ? `<div class="form-group"><label>Folder ID</label>
                                 <input type="text" id="set_YANDEX_FOLDER_ID" value="${this.esc(val('YANDEX_FOLDER_ID'))}"></div>` : ''}
                         </div>
-                        <button class="btn btn--outline btn--sm" onclick="App.testLlm('${p.provider}')">Проверить подключение</button>
+                        <button class="btn btn--outline btn--sm" onclick="App.testLlm('${p.provider}', 'llmTest_${p.provider}')">Проверить подключение</button>
+                        <div id="llmTest_${p.provider}" style="margin-top:10px"></div>
                     </div>`;
                 }).join('')}
                 <div class="flex flex--end"><button class="btn btn--primary" onclick="App.saveSettings()">Сохранить</button></div>
             `;
             this.settingsSpec = s.items.filter(i => document.getElementById('set_' + i.key));
+            this.llmFormInitial = Object.fromEntries(this.settingsSpec.map(i => [i.key, document.getElementById('set_' + i.key).value]));
         } catch (err) { this.adminFail(err); }
     },
 
@@ -9585,8 +9600,8 @@ const App = {
         out.innerHTML = '<p class="muted">Спрашиваем OpenRouter...</p>';
         try {
             const r = await this.api('admin.php?action=openrouter_models_refresh', {method: 'POST', body: {}});
-            out.innerHTML = `<p class="ok">Загружено моделей: ${r.count}</p>`;
-            this.adminLlm();
+            await this.adminLlm();   // re-render first: it replaces the result box
+            this.testOut(`Загружено моделей: ${r.count}`, 'ok', 'orCatalogResult');
         } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
@@ -9610,7 +9625,7 @@ const App = {
             const how = r.source === 'models_api'
                 ? 'Список пришёл от облака (Models API).'
                 : 'Models API не ответил — слаги проверены по одному.';
-            out.innerHTML = `
+            const html = `
                 <p class="muted">${how}</p>
                 <p class="ok">Отвечает: ${(r.ok || []).join(', ') || '— ни одна'}</p>
                 ${(r.openai || []).length ? `<p class="muted">Только по OpenAI-совместимому API
@@ -9618,7 +9633,9 @@ const App = {
                 ${(r.missing || []).length ? `<p class="no">Нет в этом облаке: ${this.esc(r.missing.join(', '))}</p>` : ''}
                 ${(r.unclear || []).length ? `<p class="muted">Не удалось выяснить (ответ не про модель):<br>
                     ${r.unclear.map(x => this.esc(x)).join('<br>')}</p>` : ''}`;
-            this.adminLlm();
+            await this.adminLlm();   // re-render first: it replaces the result box
+            const box = document.getElementById('yxCatalogResult');
+            if (box) box.innerHTML = html;
         } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 

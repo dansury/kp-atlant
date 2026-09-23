@@ -160,6 +160,12 @@ verifyYandexModels()   кнопка «Проверить каталог Yandex»
                        settings.yandex_models {checked, models, routes, synced_at}
                        ok | missing; модели, которых нет в списке кандидатов,
                        ложатся в `models` и попадают в выбор
+                       The page is re-rendered first (fresh counters), then the
+                       report is written into the new #yxCatalogResult — it stays
+                       on screen. Same for refreshOpenRouterModels().
+testLlm(p, target)     «Проверить подключение» on a provider card writes its
+                       answer into that card's #llmTest_<provider>; the test
+                       runs on stored settings, so unsaved card edits are flagged
                        Models API не ответил → по одному короткому запросу на
                        слаг; прочие ответы (нет ключа, прокси, 429) слаг не
                        судят — одна сетевая неудача не вычёркивает каталог
