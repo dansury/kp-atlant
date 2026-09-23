@@ -8,7 +8,7 @@ settings, Word/PDF parity, multiple КП).
 ### Placeholders
 
 `KpTerms::FACTORY_TEXT` carries two delivery placeholders, filled by
-`KpTerms::fill()` from `KP_DELIVERY_MODE`:
+`KpTerms::fill()` from the КП's delivery mode (`DeliveryShare::mode()`, module 049; `separate` has its own clause there):
 
 | Placeholder | `included` (delivery in the goods price) | `line` (separate) |
 |---|---|---|

@@ -347,6 +347,16 @@ try {
             require_once ROOT . '/lib/letter_shape.php';
             $text = LetterShape::apply($text, (string)($ctx['contact_person'] ?: ($msg['from_name'] ?? '')));
 
+            // Доставка «оплачивается отдельно» — её цена в тексте письма (модуль 049)
+            if (!empty($msg['request_id'])) {
+                require_once ROOT . '/lib/request_items.php';
+                require_once ROOT . '/lib/delivery_share.php';
+                $d = RequestItems::delivery((int)$msg['request_id']);
+                $text = DeliveryShare::appendToLetter($text, [
+                    'delivery_on' => $d['on'], 'delivery_price' => $d['price'], 'delivery_mode' => $d['mode'],
+                ]);
+            }
+
             // Промпты ответа заканчиваются словами «без подписи — её подставит
             // система». Система подставляет её здесь (модуль 039).
             $text = MailSignature::appendText($text, MailSignature::forManager((int)$manager['id']));

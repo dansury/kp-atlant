@@ -621,16 +621,21 @@ final class RequestItems {
      * Живёт на ЗАПРОСЕ и копируется в каждое его КП: у запроса КП бывает
      * несколько, и доставка у них одна и та же.
      *
-     * @return array{on:int,name:string,price:float}
+     * @return array{on:int,name:string,price:float,mode:string,mode_set:?string}
      */
     public static function delivery(int $requestId): array {
-        $r = Db::one("SELECT delivery_on, delivery_name, delivery_price FROM requests WHERE id=?", [$requestId]) ?: [];
+        require_once __DIR__ . '/delivery_share.php';
+        $r = Db::one("SELECT delivery_on, delivery_name, delivery_price, delivery_mode FROM requests WHERE id=?", [$requestId]) ?: [];
         return [
             // Колонки нет у запроса, заведённого до модуля 034, — значит «да»:
             // доставку считают почти всегда
             'on'    => ($r['delivery_on'] ?? null) === null ? 1 : (int)$r['delivery_on'],
             'name'  => trim((string)($r['delivery_name'] ?? '')) ?: 'Доставка',
             'price' => round((float)($r['delivery_price'] ?? 0), 2),
+            // Режим этого КП; не выбран — как в настройках (модуль 049)
+            'mode'  => DeliveryShare::mode($r),
+            // Выбранный руками или null — его и копирует КП
+            'mode_set' => DeliveryShare::normalize($r['delivery_mode'] ?? null),
         ];
     }
 
@@ -716,7 +721,9 @@ final class RequestItems {
     }
 
     public static function saveDelivery(int $requestId, ?array $d): array {
-        Db::update('requests', [
+        require_once __DIR__ . '/delivery_share.php';
+        $mode = $d === null ? false : DeliveryShare::normalize($d['mode'] ?? null);
+        Db::update('requests', ($mode === false || $mode === null ? [] : ['delivery_mode' => $mode]) + [
             'delivery_on'    => $d === null ? 0 : 1,
             'delivery_name'  => $d === null ? null : (trim((string)($d['name'] ?? '')) ?: 'Доставка'),
             'delivery_price' => $d === null ? 0 : max(0.0, round((float)($d['price'] ?? 0), 2)),

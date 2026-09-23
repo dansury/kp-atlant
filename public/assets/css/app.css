@@ -661,7 +661,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    Она стоит под позициями всегда и убирается крестиком, как любая другая. */
 .match-row--delivery { background: var(--surface-2); }
 .match-row--delivery > input[data-delivery-price] { flex: 0 1 96px; width: auto; }
-.match-row--delivery > .muted { font-size: 12px; }
+.match-row--delivery > .muted, .match-row--delivery [data-delivery-note] { font-size: 12px; }
+.match-row--delivery > select[data-delivery-mode] { flex: 0 1 190px; width: auto; }
 .match-row--out input, .match-row--out .suggest { text-decoration: line-through; }
 .note--out { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
              padding: 6px 10px; font-size: 12px; margin: 4px 0; color: var(--text); }
@@ -1171,3 +1172,30 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 }
 .kp-zoom { display: inline-flex; gap: 2px; margin-left: auto; align-items: center; }
 .kp-zoom [data-kp-zoom-label] { min-width: 58px; }
+
+/* ==== Вкладки справа: «Информация» и «Заметки» (модуль 049) ====
+   На десктопе обе карточки свёрнуты в вертикальные вкладки у правого края
+   окна и открываются шторкой поверх страницы. Телефон — как в модуле 046. */
+@media (min-width: 641px) {
+    .letter:has(#companySide) { padding-right: 44px; }
+    /* Колонка справа нужна, только пока в ней стоит подбор */
+    .letter:has(#companySide):not(:has(> .letter__side > [data-thread-items])) { grid-template-columns: minmax(0, 1fr); }
+    #companySide { position: fixed; right: 0; top: 76px; z-index: 90;
+                   display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+    #companySide > [data-block] { margin: 0; box-shadow: var(--shadow-lg, 0 8px 24px rgba(16,24,40,.18)); }
+    #companySide > [data-block]:not(.is-folded) {
+        width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 96px); overflow-y: auto;
+        border-radius: var(--radius) 0 0 var(--radius);
+    }
+    #companySide > [data-block].is-folded {
+        width: 40px; padding: 10px 0; cursor: pointer; border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+    }
+    #companySide > [data-block].is-folded > .block-head {
+        writing-mode: vertical-rl; transform: rotate(180deg); background: none; padding: 0;
+        margin: 0 auto; font-size: 13px; white-space: nowrap; gap: 4px;
+    }
+    #companySide > [data-block].is-folded > .block-head > .block-fold,
+    #companySide > [data-block].is-folded > .block-head > .hint { display: none; }
+    #companySide > [data-block].is-folded:hover { background: var(--surface-2); }
+    [data-notes-dot] .notif-dot { vertical-align: middle; margin: 0 2px; }
+}

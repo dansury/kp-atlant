@@ -230,8 +230,9 @@ class PdfGenerator {
         // входит в ЦЕНУ за единицу, а не только в сумму строки: «цена × кол-во»
         // в таблице обязана сходиться с «Суммой» (модуль 045). Те же доли
         // получают текст КП в письме и счёт — `DeliveryShare`.
+        // «Оплачивается отдельно» (модуль 049) — не в документе, а в письме
         $delivery = null;
-        if ((int)($proposal['delivery_on'] ?? 0) === 1) {
+        if ((int)($proposal['delivery_on'] ?? 0) === 1 && DeliveryShare::mode($proposal) !== 'separate') {
             $delivery = [
                 'name'  => trim((string)($proposal['delivery_name'] ?? '')) ?: 'Доставка',
                 'price' => (float)($proposal['delivery_price'] ?? 0),
