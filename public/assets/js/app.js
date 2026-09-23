@@ -817,6 +817,8 @@ const App = {
      * запоминается.
      */
     FOLDABLE: ['thread', 'info', 'events', 'ms'],
+    /** Блоки, которые на десктопе живут вкладками у правого края (модуль 049). */
+    RAIL: ['info', 'events'],
 
     isPhone() {
         return window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
@@ -830,12 +832,14 @@ const App = {
     /** true — свёрнут, false — раскрыт, null — у этого письма не трогали. */
     foldGet(name) {
         if (name === 'info' && this.isPhone()) return true;
+        // Десктоп: вкладки справа всегда свёрнуты (модуль 049)
+        if (this.RAIL.includes(name) && !this.isPhone()) return true;
         const st = this.foldStore();
         return name in st ? !!st[name] : null;
     },
 
     foldSet(name, folded) {
-        if (!this.foldKey) return;
+        if (!this.foldKey || (this.RAIL.includes(name) && !this.isPhone())) return;
         const st = this.foldStore();
         st[name] = folded ? 1 : 0;
         try { localStorage.setItem('kp.fold.' + this.foldKey, JSON.stringify(st)); } catch { /* не запомним */ }
@@ -880,8 +884,40 @@ const App = {
         const el = btn.closest('[data-block]');
         if (!el) return;
         const folded = !el.classList.contains('is-folded');
+        // Шторка одна: открыли вкладку — соседняя закрывается
+        if (!folded && this.RAIL.includes(el.dataset.block) && !this.isPhone()) {
+            this.railClose(el);
+            this.bindRailClose();
+        }
         this.applyBlockFold(el, folded);
         this.foldSet(el.dataset.block, folded);
+    },
+
+    /** Нажатие по свёрнутой вкладке справа открывает её целиком. */
+    railOpen(ev, el) {
+        if (this.isPhone() || !el.classList.contains('is-folded')) return;
+        if (ev.target.closest('.block-fold, .hint')) return;
+        const btn = el.querySelector(':scope > .block-head > .block-fold');
+        if (btn) this.toggleBlock(btn);
+    },
+
+    /** Свернуть открытые вкладки справа, кроме $keep. */
+    railClose(keep = null) {
+        document.querySelectorAll('#companySide > [data-block]:not(.is-folded)').forEach(el => {
+            if (el !== keep) this.applyBlockFold(el, true);
+        });
+    },
+
+    /** Esc и нажатие мимо шторки закрывают её; окна и подсказки не в счёт. */
+    bindRailClose() {
+        if (this._railBound) return;
+        this._railBound = true;
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') this.railClose(); });
+        document.addEventListener('mousedown', e => {
+            if (this.isPhone() || !e.target.isConnected) return;
+            if (e.target.closest('#companySide, .modal, .hint-bubble, .toast-container')) return;
+            this.railClose();
+        });
     },
 
     /** Блоки появляются в разметке в разное время — привязываем их по мере появления. */
@@ -1021,23 +1057,47 @@ const App = {
                 <button class="btn btn--outline btn--sm" onclick="App.deliveryToggle(this, 1)">+ Вернуть доставку</button>
             </div>`;
         }
+        // Доставка — одна сумма на весь заказ: без единиц и количества (модуль 049)
+        const mode = d.mode || (this.ui || {}).delivery_mode || 'included';
         return `<div class="match-row match-row--delivery" data-delivery-row>
             <div class="match-row__name">
-                <div class="muted">${(this.ui || {}).delivery_mode === 'line'
-                    ? 'Отдельная строка КП — не входит в цену товара'
-                    : 'Включена в стоимость товаров — распределится по позициям КП и счёта'}</div>
                 <input type="text" data-delivery-name value="${this.esc(d.name || 'Доставка')}"
                        placeholder="Доставка">
+                <div class="muted" data-delivery-note>${this.deliveryModeNote(mode)}</div>
             </div>
-            <span class="muted">усл.</span>
-            <span class="muted">1</span>
+            ${this.deliveryModeSelect(mode, 'data-delivery-mode onchange="App.deliveryModeChanged(this)"')}
             <input type="number" step="0.01" min="0" data-delivery-price value="${Number(d.price) || 0}"
-                   placeholder="Цена" title="Стоимость доставки" oninput="App.updateMatchTotal(this)">
+                   placeholder="Цена" title="Стоимость доставки на весь заказ" oninput="App.updateMatchTotal(this)">
             <div class="match-row__tools">
                 <button class="btn btn--outline btn--sm" title="Убрать доставку из КП"
                         onclick="App.deliveryToggle(this, 0)">×</button>
             </div>
         </div>`;
+    },
+
+    DELIVERY_MODES: {
+        included: ['в стоимость товаров', 'Распределится по ценам позиций КП и счёта'],
+        line:     ['отдельной строкой', 'Своя строка в таблице КП и в итоге'],
+        separate: ['оплачивается отдельно', 'В КП не входит; стоимость допишется в текст письма'],
+    },
+
+    /** Выбор режима доставки этого КП. $attrs — атрибуты select. */
+    deliveryModeSelect(mode, attrs) {
+        return `<select ${attrs} title="Как учитывать доставку в этом КП">
+            ${Object.entries(this.DELIVERY_MODES).map(([k, v]) =>
+                `<option value="${k}" ${k === mode ? 'selected' : ''}>${v[0]}</option>`).join('')}
+        </select>`;
+    },
+
+    deliveryModeNote(mode) {
+        return (this.DELIVERY_MODES[mode] || this.DELIVERY_MODES.included)[1];
+    },
+
+    deliveryModeChanged(sel) {
+        const row = sel.closest('[data-delivery-row]');
+        const note = row && row.querySelector('[data-delivery-note]');
+        if (note) note.textContent = this.deliveryModeNote(sel.value);
+        this.updateMatchTotal(sel);
     },
 
     /** Убрать доставку из КП или вернуть её обратно. */
@@ -1050,7 +1110,7 @@ const App = {
         const current = this.collectDelivery(host);
         if (current) box.dataset.was = JSON.stringify(current);
         const was = box.dataset.was ? JSON.parse(box.dataset.was) : {name: 'Доставка', price: 0};
-        box.innerHTML = this.deliveryRow({on, name: was.name, price: was.price});
+        box.innerHTML = this.deliveryRow({on, name: was.name, price: was.price, mode: was.mode});
         this.updateMatchTotal(host);
     },
 
@@ -1060,9 +1120,11 @@ const App = {
         if (!row || row.dataset.off === '1') return null;
         const name = row.querySelector('[data-delivery-name]');
         const price = row.querySelector('[data-delivery-price]');
+        const mode = row.querySelector('[data-delivery-mode]');
         return {
             name: (name && name.value.trim()) || 'Доставка',
             price: parseFloat(price && price.value) || 0,
+            mode: mode ? mode.value : '',
         };
     },
 
@@ -1312,7 +1374,7 @@ const App = {
     async openKp(proposalId, btn, keepOpen = false) {
         const id = Number(proposalId) || 0;
         if (!id) { this.toast('КП ещё не собрано — нажмите «Сформировать КП»', 'error'); return; }
-        // Документ раскрывается В ЛЕВОЙ КОЛОНКЕ, под полем письма (модуль 029):
+        // Документ раскрывается В ЛЕВОЙ КОЛОНКЕ, над полем письма (модули 029, 049):
         // читают КП и пишут про него в одном столбце, а не в разных концах
         // экрана. Блок `#kpWide` под всей карточкой оставался за пределами
         // видимого экрана — до него надо было домотать, и то, что КП вообще
@@ -1689,11 +1751,12 @@ const App = {
         return el;
     },
 
+    /** Место КП — НАД полем письма (модуль 049): документ читают, затем пишут. */
     kpSlot() {
         const composer = document.querySelector('[data-composer]');
         if (composer && composer.parentElement) {
-            return composer.parentElement.querySelector('[data-kp-under-letter]')
-                || composer.insertAdjacentElement('afterend',
+            return composer.parentElement.querySelector(':scope > [data-kp-under-letter]')
+                || composer.insertAdjacentElement('beforebegin',
                        this.dataDiv('kpUnderLetter'));
         }
         return document.getElementById('kpWide');
@@ -2562,13 +2625,15 @@ const App = {
             return Math.round(p * 100) / 100;
         };
         let total = rows.reduce((s, r) => s + priceOf(r) * r.quantity, 0);
-        // Доставка стоит в КП отдельной строкой — значит и в сумме тоже
+        // Доставка входит в сумму КП, если её не оплачивают отдельно (модуль 049)
         const delivery = this.collectDelivery(host);
-        if (delivery) total += delivery.price;
+        const apart = delivery && delivery.mode === 'separate';
+        if (delivery && !apart) total += delivery.price;
         const noPrice = rows.filter(r => !r.price).length;
         el.innerHTML = all.length || delivery
             ? `Позиций: ${rows.length} · сумма по каталогу: ${this.fmtMoney(total)}`
-              + (delivery ? ` · в т.ч. доставка ${this.fmtMoney(delivery.price)}` : '')
+              + (delivery ? (apart ? ` · доставка отдельно: ${this.fmtMoney(delivery.price)}`
+                                   : ` · в т.ч. доставка ${this.fmtMoney(delivery.price)}`) : '')
               + (noPrice ? ` · без цены: ${noPrice}` : '')
               + (dropped ? ` · не наша номенклатура: ${dropped}` : '')
             : '';
@@ -2985,13 +3050,7 @@ const App = {
             ${this.proposalWarnings(proposal)}
             <div class="grid grid--2">
                 <div>
-                    <div class="card">
-                        <div class="card__title">Сопроводительное письмо</div>
-                        <div class="form-group">
-                            <textarea id="coverLetter" rows="6" placeholder="Текст сопроводительного письма...">${this.esc(proposal.cover_letter_final || proposal.cover_letter || '')}</textarea>
-                        </div>
-                    </div>
-
+                    <!-- Текст письма правится только в поле письма (модуль 049) -->
                     <div class="card">
                         <div class="card__title">Карточки товаров</div>
                         <div class="note" style="margin-bottom:8px">Описание, характеристики, комплектация и фото подтягиваются из МойСклад. Правки здесь попадают в PDF.</div>
@@ -3062,7 +3121,11 @@ const App = {
                            перепишет то, что стоит здесь (модуль 034).</p>
                         <div class="form-group">
                             <label><input type="checkbox" id="deliveryOn" ${proposal.delivery_on == 1 ? 'checked' : ''}>
-                                Отдельной строкой в таблице и в итоге</label>
+                                Доставка в этом КП</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Как учитывать</label>
+                            ${this.deliveryModeSelect(proposal.delivery_mode || (this.ui || {}).delivery_mode, 'id="deliveryMode"')}
                         </div>
                         <div class="grid grid--2">
                             <div class="form-group">
@@ -3591,13 +3654,13 @@ const App = {
         }).filter(a => (a.product_name || '').trim() !== '');
 
         return {
-            cover_letter_final: document.getElementById('coverLetter').value,
             pre_table_text: document.getElementById('preTable').value,
             post_table_text: document.getElementById('postTable').value,
             terms_text: document.getElementById('termsText').value,
             delivery_on: document.getElementById('deliveryOn').checked ? 1 : 0,
             delivery_name: document.getElementById('deliveryName').value,
             delivery_price: parseFloat(document.getElementById('deliveryPrice').value) || 0,
+            delivery_mode: document.getElementById('deliveryMode').value,
             images_note: document.getElementById('imagesNote').value,
             upsell_intro: document.getElementById('upsellIntro').value,
             upsell_note: document.getElementById('upsellNote').value,
@@ -4057,7 +4120,9 @@ const App = {
         // Раскрытая переписка получает подбор над своим полем письма
         const open = threadKey ? document.getElementById('th_' + this.threadDomId(threadKey)) : null;
         const composer = open && open.querySelector('[data-composer]');
-        if (requestId !== null && composer) composer.before(side);
+        // Порядок: подбор → КП → письмо (модуль 049)
+        const kpBox = composer && composer.parentElement.querySelector(':scope > [data-kp-under-letter]');
+        if (requestId !== null && composer) (kpBox || composer).before(side);
         else this.parkCompanyItems();
         if (requestId === null) {
             side.className = 'card card--items';
@@ -4881,8 +4946,9 @@ const App = {
     companySide(cp) {
         const contacts = cp.contacts || [];
         const orgs = cp.orgs || [];
+        // На десктопе обе карточки — вкладки у правого края, открываются шторкой (модуль 049)
         return `
-            <div class="card" data-block="info">
+            <div class="card" data-block="info" onclick="App.railOpen(event, this)">
                 <div class="card__title">Информация</div>
                 <p><strong>ИНН:</strong> ${this.esc(cp.inn) || '—'}</p>
                 <p><strong>Домен:</strong> ${this.esc(cp.email_domain) || '—'}</p>
@@ -4914,11 +4980,8 @@ const App = {
 
             </div>
 
-            <div class="card" data-block="events">
-                <div class="card__title">Заметки, заказы и счета</div>
-                <div class="note" style="margin-bottom:8px">Заметки для коллег, вехи сделки, заказы и счета —
-                    одной лентой со ссылками в МойСклад. То, что не относится к открытой переписке, приглушено.
-                    Письма — слева, в «Переписке»: там на них можно ответить.</div>
+            <div class="card" data-block="events" onclick="App.railOpen(event, this)">
+                <div class="card__title">Заметки, заказы и счета<span data-notes-dot></span>${this.hint('events')}</div>
                 <div id="chatFeed" class="chat"><div class="loading">Загрузка...</div></div>
                 <div class="chat__composer">
                     <textarea id="noteText" rows="2" placeholder="Заметка для коллег (клиенту не уходит)..."></textarea>
@@ -5132,8 +5195,13 @@ const App = {
                         ${files ? `<div class="msg__files">${files}</div>` : ''}
                         ${m.request_id ? `<a class="muted" href="#mail/request/${m.request_id}">→ запрос #${m.request_id}</a>` : ''}
                     </div>`;
-            }).join('') : `<p class="muted">Заметок, событий, заказов и счетов пока нет.
-                Отправленные письма — в переписке слева.</p>`;
+            }).join('') : '<p class="muted">Пока пусто.</p>';
+
+            // Красная точка на вкладке — у компании есть заметки (модуль 049).
+            // Точка вставляется и убирается, а не прячется `hidden`
+            const hasNotes = rows.some(m => m.kind !== 'doc' && m.kind !== 'event' && !m.event_type);
+            const dot = document.querySelector('[data-block="events"] [data-notes-dot]');
+            if (dot) dot.innerHTML = hasNotes ? '<span class="notif-dot" title="Есть заметки"></span>' : '';
 
             // Всё, что не про открытый запрос, уходит в серый — но остаётся на
             // экране: у компании за год десятки заказов, и спрятать их значит
@@ -5371,6 +5439,7 @@ const App = {
     HINTS: {
         // Письма и ответ
         'board':        ['Доска «Письма»', 'Каждая карточка — КОМПАНИЯ, а не письмо: внутри вся её переписка, запросы и КП. Новые письма попадают сюда сами при открытии доски и по кнопке «Забрать почту» — и входящие, и те, что отправлены мимо сервиса, с телефона или из другого почтового клиента. Колонку карточке вы назначаете сами — сервис её никогда не двигает.'],
+        'events':       ['Заметки, заказы и счета', 'Заметки для коллег, вехи сделки, заказы и счета — одной лентой со ссылками в МойСклад. То, что не относится к открытой переписке, приглушено. Отправленные письма и ответы на них — слева, в «Переписке». Красная точка на вкладке — у компании есть заметки.'],
         'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Переписки идут по порядку: старые сверху, свежая — внизу, и она раскрыта. В строке видно, чьё в переписке последнее письмо. Любое одно письмо убирается корзиной в его заголовке — остальная переписка остаётся на месте. Убранные как «не наш профиль» стоят свёрнутым блоком «Архив компании» над списком.'],
         'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика. К ответу сам приписывается текст письма, на которое вы отвечаете, — клиенту не приходится вспоминать, о каком заказе речь.'],
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],

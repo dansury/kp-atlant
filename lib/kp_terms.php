@@ -136,17 +136,21 @@ TEXT;
         $term = self::executionTerm($proposal);
         $text = (string)preg_replace(
             '/\{execution_days\}\s*календарн\w+\s+(?:дн\w+|день)/u', $term, $text);
-        // Доставка включена в цену товара или печатается отдельной строкой —
-        // это решает настройка, а условия говорят об этом тем же текстом,
-        // что печатает документ (issue #60)
-        $included = (string)Settings::get('KP_DELIVERY_MODE', 'included') === 'included';
+        // Режим доставки этого КП (модуль 049); условия говорят тем же
+        // текстом, что печатает документ
+        require_once __DIR__ . '/delivery_share.php';
+        $mode = DeliveryShare::mode($proposal);
+        $included = $mode === 'included';
         return strtr($text, [
             '{execution_term}' => $term,
             '{execution_days}' => (string)(int)($proposal['execution_days'] ?? 30),
             '{validity_days}'  => (string)(int)($proposal['validity_days'] ?? 14),
             '{delivery_in_price}' => $included ? 'доставку, ' : '',
-            '{delivery_separate_clause}' => $included ? ''
-                : "Доставка в стоимость не включена и оплачивается при получении по тарифам СДЭК.\n",
+            '{delivery_separate_clause}' => match ($mode) {
+                'separate' => "Доставка в стоимость не включена и оплачивается отдельно.\n",
+                'line'     => "Доставка в стоимость не включена и оплачивается при получении по тарифам СДЭК.\n",
+                default    => '',
+            },
         ]);
     }
 

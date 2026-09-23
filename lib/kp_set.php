@@ -60,6 +60,7 @@ final class KpSet {
             'delivery_on'    => $d['on'],
             'delivery_name'  => $d['name'],
             'delivery_price' => $d['price'],
+            'delivery_mode'  => $d['mode_set'],
         ];
     }
 
@@ -225,12 +226,29 @@ final class KpSet {
      * @return int сколько КП пересобралось
      */
     public static function syncWaitFromRequest(int $requestId): int {
+        // Доставка строки подбора — сразу в неотправленное КП (модуль 049)
+        $touched = [];
+        $delivery = self::deliveryFields($requestId);
+        foreach (Db::all("SELECT id, delivery_on, delivery_name, delivery_price, delivery_mode FROM proposals
+                          WHERE request_id=? AND status NOT IN ('sent', 'order_created')", [$requestId]) as $p) {
+            $same = (int)$p['delivery_on'] === (int)$delivery['delivery_on']
+                && (string)$p['delivery_name'] === (string)$delivery['delivery_name']
+                && abs((float)$p['delivery_price'] - (float)$delivery['delivery_price']) < 0.005
+                && (string)$p['delivery_mode'] === (string)$delivery['delivery_mode'];
+            if ($same) continue;
+            Db::update('proposals', $delivery, 'id=?', [(int)$p['id']]);
+            $touched[(int)$p['id']] = true;
+        }
+
         $source = [];
         foreach (Db::all("SELECT id, wait_on, wait_months, wait_discount, wait_prepay
                           FROM request_items WHERE request_id=?", [$requestId]) as $row) {
             $source[(int)$row['id']] = $row;
         }
-        if (!$source) return 0;
+        if (!$source) {
+            foreach (array_keys($touched) as $proposalId) self::rebuild($proposalId);
+            return count($touched);
+        }
 
         $items = Db::all(
             "SELECT i.id, i.proposal_id, i.request_item_id,
@@ -240,7 +258,6 @@ final class KpSet {
              WHERE p.request_id=? AND p.status NOT IN ('sent', 'order_created')
                AND i.request_item_id IS NOT NULL", [$requestId]);
 
-        $touched = [];
         foreach ($items as $item) {
             $src = $source[(int)$item['request_item_id']] ?? null;
             if (!$src) continue;

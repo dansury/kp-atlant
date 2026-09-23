@@ -11,11 +11,48 @@ require_once __DIR__ . '/terms.php';
 
 final class DeliveryShare {
 
+    /** included — in the goods price; line — own row; separate — paid apart, named in the letter (module 049). */
+    public const MODES = ['included', 'line', 'separate'];
+
+    /** Mode of a КП or request row; NULL/unknown falls back to the setting. */
+    public static function mode(array $row): string {
+        $own = (string)($row['delivery_mode'] ?? '');
+        if (in_array($own, self::MODES, true)) return $own;
+        $def = (string)Settings::get('KP_DELIVERY_MODE', 'included');
+        return in_array($def, self::MODES, true) ? $def : 'included';
+    }
+
+    /** Valid mode or null («as in the settings»). */
+    public static function normalize($mode): ?string {
+        $mode = trim((string)$mode);
+        return in_array($mode, self::MODES, true) ? $mode : null;
+    }
+
     /** Delivery is on for this КП and is to be spread over the positions. */
     public static function included(array $proposal): bool {
         return (int)($proposal['delivery_on'] ?? 0) === 1
             && (float)($proposal['delivery_price'] ?? 0) > 0
-            && (string)Settings::get('KP_DELIVERY_MODE', 'included') === 'included';
+            && self::mode($proposal) === 'included';
+    }
+
+    /** Delivery is printed as its own row and counted in the total. */
+    public static function asLine(array $proposal): bool {
+        return (int)($proposal['delivery_on'] ?? 0) === 1 && self::mode($proposal) === 'line';
+    }
+
+    /** Sentence for the letter when delivery is paid separately; empty otherwise. */
+    public static function letterLine(array $row): string {
+        $price = round((float)($row['delivery_price'] ?? 0), 2);
+        if ((int)($row['delivery_on'] ?? 0) !== 1 || $price <= 0 || self::mode($row) !== 'separate') return '';
+        $sum = number_format($price, abs($price - round($price)) < 0.005 ? 0 : 2, ',', ' ');
+        return "Доставка оплачивается отдельно, её стоимость — $sum руб.";
+    }
+
+    /** Append letterLine() to $text once. */
+    public static function appendToLetter(string $text, array $row): string {
+        $line = self::letterLine($row);
+        if ($line === '' || mb_strpos($text, 'Доставка оплачивается отдельно') !== false) return $text;
+        return trim($text) === '' ? $line : rtrim($text) . "\n\n" . $line;
     }
 
     /**
@@ -108,8 +145,7 @@ final class DeliveryShare {
         }
 
         $missing = false;
-        if ((int)($proposal['delivery_on'] ?? 0) === 1 && (float)($proposal['delivery_price'] ?? 0) > 0
-            && !self::included($proposal)) {
+        if (self::asLine($proposal) && (float)($proposal['delivery_price'] ?? 0) > 0) {
             $service = trim((string)Settings::get('MS_DELIVERY_SERVICE_ID', ''));
             if ($service !== '') {
                 $positions[] = [

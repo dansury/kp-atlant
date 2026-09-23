@@ -93,7 +93,8 @@ final class KpText {
         }
 
         // Доставка отдельной строкой — когда она не разложена по позициям
-        if ((int)($proposal['delivery_on'] ?? 0) === 1 && !$spread) {
+        if ((int)($proposal['delivery_on'] ?? 0) === 1 && !$spread
+            && DeliveryShare::mode($proposal) !== 'separate') {
             $deliveryPrice = (float)($proposal['delivery_price'] ?? 0);
             $total += $deliveryPrice;
             $lines[] = sprintf('%d. %s — %s', $n + 1,

@@ -302,7 +302,7 @@ switch ($action) {
                   'warranty_text', 'images_note', 'show_images', 'show_upsell', 'upsell_intro', 'upsell_note',
                   'show_match_table', 'match_table_note',
                   // Условия одним блоком и доставка отдельной строкой (модуль 026)
-                  'terms_text', 'delivery_on', 'delivery_name', 'delivery_price',
+                  'terms_text', 'delivery_on', 'delivery_name', 'delivery_price', 'delivery_mode',
                   // Сколько фото печатать в ЭТОМ КП; пусто — общая настройка
                   'photos_per_item',
                   // «Показать в КП отсутствующую номенклатуру» (модуль 046)
@@ -315,6 +315,10 @@ switch ($action) {
         }
         if (array_key_exists('cover_letter_final', $input)) {
             $fields['cover_letter_final'] = $input['cover_letter_final'];
+        }
+        // Режим доставки этого КП (модуль 049); чужое слово — «как в настройках»
+        if (array_key_exists('delivery_mode', $fields)) {
+            $fields['delivery_mode'] = DeliveryShare::normalize($fields['delivery_mode']);
         }
         // Как печатать цену в этом КП: «в т.ч. НДС» или «+ НДС сверху»
         // (модуль 030). Пусто — как в настройках; чужое слово не принимаем.
@@ -423,10 +427,7 @@ switch ($action) {
                          'rows' => $rows, 'value' => (string)($value ?? '')];
         };
 
-        $add('cover_letter_final', 'Сопроводительное письмо',
-             $p['cover_letter_final'] !== null && $p['cover_letter_final'] !== ''
-                 ? $p['cover_letter_final'] : $p['cover_letter'],
-             'Текст письма, с которым уходит КП', 6);
+        // Текст письма правится только в поле письма (модуль 049)
         $add('intro_text',      'Вступление в документе', $p['intro_text'] ?? '');
         $add('pre_table_text',  'Текст перед таблицей',   $p['pre_table_text'] ?? '');
 
@@ -822,6 +823,8 @@ switch ($action) {
 
         $subject = $input['subject'] ?? 'Коммерческое предложение от Atlant Armour';
         $body = $proposal['cover_letter_final'] ?? $proposal['cover_letter'] ?? '';
+        // Доставка «оплачивается отдельно» — её цена в тексте письма (модуль 049)
+        $body = DeliveryShare::appendToLetter((string)$body, $proposal);
         if ($format === 'text') {
             $kp = KpText::render($id);
             $body = trim($body) !== '' ? rtrim($body) . "\n\n" . $kp['text'] : $kp['text'];

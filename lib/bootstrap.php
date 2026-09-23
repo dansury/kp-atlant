@@ -1948,6 +1948,15 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '44')");
         $current = 44;
     }
+
+    // v45 — module 049: delivery mode per КП (NULL = the KP_DELIVERY_MODE setting)
+    if ($current < 45) {
+        Db::ensureColumn('requests', 'delivery_mode', 'TEXT');
+        Db::ensureColumn('proposals', 'delivery_mode', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '45')");
+        $current = 45;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
