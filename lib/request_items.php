@@ -476,6 +476,21 @@ final class RequestItems {
         ];
     }
 
+    /**
+     * Раскрыт ли подбор по умолчанию (модуль 047): только у первого письма
+     * запроса КП/прайса — категория `kp_request` (пусто — старый запрос), и ни
+     * в одной переписке запроса ещё нет нашего письма.
+     */
+    public static function matchOpen(array $req): bool {
+        $category = (string)($req['category'] ?? '');
+        if ($category !== '' && $category !== 'kp_request') return false;
+        $answered = Db::val(
+            "SELECT 1 FROM mail_messages WHERE direction='out' AND thread_key IN (
+                 SELECT thread_key FROM mail_messages WHERE request_id=? AND thread_key IS NOT NULL) LIMIT 1",
+            [(int)$req['id']]);
+        return !$answered;
+    }
+
     /** Replace the table with what the editor sent. */
     public static function save(int $requestId, array $rows): array {
         // Комментарий, который менеджер не тронул, — это описание из каталога,

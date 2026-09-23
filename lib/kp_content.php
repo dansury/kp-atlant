@@ -545,22 +545,32 @@ class KpContent {
         $row = Db::one("SELECT images_json, image_urls, parent_id FROM products_cache WHERE moysklad_id=?", [$moyskladId]);
         if (!$row) return [];
 
-        // A variant («Бронежилет (Размер: L)») carries no photos of its own —
-        // in МойСклад they hang on the product, so borrow them from the parent
-        $empty = fn($v) => $v === null || $v === '' || $v === '[]';
-        if ($empty($row['images_json']) && $empty($row['image_urls']) && !empty($row['parent_id'])) {
+        $out = self::ownImages($row, '');
+        // A modification offers the product's photos too (module 047): own ones
+        // first, then the parent's. Without own photos the parent's keep the
+        // plain keys they always had, so saved selections stay valid.
+        if (!empty($row['parent_id'])) {
             $parent = Db::one("SELECT images_json, image_urls FROM products_cache WHERE moysklad_id=?", [$row['parent_id']]);
-            if ($parent) $row = $parent + $row;
-        }
-
-        $out = [];
-        foreach ((array)(json_decode((string)($row['images_json'] ?? ''), true) ?: []) as $i => $path) {
-            if (is_string($path) && file_exists($path)) $out[] = ['key' => "local:$i", 'source' => 'file', 'ref' => $path];
-        }
-        foreach ((array)(json_decode((string)($row['image_urls'] ?? ''), true) ?: []) as $i => $url) {
-            if (is_string($url) && str_starts_with($url, 'http')) $out[] = ['key' => "url:$i", 'source' => 'url', 'ref' => $url];
+            if ($parent) {
+                $seen = array_column($out, 'ref');
+                foreach (self::ownImages($parent, $out ? 'parent:' : '') as $img) {
+                    if (!in_array($img['ref'], $seen, true)) $out[] = $img;
+                }
+            }
         }
         return array_slice($out, 0, $max);
+    }
+
+    /** Photos stored on one catalog row, keys prefixed with $prefix. */
+    private static function ownImages(array $row, string $prefix): array {
+        $out = [];
+        foreach ((array)(json_decode((string)($row['images_json'] ?? ''), true) ?: []) as $i => $path) {
+            if (is_string($path) && file_exists($path)) $out[] = ['key' => "{$prefix}local:$i", 'source' => 'file', 'ref' => $path];
+        }
+        foreach ((array)(json_decode((string)($row['image_urls'] ?? ''), true) ?: []) as $i => $url) {
+            if (is_string($url) && str_starts_with($url, 'http')) $out[] = ['key' => "{$prefix}url:$i", 'source' => 'url', 'ref' => $url];
+        }
+        return $out;
     }
 
     /** One photo by its key — raw bytes plus a mime type, ready to stream. */

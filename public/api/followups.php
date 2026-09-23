@@ -72,7 +72,6 @@ switch ($action) {
         Db::update('followups', ['status' => 'sent', 'sent_at' => $now], 'id=?', [$id]);
 
         // Feed entry — clears the unanswered highlight (FR-038)
-        $manager = currentManager();
         Crm::logEvent($f['counterparty_id'] ? (int)$f['counterparty_id'] : null, 'out', $text, [
             'subject'    => $subject,
             'email_to'   => $to,

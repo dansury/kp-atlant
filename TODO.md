@@ -47,6 +47,16 @@ not have.
   overridden in «Админ → Промпты» keeps the old text — re-save it from the
   default there. Check one real letter with «укажите в КП …» end to end.
 
+## Module 047 — needs a live T-Bank and MoySklad
+- Put a T-API token and the account number into «Банк (Т-Банк)», press
+  «Настройки → МойСклад → Проверить оплаты сейчас»: the statement endpoint
+  (`/api/v1/statement`) and its field names were taken from the public docs,
+  not from a live answer.
+- One real payment: check that the «Входящий платёж» created in MoySklad is
+  linked to both the invoice and the order (the code falls back to the invoice
+  alone if MoySklad refuses the pair).
+- Add `cron/check_payments.php` (every 10 min) to the host's crontab.
+
 ## Open
 - `php tests/module_026.php` has one failing check («новое письмо поднимает
   карточку обратно») that predates module 042 — still not investigated.

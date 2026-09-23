@@ -123,6 +123,8 @@ switch ($action) {
         // У постоянного контрагента — свои условия, и они в приоритете (issue #60)
         $req['conditions']  = Terms::conditions((int)$manager['id'], $req['counterparty_id'] ? (int)$req['counterparty_id'] : null);
         $req['price_types'] = Catalog::priceTypes();
+        // Подбор раскрыт только у первого письма запроса КП/прайса (модуль 047)
+        $req['match_open'] = RequestItems::matchOpen($req);
         jsonData($req);
 
     // ---- Matched catalog positions of a request (module 008) ----

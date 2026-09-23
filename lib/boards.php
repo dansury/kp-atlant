@@ -24,6 +24,7 @@ final class Boards {
         ['В работе',      '#e0a53c', 'work'],
         ['КП отправлено', '#4f9e57', null],
         ['Ждём оплату',   '#b45cc0', null],
+        ['Сборка',        '#2f8f8a', 'assembly'],
         ['Закрыто',       '#8a8f98', 'closed'],
     ];
 
@@ -72,6 +73,31 @@ final class Boards {
             ?: Db::one("SELECT * FROM board_columns WHERE board_id=? AND title='В работе' ORDER BY position, id LIMIT 1", [$boardId])
             ?: Db::one("SELECT * FROM board_columns WHERE board_id=? AND (kind IS NULL OR kind<>'inbox') ORDER BY position, id LIMIT 1", [$boardId])
             ?: self::inboxColumn($boardId);
+    }
+
+    /**
+     * «Сборка» (модуль 047): сюда встаёт карточка, чей заказ оплачен. Нет —
+     * заводится после «Ждём оплату», иначе перед «Закрыто», иначе последней.
+     */
+    public static function assemblyColumn(int $boardId): array {
+        $col = Db::one("SELECT * FROM board_columns WHERE board_id=? AND kind='assembly' ORDER BY position, id LIMIT 1", [$boardId]);
+        if ($col) return $col;
+
+        $cols = Db::all("SELECT id, title, kind, position FROM board_columns WHERE board_id=? ORDER BY position, id", [$boardId]);
+        $at = count($cols);
+        foreach ($cols as $i => $c) {
+            if (preg_match('/^жд[её]м\s+оплат/iu', trim((string)$c['title']))) { $at = $i + 1; break; }
+        }
+        if ($at === count($cols)) {
+            foreach ($cols as $i => $c) if (($c['kind'] ?? null) === 'closed') { $at = $i; break; }
+        }
+        // Колонки раздвигаются: новая встаёт на место, а не в конец
+        foreach ($cols as $i => $c) {
+            Db::update('board_columns', ['position' => $i < $at ? $i : $i + 1], 'id=?', [(int)$c['id']]);
+        }
+        $id = Db::insert('board_columns', ['board_id' => $boardId, 'title' => 'Сборка', 'color' => '#2f8f8a',
+                                           'kind' => 'assembly', 'position' => $at]);
+        return Db::one("SELECT * FROM board_columns WHERE id=?", [$id]);
     }
 
     /** The board with its columns and cards — one request paints the whole page. */
@@ -197,6 +223,8 @@ final class Boards {
             $card['draft'] = $drafts[(int)($card['draft_id'] ?? 0)] ?? null;
             if (!$card['draft']) $card['draft_id'] = null;
             elseif ($card['kind'] === 'note') $card['kind'] = 'draft';
+            // Готово письмо «заказ отправлен» — карточка ждёт человека (модуль 047)
+            $card['attention'] = ($card['draft']['kind'] ?? '') === 'shipment';
 
             // «Прочитано», нажатое на карточке, гасит и жирный шрифт (модуль 026).
             // Жирность даёт «ждёт ответа», а оно считается по датам писем —
@@ -207,7 +235,7 @@ final class Boards {
                 $card['unanswered'] = false;
             }
             // Bright and on top: a letter nobody has read, or one nobody has answered
-            $card['hot'] = $card['unread'] > 0 || $card['unanswered'];
+            $card['hot'] = $card['unread'] > 0 || $card['unanswered'] || $card['attention'];
         }
         unset($card);
     }
@@ -227,8 +255,9 @@ final class Boards {
 
         $in = implode(',', array_fill(0, count($ids), '?'));
         $out = [];
-        foreach (Db::all("SELECT id, subject, to_email, body, updated_at FROM mail_drafts WHERE id IN ($in)", $ids) as $d) {
+        foreach (Db::all("SELECT id, subject, to_email, body, updated_at, kind FROM mail_drafts WHERE id IN ($in)", $ids) as $d) {
             $out[(int)$d['id']] = [
+                'kind'       => (string)($d['kind'] ?? ''),
                 'subject'    => (string)($d['subject'] ?? ''),
                 'to'         => (string)($d['to_email'] ?? ''),
                 'preview'    => MailText::preview(MailText::fromHtml((string)$d['body']), 140),
@@ -582,9 +611,9 @@ final class Boards {
     public static function saveColumn(
         int $boardId, ?int $columnId, string $title, ?string $color, ?string $kind = null, ?int $cardLimit = null
     ): int {
-        // «closed» не обязан быть единственным на доску, в отличие от «inbox»/«work»
-        $exclusive = in_array($kind, ['inbox', 'work'], true);
-        $known = in_array($kind, ['inbox', 'work', 'closed'], true);
+        // «closed» не обязан быть единственным на доску, в отличие от «inbox»/«work»/«assembly»
+        $exclusive = in_array($kind, ['inbox', 'work', 'assembly'], true);
+        $known = in_array($kind, ['inbox', 'work', 'closed', 'assembly'], true);
         if ($columnId) {
             $data = array_filter(['title' => trim($title) ?: 'Колонка', 'color' => $color], fn($v) => $v !== null);
             // Exactly one intake column per board, or new mail would double up;

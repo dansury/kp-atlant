@@ -499,6 +499,9 @@ final class MailArchive {
             'to_emails'   => $msg['to'] ?? '',
             'date_at'     => $msg['date'] ?? '',
         ]);
+        // Ответ, пришедший из «Отправленных» (написан в другой программе),
+        // гасит жирный шрифт так же, как ответ из сервиса (модуль 047)
+        if ($direction === 'out') self::markThreadAnswered($thread, (string)($msg['date'] ?? ''));
         return Db::insert('mail_messages', [
             'mailbox_id'   => (int)$box['id'],
             'thread_key'    => $thread,
@@ -529,6 +532,17 @@ final class MailArchive {
             'processed_at' => $markProcessed ? date('Y-m-d H:i:s') : null,
             'date_at'      => $msg['date'] ?? date('Y-m-d H:i:s'),
         ]);
+    }
+
+    /** Входящие письма переписки, на которые уже ответили к $at, — прочитаны. */
+    public static function markThreadAnswered(string $thread, string $at = ''): void {
+        if ($thread === '') return;
+        if ($at === '') {
+            Db::q("UPDATE mail_messages SET is_read=1 WHERE thread_key=? AND direction='in' AND is_read=0", [$thread]);
+            return;
+        }
+        Db::q("UPDATE mail_messages SET is_read=1 WHERE thread_key=? AND direction='in' AND is_read=0 AND date_at<=?",
+              [$thread, $at]);
     }
 
     /** Store a message the service itself sent. */
