@@ -235,6 +235,43 @@ ok('и остаётся неподтверждённым', ($only[0]['is_confirm
 ok('и помечено источником «по описанию»', ($only[0]['match_source'] ?? '') === 'description',
    (string)($only[0]['match_source'] ?? ''));
 
+// Название прежде описания: «Бронеплита … БР-3» — это плита, а не бронежилет,
+// у которого плиты в описании и в хвосте имени
+Db::insert('products_cache', [
+    'moysklad_id' => 'p-plate3', 'name' => 'Бронеплита Атлант Бр3 СВМПЭ',
+    'name_normalized' => '', 'article' => 'BP-3', 'price' => 18000, 'unit' => 'шт.',
+    'product_type' => 'product', 'stock' => 4, 'reserved' => 0,
+    'description' => 'Плита из полиэтилена, размер 250х300 мм.',
+]);
+Db::insert('products_cache', [
+    'moysklad_id' => 'p-vest5', 'name' => 'Бронежилет штурмовой Атлант Бр5 (с бронеплитами)',
+    'name_normalized' => '', 'article' => 'BZ-5', 'price' => 111000, 'unit' => 'шт.',
+    'product_type' => 'product', 'stock' => 0, 'reserved' => 0,
+    'description' => 'Бронеплита 30x25 см, защита по классу Бр5, модули из СВМПЭ.',
+]);
+Db::insert('products_cache', [
+    'moysklad_id' => 'p-vest2', 'name' => 'Бронежилет Атлант базовый (без бронеплит)',
+    'name_normalized' => '', 'article' => 'BZ-2', 'price' => 49000, 'unit' => 'шт.',
+    'product_type' => 'product', 'stock' => 5, 'reserved' => 0,
+    'description' => 'Карманы под бронеплита 30x25 см, пакеты СВМПЭ.',
+]);
+ProductMatcher::forgetCatalog();
+
+$plate = ProductMatcher::matchItems([['name' => 'Бронеплита 30x25 см СВМПЭ БР-3', 'qty' => 8]], false)[0];
+ok('«Бронеплита … БР-3» находит плиту по названию',
+   ($plate['match']['moysklad_id'] ?? '') === 'p-plate3', (string)($plate['match']['name'] ?? ''));
+ok('источник — слова названия, а не описание', ($plate['match_source'] ?? '') === 'words',
+   (string)($plate['match_source'] ?? ''));
+ok('бронежилет Бр5 с чужим классом не предлагается',
+   !in_array('p-vest5', array_column($plate['variants'], 'moysklad_id'), true),
+   json_encode(array_column($plate['variants'], 'name'), JSON_UNESCAPED_UNICODE));
+ok('найденное описанием не «равнозначно» найденному названием', $plate['needs_choice'] === false);
+
+// Тот же вид товара стоит выше чужого, найденного теми же словами названия
+$head = array_column(ProductMatcher::findCandidates('бронеплита атлант', 5), 'moysklad_id');
+ok('на «бронеплита атлант» первой идёт плита', ($head[0] ?? '') === 'p-plate3',
+   json_encode($head, JSON_UNESCAPED_UNICODE));
+
 // =====================================================================  4
 
 echo "\n== 4. Строка подбора: комментарий, ручная цена, условия ==\n";

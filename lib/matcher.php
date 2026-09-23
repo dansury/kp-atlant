@@ -70,7 +70,7 @@ class ProductMatcher {
         $results = [];
         foreach ($parsedItems as $index => $item) {
             $searchName = $names[$index];
-            $candidates = self::findCandidates($searchName, $maxShown, $queryVectors[$index] ?? null, $counterpartyId);
+            $candidates = self::rankedCandidates($searchName, $maxShown, $queryVectors[$index] ?? null, $counterpartyId);
 
             $result = [
                 'raw_name' => $item['name'],
@@ -105,11 +105,13 @@ class ProductMatcher {
                 // that score 0.91 and 0.89 are not a match and a runner-up, they
                 // are a question: the same vest in two sizes, the same helmet in
                 // two colours. Picking the first one is a guess the manager pays for.
-                // Найденное по описанию в этот счёт не идёт: комплект с
-                // товаром в составе — не «равнозначный вариант» самому товару.
+                // Только из ряда лидера: бронежилет с плитой в описании — не
+                // «равнозначный вариант» самой плите.
                 $fromDesc = fn($c) => ($c['source'] ?? '') === 'description';
                 $equal = array_values(array_filter($candidates, fn($c) => $best['score'] - $c['score'] <= $delta
-                    && ($fromDesc($best) || !$fromDesc($c))));
+                    && $c['rank'] === $best['rank']));
+                $candidates = self::stripRank($candidates);
+                $best = $candidates[0];
 
                 $result['match'] = $best;
                 $result['match_source'] = $best['source'];
@@ -186,6 +188,18 @@ class ProductMatcher {
      * embedded in one batch) skip the per-phrase request.
      */
     public static function findCandidates(string $query, int $maxResults = 3, ?array $queryVector = null, ?int $counterpartyId = null): array {
+        return self::stripRank(self::rankedCandidates($query, $maxResults, $queryVector, $counterpartyId));
+    }
+
+    /** Служебный ряд наружу не уходит. */
+    private static function stripRank(array $rows): array {
+        foreach ($rows as &$row) unset($row['rank']);
+        unset($row);
+        return $rows;
+    }
+
+    /** Кандидаты с рядом (`rank`) — `matchItems()` сравнивает ряды. */
+    private static function rankedCandidates(string $query, int $maxResults, ?array $queryVector, ?int $counterpartyId): array {
         $normQuery = self::normalize($query);
         if ($normQuery === '') return [];
 
@@ -229,6 +243,14 @@ class ProductMatcher {
         // совпадение 84% и ни одного намёка, что класс защиты другой.
         $queryMarkers = self::markers($normQuery);
 
+        // Название ищется ключевыми словами прежде описания: главное слово
+        // (вид товара) и доля слов запроса в имени, метки — тоже слова
+        $head = self::headWord($normQuery);
+        $nameWords = $queryWords;
+        foreach ($queryMarkers as $prefix => $values) {
+            foreach (array_keys($values) as $v) $nameWords[] = $prefix . $v;
+        }
+
         $scored = [];
         foreach ($products as $p) {
             $byName = self::similarity($normQuery, $p['match_text']);
@@ -243,6 +265,8 @@ class ProductMatcher {
                     + ($nameCap - self::NAME_CONTAIN_BASE) * $byName));
             }
             $lexical = $byName;
+            $headHit = $head === null || self::headInName($head, $p['match_text']);
+            $inNameKeys = $nameWords ? self::containment($nameWords, $p['match_text']) : 0.0;
 
             // Article typed straight into the letter is an exact answer
             if ($p['article'] && stripos($normQuery, mb_strtolower((string)$p['article'])) !== false) {
@@ -266,11 +290,16 @@ class ProductMatcher {
             $conflict = $queryMarkers && self::markerConflict($queryMarkers, $p['match_text']);
             if ($conflict) $combined = min($combined, self::MARKER_CONFLICT_CAP);
 
-            $qualifies = $combined >= $minScore || (!$conflict && $vec !== null && $vec >= self::VEC_STRONG);
+            // Тот же вид товара и половина ключевых слов в имени — уже находка
+            // по названию, даже когда «30x25 см» топят оценку ниже порога
+            $byKeywords = !$conflict && $head !== null && $headHit && $inNameKeys >= 0.5;
+
+            $qualifies = $combined >= $minScore || $byKeywords
+                || (!$conflict && $vec !== null && $vec >= self::VEC_STRONG);
             if (!$qualifies) continue;
 
             $prices = Catalog::decodePrices($p['prices_json'] ?? null);
-            $source = self::sourceOf($byName, $byDesc, $vec, $minScore);
+            $source = self::sourceOf($byKeywords ? max($byName, $minScore) : $byName, $byDesc, $vec, $minScore);
             $scored[] = [
                 'moysklad_id' => $p['moysklad_id'],
                 'name'        => $p['name'],
@@ -285,27 +314,52 @@ class ProductMatcher {
                 'lexical'     => round($lexical, 3),
                 'vector'      => $vec === null ? null : round($vec, 3),
                 'source'      => $source,
-                'rank'        => self::rankOf($source, (string)($p['product_type'] ?? '')),
+                'rank'        => self::rankOf($source, (string)($p['product_type'] ?? ''), $headHit),
             ];
         }
 
         // Ряд важнее оценки: 0.75, набранные описанием, не обгоняют 0.7,
         // набранные названием
         usort($scored, fn($a, $b) => [$a['rank'], -$a['score']] <=> [$b['rank'], -$b['score']]);
-        $scored = array_slice($scored, 0, $maxResults);
-        foreach ($scored as &$row) unset($row['rank']);   // служебный ключ наружу не уходит
-        unset($row);
-        return $scored;
+        return array_slice($scored, 0, $maxResults);
     }
 
     /**
-     * Ряд выдачи: сперва найденное названием и смыслом, потом описанием, в
-     * самом конце комплекты. Описание комплекта — список ЧУЖИХ товаров:
-     * «монокуляр» в нём значит «лежит внутри», а не «это он и есть».
+     * Ряд выдачи: 0 — названием или смыслом и тот же вид товара, 1 — названием
+     * или смыслом, но вид другой, 2 — описанием, 3 — описанием комплекта.
+     * Описание комплекта — список ЧУЖИХ товаров: «монокуляр» в нём значит
+     * «лежит внутри», а не «это он и есть».
      */
-    private static function rankOf(string $source, string $productType): int {
-        if ($source !== 'description') return 0;
-        return $productType === 'bundle' ? 2 : 1;
+    private static function rankOf(string $source, string $productType, bool $headHit): int {
+        if ($source !== 'description') return $headHit ? 0 : 1;
+        return $productType === 'bundle' ? 3 : 2;
+    }
+
+    /** Главное слово запроса: первое буквенное от четырёх букв, вид товара. */
+    private static function headWord(string $normalized): ?string {
+        foreach (explode(' ', $normalized) as $w) {
+            if (mb_strlen($w) >= 4 && preg_match('/^\p{L}+$/u', $w)) return $w;
+        }
+        return null;
+    }
+
+    /**
+     * Главное слово стоит в первых трёх словах имени: вид товара пишется в
+     * начале, а «(с бронеплитами)» в хвосте бронежилет плитой не делает.
+     */
+    private static function headInName(string $head, string $nameText): bool {
+        foreach (array_slice(explode(' ', $nameText), 0, 3) as $w) {
+            if (self::sameStem($head, $w)) return true;
+        }
+        return false;
+    }
+
+    /** «бронеплита» = «бронеплиты», но не «бронежилет». */
+    private static function sameStem(string $a, string $b): bool {
+        $min = min(mb_strlen($a), mb_strlen($b));
+        $need = max(4, $min - 2);
+        if ($min < $need) return false;
+        return mb_substr($a, 0, $need) === mb_substr($b, 0, $need);
     }
 
     /**
@@ -468,6 +522,8 @@ class ProductMatcher {
      */
     private static function normalize(string $s): string {
         $s = mb_strtolower($s);
+        // «БР-3» — та же метка, что «Бр3» (модуль 040)
+        $s = preg_replace('/(?<=\p{L})-(?=\d)/u', '', $s);
         $s = preg_replace('/[\s\-\"\'«»(),;:.\/\\\[\]]+/u', ' ', $s);
         $s = preg_replace('/\b(шт|штук|штуки|ед|компл)\b\.?/u', '', $s);
         return trim(preg_replace('/\s+/u', ' ', $s));
