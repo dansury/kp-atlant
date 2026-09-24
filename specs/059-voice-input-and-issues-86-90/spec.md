@@ -1,4 +1,4 @@
-# 058 — Voice input for letters; issues #86–#90
+# 059 — Voice input for letters; issues #86–#90
 
 ## 1. Voice input («печатать письма голосом»)
 

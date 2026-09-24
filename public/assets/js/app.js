@@ -4991,7 +4991,7 @@ const App = {
                     <button type="button" class="btn btn--outline btn--sm" title="Нумерованный список" onclick="App.rte(this,'insertOrderedList')">1. список</button>
                     <button type="button" class="btn btn--outline btn--sm" title="Ссылка" onclick="App.rteLink(this)">ссылка</button>
                     <button type="button" class="btn btn--outline btn--sm" title="Убрать оформление" onclick="App.rte(this,'removeFormat')">✕ формат</button>
-                    <!-- Голосовой ввод (модуль 058) -->
+                    <!-- Голосовой ввод (модуль 059) -->
                     <button type="button" class="btn btn--outline btn--sm mic" data-mic
                             title="Надиктовать текст: нажмите, говорите, нажмите ещё раз"
                             onmousedown="event.preventDefault()"
@@ -13353,7 +13353,7 @@ Object.assign(App, {
     },
 });
 
-// ==== Голосовой ввод письма (модуль 058) ====
+// ==== Голосовой ввод письма (модуль 059) ====
 //
 // Решение из dansury/kraskiweb: браузер пишет голос (MediaRecorder), сервер
 // распознаёт его Yandex SpeechKit (`Speech::transcribe`), текст встаёт туда,

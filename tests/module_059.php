@@ -1,6 +1,6 @@
 <?php
 /**
- * Модуль 058: голосовой ввод письма (решение из kraskiweb) и issues #86–#90.
+ * Модуль 059: голосовой ввод письма (решение из kraskiweb) и issues #86–#90.
  *
  *   — WebM(Opus) перекладывается в Ogg(Opus), SpeechKit получает Ogg;
  *   — «под заказ», снятое руками, не возвращают ни подбор, ни общие условия, ни пересборка;
@@ -8,9 +8,9 @@
  *   — трек СДЭК ищется во всех колонках, кроме «Закрыто», карточка фиолетовая;
  *   — интерфейс: 🎤 в полях письма, «Написать» на всю страницу, скриншот Ctrl+V, зачёркивание в КП.
  *
- * Запуск:  php tests/module_058.php
+ * Запуск:  php tests/module_059.php
  */
-$tmpDb = sys_get_temp_dir() . '/kp-test-058-' . getmypid() . '.db';
+$tmpDb = sys_get_temp_dir() . '/kp-test-059-' . getmypid() . '.db';
 $configPath = dirname(__DIR__) . '/config.php';
 $hadConfig = file_exists($configPath);
 
@@ -67,7 +67,7 @@ ok('не WebM — null', AudioRemux::webmOpusToOggOpus('RIFF....WAVE') === null)
 
 // ===================================================================== 2
 echo "\n2. Speech: SpeechKit получает Ogg, ошибки говорят словами\n";
-$tmp = sys_get_temp_dir() . '/kp-058-voice-' . getmypid() . '.webm';
+$tmp = sys_get_temp_dir() . '/kp-059-voice-' . getmypid() . '.webm';
 file_put_contents($tmp, $webm);
 register_shutdown_function(fn() => @unlink($tmp));
 

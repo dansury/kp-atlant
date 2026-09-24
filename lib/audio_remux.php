@@ -1,6 +1,6 @@
 <?php
 /**
- * Ported from dansury/kraskiweb src/AudioRemux.php (module 058).
+ * Ported from dansury/kraskiweb src/AudioRemux.php (module 059).
  * Pure-PHP audio remux: WebM(Opus) → Ogg(Opus).
  *
  * Why: browser MediaRecorder records Opus, but Chrome/Android wrap it in a WebM

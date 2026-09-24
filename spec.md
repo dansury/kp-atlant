@@ -56,7 +56,7 @@
 | Full-text search over letters, companies (INN, phones, contacts), request items and board cards; case-insensitive Cyrillic (`lib/search.php`) | `specs/055-full-text-search/spec.md` | Implemented |
 | The card moves by itself: КП sent → «КП отправлено», invoice sent → «Ждём оплату» (priority), forward only | `specs/056-auto-stage-on-send/spec.md` | Implemented |
 | Send delay with «Отменить» (per manager, 20 s default), fold arrows + collapse-all on the match table and letters, «Обновить из МойСклад» reports what it did | `specs/057-send-delay-folding-ms-sync/spec.md` | Implemented |
-| Voice input for letters (SpeechKit, from kraskiweb); issues #86–#90: «под заказ» by hand, strikethrough in the КП editor, СДЭК track on all cards, screenshots in support, full-page «Написать», admin tickets straight to GitHub | `specs/058-voice-input-and-issues-86-90/spec.md` | Implemented |
+| Voice input for letters (SpeechKit, from kraskiweb); issues #86–#90: «под заказ» by hand, strikethrough in the КП editor, СДЭК track on all cards, screenshots in support, full-page «Написать», admin tickets straight to GitHub | `specs/059-voice-input-and-issues-86-90/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -107,7 +107,7 @@
 | Модуль 055: поиск без учёта регистра и «ё», по компании, ИНН, телефону, товару; индекс триггерами | `php tests/module_055.php` |
 | Модуль 056: карточка сама переходит в «КП отправлено» / «Ждём оплату» при отправке, только вперёд | `php tests/module_056.php` |
 | Module 057: send delay (queue, claim, cancel, send now), per-manager delay, fold controls, МойСклад sync report | `php tests/module_057.php` |
-| Module 058: WebM→Ogg remux, SpeechKit transcription, «под заказ» by hand + variant stock (#86), СДЭК track on all cards (#88), UI: 🎤, full-page «Написать», screenshot paste, admin tickets, КП strikethrough | `php tests/module_058.php` |
+| Module 059: WebM→Ogg remux, SpeechKit transcription, «под заказ» by hand + variant stock (#86), СДЭК track on all cards (#88), UI: 🎤, full-page «Написать», screenshot paste, admin tickets, КП strikethrough | `php tests/module_059.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

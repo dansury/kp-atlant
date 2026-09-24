@@ -1497,7 +1497,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
 .bcard--cdek { background: #f3e8ff; border-left: 3px solid #7c3aed; }
 .bcard--cdek .chip--ship { background: #ede9fe; color: #5b21b6; }
 
-/* Голосовой ввод (модуль 058): идёт запись — кнопка залита красным. #fff на #b91c1c = 6.5:1, AA */
+/* Голосовой ввод (модуль 059): идёт запись — кнопка залита красным. #fff на #b91c1c = 6.5:1, AA */
 .mic--rec { background: #b91c1c; border-color: #b91c1c; color: #fff; animation: micPulse 1.2s ease-in-out infinite; }
 @keyframes micPulse { 50% { box-shadow: 0 0 0 4px rgba(185, 28, 28, .25); } }
 @media (prefers-reduced-motion: reduce) { .mic--rec { animation: none; } }
