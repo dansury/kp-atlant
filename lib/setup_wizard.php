@@ -78,7 +78,7 @@ final class SetupWizard {
                 'links' => [
                     ['label' => 'Yandex Cloud: сервисный аккаунт и API-ключ',
                      'url'   => 'https://console.yandex.cloud/',
-                     'note'  => 'Сервисному аккаунту нужны роли ai.languageModels.user и ai.embeddings.user; '
+                     'note'  => 'Сервисному аккаунту нужны роли ai.languageModels.user, ai.embeddings.user и ai.speechkit-stt.user (голосовой ввод письма); '
                               . 'Folder ID виден в адресе консоли'],
                     ['label' => 'OpenRouter: ключ',
                      'url'   => 'https://openrouter.ai/settings/keys',

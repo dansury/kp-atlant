@@ -376,6 +376,13 @@ switch ($action) {
                 if (array_key_exists('selected_images', $itemData) && is_array($itemData['selected_images'])) {
                     $upd['selected_images'] = json_encode(array_values($itemData['selected_images']), JSON_UNESCAPED_UNICODE);
                 }
+                // «Под заказ», решённое в КП, — решение человека: пересборка берёт его из подбора (issue #86)
+                if (array_key_exists('wait_on', $itemData)) {
+                    $upd['wait_manual'] = 1;
+                    $reqItem = (int)(Db::val("SELECT request_item_id FROM proposal_items WHERE id=? AND proposal_id=?", [$itemId, $id]) ?: 0);
+                    if ($reqItem) Db::update('request_items', ['wait_on' => !empty($itemData['wait_on']) ? 1 : 0, 'wait_manual' => 1],
+                                             'id=?', [$reqItem]);
+                }
                 if ($upd) Db::update('proposal_items', $upd, 'id=? AND proposal_id=?', [$itemId, $id]);
             }
             $moneyAfter = Db::all("SELECT id, price, quantity FROM proposal_items WHERE proposal_id=? ORDER BY id", [$id]);

@@ -431,6 +431,8 @@ const App = {
                     // с разной вёрсткой (модуль 023)
                     if (seg === 'requests') { location.replace('#mail'); return; }
                     // «#mail/new/trial» — проверочный запрос мастера настройки (модуль 038)
+                    // «Написать» — тот же редактор, что у ответа, во всю страницу (issue #89)
+                    if (seg === 'compose') return this.pageMailCompose();
                     if (seg === 'new') return this.pageNewRequest(params[1] === 'trial'
                         ? {trial: true, text: this.trialText || ''} : {});
                     if (seg === 'request') return this.pageRequest(params[1]);
@@ -1858,12 +1860,37 @@ const App = {
             doc.execCommand('insertHTML', false,
                 '<div class="kp-page-break" style="page-break-before:always" contenteditable="false"></div><p><br></p>');
         } else {
+            // Зачёркивание в шаблоне — класс `.was` и <del>; execCommand снимает только теги (issue #87)
+            let struck = false;
+            if (cmd === 'strikeThrough') try { struck = doc.queryCommandState('strikeThrough'); } catch { /* нет */ }
             doc.execCommand(cmd, false, arg);
+            if (cmd === 'removeFormat' || struck) this.kpUnstrike(doc);
         }
         card.dataset.dirty = '1';
         this.kpPageDirty(card, true);
         this.kpToolbarState(card);
         this.kpRepaginateSoon(card);
+    },
+
+    /** Снимает зачёркивание, которое не тег: класс `.was`, <del>, text-decoration (issue #87). */
+    kpUnstrike(doc) {
+        const sel = doc.getSelection();
+        if (!sel || !sel.rangeCount) return;
+        const r = sel.getRangeAt(0);
+        const hit = new Set();
+        for (const n of [r.startContainer, r.endContainer]) {
+            for (let e = n.nodeType === 1 ? n : n.parentElement; e && e !== doc.body; e = e.parentElement) hit.add(e);
+        }
+        doc.body.querySelectorAll('.was, del, s, strike, [style*="line-through"]').forEach(e => {
+            if (r.intersectsNode(e)) hit.add(e);
+        });
+        hit.forEach(e => {
+            e.classList.remove('was');
+            if (/line-through/.test(e.style.textDecoration || '')) e.style.textDecoration = '';
+            if (!e.getAttribute('style')) e.removeAttribute('style');
+            if (!e.getAttribute('class')) e.removeAttribute('class');
+            if (['DEL', 'S', 'STRIKE'].includes(e.tagName)) e.replaceWith(...e.childNodes);
+        });
     },
 
     /** Нажатые кнопки и стиль абзаца — по выделению на листе. */
@@ -2703,8 +2730,10 @@ const App = {
      */
     matchRowExtra(i = {}) {
         const backorder = Number(i.is_backorder) === 1 || (i.stock !== null && i.stock !== undefined && Number(i.stock) <= 0);
-        // Товара нет — «под заказ» встаёт сама, без ручной галочки (issue #60)
-        const waitOn = i.wait_on ? 1 : (backorder ? 1 : 0);
+        // Товара нет — «под заказ» встаёт сама (issue #60), но только пока галочку
+        // не трогал человек: снятая им не возвращается (issue #86)
+        const manual = Number(i.wait_manual) === 1;
+        const waitOn = manual ? (Number(i.wait_on) === 1 ? 1 : 0) : (i.wait_on || backorder ? 1 : 0);
         return `
             <div class="match-extra">
                 <div class="match-extra__money">
@@ -2714,7 +2743,8 @@ const App = {
                     </label>
                     <label class="${backorder ? '' : 'muted'}" title="Товара нет на складе: срок ожидания, скидка за ожидание и предоплата">
                         <input type="checkbox" data-field="wait_on" ${waitOn ? 'checked' : ''}
-                               onchange="App.updateMatchTotal(this); App.toggleWaitFields(this)"> под заказ
+                               onchange="this.nextElementSibling.value = 1; App.updateMatchTotal(this); App.toggleWaitFields(this)"><input
+                               type="hidden" data-field="wait_manual" value="${manual ? 1 : 0}"> под заказ
                     </label>
                     <span class="match-extra__wait" ${waitOn ? '' : 'hidden'}>
                         <label>ждать
@@ -4610,6 +4640,20 @@ const App = {
      * кнопка «Написать» наверху карточки, которая открывала окно поверх экрана;
      * теперь письмо пишется там же, где читается переписка.
      */
+    /**
+     * «✉ Написать» (issue #89): новое письмо на всю страницу тем же редактором,
+     * что и ответ, — оформление, файлы, подпись, черновик, отложенная отправка.
+     */
+    async pageMailCompose() {
+        const app = document.getElementById('app');
+        const d = await this.api('mail.php?action=list&limit=1');
+        this.companyMailboxes = d.mailboxes || this.companyMailboxes || [];
+        app.innerHTML = `${this.pageHead({title: 'Новое письмо'})}
+            <div class="card compose-page">${this.threadComposer('', {to: '', subject: ''}, this.companyMailboxes)}</div>`;
+        await this.restoreComposerDraft('');
+        app.querySelector('[data-cmp-to]')?.focus();
+    },
+
     /** «Написать новое письмо» — бланк разворачивается на месте кнопки. */
     openNewLetter(btn, id) {
         const host = btn.closest('div');
@@ -4948,6 +4992,11 @@ const App = {
                     <button type="button" class="btn btn--outline btn--sm" title="Нумерованный список" onclick="App.rte(this,'insertOrderedList')">1. список</button>
                     <button type="button" class="btn btn--outline btn--sm" title="Ссылка" onclick="App.rteLink(this)">ссылка</button>
                     <button type="button" class="btn btn--outline btn--sm" title="Убрать оформление" onclick="App.rte(this,'removeFormat')">✕ формат</button>
+                    <!-- Голосовой ввод (модуль 059) -->
+                    <button type="button" class="btn btn--outline btn--sm mic" data-mic
+                            title="Надиктовать текст: нажмите, говорите, нажмите ещё раз"
+                            onmousedown="event.preventDefault()"
+                            onclick="App.dictate(this, this.closest('.composer').querySelector('[data-cmp-rte]'))">🎤 голосом</button>
                 </div>
                 <div class="composer__editor" data-cmp-rte contenteditable="true"
                      data-placeholder="Ответьте клиенту — или попросите черновик у нейросети"
@@ -5730,6 +5779,8 @@ const App = {
                 return;
             }
             this.sentToast(res);
+            // Письмо со страницы «Написать» ушло — страница своё отработала
+            if ((location.hash || '').startsWith('#mail/compose')) { location.hash = '#mail'; return; }
             // The answer belongs in the conversation it answers — reopen it
             const box = key ? document.getElementById('th_' + this.threadDomId(key)) : null;
             if (box) { box.dataset.loaded = ''; box.hidden = true; this.toggleCompanyThread(key); }
@@ -6350,7 +6401,7 @@ const App = {
         'mail-keys':    ['Список писем', 'Письма идут по дате последнего письма: пришло новое — строка поднимается наверх и на миг подсвечивается. Жирным — есть непрочитанные, красная точка — клиент ждёт ответа. Слева — статусы (это колонки доски) со своим цветом. Клавиши: j / k — вниз / вверх, o или Enter — открыть, x — отметить, e — в архив, Shift+I — прочитано, / — поиск.'],
         'events':       ['Заметки, заказы и счета', 'Заметки для коллег, вехи сделки, заказы и счета — одной лентой со ссылками в МойСклад. То, что не относится к открытой переписке, приглушено. Отправленные письма и ответы на них — слева, в «Переписке». Красная точка на вкладке — у компании есть заметки.'],
         'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Переписки идут по порядку: старые сверху, свежая — внизу, и она раскрыта. В строке видно, чьё в переписке последнее письмо. Любое одно письмо убирается корзиной в его заголовке — остальная переписка остаётся на месте. Убранные как «не наш профиль» стоят свёрнутым блоком «Архив компании» над списком.'],
-        'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика. К ответу сам приписывается текст письма, на которое вы отвечаете, — клиенту не приходится вспоминать, о каком заказе речь.'],
+        'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика. К ответу сам приписывается текст письма, на которое вы отвечаете, — клиенту не приходится вспоминать, о каком заказе речь. Кнопка «🎤 голосом» — надиктовать текст: нажмите, говорите до 30 секунд, нажмите ещё раз, и распознанное встанет туда, где стоит курсор.'],
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки — модель на это не тратится. Равнозначные варианты сервис не выбирает молча: он спрашивает.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
@@ -7373,13 +7424,13 @@ const App = {
             box.innerHTML = `
                 <div class="card__title">Т-Банк: входящие оплаты</div>
                 <p class="muted">Оплата по счёту проводится «Входящим платежом» в МойСклад, карточка компании
-                   встаёт в «Сборку», менеджеру приходит «Сообщить складу». Склад вписал трек-номер в заказ —
+                   встаёт в «Сборку», менеджеру приходит «Сообщить складу». Склад вписал трек-номер в заказ любой карточки, кроме «Закрыто», —
                    готов черновик письма клиенту. Токен и номера счетов — в
                    <a href="#settings/all">«Все параметры» → «Банк (Т-Банк)»</a>. Cron: <code>cron/check_payments.php</code> раз в 10 минут.</p>
                 <p>${d.configured ? `Счета: ${d.accounts.map(a => this.esc(a)).join(', ')}` : '<span class="no">Не настроен: нет токена или счёта</span>'}
                    ${last ? `<span class="muted"> · последняя проверка ${this.fmtDate(last.at)}: новых ${last.new}, по счёту ${last.matched}, без счёта ${last.unmatched}</span>` : ''}</p>
                 ${result ? `<p class="${result.payments.errors.length ? 'no' : 'ok'}">Проверено: новых операций ${result.payments.new || 0},
-                    заказов в «Сборке» ${result.shipments.checked}, отправлено ${result.shipments.shipped}
+                    заказов на доске ${result.shipments.checked}, отправлено ${result.shipments.shipped}
                     ${[...result.payments.errors, ...result.shipments.errors].map(e => '<br>' + this.esc(e)).join('')}</p>` : ''}
                 <button class="btn btn--outline btn--sm" onclick="App.bankCheck(this)">Проверить оплаты сейчас</button>
                 ${(d.recent || []).length ? `<table class="table" style="margin-top:10px"><tbody>
@@ -8712,6 +8763,8 @@ const App = {
         // Жирным — новое и неотвеченное, как на доске (модуль 051)
         if (card.unread || card.unanswered) cls.push('grow--unread');
         if (risen) cls.push('grow--risen');
+        // Трек СДЭК вписан, письмо со ссылкой отслеживания ждёт отправки (issue #88)
+        if (card.cdek) cls.push('grow--cdek');
         const tags = [
             `<span class="stag" style="--col:${this.esc(col.color || '#8a8f98')}">${this.esc(col.title)}</span>`,
             card.attention ? '<span class="grow__draft">письмо готово</span>' : (d ? '<span class="grow__draft">Черновик</span>' : ''),
@@ -9316,6 +9369,7 @@ const App = {
         if (card.unanswered) cls.push('bcard--unanswered'); else cls.push('bcard--answered');
         // Готово письмо «заказ отправлен» — карточка жирная, пока его не отправят (модуль 047)
         if (card.attention) cls.push('bcard--attention');
+        if (card.cdek) cls.push('bcard--cdek');
         const href = card.counterparty_id
             ? `#mail/company/${card.counterparty_id}`
             : (card.thread_key ? `#mail/t/${encodeURIComponent(card.thread_key)}` : '');
@@ -10162,6 +10216,8 @@ const App = {
     // mailbox it is sent from.
     // $toOverride — writing to a company from its card, with nothing to reply to
     async mailCompose(replyToId, generate, threadKey, toOverride) {
+        // Новое письмо никому не отвечает — пишется на своей странице, а не в окне (issue #89)
+        if (!replyToId && !threadKey) { location.hash = '#mail/compose'; return; }
         const d = await this.api('mail.php?action=list&limit=1');
         let src = null;
         if (replyToId) src = await this.api(`mail.php?action=get&id=${replyToId}`);
@@ -10194,6 +10250,10 @@ const App = {
                         <button class="btn btn--sm btn--outline" id="genReplyBtn" onclick="App.mailGenerateReply(${replyToId})">Создать ответ</button>
                     </div>` : ''}
                 <textarea id="cmpText" rows="9"></textarea>
+                <button type="button" class="btn btn--outline btn--sm mic" data-mic style="margin-top:6px"
+                        title="Надиктовать текст: нажмите, говорите, нажмите ещё раз"
+                        onmousedown="event.preventDefault()"
+                        onclick="App.dictate(this, document.getElementById('cmpText'))">🎤 голосом</button>
             </div>
             <button class="btn btn--primary btn--block" data-send-btn onclick="App.mailSend(${replyToId || 'null'})">Отправить</button>
         `);
@@ -12773,21 +12833,37 @@ Object.assign(App, {
             </div>
             <div class="form-group">
                 <label>Что случилось</label>
-                <textarea id="supBody" rows="6" onpaste="App.supportPaste(event)"
-                          placeholder="Что делали, что ожидали увидеть и что увидели. Скриншот можно вставить сюда — Ctrl+V"></textarea>
+                <textarea id="supBody" rows="6"
+                          placeholder="Что делали, что ожидали увидеть и что увидели. Скриншот — Ctrl+V в любом месте окна"></textarea>
             </div>
             <div class="form-group">
                 <label>Файлы</label>
-                <input type="file" id="supFiles" multiple onchange="App.supportAttach(this)">
+                <!-- Скриншот вставляется Ctrl+V в любом месте окна или перетаскивается сюда (issue #88) -->
+                <label class="sup-drop" id="supDrop">
+                    📋 Вставьте скриншот (Ctrl+V), перетащите файл сюда или нажмите, чтобы выбрать
+                    <input type="file" id="supFiles" multiple hidden onchange="App.supportAttach(this)">
+                </label>
                 <div class="flex flex--wrap" id="supFileList" style="gap:6px;margin-top:6px"></div>
                 <div class="muted">Картинки, документы, видео — всё, что можно приложить к issue.</div>
             </div>
             <p class="muted">Экран: <code>${this.esc(location.hash || '#mail')}</code> — уйдёт вместе с обращением.
-               Администратор посмотрит и заведёт issue в репозитории.</p>
+               ${(this.manager && this.manager.is_admin) ? 'Вы администратор — issue заведётся сразу, без ревью.'
+                   : 'Администратор посмотрит и заведёт issue в репозитории.'}</p>
             <div class="flex flex--end" style="gap:8px">
                 <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
                 <button class="btn btn--primary" onclick="App.supportSend(this)">Отправить</button>
             </div>`);
+        const box = document.querySelector('#modal .modal__box');
+        if (box) {
+            box.addEventListener('paste', e => this.supportPaste(e));
+            const drop = box.querySelector('#supDrop');
+            ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('sup-drop--over'); }));
+            ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, () => drop.classList.remove('sup-drop--over')));
+            drop.addEventListener('drop', e => {
+                e.preventDefault();
+                [...(e.dataTransfer?.files || [])].forEach(f => this.supportUpload(f));
+            });
+        }
     },
 
     async supportAttach(input) {
@@ -12812,20 +12888,23 @@ Object.assign(App, {
             const res = await fetch('/api/support.php?action=upload', {method: 'POST', body: fd, credentials: 'same-origin'});
             const d = await res.json();
             if (!res.ok || d.error) throw new Error(d.error || 'Файл не загрузился');
+            if (/^image\//.test(file.type)) d.file.preview = URL.createObjectURL(file);
             (this.supportFiles = this.supportFiles || []).push(d.file);
-            const box = document.getElementById('supFileList');
-            if (box) box.innerHTML = (this.supportFiles || []).map((f, i) => `
-                <span class="chip">📎 ${this.esc(f.filename)}
-                    <a onclick="App.supportDrop(${i})" title="Убрать">×</a></span>`).join('');
+            this.supportFileList();
         } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /** Приложенные файлы: картинка — миниатюрой, чтобы было видно, что вставился нужный скриншот. */
+    supportFileList() {
+        const box = document.getElementById('supFileList');
+        if (box) box.innerHTML = (this.supportFiles || []).map((f, i) => `
+            <span class="chip">${f.preview ? `<img src="${f.preview}" alt="" class="sup-thumb">` : '📎'} ${this.esc(f.filename)}
+                <a onclick="App.supportDrop(${i})" title="Убрать">×</a></span>`).join('');
     },
 
     supportDrop(i) {
         (this.supportFiles || []).splice(i, 1);
-        const box = document.getElementById('supFileList');
-        if (box) box.innerHTML = (this.supportFiles || []).map((f, n) => `
-            <span class="chip">📎 ${this.esc(f.filename)}
-                <a onclick="App.supportDrop(${n})" title="Убрать">×</a></span>`).join('');
+        this.supportFileList();
     },
 
     async supportSend(btn) {
@@ -12834,14 +12913,17 @@ Object.assign(App, {
         if (!title && !body) return this.toast('Опишите, что случилось', 'error');
         btn.disabled = true;
         try {
-            await this.api('support.php?action=submit', {method: 'POST', body: {
+            const r = await this.api('support.php?action=submit', {method: 'POST', body: {
                 kind:  document.getElementById('supKind').value,
                 title, body,
                 page:  location.hash || '#mail',
                 files: (this.supportFiles || []).map(f => f.name),
             }});
             this.closeModal();
-            this.toast('Отправили администратору — ответ придёт в уведомления', 'success');
+            if (r.issue_url) this.toast('Issue #' + r.issue_number + ' заведён в GitHub', 'success');
+            else if (r.issue_error) this.toast('Обращение сохранено, но issue не завёлся: ' + r.issue_error, 'error');
+            else this.toast('Отправили администратору — ответ придёт в уведомления', 'success');
+            if ((location.hash || '').startsWith('#settings/support')) this.settingsSupport();
         } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
     },
 
@@ -13275,6 +13357,125 @@ Object.assign(App, {
             if (box) box.innerHTML = `<p class="ok" style="margin-top:8px">Модель по умолчанию:
                 <code>${this.esc(spec)}</code>. Соберите КП и письмо ещё раз и сравните.</p>`;
         } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+});
+
+// ==== Голосовой ввод письма (модуль 059) ====
+//
+// Решение из dansury/kraskiweb: браузер пишет голос (MediaRecorder), сервер
+// распознаёт его Yandex SpeechKit (`Speech::transcribe`), текст встаёт туда,
+// где стоял курсор. Одна запись за раз; v1 SpeechKit берёт до 30 секунд.
+Object.assign(App, {
+
+    dictation: {recorder: null},
+
+    /** MIME, который браузер умеет писать; Opus — его SpeechKit и читает. */
+    audioMime() {
+        if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+        for (const t of ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']) {
+            try { if (MediaRecorder.isTypeSupported(t)) return t; } catch { /* нет */ }
+        }
+        return '';
+    },
+
+    audioExt(mime) {
+        mime = (mime || '').toLowerCase();
+        if (mime.includes('ogg')) return 'ogg';
+        if (mime.includes('mp4') || mime.includes('aac')) return 'm4a';
+        if (mime.includes('mpeg') || mime.includes('mp3')) return 'mp3';
+        return 'webm';
+    },
+
+    /** Нажали 🎤: начать запись или, если она идёт, остановить и распознать. */
+    async dictate(btn, target) {
+        const st = this.dictation;
+        if (st.recorder && st.recorder.state === 'recording') { st.recorder.stop(); return; }
+        if (st.busy) return;
+        if (!target) return;
+        if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder)) {
+            this.toast('Браузер не даёт записать звук — нужен https и современный браузер', 'error');
+            return;
+        }
+        // Курсор запоминается до записи: кнопка не должна утащить место вставки
+        st.range = null;
+        const sel = window.getSelection();
+        if (target.isContentEditable && sel && sel.rangeCount && target.contains(sel.getRangeAt(0).startContainer)) {
+            st.range = sel.getRangeAt(0).cloneRange();
+        }
+        let stream;
+        try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+        catch { this.toast('Нет доступа к микрофону — разрешите его в браузере', 'error'); return; }
+        const mime = this.audioMime();
+        let rec;
+        try { rec = mime ? new MediaRecorder(stream, {mimeType: mime}) : new MediaRecorder(stream); }
+        catch {
+            try { rec = new MediaRecorder(stream); }
+            catch { stream.getTracks().forEach(t => t.stop()); this.toast('Запись звука не поддерживается', 'error'); return; }
+        }
+        const chunks = [];
+        const label = btn.textContent;
+        const started = Date.now();
+        const ui = on => {
+            btn.classList.toggle('mic--rec', on);
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        };
+        rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+        rec.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop());
+            clearInterval(st.tick);
+            ui(false);
+            st.recorder = null;
+            // Случайное касание — не запись
+            if (Date.now() - started < 600) { btn.textContent = label; return; }
+            const type = rec.mimeType || mime || 'audio/webm';
+            const blob = new Blob(chunks, {type});
+            if (!blob.size) { btn.textContent = label; this.toast('Запись пустая', 'error'); return; }
+            st.busy = true;
+            btn.disabled = true;
+            btn.textContent = '⏳ распознаём…';
+            try {
+                const fd = new FormData();
+                fd.append('audio', blob, 'voice.' + this.audioExt(type));
+                const res = await fetch('/api/mail.php?action=transcribe', {method: 'POST', body: fd, credentials: 'same-origin'});
+                const d = await res.json().catch(() => ({}));
+                if (!res.ok || d.error) throw new Error(d.error || 'Не удалось распознать запись');
+                this.insertDictation(target, d.text || '', st.range);
+            } catch (err) { this.toast(err.message, 'error'); }
+            finally { st.busy = false; btn.disabled = false; btn.textContent = label; }
+        };
+        rec.start();
+        st.recorder = rec;
+        ui(true);
+        const show = () => {
+            const sec = Math.floor((Date.now() - started) / 1000);
+            btn.textContent = `⏹ 0:${String(sec).padStart(2, '0')} — стоп`;
+            // Предел короткого распознавания SpeechKit — 30 секунд
+            if (sec >= 29 && rec.state === 'recording') rec.stop();
+        };
+        show();
+        st.tick = setInterval(show, 500);
+    },
+
+    /** Распознанный текст — в поле, на место курсора; поле узнаёт об этом как о наборе. */
+    insertDictation(target, text, range) {
+        text = String(text || '').trim();
+        if (!text) return;
+        if (target.isContentEditable) {
+            target.focus();
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            if (range) sel.addRange(range);
+            else { const r = document.createRange(); r.selectNodeContents(target); r.collapse(false); sel.addRange(r); }
+            const before = sel.rangeCount ? sel.getRangeAt(0).startContainer.textContent || '' : '';
+            const pad = before && !/\s$/.test(before.slice(0, sel.getRangeAt(0).startOffset)) ? ' ' : '';
+            document.execCommand('insertText', false, pad + text + ' ');
+        } else {
+            const at = target.selectionStart ?? target.value.length;
+            const pad = at > 0 && !/\s$/.test(target.value.slice(0, at)) ? ' ' : '';
+            target.setRangeText(pad + text + ' ', at, target.selectionEnd ?? at, 'end');
+            target.focus();
+            target.dispatchEvent(new Event('input', {bubbles: true}));
+        }
     },
 });
 

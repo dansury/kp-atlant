@@ -1479,3 +1479,25 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
             color: var(--text-muted); font-size: 14px; line-height: 1; flex: 0 0 auto; }
 .fold-all:hover { color: var(--text); border-color: var(--text-muted); }
 .fold-all ~ .block-fold { margin-left: 0; }
+
+/* Поддержка: зона вставки/перетаскивания скриншота (issue #88). #666 на #fff = 5.7:1, AA */
+.sup-drop { display: block; padding: 12px; border: 1px dashed var(--border); border-radius: 4px;
+    color: #666; font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: normal;
+    text-align: center; cursor: pointer; }
+.sup-drop--over { border-color: var(--primary); background: #fff5f5; }
+.sup-thumb { width: 40px; height: 28px; object-fit: cover; vertical-align: middle; border-radius: 2px; }
+
+/* «Написать» на всю страницу (issue #89): поле письма — основная площадь экрана */
+.compose-page .composer__editor { min-height: 50vh; }
+
+/* Заказ ушёл СДЭК, письмо с трек-ссылкой ждёт отправки (issue #88).
+   Фиолетовый — отдельный смысл «отправлено, сообщите клиенту». #5b21b6 на #f3e8ff = 7.9:1, AA */
+.grow--cdek { background: #f3e8ff; box-shadow: inset 3px 0 0 #7c3aed; }
+.grow--cdek .grow__draft { color: #5b21b6; }
+.bcard--cdek { background: #f3e8ff; border-left: 3px solid #7c3aed; }
+.bcard--cdek .chip--ship { background: #ede9fe; color: #5b21b6; }
+
+/* Голосовой ввод (модуль 059): идёт запись — кнопка залита красным. #fff на #b91c1c = 6.5:1, AA */
+.mic--rec { background: #b91c1c; border-color: #b91c1c; color: #fff; animation: micPulse 1.2s ease-in-out infinite; }
+@keyframes micPulse { 50% { box-shadow: 0 0 0 4px rgba(185, 28, 28, .25); } }
+@media (prefers-reduced-motion: reduce) { .mic--rec { animation: none; } }

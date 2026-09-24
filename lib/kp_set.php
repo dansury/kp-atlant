@@ -112,6 +112,7 @@ final class KpSet {
             'discount_percent'    => (float)($m['discount_percent'] ?? 0),
             'price_is_manual'     => (int)($m['price_is_manual'] ?? 0),
             'wait_on'             => (int)($m['wait_on'] ?? 0),
+            'wait_manual'         => (int)($m['wait_manual'] ?? 0),
             'wait_months'         => $m['wait_months'] ?? null,
             'wait_discount'       => $m['wait_discount'] ?? null,
             'wait_prepay'         => $m['wait_prepay'] ?? null,

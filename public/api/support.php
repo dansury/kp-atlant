@@ -38,7 +38,18 @@ try {
 
         case 'submit':
             if (!Support::enabled()) jsonError('Обратная связь выключена в настройках');
-            $res = Support::submit((int)$manager['id'], $input, (array)($input['files'] ?? []));
+            // Администратор сам и есть ревью: его обращение сразу уходит в issue (issue #90)
+            $res = Support::submit((int)$manager['id'], $input + ($isAdmin ? ['quiet' => 1] : []),
+                                   (array)($input['files'] ?? []));
+            if ($isAdmin && Support::repo() !== '' && Support::token() !== '') {
+                try {
+                    $gh = Support::approve((int)$res['id'], (int)$manager['id']);
+                    $res += ['issue_number' => $gh['number'], 'issue_url' => $gh['url']];
+                } catch (Throwable $e) {
+                    Logger::exception('support', $e, ['ticket' => $res['id']]);
+                    $res['issue_error'] = $e->getMessage();
+                }
+            }
             jsonOk($res + ['items' => Support::listFor($manager)]);
 
         /**
