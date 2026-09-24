@@ -79,5 +79,26 @@ ok('список складов для выбора', str_contains($inv, "case '
 ok('клиент шлёт склад', str_contains($js, '&store_id=${encodeURIComponent(picked.store || \'\')}'));
 ok('окно выбора склада', str_contains($js, 'data-pick-store') && str_contains($js, 'pickInvoiceTarget()'));
 
+echo "Документы в письме\n";
+ok('kpAttach объявлен один раз', substr_count($js, '    async kpAttach(') === 1 && str_contains($js, 'async kpAttachFiles(input)'));
+ok('у файла кнопка ✕ «Убрать из письма»', str_contains($js, 'onclick="App.removeFileChip(this)"'));
+ok('тот же документ не дублируется', str_contains($js, 'addFileChip(composer, f)'));
+ok('документ идёт в видимое письмо', str_contains($js, 'const composer = this.activeComposer();'));
+$methods = [];
+preg_match_all('/^    (?:async )?([a-zA-Z_]+)\(/m', $js, $m);
+$dups = array_keys(array_filter(array_count_values($m[1]), fn($n) => $n > 1));
+ok('в App нет одноимённых методов', !$dups, implode(', ', $dups));
+
+echo "Печатная форма счёта\n";
+ok('ссылка хранилища — без токена', str_contains($ms, "self::requestRawUrl('GET', \$url, null, \$ownHost)")
+    && str_contains($ms, "\$auth ? self::headers(\$body !== null) : []"));
+ok('причина отказа — в ответе 502', str_contains($inv, 'MoySklad::lastExportError()'));
+ok('просмотр счёта без JSON в рамке', str_contains($js, "URL.createObjectURL(await res.blob())"));
+
+echo "Подпись в поле письма\n";
+ok('галочка правит поле', str_contains($js, 'this.insertSignature(box, sign)') && str_contains($js, 'this.removeSignature(box, sign)'));
+ok('подпись после черновика, не наперегонки', str_contains($js, 'await this.syncSignature(c, restored);'));
+ok('черновик нейросети отмечает галочку', str_contains($js, "await this.syncSignature(c, true);\n            this.composerChanged(key);"));
+
 echo $fail ? "\nFAILED: $fail\n" : "\nAll passed\n";
 exit($fail ? 1 : 0);

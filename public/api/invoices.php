@@ -111,7 +111,8 @@ switch ($action) {
         if (!$inv) jsonError('Счёт не найден', 404);
 
         $path = MsSync::ensureInvoicePdf($id);
-        if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад', 502);
+        if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад'
+                . (MoySklad::lastExportError() !== '' ? ': ' . MoySklad::lastExportError() : ''), 502);
 
         header('Content-Type: application/pdf');
         header('Content-Disposition: inline; filename="' . rawurlencode('Счёт ' . $inv['name'] . '.pdf') . '"');
@@ -376,7 +377,8 @@ switch ($action) {
         if (!filter_var($to, FILTER_VALIDATE_EMAIL)) jsonError('Укажите корректный email получателя');
 
         $path = MsSync::ensureInvoicePdf($id);
-        if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад', 502);
+        if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад'
+                . (MoySklad::lastExportError() !== '' ? ': ' . MoySklad::lastExportError() : ''), 502);
 
         $subject = trim($input['subject'] ?? '') ?:
             ((string)Db::val("SELECT value FROM settings WHERE key='invoice_email_subject'") . ' № ' . $inv['name']);

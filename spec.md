@@ -52,7 +52,7 @@
 | WYSIWYG-редактор КП со страницами, тексты для следующих КП, подпись по выбору, медленная модель ≠ фильтр, жирные неотвеченные в списке | `specs/051-wysiwyg-kp-and-signature/spec.md` | Implemented |
 | Documents into the letter in one click and downloadable, match table (+ Позиция below, folding, integer qty), pinned «?», МойСклад window on invoice, «СОТРУДНИК» in the invoice, rail arrows | `specs/052-attach-docs-and-match-table/spec.md` | Implemented |
 | Bitrix module zip built in the repo, «Сайт (Битрикс)» card in «Каталог» (description priority, sync, module version), Excel export in the Bitrix admin menu | `specs/053-bitrix-zip-and-site-card/spec.md` | Implemented |
-| КП buttons on a folded match table; invoice order in «Резерв» on a store with the employee | `specs/054-folded-kp-bar-and-order-reserve/spec.md` | Implemented |
+| КП buttons on a folded match table; invoice order in «Резерв» on a store with the employee; attach/remove documents in the letter, invoice print form, signature checkbox in the editor | `specs/054-folded-kp-bar-and-order-reserve/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -99,7 +99,7 @@
 | Модуль 051: поля КП и подстановки из редактора, заготовки для следующих КП, подпись по выбору, разрыв страницы в Word, таймаут модели | `php tests/module_051.php` |
 | Модуль 052: вложения скачиваются, «СОТРУДНИК» в счёте по типу поля, целое количество, интерфейс по исходнику | `php tests/module_052.php` |
 | Модуль 053: архив модуля Битрикс совпадает с исходниками, подписи выбора, версия модуля, меню экспорта | `php tests/module_053.php` |
-| Модуль 054: кнопки КП при свёрнутом подборе, статус по имени, склад по умолчанию, резерв позиций | `php tests/module_054.php` |
+| Модуль 054: кнопки КП при свёрнутом подборе, статус по имени, склад по умолчанию, резерв позиций, документы в письме, печатная форма счёта, подпись в поле | `php tests/module_054.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

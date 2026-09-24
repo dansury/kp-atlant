@@ -2453,13 +2453,13 @@ const App = {
      * пишется по переписке — в него, если открыт бланк нового письма — в него.
      */
     async attachDoc(kind, id, btn) {
-        const composer = document.querySelector('[data-composer]');
+        const composer = this.activeComposer();
         if (!composer) { this.toast('Сначала откройте письмо, к которому приложить', 'error'); return; }
         btn.disabled = true;
         try {
             const r = await this.api('mail.php?action=attach_doc', {method: 'POST', body: {kind, id}});
             const f = r.file;
-            composer.querySelector('[data-cmp-files]').insertAdjacentHTML('beforeend', this.fileChip(f));
+            this.addFileChip(composer, f);
             this.toast(`Приложено: ${f.filename} — нажмите на него в письме, чтобы скачать и проверить`, 'success');
             composer.scrollIntoView({behavior: 'smooth', block: 'center'});
         } catch (err) { this.toast(err.message, 'error'); }
@@ -3828,7 +3828,7 @@ const App = {
                 <!-- Свои файлы к письму: менеджер мог переделать документ руками (модуль 023) -->
                 <div class="form-group" style="max-width:420px">
                     <label>Свои файлы к письму</label>
-                    <input type="file" multiple onchange="App.kpAttach(this)">
+                    <input type="file" multiple onchange="App.kpAttachFiles(this)">
                     <div class="composer__files" id="kpFiles"></div>
                 </div>
                 <button class="btn btn--primary" onclick="App.sendProposal(${id})">Отправить КП</button>
@@ -4357,7 +4357,7 @@ const App = {
     },
 
     /** Свои файлы к письму с КП — тот же выгрузчик, что у ответа на письмо. */
-    async kpAttach(input) {
+    async kpAttachFiles(input) {
         const list = document.getElementById('kpFiles');
         if (!list || !input.files || !input.files.length) return;
         for (const file of [...input.files]) {
@@ -4897,7 +4897,7 @@ const App = {
                      встанет в тексте (модуль 047); снимается одной галочкой -->
                 <label class="muted composer__sign" title="Ваша подпись допишется в конец письма">
                     <input type="checkbox" data-cmp-sign checked
-                           onchange="App.toggleSignatureNote(this)"> подпись
+                           onchange="App.toggleSignatureNote(this, '${this.jsStr(key)}')"> подпись
                     <span data-cmp-sign-text></span>
                 </label>
                 <div class="composer__files" data-cmp-files></div>
@@ -4996,8 +4996,19 @@ const App = {
         if (box.dataset.open === '1') { box.dataset.open = ''; box.innerHTML = ''; btn.textContent = '👁 Просмотреть счёт'; return; }
         box.dataset.open = '1';
         btn.textContent = '👁 Свернуть счёт';
-        box.innerHTML = `<iframe class="invdock__frame" src="/api/invoices.php?action=pdf&id=${id}"
-                                 title="Счёт #${id}"></iframe>`;
+        box.innerHTML = '<div class="muted">Получаем печатную форму из МойСклад...</div>';
+        // Сначала файл, потом рамка: ошибка печати — строкой, а не JSON в рамке (модуль 054)
+        fetch(`/api/invoices.php?action=pdf&id=${id}`, {credentials: 'same-origin'}).then(async res => {
+            if (box.dataset.open !== '1') return;
+            if (!res.ok) {
+                let msg = 'Печатная форма не получена';
+                try { msg = (await res.json()).error || msg; } catch { /* не JSON */ }
+                box.innerHTML = `<div class="no">${this.esc(msg)}</div>`;
+                return;
+            }
+            const url = URL.createObjectURL(await res.blob());
+            box.innerHTML = `<iframe class="invdock__frame" src="${url}" title="Счёт #${id}"></iframe>`;
+        }).catch(err => { box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`; });
     },
 
     /** Счёт только что выставили — список под письмом должен его увидеть. */
@@ -5020,7 +5031,7 @@ const App = {
                 kind: 'invoice', id, filename: (field && field.value) || '',
             }});
             const f = r.file;
-            composer.querySelector('[data-cmp-files]').insertAdjacentHTML('beforeend', this.fileChip(f));
+            this.addFileChip(composer, f);
             this.toast('Счёт приложен к письму: ' + f.filename, 'success');
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
@@ -5087,9 +5098,84 @@ const App = {
         box.title = sign || 'Подпись не заведена — «Настройки → Подпись»';
     },
 
-    toggleSignatureNote(input) {
-        const box = input.closest('.composer__sign');
-        if (box) box.classList.toggle('composer__sign--off', !input.checked);
+    /**
+     * Галочка «подпись» ставит или убирает подпись в самом поле письма
+     * (модуль 054): что видно в поле, то и уйдёт.
+     */
+    async toggleSignatureNote(input, key = '') {
+        const c = input.closest('[data-composer]');
+        const box = c && c.querySelector('[data-cmp-rte]');
+        const sign = await this.mailSignature();
+        if (box && sign) {
+            if (input.checked) this.insertSignature(box, sign);
+            else this.removeSignature(box, sign);
+            // Поле без текста, кроме подписи, — не черновик: карточку не заводим
+            const rest = box.cloneNode(true);
+            rest.querySelectorAll('[data-cmp-signature]').forEach(el => el.remove());
+            if (rest.textContent.trim()) this.composerChanged(key);
+        }
+        this.markSignature(input);
+    },
+
+    markSignature(input) {
+        const label = input.closest('.composer__sign');
+        if (label) label.classList.toggle('composer__sign--off', !input.checked);
+    },
+
+    /**
+     * Подпись в поле после того, как в него что-то положили (модуль 054).
+     * $fromContent — текст пришёл готовым (черновик, нейросеть): галочка
+     * показывает, есть ли в нём подпись. Иначе — пустое поле получает подпись,
+     * если галочка стоит.
+     */
+    async syncSignature(c, fromContent) {
+        const input = c && c.querySelector('[data-cmp-sign]');
+        const box = c && c.querySelector('[data-cmp-rte]');
+        if (!input || !box) return;
+        const sign = await this.mailSignature();
+        if (!sign) return;
+        const has = this.hasSignature(box, sign);
+        if (fromContent) input.checked = has;
+        else if (input.checked && !has) this.insertSignature(box, sign);
+        this.markSignature(input);
+    },
+
+    /** Нормализация как у сервера (MailSignature::normalize): регистр, тире, скобки, пробелы. */
+    signNorm(t) {
+        return String(t).toLowerCase().replace(/[\u00a0()\-—–]/g, ' ').replace(/\s+/g, ' ').trim();
+    },
+
+    signLines(sign) {
+        return sign.split('\n').map(l => this.signNorm(l)).filter(l => l.length >= 3);
+    },
+
+    /** Подпись уже в поле: блок подписи или половина её строк (как MailSignature::has). */
+    hasSignature(box, sign) {
+        if (box.querySelector('[data-cmp-signature]')) return true;
+        const lines = this.signLines(sign);
+        const text = this.signNorm(box.innerText || box.textContent || '');
+        return lines.length > 0 && lines.filter(l => text.includes(l)).length * 2 >= lines.length;
+    },
+
+    insertSignature(box, sign) {
+        if (this.hasSignature(box, sign)) return;
+        const el = document.createElement('div');
+        el.dataset.cmpSignature = '1';
+        el.innerHTML = sign.split('\n').map(l => this.esc(l)).join('<br>');
+        // Пустое поле — строка для текста над подписью
+        if (!box.textContent.trim()) box.innerHTML = '<div><br></div>';
+        box.appendChild(el);
+    },
+
+    /** Убрать блок подписи — и подпись, которую написала нейросеть абзацем. */
+    removeSignature(box, sign) {
+        box.querySelectorAll('[data-cmp-signature]').forEach(el => el.remove());
+        const lines = this.signLines(sign);
+        if (!lines.length) return;
+        const whole = lines.join(' ');
+        [...box.querySelectorAll('p, div')].reverse().forEach(el => {
+            if (el.isConnected && this.signNorm(el.innerText || el.textContent || '') === whole) el.remove();
+        });
     },
 
     /**
@@ -5143,24 +5229,30 @@ const App = {
         const c = this.composerOf(key);
         if (!c) return;
         const box = c.querySelector('[data-cmp-rte]');
-        if (!box || box.innerHTML.trim() !== '') return;
+        if (!box) return;
+        // Подпись — после черновика: иначе поле уже не пустое и черновик не встанет
+        if (box.innerHTML.trim() !== '') { await this.syncSignature(c, true); return; }
+        let restored = false;
         try {
             const id = Number(c.querySelector('[data-cmp-reply]').value) || 0;
             const cp = Number((c.querySelector('[data-cmp-cp]') || {}).value) || 0;
             const d = await this.api('mail.php?action=draft_get&id=' + id
                                      + '&counterparty_id=' + cp
                                      + '&thread_key=' + encodeURIComponent(key || ''));
-            if (!d.draft || !d.draft.body) return;
-            box.innerHTML = d.draft.body;
-            const idBox = c.querySelector('[data-cmp-draft-id]');
-            if (idBox) idBox.value = d.draft.id || '';
-            const subj = c.querySelector('[data-cmp-subject]');
-            if (subj && !subj.value.trim() && d.draft.subject) subj.value = d.draft.subject;
-            const to = c.querySelector('[data-cmp-to]');
-            if (to && !to.value.trim() && d.draft.to_email) to.value = d.draft.to_email;
-            const note = c.querySelector('[data-cmp-saved]');
-            if (note) note.textContent = 'восстановлен черновик от ' + this.fmtDate(d.draft.updated_at);
+            if (d.draft && d.draft.body) {
+                box.innerHTML = d.draft.body;
+                restored = true;
+                const idBox = c.querySelector('[data-cmp-draft-id]');
+                if (idBox) idBox.value = d.draft.id || '';
+                const subj = c.querySelector('[data-cmp-subject]');
+                if (subj && !subj.value.trim() && d.draft.subject) subj.value = d.draft.subject;
+                const to = c.querySelector('[data-cmp-to]');
+                if (to && !to.value.trim() && d.draft.to_email) to.value = d.draft.to_email;
+                const note = c.querySelector('[data-cmp-saved]');
+                if (note) note.textContent = 'восстановлен черновик от ' + this.fmtDate(d.draft.updated_at);
+            }
         } catch { /* черновика нет — поле и так пустое */ }
+        await this.syncSignature(c, restored);
     },
 
     /** Свои файлы к письму: менеджер мог переделать документ руками. */
@@ -5186,14 +5278,39 @@ const App = {
 
     /**
      * Приложенный файл в письме (модуль 052): имя — ссылка на ту самую копию,
-     * что уйдёт клиенту, её можно скачать и проверить; × — убрать.
+     * что уйдёт клиенту, её можно скачать и проверить; ✕ — убрать из письма
+     * (модуль 054), у любого файла: КП, счёта, своего.
      */
     fileChip(f) {
         const url = '/api/mail.php?action=outbox_file&name=' + encodeURIComponent(f.name);
-        return `<span class="chip chip--file" data-cmp-file="${this.esc(f.name)}">
+        return `<span class="chip chip--file" data-cmp-file="${this.esc(f.name)}" data-cmp-filename="${this.esc(f.filename)}">
             <a href="${url}" download="${this.esc(f.filename)}"
                title="Скачать и проверить — уйдёт ровно этот файл">📎 ${this.esc(f.filename)} ⬇</a>
-            <a class="chip__x" onclick="this.parentElement.remove()" title="Убрать" role="button">×</a></span>`;
+            <button type="button" class="chip__x" onclick="App.removeFileChip(this)"
+                    title="Убрать из письма" aria-label="Убрать ${this.esc(f.filename)} из письма">✕</button></span>`;
+    },
+
+    /** Файл в письмо; тот же документ второй раз не дублируется, а заменяется. */
+    addFileChip(composer, f) {
+        const list = composer.querySelector('[data-cmp-files]');
+        if (!list) return;
+        [...list.querySelectorAll('[data-cmp-filename]')]
+            .filter(el => el.dataset.cmpFilename === f.filename).forEach(el => el.remove());
+        list.insertAdjacentHTML('beforeend', this.fileChip(f));
+    },
+
+    removeFileChip(btn) {
+        const chip = btn.closest('[data-cmp-file]');
+        if (!chip) return;
+        const name = chip.dataset.cmpFilename || 'файл';
+        chip.remove();
+        this.toast(`${name} убран из письма`, 'info');
+    },
+
+    /** Письмо, в которое кладутся документы: видимое на экране, иначе первое. */
+    activeComposer() {
+        const all = [...document.querySelectorAll('[data-composer]')];
+        return all.find(c => c.offsetParent !== null) || all[0] || null;
     },
 
     composerFiles(c) {
@@ -5384,6 +5501,7 @@ const App = {
             const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body});
             // Черновик приходит текстом — в редакторе он становится абзацами
             area.innerHTML = this.draftHtml(r.text || '');
+            await this.syncSignature(c, true);
             this.composerChanged(key);
             const subj = c.querySelector('[data-cmp-subject]');
             if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;

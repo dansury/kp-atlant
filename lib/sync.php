@@ -189,7 +189,11 @@ class MsSync {
         if ($abs && is_file($abs) && filesize($abs) > 0) return $abs;
 
         $pdf = MoySklad::exportInvoicePdf($inv['moysklad_id']);
-        if ($pdf === null) return null;
+        if ($pdf === null) {
+            Logger::warning('moysklad', 'Печатная форма счёта не получена: ' . MoySklad::lastExportError(),
+                            ['invoice_id' => $invoiceId]);
+            return null;
+        }
 
         $dir = ROOT . '/storage/invoices';
         if (!is_dir($dir)) mkdir($dir, 0755, true);

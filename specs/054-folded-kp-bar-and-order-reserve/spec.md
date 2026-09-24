@@ -1,4 +1,4 @@
-# Module 054 — КП buttons on a folded match table, the invoice's order in «Резерв» on a store with an employee
+# Module 054 — КП buttons on a folded match table, the invoice's order in «Резерв» on a store with an employee; attach / remove documents in the letter, invoice print form, signature checkbox
 
 Source: the request of 2026-09-24: the КП buttons (🔄 Пересобрать · Открыть ·
 ⬇ Word · ⬇ PDF · 📎 В письмо · 🧾 Счёт · Убрать) must stay visible when the
@@ -72,3 +72,58 @@ attribute (module 052) is filled as before.
 
 The store list is read once per page (`App._msStores`). A repeat after
 creating the counterparty in MoySklad (module 052) reuses the same choice.
+
+## 3. Documents in the letter: attach and remove
+
+- «📎 PDF в письмо» / «📎 Word в письмо» under the КП preview call
+  `kpAttach(id, kind, btn)`. The file input of the old КП page is
+  `kpAttachFiles(input)` — two methods with the same name overwrote each other,
+  and the buttons did nothing.
+- Documents go to the visible composer (`activeComposer()`: first
+  `[data-composer]` with `offsetParent`, else the first one).
+- `addFileChip(composer, f)`: the same document (same `filename`) attached again
+  replaces its chip instead of adding a second one.
+- Every attached file (КП, invoice, own file) has a ✕ button
+  (`removeFileChip`) — the chip goes away, and the file is no longer in
+  `files` of the send request.
+
+## 4. Invoice print form
+
+`MoySklad::exportInvoicePdf($id)`: POST `/entity/invoiceout/{id}/export`
+answers with the PDF (200) or a `Location` (303/202). The `Location` is polled
+by `downloadExport()` (up to 8 times while it answers 202/404/429/5xx),
+following storage redirects by hand. A URL on the API host is requested with
+the token; any other host (the file storage, a signed URL) — **without**
+`Authorization` and JSON headers: the storage refuses a second auth method.
+Export is re-requested at most 3 times, and not at all after 400/403/404/412.
+
+The reason for a failure is kept (`MoySklad::lastExportError()`): it is logged
+by `MsSync::ensureInvoicePdf` and appended to the 502 of
+`invoices.php?action=pdf` and `mail.php?action=attach_doc`.
+
+«👁 Просмотреть счёт» fetches the PDF first and shows it via a blob URL; an
+error is shown as text instead of JSON inside the frame.
+
+## 5. Signature checkbox edits the letter
+
+The «подпись» checkbox under the letter inserts or removes the signature in
+the editor itself — what is in the field is what goes out.
+
+- `insertSignature(box, sign)`: appends `<div data-cmp-signature>` with the
+  lines of `mailSignature()` joined by `<br>`; an empty field first gets an
+  empty line to type above it. Nothing is added if the signature is already
+  there.
+- `removeSignature(box, sign)`: removes `[data-cmp-signature]` and any
+  `p`/`div` whose normalized text is exactly the signature (the paragraph the
+  AI draft ends with).
+- `hasSignature(box, sign)`: a signature block, or at least half of the
+  signature lines in the text (same rule as `MailSignature::has`).
+- `syncSignature(c, fromContent)` runs after `restoreComposerDraft` (never in
+  parallel with it, so the signature does not block the draft) and after an AI
+  draft: for content that arrived ready (draft, AI) the checkbox shows whether
+  the signature is in it; an empty field gets the signature when the checkbox
+  is on.
+- Toggling saves the draft only if there is text besides the signature (an
+  untouched letter does not become a draft card).
+- The send request still carries `signature`; the server does not add it a
+  second time (`MailSignature::has`).

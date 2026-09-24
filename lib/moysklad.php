@@ -10,6 +10,7 @@ class MoySklad {
     // Last HTTP response, for diagnostics
     private static array $lastHttp = ['code' => 0, 'body' => '', 'path' => ''];
     private static array $diag = [];
+    private static string $exportError = '';
 
     public static function init(string $token): void {
         self::$token = $token;
@@ -1323,35 +1324,74 @@ class MoySklad {
      * Returns raw PDF bytes or null when unavailable.
      */
     public static function exportInvoicePdf(string $invoiceId): ?string {
+        self::$exportError = '';
         $template = self::firstInvoiceTemplate();
-        if (!$template) return null;
+        if (!$template) {
+            self::$exportError = 'у счёта покупателя нет ни одного шаблона печати';
+            return null;
+        }
 
         $body = [
             'template'  => ['meta' => $template['meta']],
             'extension' => 'pdf',
         ];
 
-        // MoySklad answers 200 with the file, or 3xx/202 with a Location to poll
-        for ($attempt = 0; $attempt < 4; $attempt++) {
+        // Ответ — сам файл (200) или ссылка на него (303/202 + Location).
+        // Ссылку опрашиваем, а не просим печать заново (модуль 054).
+        for ($attempt = 0; $attempt < 3; $attempt++) {
             [$code, $raw, $headers] = self::requestRaw('POST', "/entity/invoiceout/$invoiceId/export", $body);
 
-            if ($code === 200 && $raw !== '' && str_starts_with($raw, '%PDF')) return $raw;
+            if ($code === 200 && str_starts_with($raw, '%PDF')) return $raw;
 
-            if (in_array($code, [202, 301, 302, 303, 307], true)) {
-                $location = $headers['location'] ?? '';
-                if ($location) {
-                    sleep(1);
-                    [$c2, $raw2] = self::requestRawUrl('GET', $location);
-                    if ($c2 === 200 && str_starts_with($raw2, '%PDF')) return $raw2;
-                }
-                sleep(1);
+            $location = $headers['location'] ?? '';
+            if (in_array($code, [202, 301, 302, 303, 307], true) && $location !== '') {
+                $pdf = self::downloadExport($location);
+                if ($pdf !== null) return $pdf;
                 continue;
             }
 
-            if ($code === 403) return null;
-            sleep(1);
+            self::$exportError = "печать ответила HTTP $code" . self::errorText($raw);
+            if (in_array($code, [400, 403, 404, 412], true)) break;   // повтор не поможет
+            if ($code === 429) sleep(1);
         }
         return null;
+    }
+
+    /** Почему последняя печатная форма не получилась — для сообщения и журнала. */
+    public static function lastExportError(): string {
+        return self::$exportError;
+    }
+
+    /**
+     * Скачать готовую печатную форму по Location (модуль 054).
+     *
+     * Ссылка ведёт в файловое хранилище с подписью в самом адресе: токен
+     * МойСклад туда не отправляется — хранилище отвергает второй способ
+     * авторизации. Внутри API (тот же хост) — с токеном. Файл готовится не
+     * сразу — ссылка опрашивается, редирект хранилища проходится руками.
+     */
+    private static function downloadExport(string $url): ?string {
+        for ($i = 0; $i < 8; $i++) {
+            $ownHost = parse_url($url, PHP_URL_HOST) === parse_url(self::$base, PHP_URL_HOST);
+            [$code, $raw, $headers] = self::requestRawUrl('GET', $url, null, $ownHost);
+            if ($code === 200 && str_starts_with($raw, '%PDF')) return $raw;
+            if (in_array($code, [301, 302, 303, 307, 308], true) && !empty($headers['location'])) {
+                $url = $headers['location'];
+                continue;
+            }
+            self::$exportError = "файл печатной формы: HTTP $code" . self::errorText($raw);
+            // 202 / 404 — форма ещё готовится; остальное — ждать нечего
+            if (!in_array($code, [202, 404, 429, 0], true) && $code < 500) return null;
+            usleep(700000 + $i * 300000);
+        }
+        return null;
+    }
+
+    /** Текст ошибки МойСклад из ответа, если он там есть. */
+    private static function errorText(string $raw): string {
+        $j = json_decode($raw, true);
+        $msg = is_array($j) ? (string)($j['errors'][0]['error'] ?? '') : '';
+        return $msg !== '' ? ": $msg" : '';
     }
 
     /**
@@ -1493,7 +1533,7 @@ class MoySklad {
     }
 
     // Raw request against an absolute URL (used for async export redirects)
-    private static function requestRawUrl(string $method, string $url, ?array $body = null): array {
+    private static function requestRawUrl(string $method, string $url, ?array $body = null, bool $auth = true): array {
         $headers = [];
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -1502,7 +1542,8 @@ class MoySklad {
             CURLOPT_CUSTOMREQUEST  => $method,
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_ENCODING       => 'gzip',
-            CURLOPT_HTTPHEADER     => self::headers($body !== null),
+            // Чужой хост (хранилище файлов) — без токена и JSON-заголовков
+            CURLOPT_HTTPHEADER     => $auth ? self::headers($body !== null) : [],
             CURLOPT_HEADERFUNCTION => function ($ch, $line) use (&$headers) {
                 $parts = explode(':', $line, 2);
                 if (count($parts) === 2) $headers[strtolower(trim($parts[0]))] = trim($parts[1]);

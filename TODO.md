@@ -105,3 +105,6 @@ not have.
   are reserved there, and «Сотрудник» (owner) is the manager. If the token may not
   assign other employees, the note «сотрудник МойСклад … (МойСклад не дал назначить)»
   appears — then give the token's employee that right.
+- «👁 Просмотреть счёт» / «📎 Прикрепить счёт»: the print-form download no longer
+  sends the token to the file storage. If it still fails, the error now names the
+  reason (HTTP code + MoySklad text) — check the journal and `MS_INVOICE_TEMPLATE`.
