@@ -428,7 +428,9 @@ try {
                 jsonError('Неизвестный документ');
             }
 
-            jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'])]);
+            // Счёт или КП — помечается: письмо с ним передвинет карточку (модуль 056)
+            jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'],
+                                            $kind === 'invoice' ? 'invoice' : 'kp', $id)]);
         }
 
         // Приложенный файл — назад, скачать и проверить до отправки (модуль 052)

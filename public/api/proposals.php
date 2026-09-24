@@ -753,7 +753,16 @@ switch ($action) {
         Db::update('proposals', ['status' => 'sent', 'sent_at' => $now, 'updated_at' => $now], 'id=?', [$id]);
         Db::update('requests', ['status' => 'sent', 'updated_at' => $now], 'id=?', [$proposal['request_id']]);
 
-        jsonOk(['sent_at' => $now]);
+        // КП ушло — карточка в «КП отправлено», если не дальше (модуль 056)
+        $stage = null;
+        try {
+            require_once ROOT . '/lib/boards.php';
+            $stage = Boards::advance($proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null, null, 'kp_sent');
+        } catch (Throwable $e) {
+            Logger::warning('boards', 'Карточка не передвинулась: ' . $e->getMessage(), ['proposal_id' => $id]);
+        }
+
+        jsonOk(['sent_at' => $now, 'stage' => $stage]);
 
     // Photos available for one KP position, with the manager's current pick
     case 'item_images':

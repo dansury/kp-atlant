@@ -91,7 +91,7 @@ creating the counterparty in MoySklad (module 052) reuses the same choice.
 
 `MoySklad::exportInvoicePdf($id)`: POST `/entity/invoiceout/{id}/export`
 answers with the PDF (200) or a `Location` (303/202). The `Location` is polled
-by `downloadExport()` (up to 8 times while it answers 202/404/429/5xx),
+by `downloadExport()` (for up to 40 s while it answers 202/404/429/5xx — a fresh print form takes MoySklad a while, a recent one comes at once),
 following storage redirects by hand. A URL on the API host is requested with
 the token; any other host (the file storage, a signed URL) — **without**
 `Authorization` and JSON headers: the storage refuses a second auth method.

@@ -108,3 +108,7 @@ not have.
 - «👁 Просмотреть счёт» / «📎 Прикрепить счёт»: the print-form download no longer
   sends the token to the file storage. If it still fails, the error now names the
   reason (HTTP code + MoySklad text) — check the journal and `MS_INVOICE_TEMPLATE`.
+
+## Module 056 — check on the live board
+- Send a letter with «📎 В письмо» КП → the card goes to «КП отправлено»; send the
+  invoice → «Ждём оплату»; send another КП after that → the card stays.

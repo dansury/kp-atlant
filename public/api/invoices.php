@@ -418,7 +418,16 @@ switch ($action) {
             'meta'       => ['invoice_id' => $id, 'invoice_name' => $inv['name'], 'sum' => (float)$inv['sum']],
         ]);
 
-        jsonOk(['sent_to' => $to]);
+        // Счёт ушёл — карточка ждёт оплату (модуль 056)
+        $stage = null;
+        try {
+            require_once ROOT . '/lib/boards.php';
+            $stage = Boards::advance($inv['counterparty_id'] ? (int)$inv['counterparty_id'] : null, null, 'payment');
+        } catch (Throwable $e) {
+            Logger::warning('boards', 'Карточка не передвинулась: ' . $e->getMessage(), ['invoice_id' => $id]);
+        }
+
+        jsonOk(['sent_to' => $to, 'stage' => $stage]);
     }
 
     default:
