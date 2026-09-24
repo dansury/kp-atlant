@@ -1148,30 +1148,28 @@ final class Boards {
      * «Глори Эйр» should find the card even when only the letter mentions it.
      */
     public static function search(string $q, int $limit = 50): array {
-        require_once __DIR__ . '/mail.php';
-
         // Слова ищутся ВСЕ: «уралэлемент счёт» — это карточка, где есть и то, и
-        // другое. И каждое слово ищется по всему, что за карточкой стоит —
-        // письма целиком, вложения, запрос (модуль 023).
-        $terms = MailArchive::searchTerms($q);
+        // другое. Каждое слово — по карточке, компании, запросу и всем письмам
+        // за карточкой, без учёта регистра (модуль 055).
+        $terms = SearchIndex::terms($q);
         if (!$terms) return [];
+        SearchIndex::ready();
 
         $where = ['d.dismissed_at IS NULL'];
         $params = [];
         foreach ($terms as $term) {
-            $like = '%' . $term . '%';
-            $where[] = "(d.title LIKE ? OR d.note LIKE ?
-                OR cp.name LIKE ? OR cp.inn LIKE ?
-                OR r.email_subject LIKE ? OR r.raw_text LIKE ? OR r.email_from LIKE ?
+            $like = SearchIndex::like($term);
+            [$msg, $p] = SearchIndex::messageMatch('m', $term);
+            $where[] = "(d.id IN (" . SearchIndex::hitsSql('card') . ")
+                OR d.counterparty_id IN (SELECT id FROM counterparties
+                                         WHERE id IN (" . SearchIndex::hitsSql('cp') . ")
+                                            OR merged_into_id IN (" . SearchIndex::hitsSql('cp') . "))
+                OR d.request_id IN (" . SearchIndex::hitsSql('req') . ")
                 OR EXISTS (SELECT 1 FROM mail_messages m
-                           LEFT JOIN attachments a ON a.mail_message_id = m.id
                            WHERE (m.thread_key = d.thread_key
                                   OR (d.counterparty_id IS NOT NULL AND m.counterparty_id = d.counterparty_id))
-                             AND (m.subject LIKE ? OR m.body_text LIKE ? OR m.body_html LIKE ?
-                                  OR m.from_email LIKE ? OR m.from_name LIKE ?
-                                  OR m.to_emails LIKE ? OR m.cc_emails LIKE ?
-                                  OR a.filename LIKE ? OR a.extracted_text LIKE ?)))";
-            array_push($params, ...array_fill(0, 16, $like));
+                             AND $msg))";
+            array_push($params, $like, $like, $like, $like, ...$p);
         }
 
         return Db::all(

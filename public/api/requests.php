@@ -35,10 +35,16 @@ switch ($action) {
             $where .= " AND r.category IS NOT 'spam'";
         }
         if (trim((string)($_GET['q'] ?? '')) !== '') {
-            // Поиск по всем запросам: контрагент, контактное лицо, тема письма, текст
-            $where .= ' AND (c.name LIKE ? OR c.contact_person LIKE ? OR r.email_subject LIKE ? OR r.email_from LIKE ? OR r.raw_text LIKE ?)';
-            $like = '%' . trim((string)$_GET['q']) . '%';
-            array_push($params, $like, $like, $like, $like, $like);
+            // Каждое слово — в запросе (текст, позиции, КП) или в его компании (модуль 055)
+            SearchIndex::ready();
+            foreach (SearchIndex::terms((string)$_GET['q']) as $term) {
+                $like = SearchIndex::like($term);
+                $where .= ' AND (r.id IN (' . SearchIndex::hitsSql('req') . ')
+                             OR r.counterparty_id IN (SELECT id FROM counterparties
+                                                      WHERE id IN (' . SearchIndex::hitsSql('cp') . ')
+                                                         OR merged_into_id IN (' . SearchIndex::hitsSql('cp') . ')))';
+                array_push($params, $like, $like, $like);
+            }
         }
 
         $total = Db::val("SELECT COUNT(*) FROM requests r LEFT JOIN counterparties c ON r.counterparty_id = c.id WHERE $where", $params);
