@@ -93,3 +93,9 @@ not have.
   «UID в МойСклад» in the manager card if the name lookup does not find them.
 - «Счёт в МойСклад» on a company without MoySklad: the creation window opens,
   after «Создать» the invoice is issued without reloading the page.
+
+## Module 053 — needs a live MoySklad
+- Issue an invoice: check the order is in «Резерв», on the chosen store, the goods
+  are reserved there, and «Сотрудник» (owner) is the manager. If the token may not
+  assign other employees, the note «сотрудник МойСклад … (МойСклад не дал назначить)»
+  appears — then give the token's employee that right.
