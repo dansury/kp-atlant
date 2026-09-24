@@ -833,7 +833,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    without leaving the company. */
 .card--items { margin: 10px 0 12px; background: var(--surface-2); border-color: var(--border); }
 /* Свёрнутый подбор (модуль 045): видна только шапка с кнопкой «Развернуть» */
-.card--folded > :not(.card__title) { display: none !important; }
+/* Кнопки КП и счета видны и в свёрнутом подборе (модуль 053) */
+.card--folded > :not(.card__title):not(.card__keep) { display: none !important; }
 .card--items > .card__title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .card--folded > .card__title { margin-bottom: 0; }
 .card__fold { margin-left: auto; }

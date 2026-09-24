@@ -962,14 +962,15 @@ const App = {
                 <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
             </div>
             <div data-delivery>${this.deliveryRow(opts.delivery)}</div>
-            <div class="flex flex--wrap" style="margin-top:10px">
+            <!-- .card__keep — видно и в свёрнутом подборе (модуль 053) -->
+            <div class="flex flex--wrap card__keep" style="margin-top:10px">
                 <!-- «Сохранить» больше нет: правки сохраняются сами (issue #60) -->
                 <span class="muted" data-match-saved></span>
                 <span data-kp-buttons class="flex flex--wrap">${this.matchKpButton(requestId, opts.kp || {})}</span>
             </div>
-            <div data-kp-invoices class="muted" style="margin-top:6px"></div>
+            <div data-kp-invoices class="muted card__keep" style="margin-top:6px"></div>
             <div data-match-total class="muted" style="margin-top:8px"></div>
-            <div data-kp-slot></div>
+            <div data-kp-slot class="card__keep"></div>
         `;
         this.updateMatchTotal(host);
         this.bindMatchDnd(host);
@@ -2305,12 +2306,13 @@ const App = {
      * печатная форма и появляется строкой в карточке: приложить к письму
      * одной кнопкой или забрать отдельным файлом — как и просили.
      */
-    async kpInvoice(id, btn, pickedOrg = null) {
-        // Организаций в карточке может быть несколько — на какую счёт, решает
-        // менеджер, а не карточка (модуль 029). Одна организация — вопрос не
-        // задаётся вовсе. Повтор после заведения в МойСклад — на ту же.
-        const orgId = pickedOrg !== null ? pickedOrg : await this.pickInvoiceOrg();
-        if (orgId === null) return;
+    async kpInvoice(id, btn, picked = null) {
+        // На какую организацию (модуль 029) и с какого склада (модуль 053) —
+        // решает менеджер; выбирать нечего — вопроса нет. Повтор после
+        // заведения в МойСклад — с тем же выбором.
+        picked = picked || await this.pickInvoiceTarget();
+        if (!picked) return;
+        const orgId = picked.org;
 
         // Кнопка живёт в двух местах: в развёрнутой карточке КП и под таблицей
         // подбора. Во втором случае счёт встаёт строкой под кнопками КП.
@@ -2320,7 +2322,8 @@ const App = {
         btn.textContent = 'Выставляем...';
         try {
             const r = await this.api(
-                `invoices.php?action=create_from_proposal&proposal_id=${id}&org_id=${orgId}`,
+                `invoices.php?action=create_from_proposal&proposal_id=${id}&org_id=${orgId}`
+                    + `&store_id=${encodeURIComponent(picked.store || '')}`,
                 {method: 'POST', body: {}});
             this.toast(`Счёт ${r.name} выставлен` + (r.order ? `, заказ ${r.order.name} в резерве` : ''),
                        'success');
@@ -2348,7 +2351,7 @@ const App = {
             const ms = err.data && err.data.ms_unlinked;
             if (ms) {
                 this.toast(err.message, 'info');
-                this._msAfter = () => this.kpInvoice(id, btn, orgId);
+                this._msAfter = () => this.kpInvoice(id, btn, picked);
                 this.msCreateForm(ms);
             } else {
                 this.toast(err.message, 'error');
@@ -2358,37 +2361,60 @@ const App = {
     },
 
     /**
-     * На какую организацию счёт (модуль 029).
+     * На какую организацию счёт (модуль 029) и с какого склада (модуль 053).
      *
-     * Возвращает id организации, 0 — сама карточка, `null` — менеджер передумал.
-     * Организация одна — спрашивать нечего: лишнее окно на каждом счёте хуже,
-     * чем отсутствие выбора там, где выбора нет.
+     * Возвращает {org, store}: org — id организации, 0 — сама карточка;
+     * store — id склада, '' — по умолчанию; `null` — менеджер передумал.
+     * Одна организация и не больше одного склада — окна нет: лишнее окно на
+     * каждом счёте хуже, чем отсутствие выбора там, где выбора нет.
      */
-    pickInvoiceOrg() {
+    async pickInvoiceTarget() {
         const orgs = (this.company && this.company.orgs) || [];
-        if (orgs.length < 2) return Promise.resolve(0);
+        if (!this._msStores) {
+            try {
+                const d = await this.api('invoices.php?action=stores');
+                this._msStores = {items: d.items || [], def: d.default || ''};
+            } catch { this._msStores = {items: [], def: ''}; } // склад выберет сервер
+        }
+        const stores = this._msStores;
+        if (orgs.length < 2 && stores.items.length < 2) return {org: 0, store: stores.def};
+        const primary = orgs.find(o => o.primary) || orgs[0];
         return new Promise(resolve => {
             this._orgPick = resolve;
-            this.modal('На какую организацию счёт?', `
-                <p class="muted">В карточке несколько организаций — счёт выставляется на выбранную.</p>
-                ${orgs.map(o => `
-                    <button class="btn btn--block ${o.primary ? 'btn--primary' : 'btn--outline'}"
-                            style="margin-bottom:6px;text-align:left"
-                            ${o.moysklad_id ? '' : 'title="Не связана с МойСклад — сначала откроется окно заведения"'}
-                            onclick="App.finishOrgPick(${o.id})">
-                        ${this.esc(o.name)}${o.inn ? ` <small class="muted">ИНН ${this.esc(o.inn)}</small>` : ''}
-                        ${o.moysklad_id ? '' : ' <small class="no">нет в МойСклад</small>'}
-                    </button>`).join('')}
-                <button class="btn btn--outline btn--block" onclick="App.finishOrgPick(null)">Отмена</button>
+            this.modal('Выставить счёт', `
+                ${orgs.length >= 2 ? `
+                <div class="form-group"><label for="pickOrg">Организация покупателя</label>
+                    <select id="pickOrg" data-pick-org>
+                        ${orgs.map(o => `<option value="${o.id}" ${o === primary ? 'selected' : ''}>
+                            ${this.esc(o.name)}${o.inn ? ' · ИНН ' + this.esc(o.inn) : ''}${o.moysklad_id ? '' : ' · нет в МойСклад'}
+                        </option>`).join('')}
+                    </select></div>
+                <p class="muted">Не связанная с МойСклад организация сначала откроет окно заведения.</p>` : ''}
+                ${stores.items.length >= 2 ? `
+                <div class="form-group"><label for="pickStore">Склад — на нём товар встанет в резерв</label>
+                    <select id="pickStore" data-pick-store>
+                        ${stores.items.map(st => `<option value="${this.esc(st.id)}" ${st.id === stores.def ? 'selected' : ''}>
+                            ${this.esc(st.name)}</option>`).join('')}
+                    </select></div>` : ''}
+                <div class="flex flex--wrap" style="margin-top:10px">
+                    <button class="btn btn--primary" onclick="App.finishOrgPick(true)">Выставить счёт</button>
+                    <button class="btn btn--outline" onclick="App.finishOrgPick(null)">Отмена</button>
+                </div>
             `);
         });
     },
 
-    finishOrgPick(orgId) {
+    finishOrgPick(go) {
         const resolve = this._orgPick;
+        const org = document.querySelector('.modal [data-pick-org]');
+        const store = document.querySelector('.modal [data-pick-store]');
+        const picked = go ? {
+            org: org ? Number(org.value) : 0,
+            store: store ? store.value : ((this._msStores && this._msStores.def) || ''),
+        } : null;
         this._orgPick = null;
         this.closeModal();
-        if (resolve) resolve(orgId);
+        if (resolve) resolve(picked);
     },
 
     /** Что показать о только что выставленном счёте в развёрнутой карточке КП. */
@@ -9931,6 +9957,18 @@ const App = {
         } catch { /* нет связи с МойСклад — остаётся то, что уже выбрано */ }
     },
 
+    async loadStoreOptions(selectId, current) {
+        try {
+            const d = await this.api('admin.php?action=moysklad_stores');
+            const sel = document.getElementById(selectId);
+            const items = (d.items || []).filter(st => !st.archived);
+            if (!sel || !items.length) return;
+            sel.innerHTML = `<option value="">(первый из складов для остатков)</option>`
+                + items.map(st => `<option value="${this.esc(st.id)}">${this.esc(st.name)}</option>`).join('');
+            sel.value = current || '';
+        } catch { /* нет связи с МойСклад — остаётся то, что уже выбрано */ }
+    },
+
     // target: the provider card's own result box, so the answer shows next to its button
     async testLlm(provider, target = 'testResult') {
         const dirty = target !== 'testResult' && this.llmCardDirty(provider)
@@ -10223,6 +10261,13 @@ const App = {
                     this.loadOrganizations(id, String(it.value));
                     return `<select id="${id}">
                         <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первая организация аккаунта)'}</option>
+                    </select>`;
+                }
+                // Склад заказа под счёт — из списка складов МойСклад (модуль 053)
+                if (it.type === 'store') {
+                    this.loadStoreOptions(id, String(it.value));
+                    return `<select id="${id}">
+                        <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первый из складов для остатков)'}</option>
                     </select>`;
                 }
                 // Списки синонимов и текст блока дисциплины — многострочные

@@ -204,6 +204,13 @@ switch ($action) {
         $employeeAttr = array_filter([
             trim((string)Settings::get('MS_EMPLOYEE_ATTR', 'СОТРУДНИК')) => trim((string)($managerCard['name'] ?? '')),
         ], fn($v, $k) => $k !== '' && $v !== '', ARRAY_FILTER_USE_BOTH);
+        // Склад заказа и счёта: выбор менеджера, иначе по умолчанию (модуль 053)
+        try {
+            $storeId = MoySklad::defaultStoreId(trim((string)($_GET['store_id'] ?? '')));
+        } catch (Throwable $e) {
+            $storeId = null;
+            Logger::warning('moysklad', 'Склады не прочитались: ' . $e->getMessage(), ['proposal_id' => $proposalId]);
+        }
         $order = null;
         $orderLocalId = null;
         $orderError = null;
@@ -218,6 +225,7 @@ switch ($action) {
                     'state_name'      => trim((string)Settings::get('MS_ORDER_STATE', 'Резерв')),
                     'attributes'      => $employeeAttr,
                     'manager'         => $managerCard,
+                    'store_id'        => (string)$storeId,
                 ]);
                 $orderMissing = $order['missing'] ?? [];
             } catch (Throwable $e) {
@@ -238,7 +246,10 @@ switch ($action) {
                 'order_id'        => $order['id'] ?? null,
                 'attributes'      => $employeeAttr,
                 'manager'         => $managerCard,
+                'store_id'        => (string)$storeId,
             ]);
+            // Чего не нашлось для счёта (сотрудник) — рядом с тем, что не нашлось для заказа
+            $orderMissing = array_values(array_unique(array_merge($orderMissing, $inv['missing'] ?? [])));
         } catch (MoySkladPermissionException $e) {
             jsonError('МойСклад: нет прав на создание счетов', 403);
         } catch (Throwable $e) {
@@ -298,6 +309,24 @@ switch ($action) {
             // Доставка отдельной строкой, а услуга в МойСклад не указана
             'delivery_missing' => $deliveryMissing,
         ]);
+    }
+
+    /**
+     * Склады для выбора при выставлении счёта (модуль 053): неархивные и тот,
+     * что стоит по умолчанию.
+     */
+    case 'stores': {
+        requireAuth();
+        MoySklad::init($GLOBALS['cfg']['MOYSKLAD_TOKEN'] ?? '');
+        try {
+            $all = MoySklad::stores();
+        } catch (Throwable $e) {
+            jsonError('Склады не получены: ' . $e->getMessage(), 502);
+        }
+        $items = array_values(array_map(fn($s) => ['id' => $s['id'], 'name' => $s['name']],
+                                        array_filter($all, fn($s) => !$s['archived'])));
+        jsonOk(['items' => $items, 'default' => MoySklad::pickStore(
+            $all, (string)Settings::get('MS_ORDER_STORE', ''), MoySklad::selectedStores())]);
     }
 
     /**

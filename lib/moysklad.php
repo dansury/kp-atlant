@@ -210,6 +210,29 @@ class MoySklad {
     }
 
     /**
+     * Склад заказа и счёта (модуль 053): выбранный, если он жив; затем первый
+     * из складов остатков; затем первый неархивный. Складов нет — null.
+     *
+     * @param array $stores   stores(): [{id, name, archived}]
+     * @param string $wanted  выбор менеджера или `MS_ORDER_STORE`
+     * @param array $selected `MOYSKLAD_STORES`
+     */
+    public static function pickStore(array $stores, string $wanted, array $selected): ?string {
+        $live = array_values(array_map(fn($s) => (string)$s['id'],
+            array_filter($stores, fn($s) => empty($s['archived']) && (string)($s['id'] ?? '') !== '')));
+        foreach (array_merge([trim($wanted)], $selected) as $id) {
+            if ($id !== '' && in_array($id, $live, true)) return $id;
+        }
+        return $live[0] ?? null;
+    }
+
+    /** Склад по умолчанию — из настроек и живого списка МойСклад. */
+    public static function defaultStoreId(string $wanted = ''): ?string {
+        if ($wanted === '') $wanted = (string)Settings::get('MS_ORDER_STORE', '');
+        return self::pickStore(self::stores(), $wanted, self::selectedStores());
+    }
+
+    /**
      * Перечитать остатки и записать их в `products_cache`.
      *
      * Отчёт `/report/stock/all` отдаёт и товары, и модификации одной таблицей —
@@ -679,6 +702,48 @@ class MoySklad {
         return $cache;
     }
 
+    /** Статус по имени без учёта регистра, пробелов и «ё» (модуль 053): «резерв » = «Резерв». */
+    public static function stateId(array $states, string $name): ?string {
+        $norm = fn(string $v) => str_replace('ё', 'е', mb_strtolower(trim(preg_replace('/\s+/u', ' ', $v))));
+        $want = $norm($name);
+        if ($want === '') return null;
+        foreach ($states as $n => $id) {
+            if ($norm((string)$n) === $want) return (string)$id;
+        }
+        return null;
+    }
+
+    /** Meta склада для тела документа. */
+    private static function storeMeta(string $storeId): array {
+        return ['meta' => [
+            'href'      => self::$base . '/entity/store/' . $storeId,
+            'type'      => 'store',
+            'mediaType' => 'application/json',
+        ]];
+    }
+
+    /**
+     * POST документа с «Сотрудником» (`owner`, модуль 053). Сотрудник не
+     * найден или МойСклад не дал его назначить — документ уходит без owner
+     * (его ставит сам МойСклад), а причина — в $missing.
+     */
+    private static function postWithOwner(string $path, array $body, ?array $manager, array &$missing): array {
+        $who = trim((string)($manager['name'] ?? ''));
+        $note = 'сотрудник МойСклад для менеджера' . ($who !== '' ? " «{$who}»" : '');
+        $owner = $manager ? self::employeeMeta($manager) : null;
+        if (!$owner) {
+            if ($manager) $missing[] = $note;
+            return self::post($path, $body);
+        }
+        try {
+            return self::post($path, $body + ['owner' => ['meta' => $owner]]);
+        } catch (MoySkladException $e) {
+            if (self::lastErrorCode() >= 500 || self::lastErrorCode() === 0) throw $e;
+            $missing[] = $note . ' (МойСклад не дал назначить: ' . $e->getMessage() . ')';
+            return self::post($path, $body);
+        }
+    }
+
     /** Дополнительные поля заказа покупателя: имя → [id, type, required, dictionary]. */
     public static function orderAttributes(): array {
         return self::entityAttributes('customerorder');
@@ -818,13 +883,20 @@ class MoySklad {
             throw new MoySkladPermissionException('No write access to customerorder');
         }
 
-        $positions = array_map(fn($p) => array_filter([
-            'quantity' => $p['quantity'],
-            'price' => round($p['price'] * 100), // MoySklad uses kopeks
-            'discount' => $p['discount'] ?? null,
-            'vat' => $p['vat'] ?? null,
-            'assortment' => self::assortmentMeta((string)$p['product_id'], (string)($p['type'] ?? '')),
-        ], fn($v) => $v !== null), $data['positions']);
+        // С заданным складом товар и модификация встают в резерв целиком
+        // (модуль 053); услугу резервировать нечем
+        $storeId = (string)($data['store_id'] ?? '');
+        $positions = array_map(function ($p) use ($storeId) {
+            $meta = self::assortmentMeta((string)$p['product_id'], (string)($p['type'] ?? ''));
+            return array_filter([
+                'quantity' => $p['quantity'],
+                'reserve' => ($storeId !== '' && $meta['meta']['type'] !== 'service') ? $p['quantity'] : null,
+                'price' => round($p['price'] * 100), // MoySklad uses kopeks
+                'discount' => $p['discount'] ?? null,
+                'vat' => $p['vat'] ?? null,
+                'assortment' => $meta,
+            ], fn($v) => $v !== null);
+        }, $data['positions']);
 
         $body = [
             'organization' => ['meta' => [
@@ -840,6 +912,7 @@ class MoySklad {
             'positions' => $positions,
         ];
         if (!empty($data['description'])) $body['description'] = $data['description'];
+        if ($storeId !== '') $body['store'] = self::storeMeta($storeId);
 
         // Включён ли налог в цену позиции — то же, что КП сказало клиенту
         // (модуль 030). Счёт «ценой + НДС» по КП «в т.ч. НДС» — это другая
@@ -852,7 +925,7 @@ class MoySklad {
         // счёт клиенту важнее нашей внутренней раскладки (модуль 026).
         $missing = [];
         if (!empty($data['state_name'])) {
-            $stateId = self::orderStates()[(string)$data['state_name']] ?? null;
+            $stateId = self::stateId(self::orderStates(), (string)$data['state_name']);
             if ($stateId) {
                 $body['state'] = ['meta' => [
                     'href'      => self::$base . '/entity/customerorder/metadata/states/' . $stateId,
@@ -868,7 +941,9 @@ class MoySklad {
         if ($attrs) $body['attributes'] = $attrs;
         if (array_key_exists('applicable', $data)) $body['applicable'] = (bool)$data['applicable'];
 
-        $resp = self::post('/entity/customerorder', $body);
+        if (array_key_exists('store_id', $data) && $storeId === '') $missing[] = 'склад';
+
+        $resp = self::postWithOwner('/entity/customerorder', $body, $data['manager'] ?? null, $missing);
         return [
             'id' => self::extractId($resp['id'] ?? $resp['meta']['href'] ?? ''),
             'name' => $resp['name'] ?? '',
@@ -930,6 +1005,7 @@ class MoySklad {
             ]];
         }
         if (!empty($data['description'])) $body['description'] = $data['description'];
+        if (!empty($data['store_id'])) $body['store'] = self::storeMeta((string)$data['store_id']);
 
         // Тот же ответ, что и у заказа: налог в цене или сверху — как напечатано
         // в КП (модуль 030)
@@ -952,8 +1028,8 @@ class MoySklad {
                     : 'впишите его название в «Настройки → МойСклад → Доп. поле с именем менеджера»'));
         }
 
-        $resp = self::post('/entity/invoiceout', $body);
-        return self::mapInvoice($resp);
+        $resp = self::postWithOwner('/entity/invoiceout', $body, $data['manager'] ?? null, $missing);
+        return self::mapInvoice($resp) + ['missing' => $missing];
     }
 
     /** Обязательные доп. поля документа, которых нет в $attrs (имена). */

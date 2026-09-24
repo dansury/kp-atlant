@@ -51,6 +51,7 @@
 | Письма списком как в Gmail, цвета статусов, одна шапка экрана, UX-проход по экранам | `specs/050-gmail-list-and-ux-pass/spec.md` | Implemented |
 | WYSIWYG-редактор КП со страницами, тексты для следующих КП, подпись по выбору, медленная модель ≠ фильтр, жирные неотвеченные в списке | `specs/051-wysiwyg-kp-and-signature/spec.md` | Implemented |
 | Documents into the letter in one click and downloadable, match table (+ Позиция below, folding, integer qty), pinned «?», МойСклад window on invoice, «СОТРУДНИК» in the invoice, rail arrows | `specs/052-attach-docs-and-match-table/spec.md` | Implemented |
+| КП buttons on a folded match table; invoice order in «Резерв» on a store with the employee | `specs/053-folded-kp-bar-and-order-reserve/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -96,6 +97,7 @@
 | Модуль 050: «Прочитано» не мешает новому письму поднять карточку, список как в Gmail, цвета статусов, шапка экрана, группы настроек | `php tests/module_050.php` |
 | Модуль 051: поля КП и подстановки из редактора, заготовки для следующих КП, подпись по выбору, разрыв страницы в Word, таймаут модели | `php tests/module_051.php` |
 | Модуль 052: вложения скачиваются, «СОТРУДНИК» в счёте по типу поля, целое количество, интерфейс по исходнику | `php tests/module_052.php` |
+| Модуль 053: кнопки КП при свёрнутом подборе, статус по имени, склад по умолчанию, резерв позиций | `php tests/module_053.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 
