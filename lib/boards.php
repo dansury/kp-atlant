@@ -100,6 +100,78 @@ final class Boards {
         return Db::one("SELECT * FROM board_columns WHERE id=?", [$id]);
     }
 
+    /**
+     * Колонки стадий (модуль 056): сюда карточка переходит сама, когда ушло
+     * КП или счёт. kind → [название, цвет, как узнать по названию].
+     */
+    private const STAGES = [
+        'kp_sent' => ['КП отправлено', '#4f9e57', '/^кп\s+(отправлен|выслан)/iu'],
+        'payment' => ['Ждём оплату',   '#b45cc0', '/^жд[её]м\s+оплат/iu'],
+    ];
+
+    /** Ранг колонки: сама карточка идёт только вперёд. Остальные — 0. */
+    private const RANK = ['kp_sent' => 1, 'payment' => 2, 'assembly' => 3];
+
+    /** Колонка стадии: по kind, затем по названию, иначе заводится на своём месте. */
+    public static function stageColumn(int $boardId, string $kind): array {
+        if (!isset(self::STAGES[$kind])) throw new InvalidArgumentException("Нет стадии $kind");
+        [$title, $color, $re] = self::STAGES[$kind];
+        $col = Db::one("SELECT * FROM board_columns WHERE board_id=? AND kind=? ORDER BY position, id LIMIT 1",
+                       [$boardId, $kind]);
+        if ($col) return $col;
+
+        $cols = Db::all("SELECT * FROM board_columns WHERE board_id=? ORDER BY position, id", [$boardId]);
+        foreach ($cols as $c) {
+            if (empty($c['kind']) && preg_match($re, trim((string)$c['title']))) {
+                Db::update('board_columns', ['kind' => $kind], 'id=?', [(int)$c['id']]);
+                return ['kind' => $kind] + $c;
+            }
+        }
+
+        // Новая: «КП отправлено» — после «В работе», «Ждём оплату» — после «КП отправлено»
+        $after = $kind === 'kp_sent' ? 'work' : 'kp_sent';
+        $at = count($cols);
+        foreach ($cols as $i => $c) if (($c['kind'] ?? null) === $after) { $at = $i + 1; break; }
+        if ($at === count($cols)) {
+            foreach ($cols as $i => $c) {
+                if (in_array($c['kind'] ?? null, ['payment', 'assembly', 'closed'], true)) { $at = $i; break; }
+            }
+        }
+        foreach ($cols as $i => $c) {
+            Db::update('board_columns', ['position' => $i < $at ? $i : $i + 1], 'id=?', [(int)$c['id']]);
+        }
+        $id = Db::insert('board_columns', ['board_id' => $boardId, 'title' => $title, 'color' => $color,
+                                           'kind' => $kind, 'position' => $at]);
+        return Db::one("SELECT * FROM board_columns WHERE id=?", [$id]);
+    }
+
+    /**
+     * КП или счёт ушёл клиенту — карточка встаёт в свою стадию (модуль 056).
+     * Только вперёд: ожидающая оплаты или собираемая карточка от нового КП
+     * назад не едет. Возвращает название колонки или null, если не двигали.
+     */
+    public static function advance(?int $cpId, ?string $threadKey, string $kind): ?string {
+        $cpId = $cpId ? Crm::rootId($cpId) : null;
+        $threadKey = trim((string)$threadKey);
+        if (!$cpId && $threadKey === '') return null;
+
+        $boardId = (int)self::singleton()['id'];
+        $col = self::stageColumn($boardId, $kind);
+        $card = self::findCard($boardId, 0, $cpId, $cpId ? '' : $threadKey);
+        if ($card) {
+            $now = (string)Db::val("SELECT kind FROM board_columns WHERE id=?", [(int)$card['column_id']]);
+            $dismissed = !empty($card['dismissed_at']);
+            if (!$dismissed && (self::RANK[$now] ?? 0) >= self::RANK[$kind]) return null;
+            if ($dismissed) Db::update('board_cards', ['dismissed_at' => null], 'id=?', [(int)$card['id']]);
+            if ((int)$card['column_id'] !== (int)$col['id']) self::moveCard((int)$card['id'], (int)$col['id'], 0);
+        } else {
+            self::addCard((int)$col['id'], ['counterparty_id' => $cpId, 'thread_key' => $cpId ? '' : $threadKey]);
+        }
+        Logger::info('boards', "Карточка → «{$col['title']}»" . ($kind === 'payment' ? ' (счёт отправлен)' : ' (КП отправлено)'),
+                     ['counterparty_id' => $cpId, 'thread_key' => $threadKey ?: null]);
+        return (string)$col['title'];
+    }
+
     /** The board with its columns and cards — one request paints the whole page. */
     public static function get(int $id): ?array {
         $board = Db::one("SELECT * FROM boards WHERE id=?", [$id]);
@@ -612,8 +684,8 @@ final class Boards {
         int $boardId, ?int $columnId, string $title, ?string $color, ?string $kind = null, ?int $cardLimit = null
     ): int {
         // «closed» не обязан быть единственным на доску, в отличие от «inbox»/«work»/«assembly»
-        $exclusive = in_array($kind, ['inbox', 'work', 'assembly'], true);
-        $known = in_array($kind, ['inbox', 'work', 'closed', 'assembly'], true);
+        $exclusive = in_array($kind, ['inbox', 'work', 'assembly', 'kp_sent', 'payment'], true);
+        $known = in_array($kind, ['inbox', 'work', 'closed', 'assembly', 'kp_sent', 'payment'], true);
         if ($columnId) {
             $data = array_filter(['title' => trim($title) ?: 'Колонка', 'color' => $color], fn($v) => $v !== null);
             // Exactly one intake column per board, or new mail would double up;

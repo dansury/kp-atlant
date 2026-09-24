@@ -5602,7 +5602,8 @@ const App = {
             // «Отправлено» is only half the news when the copy never reached the
             // server's «Отправленные» — the manager hears it now, not in a month
             if (res.warning) this.toast(res.warning, 'error');
-            else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
+            else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : '')
+                            + (res.stage ? ` · карточка → «${res.stage}»` : ''), 'success');
             // The answer belongs in the conversation it answers — reopen it
             const box = key ? document.getElementById('th_' + this.threadDomId(key)) : null;
             if (box) { box.dataset.loaded = ''; box.hidden = true; this.toggleCompanyThread(key); }

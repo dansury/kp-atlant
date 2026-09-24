@@ -61,7 +61,8 @@ final class Outbox {
      * `$_FILES`, здесь готовый путь. Оригинал остаётся на месте — копия
      * живёт своей жизнью и убирается вместе с остальными черновиками.
      */
-    public static function adopt(string $path, string $filename, int $managerId): array {
+    public static function adopt(string $path, string $filename, int $managerId,
+                                 ?string $kind = null, ?int $docId = null): array {
         if (!is_file($path)) throw new RuntimeException('Файла нет на сервере: ' . basename($path));
 
         $maxMb = max(1, (int)Settings::get('MAIL_ATTACH_MAX_MB', 25));
@@ -74,6 +75,11 @@ final class Outbox {
         $stored = bin2hex(random_bytes(8)) . '__' . $original;
         if (!@copy($path, self::dir($managerId) . '/' . $stored)) {
             throw new RuntimeException('Файл не удалось положить к письму');
+        }
+        // КП или счёт — помним, чтобы отправка письма передвинула карточку (модуль 056)
+        if ($kind !== null && $docId) {
+            Db::q("INSERT OR REPLACE INTO outbox_docs (name, manager_id, kind, doc_id) VALUES (?,?,?,?)",
+                  [$stored, $managerId, $kind, $docId]);
         }
 
         self::sweep($managerId);
@@ -116,6 +122,26 @@ final class Outbox {
         return is_file($path) ? $path : null;
     }
 
+    /**
+     * Какие документы среди файлов письма (модуль 056).
+     *
+     * @return list<array{kind:string,doc_id:int,name:string}>
+     */
+    public static function docsOf(array $names, int $managerId): array {
+        $names = array_values(array_filter(array_map(
+            fn($e) => basename(trim(is_array($e) ? (string)($e['name'] ?? '') : (string)$e)), $names)));
+        if (!$names) return [];
+        $in = implode(',', array_fill(0, count($names), '?'));
+        return array_map(fn($r) => ['kind' => (string)$r['kind'], 'doc_id' => (int)$r['doc_id'], 'name' => (string)$r['name']],
+            Db::all("SELECT name, kind, doc_id FROM outbox_docs WHERE manager_id=? AND name IN ($in)",
+                    [$managerId, ...$names]));
+    }
+
+    /** Письмо ушло — отметки его файлов больше не нужны. */
+    public static function forgetDocs(array $docs): void {
+        foreach ($docs as $d) Db::q("DELETE FROM outbox_docs WHERE name=?", [$d['name']]);
+    }
+
     /** Человеческое имя файла: без служебной приставки, которой он лежит на диске. */
     public static function displayName(string $stored): string {
         return (string)preg_replace('/^[0-9a-f]{16}__/', '', basename($stored));
@@ -140,6 +166,10 @@ final class Outbox {
             if (!is_file($path) || filemtime($path) >= $deadline) continue;
             if (isset($keep[basename($path)])) continue;
             @unlink($path);
+        }
+        // Отметки документов, чьих файлов уже нет (модуль 056)
+        foreach (Db::all("SELECT name FROM outbox_docs WHERE manager_id=?", [$managerId]) as $r) {
+            if (!is_file($dir . '/' . basename((string)$r['name']))) Db::q("DELETE FROM outbox_docs WHERE name=?", [$r['name']]);
         }
     }
 
