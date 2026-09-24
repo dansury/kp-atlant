@@ -256,7 +256,8 @@ final class Terms {
         if (($item['wait_discount'] ?? null) === null) $upd['wait_discount'] = $d['discount'];
         if (($item['wait_prepay']   ?? null) === null) $upd['wait_prepay']   = $d['prepay'];
         // Сам по себе выключатель поднимается только если так велели настройки
-        if (self::auto() && (int)($item['wait_on'] ?? 0) !== 1) $upd['wait_on'] = 1;
+        // …и никогда — поверх решения человека (issue #86)
+        if (self::auto() && (int)($item['wait_on'] ?? 0) !== 1 && (int)($item['wait_manual'] ?? 0) !== 1) $upd['wait_on'] = 1;
         return $upd;
     }
 

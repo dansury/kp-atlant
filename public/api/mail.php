@@ -406,6 +406,18 @@ try {
 
         // ---- Свои файлы к письму (модуль 023) ----
 
+        // Голосовой ввод письма (модуль 058): запись → текст, вставляет его браузер
+        case 'transcribe': {
+            require_once ROOT . '/lib/speech.php';
+            $f = $_FILES['audio'] ?? null;
+            if (!$f || (int)($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) jsonError('Запись не дошла до сервера');
+            try {
+                jsonOk(['text' => Speech::transcribe((string)$f['tmp_name'], (string)($f['type'] ?? ''))]);
+            } catch (RuntimeException $e) {
+                jsonError($e->getMessage());
+            }
+        }
+
         case 'upload':
             if (empty($_FILES['file'])) jsonError('Файл не передан');
             jsonOk(['file' => Outbox::accept($_FILES['file'], (int)$manager['id'])]);

@@ -77,7 +77,7 @@ final class Settings {
         'OPENROUTER_API_KEY'    => ['llm', 'Ключ OpenRouter', 'secret', true, '', 'Ключ вида sk-or-… из личного кабинета OpenRouter'],
         'OPENROUTER_MODEL'      => ['llm', 'Модель OpenRouter', 'model:openrouter', false, 'google/gemini-2.5-flash', 'Слаг модели, как он записан у OpenRouter: google/gemini-2.5-flash, openai/gpt-4o-mini'],
         'OPENROUTER_BASE_URL'   => ['llm', 'Адрес API OpenRouter', 'text', false, 'https://openrouter.ai/api/v1', 'Свой зеркальный адрес, если основной недоступен'],
-        'YANDEX_API_KEY'        => ['llm', 'Ключ Yandex', 'secret', true, '', 'API-ключ сервисного аккаунта Yandex Cloud с ролью ai.languageModels.user'],
+        'YANDEX_API_KEY'        => ['llm', 'Ключ Yandex', 'secret', true, '', 'API-ключ сервисного аккаунта Yandex Cloud с ролями ai.languageModels.user и ai.speechkit-stt.user (голосовой ввод письма)'],
         'YANDEX_FOLDER_ID'      => ['llm', 'Folder ID Yandex', 'text', false, '', 'Идентификатор каталога Yandex Cloud вида b1g… — виден в адресной строке консоли и на странице каталога'],
         'YANDEX_MODEL'          => ['llm', 'Модель Yandex', 'model:yandex', false, 'yandexgpt', 'Слаг без версии: /latest подставляется сам'],
         'LLM_DISCIPLINE'        => ['llm', 'Дисциплина ответа', 'bool', false, 1, 'Ко всем промптам добавляется блок правил: делать работу целиком, не сокращать, не задавать лишних уточняющих вопросов, не выдумывать факты'],

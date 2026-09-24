@@ -297,6 +297,7 @@ final class Boards {
             elseif ($card['kind'] === 'note') $card['kind'] = 'draft';
             // Готово письмо «заказ отправлен» — карточка ждёт человека (модуль 047)
             $card['attention'] = ($card['draft']['kind'] ?? '') === 'shipment';
+            $card['cdek'] = $card['attention'] && !empty($card['draft']['cdek']);
 
             // «Прочитано», нажатое на карточке, гасит и жирный шрифт (модуль 026).
             // Жирность даёт «ждёт ответа», а оно считается по датам писем —
@@ -330,6 +331,8 @@ final class Boards {
         foreach (Db::all("SELECT id, subject, to_email, body, updated_at, kind FROM mail_drafts WHERE id IN ($in)", $ids) as $d) {
             $out[(int)$d['id']] = [
                 'kind'       => (string)($d['kind'] ?? ''),
+                // Письмо об отправке СДЭК несёт ссылку отслеживания — карточка фиолетовая (issue #88)
+                'cdek'       => str_contains((string)$d['body'], 'cdek.ru/ru/tracking'),
                 'subject'    => (string)($d['subject'] ?? ''),
                 'to'         => (string)($d['to_email'] ?? ''),
                 'preview'    => MailText::preview(MailText::fromHtml((string)$d['body']), 140),

@@ -59,17 +59,19 @@ final class Fulfillment {
     // ------------------------------------------------------------- отправка
 
     /**
-     * Карточки «Сборки»: заказы, по которым склад вписал трек-номер, получают
-     * черновик письма клиенту.
+     * Карточки доски во всех колонках, кроме «Закрыто» (issue #88): заказы, по
+     * которым склад вписал трек-номер, получают черновик письма клиенту.
      *
      * @return array{checked:int,shipped:int,errors:list<string>}
      */
     public static function checkShipments(int $limit = 30): array {
         $res = ['checked' => 0, 'shipped' => 0, 'errors' => []];
-        $col = Boards::assemblyColumn((int)Boards::singleton()['id']);
+        $boardId = (int)Boards::singleton()['id'];
         $cps = array_map('intval', array_column(Db::all(
-            "SELECT DISTINCT counterparty_id FROM board_cards
-             WHERE column_id=? AND counterparty_id IS NOT NULL AND dismissed_at IS NULL", [(int)$col['id']]), 'counterparty_id'));
+            "SELECT DISTINCT bc.counterparty_id FROM board_cards bc
+               JOIN board_columns col ON col.id = bc.column_id
+             WHERE col.board_id=? AND COALESCE(col.kind, '') <> 'closed'
+               AND bc.counterparty_id IS NOT NULL AND bc.dismissed_at IS NULL", [$boardId]), 'counterparty_id'));
         if (!$cps) return $res;
 
         $in = implode(',', array_fill(0, count($cps), '?'));

@@ -2010,6 +2010,14 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '49')");
         $current = 49;
     }
+
+    // v50 — issue #86: «под заказ» set by the manager's own hand is never re-raised
+    if ($current < 50) {
+        foreach (['proposal_items', 'request_items'] as $table) Db::ensureColumn($table, 'wait_manual', 'INTEGER', '0');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '50')");
+        $current = 50;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

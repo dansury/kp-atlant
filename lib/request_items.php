@@ -320,6 +320,11 @@ final class RequestItems {
         $variantStock = Variants::stockFor(array_merge($ids, $candidateIds));
 
         foreach ($rows as &$row) {
+            // Товар с модификациями: остаток строки — их свободный остаток, не ноль товара (issue #86)
+            $own = $variantStock[(string)($row['moysklad_product_id'] ?? '')] ?? null;
+            if ($own && (string)($catalog[(string)$row['moysklad_product_id']]['product_type'] ?? '') !== 'variant') {
+                $row['stock'] = $own['free'];
+            }
             $row['variants'] = $row['match_variants'] ? (json_decode($row['match_variants'], true) ?: []) : [];
             unset($row['match_variants']);
             // Кандидат с модификациями отвечает их количествами, а не нулём
@@ -538,6 +543,8 @@ final class RequestItems {
                                             $wasProduct[(int)($row['id'] ?? 0)] ?? null),
                 // «Под заказ»: срок, скидка за ожидание и предоплата
                 'wait_on'             => !empty($row['wait_on']) ? 1 : 0,
+                // Галочку поставил или снял человек — её больше не ставит никто другой (issue #86)
+                'wait_manual'         => !empty($row['wait_manual']) ? 1 : 0,
                 'wait_months'         => isset($row['wait_months']) && $row['wait_months'] !== '' ? max(0, (int)$row['wait_months']) : null,
                 'wait_discount'       => isset($row['wait_discount']) && $row['wait_discount'] !== '' ? max(0.0, min(100.0, (float)$row['wait_discount'])) : null,
                 'wait_prepay'         => isset($row['wait_prepay']) && $row['wait_prepay'] !== '' ? max(0, min(100, (int)$row['wait_prepay'])) : null,
@@ -604,6 +611,8 @@ final class RequestItems {
         // Строка поехала на другой товар — снять её фотографии и с тех КП,
         // которые ещё не ушли клиенту: тот же каскад, что у `item_images_save`
         foreach ($repicked as $itemId) self::forgetImages($itemId);
+        // Остаток считает сервер: у общего товара он — сумма модификаций (issue #86)
+        self::refreshStock($requestId);
 
         // Rows the editor no longer sends were deleted in the browser
         $all = Db::all("SELECT id FROM request_items WHERE request_id=?", [$requestId]);
@@ -766,6 +775,7 @@ final class RequestItems {
                 'discount_percent' => (float)($row['discount_percent'] ?? 0),
                 'price_is_manual'  => (int)($row['price_is_manual'] ?? 0),
                 'wait_on'      => (int)($row['wait_on'] ?? 0),
+                'wait_manual'  => (int)($row['wait_manual'] ?? 0),
                 'wait_months'  => $row['wait_months'] ?? null,
                 'wait_discount'=> $row['wait_discount'] ?? null,
                 'wait_prepay'  => $row['wait_prepay'] ?? null,
@@ -827,7 +837,9 @@ final class RequestItems {
 
             // «Под заказ» — про пустую полку, и только про неё
             if (Terms::isBackorder($row)) {
-                if (array_key_exists('wait_on', $c))       $upd['wait_on']       = !empty($c['wait_on']) ? 1 : 0;
+                if (array_key_exists('wait_on', $c) && (int)($row['wait_manual'] ?? 0) !== 1) {
+                    $upd['wait_on'] = !empty($c['wait_on']) ? 1 : 0;
+                }
                 if (array_key_exists('wait_months', $c))   $upd['wait_months']   = max(0, (int)$c['wait_months']);
                 if (array_key_exists('wait_discount', $c)) $upd['wait_discount'] = max(0.0, min(100.0, (float)$c['wait_discount']));
                 if (array_key_exists('wait_prepay', $c))   $upd['wait_prepay']   = max(0, min(100, (int)$c['wait_prepay']));
@@ -847,7 +859,7 @@ final class RequestItems {
         $row = Db::one("SELECT * FROM request_items WHERE id=? AND request_id=?", [$itemId, $requestId]);
         if (!$row) throw new RuntimeException('Строка не найдена');
 
-        $p = Db::one("SELECT moysklad_id, name, article, unit, price, prices_json, stock, reserved, parent_id FROM products_cache WHERE moysklad_id=?", [$productId]);
+        $p = Db::one("SELECT moysklad_id, name, article, unit, price, prices_json, stock, reserved, parent_id, product_type FROM products_cache WHERE moysklad_id=?", [$productId]);
         if (!$p) throw new RuntimeException('Позиция каталога не найдена');
 
         $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
@@ -859,7 +871,8 @@ final class RequestItems {
             'article'             => $p['article'],
             'unit'                => $p['unit'] ?: 'шт.',
             'price'               => Catalog::priceFor($p, $counterpartyId),
-            'stock'               => Alternatives::freeStock($p),
+            // Общий товар — сумма свободных остатков модификаций (issue #86)
+            'stock'               => Variants::freeStock($p),
             'is_confirmed'        => 1,
             'needs_choice'        => 0,
             'updated_at'          => date('Y-m-d H:i:s'),
