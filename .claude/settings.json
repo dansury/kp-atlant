@@ -19,6 +19,16 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"Task intake (CLAUDE.md §0): split this message into atomic items R1..Rn (every sentence/clause/aside), register each in TaskCreate and echo the list; before the final reply re-read the original message and report a per-item table (# | request | status | where). Unfinished items -> TODO.md.\"}}'"
+          }
+        ]
+      }
     ]
   }
 }
