@@ -948,6 +948,8 @@ const App = {
                  собирают позиции, потом назначают на них цены и сроки -->
             <div class="flex flex--wrap" style="margin-bottom:8px">
                 <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
+                <button class="btn btn--outline btn--sm" onclick="App.foldPickedRows(this)"
+                        title="Свернуть в строку позиции, где товар уже подобран; нажмите ещё раз — развернуть все">▴ Свернуть подобранные</button>
                 <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
                 <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
                         title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
@@ -955,6 +957,10 @@ const App = {
             <div data-conditions>${this.conditionsPanel(host)}</div>
             <div data-match-rows>${items.map((i, n) => this.matchRow(i, n)).join('')}</div>
             ${items.length ? '' : '<p class="muted" data-match-empty>Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
+            <!-- Вторая «+ Позиция» — под строками (модуль 052): в длинной таблице до верхней не дотянуться -->
+            <div class="match-add-bottom">
+                <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
+            </div>
             <div data-delivery>${this.deliveryRow(opts.delivery)}</div>
             <div class="flex flex--wrap" style="margin-top:10px">
                 <!-- «Сохранить» больше нет: правки сохраняются сами (issue #60) -->
@@ -1040,7 +1046,10 @@ const App = {
         el.classList.toggle('is-folded', folded);
         const btn = el.querySelector(':scope > .block-head > .block-fold');
         if (btn) {
-            btn.textContent = folded ? '▸' : '▾';
+            // Вкладка справа на десктопе уезжает вправо — и стрелка смотрит
+            // вправо, а не вниз (модуль 052)
+            const rail = this.RAIL.includes(el.dataset.block) && !this.isPhone();
+            btn.textContent = rail ? (folded ? '◂' : '▸') : (folded ? '▸' : '▾');
             btn.title = folded ? 'Развернуть' : 'Свернуть';
             btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
         }
@@ -1314,6 +1323,8 @@ const App = {
                         title="Скачать КП файлом Word">⬇ Word</button>
                 <button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'pdf')"
                         title="Скачать КП файлом PDF">⬇ PDF</button>
+                <button class="btn btn--outline btn--sm" onclick="App.attachDoc('kp', ${id}, this)"
+                        title="Приложить КП (PDF) к письму как есть — файл появится под полем письма">📎 В письмо</button>
                 <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                         title="Выставить счёт в МойСклад по этому КП">🧾 Счёт</button>
                 <span data-kp-delete></span>`;
@@ -1338,7 +1349,9 @@ const App = {
                 <div class="flex flex--wrap" style="gap:6px;align-items:center">
                     <a href="${this.esc(i.url)}" target="_blank" rel="noopener">Счёт ${this.esc(i.name)} ↗</a>
                     <span class="muted">${this.fmtMoney(i.sum)}${i.payed_sum > 0 ? ' · оплачено ' + this.fmtMoney(i.payed_sum) : ''}</span>
-                    <a onclick="App.saveAs('${i.pdf_url}', 'Счёт ${this.jsStr(i.name)}.pdf')">PDF</a>
+                    <a onclick="App.saveAs('${i.pdf_url}', 'Счёт ${this.jsStr(i.name)}.pdf')">⬇ PDF</a>
+                    <button class="btn btn--outline btn--sm" onclick="App.attachDoc('invoice', ${i.id}, this)"
+                            title="Приложить счёт к письму — он появится под полем письма">📎 В письмо</button>
                 </div>`).join('');
         } catch (err) {
             box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
@@ -1573,15 +1586,9 @@ const App = {
                             <input type="range" min="25" max="160" value="${height}"
                                    oninput="App.kpSetHeight(this.closest('.kp-open'), this.value)"><span data-kp-size>${height}vh</span>
                         </label>
-                        <button class="btn btn--outline btn--sm"
-                                onclick="App.kpDownload(${id}, 'docx', this)">⬇ Word</button>
-                        <button class="btn btn--outline btn--sm"
-                                onclick="App.kpDownload(${id}, 'pdf', this)">⬇ PDF</button>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
                         <button class="btn btn--primary btn--sm" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
-                        <a class="btn btn--outline btn--sm" href="#mail/proposal/${id}"
-                           title="Полный редактор: карточки товаров, фото, блоки вокруг таблицы">Все настройки КП →</a>
                         <button class="btn btn--outline btn--sm" onclick="App.openKp(${id}, this)">Свернуть</button>
                     </span>
                 </div>
@@ -1620,6 +1627,18 @@ const App = {
                      aria-label="Высота окна КП: тяните мышью или стрелками вверх и вниз"
                      title="Тяните, чтобы изменить высоту окна"
                      onpointerdown="App.kpGripStart(event, this)" onkeydown="App.kpGripKey(event, this)"></div>
+                <!-- Под листом (модуль 052): скачать то, что на экране, или
+                     приложить к письму одной кнопкой — файл виден в письме и
+                     скачивается оттуда же -->
+                <div class="kp-docbar">
+                    <button class="btn btn--primary btn--sm" onclick="App.kpAttach(${id}, 'kp', this)"
+                            title="Приложить PDF к письму ровно в том виде, как на экране">📎 PDF в письмо</button>
+                    <button class="btn btn--outline btn--sm" onclick="App.kpAttach(${id}, 'kp_docx', this)"
+                            title="Приложить Word к письму">📎 Word в письмо</button>
+                    <button class="btn btn--outline btn--sm" onclick="App.kpDownload(${id}, 'pdf', this)">⬇ PDF</button>
+                    <button class="btn btn--outline btn--sm" onclick="App.kpDownload(${id}, 'docx', this)">⬇ Word</button>
+                </div>
+                <div data-kp-invoice></div>
             </div>`;
         slot.scrollIntoView({behavior: 'smooth', block: 'start'});
         this.fillKpPage(slot, id);
@@ -2168,6 +2187,13 @@ const App = {
                                     : `/api/proposals.php?action=preview&id=${id}`);
     },
 
+    /** 📎 в письмо: сначала сохраняется правка листа — уходит то, что на экране (модуль 052). */
+    async kpAttach(id, kind, btn) {
+        const card = btn.closest('.kp-open');
+        if (card && card.dataset.dirty === '1' && !(await this.kpPageSave(id, card))) return;
+        this.attachDoc(kind, id, btn);
+    },
+
     /**
      * Наполнить рамку предпросмотра — и сказать вслух, если не вышло.
      *
@@ -2279,11 +2305,11 @@ const App = {
      * печатная форма и появляется строкой в карточке: приложить к письму
      * одной кнопкой или забрать отдельным файлом — как и просили.
      */
-    async kpInvoice(id, btn) {
+    async kpInvoice(id, btn, pickedOrg = null) {
         // Организаций в карточке может быть несколько — на какую счёт, решает
         // менеджер, а не карточка (модуль 029). Одна организация — вопрос не
-        // задаётся вовсе.
-        const orgId = await this.pickInvoiceOrg();
+        // задаётся вовсе. Повтор после заведения в МойСклад — на ту же.
+        const orgId = pickedOrg !== null ? pickedOrg : await this.pickInvoiceOrg();
         if (orgId === null) return;
 
         // Кнопка живёт в двух местах: в развёрнутой карточке КП и под таблицей
@@ -2300,8 +2326,7 @@ const App = {
                        'success');
             if (card) {
                 const out = card.querySelector('[data-kp-invoice]')
-                    || card.insertBefore(this.dataDiv('kpInvoice'),
-                                         card.querySelector('.kp-preview'));
+                    || card.appendChild(this.dataDiv('kpInvoice'));
                 out.innerHTML = this.kpInvoiceNote(r);
             } else if (r.order_error || (r.order_missing || []).length || (r.skipped || []).length || r.delivery_missing) {
                 // Кнопке в колонке некуда положить оговорки — говорим их вслух
@@ -2317,7 +2342,18 @@ const App = {
             const host = document.querySelector('[data-match-host]');
             if (host && host.dataset.requestId) this.loadKpSummary(Number(host.dataset.requestId), host);
             this.refreshInvoiceDock();
-        } catch (err) { this.toast(err.message, 'error'); }
+        } catch (err) {
+            // Компании нет в МойСклад — сразу окно заведения, после него счёт
+            // выставляется сам (модуль 052)
+            const ms = err.data && err.data.ms_unlinked;
+            if (ms) {
+                this.toast(err.message, 'info');
+                this._msAfter = () => this.kpInvoice(id, btn, orgId);
+                this.msCreateForm(ms);
+            } else {
+                this.toast(err.message, 'error');
+            }
+        }
         finally { btn.disabled = false; btn.textContent = label; }
     },
 
@@ -2338,7 +2374,7 @@ const App = {
                 ${orgs.map(o => `
                     <button class="btn btn--block ${o.primary ? 'btn--primary' : 'btn--outline'}"
                             style="margin-bottom:6px;text-align:left"
-                            ${o.moysklad_id ? '' : 'disabled title="Не связана с МойСклад — счёт выставить не на что"'}
+                            ${o.moysklad_id ? '' : 'title="Не связана с МойСклад — сначала откроется окно заведения"'}
                             onclick="App.finishOrgPick(${o.id})">
                         ${this.esc(o.name)}${o.inn ? ` <small class="muted">ИНН ${this.esc(o.inn)}</small>` : ''}
                         ${o.moysklad_id ? '' : ' <small class="no">нет в МойСклад</small>'}
@@ -2397,10 +2433,8 @@ const App = {
         try {
             const r = await this.api('mail.php?action=attach_doc', {method: 'POST', body: {kind, id}});
             const f = r.file;
-            composer.querySelector('[data-cmp-files]').insertAdjacentHTML('beforeend', `
-                <span class="chip" data-cmp-file="${this.esc(f.name)}">📎 ${this.esc(f.filename)}
-                    <a onclick="this.parentElement.remove()" title="Убрать">×</a></span>`);
-            this.toast('Файл приложен к письму', 'success');
+            composer.querySelector('[data-cmp-files]').insertAdjacentHTML('beforeend', this.fileChip(f));
+            this.toast(`Приложено: ${f.filename} — нажмите на него в письме, чтобы скачать и проверить`, 'success');
             composer.scrollIntoView({behavior: 'smooth', block: 'center'});
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
@@ -2525,8 +2559,9 @@ const App = {
     matchRow(i = {}, index = -1) {
         const conf = i.match_confidence ? Math.round(i.match_confidence * 100) : null;
         const src = this.matchSourceLabel(i.match_source);
+        const folded = this.rowFolded(i.id);
         return `
-            <div class="match-row ${i.needs_choice ? 'match-row--choice' : ''} ${i.is_out_of_scope ? 'match-row--out' : ''}" data-match-row>
+            <div class="match-row ${i.needs_choice ? 'match-row--choice' : ''} ${i.is_out_of_scope ? 'match-row--out' : ''} ${folded ? 'match-row--folded' : ''}" data-match-row>
                 <input type="hidden" data-field="id" value="${this.esc(i.id || '')}">
                 <input type="hidden" data-field="raw_name" value="${this.esc(i.raw_name || '')}">
                 <input type="hidden" data-field="moysklad_product_id" value="${this.esc(i.moysklad_product_id || '')}">
@@ -2539,12 +2574,17 @@ const App = {
                 <div class="match-row__name">
                     <!-- «Не наша номенклатура» — справа от строки «из письма…» (issue #60) -->
                     <div class="match-row__src">
+                        <button type="button" class="match-row__fold" onclick="App.toggleRowFold(this)"
+                                aria-expanded="${folded ? 'false' : 'true'}"
+                                title="${folded ? 'Развернуть позицию' : 'Свернуть позицию в строку'}">${folded ? '▸' : '▾'}</button>
                         <span class="muted">${i.raw_name ? `из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}` : 'добавлено вручную'}</span>
+                        <span class="hint-pin">
                         <button class="btn btn--outline btn--sm ${i.is_out_of_scope ? 'btn--primary' : ''}"
                                 title="${i.is_out_of_scope ? 'Вернуть строку в работу' : 'Мы этим не занимаемся: в КП строка встанет серым с прочерками, в ответ клиенту не попадёт'}"
                                 onclick="App.setItemScope(this, ${i.id || 0}, ${i.is_out_of_scope ? 0 : 1})">${i.is_out_of_scope ? '↩' : '🚫'}</button>
-                        ${index === 0 && !i.is_out_of_scope ? this.hint('match-scope') : ''}
+                        ${index === 0 && !i.is_out_of_scope ? this.hint('match-scope') : ''}</span>
                     </div>
+                    <div class="match-row__summary" data-row-summary>${this.rowSummary(i)}</div>
                     ${this.variantNote(i)}
                     ${this.stockNote(i)}
                     ${this.scopeNote(i)}
@@ -2562,8 +2602,10 @@ const App = {
                         ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
                 </div>
                 <span class="qty-cell">
-                    <input type="number" step="0.01" min="0" data-field="quantity" value="${i.quantity ?? 1}"
-                           placeholder="Кол-во" title="Количество" oninput="App.updateMatchTotal(this); App.toggleQtyWarning(this)">
+                    <input type="number" step="1" min="0" inputmode="numeric" data-field="quantity"
+                           value="${this.intQty(i.quantity ?? 1)}" placeholder="Кол-во" title="Количество — целое число"
+                           onkeydown="App.qtyKey(event)" onchange="App.qtyFix(this)"
+                           oninput="App.updateMatchTotal(this); App.toggleQtyWarning(this)">
                     ${this.qtyWarning(i)}
                 </span>
                 <input type="text" data-field="unit" value="${this.esc(i.unit || 'шт.')}" placeholder="Ед." title="Единица измерения">
@@ -2578,11 +2620,15 @@ const App = {
                 <label title="Позиция подтверждена менеджером — автоподбор её больше не трогает">
                     <input type="checkbox" data-field="is_confirmed" ${i.is_confirmed ? 'checked' : ''}> ок
                 </label>
-                <label title="Мы предлагаем не то, что клиент назвал: в КП над нашим названием встанет его собственное">
-                    <input type="checkbox" data-field="is_alternative" ${i.is_alternative ? 'checked' : ''}
-                           onchange="App.toggleAnalog(this)"> аналог
-                </label>
-                ${index === 0 ? this.hint('match-analog') : ''}
+                <!-- «?» приклеен к своей галочке (модуль 052): отдельным элементом
+                     строки он переносился на новую строку один -->
+                <span class="hint-pin">
+                    <label title="Мы предлагаем не то, что клиент назвал: в КП над нашим названием встанет его собственное">
+                        <input type="checkbox" data-field="is_alternative" ${i.is_alternative ? 'checked' : ''}
+                               onchange="App.toggleAnalog(this)"> аналог
+                    </label>
+                    ${index === 0 ? this.hint('match-analog') : ''}
+                </span>
                 ${this.matchRowExtra(i)}
                 <!-- Порядок строк — внизу карточки позиции (issue #60) -->
                 <div class="match-row__tools match-row__tools--bottom">
@@ -2904,6 +2950,99 @@ const App = {
         const empty = host.querySelector('[data-match-empty]');
         if (empty) empty.remove();
         box.insertAdjacentHTML('beforeend', this.matchRow({quantity: 1, unit: 'шт.', price: 0}));
+        // Нажали нижнюю кнопку — новая строка под рукой, курсор в названии
+        const row = box.lastElementChild;
+        const name = row && row.querySelector('[data-field="product_name"]');
+        if (name) { row.scrollIntoView({behavior: 'smooth', block: 'center'}); name.focus({preventScroll: true}); }
+    },
+
+    // ---- Количество — только целое (модуль 052) ----
+
+    intQty(v) {
+        const q = parseFloat(String(v ?? '').replace(',', '.'));
+        return !(q > 0) ? 0 : Math.max(1, Math.round(q));
+    },
+
+    /** Точка, запятая, минус и «e» в поле количества не набираются. */
+    qtyKey(e) {
+        if (['.', ',', '-', '+', 'e', 'E'].includes(e.key)) e.preventDefault();
+    },
+
+    /** Вставили дробь — округляем до целого, как и сервер. */
+    qtyFix(input) {
+        const q = this.intQty(input.value);
+        if (String(q) !== input.value) {
+            input.value = q;
+            this.updateMatchTotal(input);
+            this.toggleQtyWarning(input);
+        }
+    },
+
+    // ---- Подобранные позиции сворачиваются в строку (модуль 052) ----
+
+    /** Свёрнутые строки — по id позиции, на этом устройстве. */
+    rowFoldStore() {
+        try { return JSON.parse(localStorage.getItem('kp.rowFold') || '[]') || []; } catch { return []; }
+    },
+
+    rowFolded(id) {
+        return !!id && this.rowFoldStore().includes(Number(id));
+    },
+
+    rowFoldRemember(id, folded) {
+        id = Number(id);
+        if (!id) return;
+        const ids = this.rowFoldStore().filter(x => x !== id);
+        if (folded) ids.push(id);
+        try { localStorage.setItem('kp.rowFold', JSON.stringify(ids.slice(-500))); } catch { /* не запомним */ }
+    },
+
+    /** Свёрнутая строка: товар, количество × цена = сумма. */
+    rowSummary(i) {
+        const qty = this.intQty(i.quantity ?? 1);
+        const price = Number(i.price) || 0;
+        return `<strong>${this.esc(i.product_name || i.raw_name || 'без названия')}</strong>
+            <span class="muted">${qty} ${this.esc(i.unit || 'шт.')} × ${this.fmtMoney(price)} = ${this.fmtMoney(qty * price)}</span>`;
+    },
+
+    /** Данные строки из её полей — для сводки свёрнутой строки. */
+    rowData(row) {
+        const v = f => (row.querySelector(`[data-field="${f}"]`) || {}).value || '';
+        return {product_name: v('product_name'), raw_name: v('raw_name'), quantity: v('quantity'),
+                unit: v('unit'), price: v('price')};
+    },
+
+    setRowFold(row, folded) {
+        row.classList.toggle('match-row--folded', folded);
+        const btn = row.querySelector('.match-row__fold');
+        if (btn) {
+            btn.textContent = folded ? '▸' : '▾';
+            btn.title = folded ? 'Развернуть позицию' : 'Свернуть позицию в строку';
+            btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+        }
+        const sum = row.querySelector('[data-row-summary]');
+        if (sum && folded) sum.innerHTML = this.rowSummary(this.rowData(row));
+        this.rowFoldRemember((row.querySelector('[data-field="id"]') || {}).value, folded);
+    },
+
+    toggleRowFold(btn) {
+        const row = btn.closest('[data-match-row]');
+        if (row) this.setRowFold(row, !row.classList.contains('match-row--folded'));
+    },
+
+    /**
+     * Свернуть все подобранные: товар выбран, выбирать между вариантами не
+     * нужно. Всё уже свёрнуто — второе нажатие разворачивает всё.
+     */
+    foldPickedRows(btn) {
+        const host = this.matchHost(btn);
+        if (!host) return;
+        const rows = [...host.querySelectorAll('[data-match-row]')];
+        const picked = rows.filter(r => (r.querySelector('[data-field="product_name"]') || {}).value
+            && (r.querySelector('[data-field="needs_choice"]') || {}).value !== '1');
+        const fold = picked.some(r => !r.classList.contains('match-row--folded'));
+        (fold ? picked : rows).forEach(r => this.setRowFold(r, fold));
+        if (!picked.length) this.toast('Подобранных позиций пока нет');
     },
 
     /**
@@ -3036,7 +3175,7 @@ const App = {
             row.querySelectorAll('[data-field]').forEach(el => {
                 out[el.dataset.field] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
             });
-            out.quantity = parseFloat(out.quantity) || 0;
+            out.quantity = this.intQty(out.quantity);
             out.price = parseFloat(out.price) || 0;
             out.discount_percent = parseFloat(out.discount_percent) || 0;
             return out;
@@ -3368,6 +3507,7 @@ const App = {
     closeModal() {
         const el = document.getElementById('modal');
         if (el) el.remove();
+        this._msAfter = null;
         // Окно с вопросом закрыли крестиком или уходом со страницы — тот, кто
         // его ждал, должен узнать об этом, а не висеть вечно (модуль 029)
         if (this._orgPick) { const r = this._orgPick; this._orgPick = null; r(null); }
@@ -3740,12 +3880,13 @@ const App = {
                     <span class="item-card__caret">▾</span>
                     <strong>${this.esc(it.product_name)}</strong>
                     <span class="note">${photos} фото</span>
+                    <span class="hint-pin">
                     <label class="item-card__off" onclick="event.stopPropagation()"
                            title="Позиции у нас нет: в таблицу, карточки и «Итого» она не войдёт, а КП назовёт её блоком «нужно уточнение»">
                         <input type="checkbox" data-field="is_excluded" ${off ? 'checked' : ''}
                                onchange="App.excludeItem(this)"> нет в наличии
                     </label>
-                    <span onclick="event.stopPropagation()">${this.hint('kp-exclude')}</span>
+                    <span onclick="event.stopPropagation()">${this.hint('kp-exclude')}</span></span>
                 </div>
                 <div class="item-card__fold">
                 ${it.is_substitution ? `
@@ -4202,9 +4343,7 @@ const App = {
                 });
                 const data = await res.json();
                 if (!res.ok || data.error) throw new Error(data.error || 'Файл не загрузился');
-                list.insertAdjacentHTML('beforeend', `
-                    <span class="chip" data-cmp-file="${this.esc(data.file.name)}">📎 ${this.esc(data.file.filename)}
-                        <a onclick="this.parentElement.remove()" title="Убрать">×</a></span>`);
+                list.insertAdjacentHTML('beforeend', this.fileChip(data.file));
             } catch (err) { this.toast(err.message, 'error'); }
         }
         input.value = '';
@@ -4737,7 +4876,7 @@ const App = {
                 </label>
                 <div class="composer__files" data-cmp-files></div>
                 <div class="composer__actions">
-                    ${this.categorySelect(reply.category)}${this.hint('category')}
+                    <span class="hint-pin">${this.categorySelect(reply.category)}${this.hint('category')}</span>
                     <label class="btn btn--outline btn--sm" title="Приложить свой файл к письму">
                         📎 Файл<input type="file" multiple hidden onchange="App.composerAttach('${this.jsStr(key)}', this)">
                     </label>
@@ -4855,9 +4994,7 @@ const App = {
                 kind: 'invoice', id, filename: (field && field.value) || '',
             }});
             const f = r.file;
-            composer.querySelector('[data-cmp-files]').insertAdjacentHTML('beforeend', `
-                <span class="chip" data-cmp-file="${this.esc(f.name)}">📎 ${this.esc(f.filename)}
-                    <a onclick="this.parentElement.remove()" title="Убрать">×</a></span>`);
+            composer.querySelector('[data-cmp-files]').insertAdjacentHTML('beforeend', this.fileChip(f));
             this.toast('Счёт приложен к письму: ' + f.filename, 'success');
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
@@ -5015,12 +5152,22 @@ const App = {
                 const data = await res.json();
                 if (!res.ok || data.error) throw new Error(data.error || 'Файл не загрузился');
                 const f = data.file;
-                list.insertAdjacentHTML('beforeend', `
-                    <span class="chip" data-cmp-file="${this.esc(f.name)}">📎 ${this.esc(f.filename)}
-                        <a onclick="this.parentElement.remove()" title="Убрать">×</a></span>`);
+                list.insertAdjacentHTML('beforeend', this.fileChip(f));
             } catch (err) { this.toast(err.message, 'error'); }
         }
         input.value = '';
+    },
+
+    /**
+     * Приложенный файл в письме (модуль 052): имя — ссылка на ту самую копию,
+     * что уйдёт клиенту, её можно скачать и проверить; × — убрать.
+     */
+    fileChip(f) {
+        const url = '/api/mail.php?action=outbox_file&name=' + encodeURIComponent(f.name);
+        return `<span class="chip chip--file" data-cmp-file="${this.esc(f.name)}">
+            <a href="${url}" download="${this.esc(f.filename)}"
+               title="Скачать и проверить — уйдёт ровно этот файл">📎 ${this.esc(f.filename)} ⬇</a>
+            <a class="chip__x" onclick="this.parentElement.remove()" title="Убрать" role="button">×</a></span>`;
     },
 
     composerFiles(c) {
@@ -7769,9 +7916,20 @@ const App = {
                 email: hint.email || '',
                 phone: hint.phone || '',
             }});
+            // Окно открыл «Счёт в МойСклад» — продолжаем счёт, страница остаётся
+            const after = this._msAfter;
             this.closeModal();
             this.toast(r.created ? 'Контрагент заведён в МойСклад'
                                  : 'Контрагент с таким ИНН уже был в МойСклад — привязали', 'success');
+            if (after) {
+                if (this.company && r.orgs) {
+                    this.company.orgs = r.orgs;
+                    const box = document.getElementById('cpOrgs');
+                    if (box) box.innerHTML = this.orgListHtml(r.counterparty_id, r.orgs);
+                }
+                after();
+                return;
+            }
             if (r.url) window.open(r.url, '_blank', 'noopener');
             this.route();
         } catch (err) {

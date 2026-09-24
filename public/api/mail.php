@@ -430,6 +430,25 @@ try {
             jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'])]);
         }
 
+        // Приложенный файл — назад, скачать и проверить до отправки (модуль 052)
+        case 'outbox_file': {
+            $path = Outbox::path((string)($_GET['name'] ?? ''), (int)$manager['id']);
+            if (!$path) jsonError('Файла уже нет — приложите документ заново', 404);
+            $name = Outbox::displayName($path);
+            $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+            $mime = [
+                'pdf'  => 'application/pdf',
+                'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ][$ext] ?? 'application/octet-stream';
+            header('Content-Type: ' . $mime);
+            header('Content-Disposition: ' . Attachments::contentDisposition($name, false));
+            header('X-Content-Type-Options: nosniff');
+            header('Content-Length: ' . filesize($path));
+            readfile($path);
+            exit;
+        }
+
         // ---- Черновик письма: вкладку закрыли — текст остался (модули 023, 033) ----
 
         case 'draft_get': {

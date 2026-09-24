@@ -151,9 +151,19 @@ switch ($action) {
         $buyerMsId  = $buyerOrg ? (string)$buyerOrg['moysklad_id'] : (string)($cp['moysklad_id'] ?? '');
         $buyerName  = $buyerOrg ? (string)$buyerOrg['name'] : (string)$cp['name'];
         if ($buyerMsId === '') {
+            // Клиент сразу открывает окно заведения контрагента (модуль 052)
+            $src = $buyerOrg ?: $cp;
             jsonError($buyerOrgId
-                ? "Организация «{$buyerName}» не связана с МойСклад — привяжите её в карточке, иначе счёт выставлять не на кого"
-                : 'Компания не связана с МойСклад — свяжите её в карточке, иначе счёт выставлять не на кого', 400);
+                ? "Организация «{$buyerName}» не связана с МойСклад — заведите её, иначе счёт выставлять не на кого"
+                : 'Компания не связана с МойСклад — заведите её, иначе счёт выставлять не на кого', 400, [
+                'ms_unlinked' => [
+                    'counterparty_id' => $cpId,
+                    'org_id'          => $buyerOrgId,
+                    'name'            => $buyerName,
+                    'inn'             => (string)($src['inn'] ?? ''),
+                    'email'           => (string)($cp['contact_email'] ?? ''),
+                ],
+            ]);
         }
 
         MoySklad::init($GLOBALS['cfg']['MOYSKLAD_TOKEN'] ?? '');
@@ -188,6 +198,12 @@ switch ($action) {
         // Заказ не создался — счёт всё равно выставляем: клиенту нужен счёт,
         // а не наша внутренняя раскладка.
         $orgId = msOrgId();
+        // «СОТРУДНИК» — в заказ и в счёт, из карточки менеджера (модуль 052)
+        $managerCard = Db::one("SELECT name, email, moysklad_uid FROM managers WHERE id=?", [(int)$manager['id']])
+                    ?: $manager;
+        $employeeAttr = array_filter([
+            trim((string)Settings::get('MS_EMPLOYEE_ATTR', 'СОТРУДНИК')) => trim((string)($managerCard['name'] ?? '')),
+        ], fn($v, $k) => $k !== '' && $v !== '', ARRAY_FILTER_USE_BOTH);
         $order = null;
         $orderLocalId = null;
         $orderError = null;
@@ -200,10 +216,8 @@ switch ($action) {
                     'positions'       => $positions,
                     'description'     => $note,
                     'state_name'      => trim((string)Settings::get('MS_ORDER_STATE', 'Резерв')),
-                    'attributes'      => array_filter([
-                        trim((string)Settings::get('MS_EMPLOYEE_ATTR', 'СОТРУДНИК'))
-                            => trim((string)($manager['name'] ?? '')),
-                    ], fn($v, $k) => $k !== '' && $v !== '', ARRAY_FILTER_USE_BOTH),
+                    'attributes'      => $employeeAttr,
+                    'manager'         => $managerCard,
                 ]);
                 $orderMissing = $order['missing'] ?? [];
             } catch (Throwable $e) {
@@ -222,6 +236,8 @@ switch ($action) {
                 'positions'       => $positions,
                 'description'     => $note,
                 'order_id'        => $order['id'] ?? null,
+                'attributes'      => $employeeAttr,
+                'manager'         => $managerCard,
             ]);
         } catch (MoySkladPermissionException $e) {
             jsonError('МойСклад: нет прав на создание счетов', 403);
