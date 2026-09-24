@@ -27,8 +27,23 @@ it waits N seconds, and a toast «Письмо уйдёт через N с · О�
   update to `cancelled`, so a letter already claimed cannot be «cancelled».
   A failed attempt returns the row to `pending` (or `failed` after 3).
 - Client: `App.sendMail(body)` wraps both send paths (`threadSend`,
-  `mailSend`); resolves with the send result, or `null` when cancelled. The
-  send button stays disabled during the countdown.
+  `mailSend`); resolves with the send result, or `null` when cancelled.
+- The composer is LOCKED from the click until the outcome
+  (`App.lockComposer(c, true)`): editor read-only, every button disabled,
+  `data-sending` set, pending draft autosave dropped — a second press during
+  the countdown is impossible. Cancel or an error unlocks it with the text.
+- A letter that left (or `already`) empties the composer
+  (`App.clearComposer(c)`: editor, files, draft id) and the screen redraws
+  from the server wherever the box stood: the conversation inside the company
+  card is reopened, the letter page `#mail/t/<key>` is re-routed, «Написать»
+  goes back to `#mail`. A box that still holds the sent text invites sending
+  it again.
+- Server guard: `MailSchedule::delay()` does not queue the same letter twice.
+  A row of the same manager with the same fingerprint (`fingerprint()` — to,
+  cc, subject, text, files, reply_to_id) that is `pending`/`sending` is
+  returned as is (its remaining seconds); one `sent` within
+  `RESEND_GUARD_SEC` (120 s) → `send` answers `{already: 'sent'}` and nothing
+  is queued. A deliberate re-send after two minutes passes.
 
 ## 2. Folding: a visible control on every foldable thing, tooltips instead of words
 

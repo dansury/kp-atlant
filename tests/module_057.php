@@ -92,6 +92,21 @@ $run = MailSchedule::run();
 $r4 = Db::one("SELECT status, attempts FROM mail_scheduled WHERE id=?", [$d4['id']]);
 ok('крон: упало → снова pending', $run['failed'] === 1 && $r4['status'] === 'pending' && (int)$r4['attempts'] === 1, json_encode($r4));
 
+echo "\n== 3б. Повторное нажатие — то же письмо ==\n";
+$mid = Db::insert('managers', ['login' => 'twice', 'name' => 'Двойной', 'password_hash' => 'x']);
+$p1 = ['to' => 'again@example.ru', 'subject' => 'Ответ', 'text' => 'Добрый  день', 'files' => ['b', 'a']];
+$a = MailSchedule::delay($p1, $mid, 20);
+$b = MailSchedule::delay(['files' => ['a', 'b'], 'text' => 'Добрый день'] + $p1, $mid, 20);
+ok('второе нажатие отдаёт ту же строку', $b['id'] === $a['id']);
+ok('в очереди одно письмо', (int)Db::val("SELECT COUNT(*) FROM mail_scheduled WHERE manager_id=?", [$mid]) === 1);
+$c2 = MailSchedule::delay(['text' => 'Другой текст'] + $p1, $mid, 20);
+ok('другой текст — новое письмо', $c2['id'] !== $a['id']);
+Db::update('mail_scheduled', ['status' => 'sent', 'sent_at' => date('Y-m-d H:i:s')], 'id=?', [$a['id']]);
+ok('только что ушедшее — already sent', (MailSchedule::delay($p1, $mid, 20)['already'] ?? '') === 'sent');
+Db::update('mail_scheduled', ['sent_at' => date('Y-m-d H:i:s', time() - 600)], 'id=?', [$a['id']]);
+$d2 = MailSchedule::delay($p1, $mid, 20);
+ok('через 10 минут — осознанная повторная отправка', isset($d2['id']) && $d2['id'] !== $a['id']);
+
 echo "\n== 4. Интерфейс ==\n";
 $js = file_get_contents(ROOT . '/public/assets/js/app.js');
 $api = file_get_contents(ROOT . '/public/api/mail.php');
@@ -108,6 +123,10 @@ ok('заголовок блока сворачивает', str_contains($js, 'he
 $inv = file_get_contents(ROOT . '/public/api/invoices.php');
 ok('синхронизация отвечает linked и реквизитами', str_contains($inv, "\$res['linked']") && str_contains($inv, 'Requisites::syncCounterparty'));
 ok('итог синхронизации словами', str_contains($js, 'syncReport(r)'));
+ok('поле заперто на время отсчёта', str_contains($js, 'this.lockComposer(c, true)') && str_contains($js, "if (!c || c.dataset.sending) return;"));
+ok('ушедшее письмо стирается из поля', str_contains($js, 'this.clearComposer(c);'));
+ok('страница письма перерисовывается', str_contains($js, 'afterSend(key)') && str_contains($js, 'if (!box) this.route();'));
+ok('повтор отвечает already', str_contains($api, "jsonOk(['already' => \$d['already']])"));
 
 echo $fail ? "\n$fail FAIL\n" : "\nВсё ок\n";
 exit($fail ? 1 : 0);

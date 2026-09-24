@@ -174,7 +174,10 @@ try {
             $delay = MailSchedule::delayFor((int)$manager['id']);
             if ($delay > 0) {
                 try {
-                    jsonOk(['delayed' => MailSchedule::delay($input, (int)$manager['id'], $delay)]);
+                    $d = MailSchedule::delay($input, (int)$manager['id'], $delay);
+                    // То же письмо только что ушло — второй раз его не шлём
+                    if (isset($d['already'])) jsonOk(['already' => $d['already']]);
+                    jsonOk(['delayed' => $d]);
                 } catch (InvalidArgumentException|RuntimeException $e) {
                     jsonError($e->getMessage(), 400);
                 }
