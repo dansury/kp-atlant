@@ -86,3 +86,10 @@ not have.
   compare the break points on a real КП with photos.
 - Yandex `qwen3-235b-a22b-fp8`: confirm `/no_think` makes mail triage answer
   well under `LLM_TIMEOUT_SEC` (90 s) and the JSON still parses.
+
+## Module 052 — check on a live MoySklad
+- «Счёт в МойСклад»: the invoice gets «СОТРУДНИК». Check which type the field
+  has in the account (string / employee / dictionary). For «employee» fill
+  «UID в МойСклад» in the manager card if the name lookup does not find them.
+- «Счёт в МойСклад» on a company without MoySklad: the creation window opens,
+  after «Создать» the invoice is issued without reloading the page.

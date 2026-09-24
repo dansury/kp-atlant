@@ -33,6 +33,12 @@ final class RequestItems {
      *
      * @return int сколько строк изменилось
      */
+    /** Количество в подборе — целое (модуль 052): 2,5 шлема не продаются. Дробь > 0 → хотя бы 1. */
+    public static function qty($v): int {
+        $q = (float)str_replace(',', '.', (string)$v);
+        return $q <= 0 ? 0 : max(1, (int)round($q));
+    }
+
     public static function refreshStock(int $requestId): int {
         $rows = Db::all("SELECT * FROM request_items WHERE request_id=? AND moysklad_product_id IS NOT NULL
                           AND moysklad_product_id <> ''", [$requestId]);
@@ -516,7 +522,7 @@ final class RequestItems {
                 'request_id'          => $requestId,
                 'position'            => $i + 1,
                 'raw_name'            => $rawName,
-                'quantity'            => max(0, (float)($row['quantity'] ?? 1)),
+                'quantity'            => self::qty($row['quantity'] ?? 1),
                 'moysklad_product_id' => trim((string)($row['moysklad_product_id'] ?? '')) ?: null,
                 'product_name'        => $prodName ?: null,
                 'article'             => trim((string)($row['article'] ?? '')) ?: null,
@@ -1088,7 +1094,7 @@ final class RequestItems {
                 'raw_name'            => (string)($m['raw_name'] ?? ''),
                 'is_out_of_scope'     => $rule !== null ? 1 : 0,
                 'out_of_scope_reason' => $rule,
-                'quantity'            => (float)($m['quantity'] ?? 1),
+                'quantity'            => self::qty($m['quantity'] ?? 1),
                 'moysklad_product_id' => $best['moysklad_id'] ?? null,
                 'product_name'        => $best['name'] ?? null,
                 'article'             => $best['article'] ?? null,

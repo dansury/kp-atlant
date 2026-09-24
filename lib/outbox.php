@@ -104,6 +104,18 @@ final class Outbox {
         return $out;
     }
 
+    /**
+     * Путь к приложенному файлу этого менеджера — чтобы скачать его из письма
+     * и убедиться, что уйдёт именно он (модуль 052). Чужого и несуществующего
+     * файла нет: null.
+     */
+    public static function path(string $name, int $managerId): ?string {
+        $name = basename(trim($name));
+        if ($name === '' || $name === '.' || $name === '..') return null;
+        $path = self::dir($managerId) . '/' . $name;
+        return is_file($path) ? $path : null;
+    }
+
     /** Человеческое имя файла: без служебной приставки, которой он лежит на диске. */
     public static function displayName(string $stored): string {
         return (string)preg_replace('/^[0-9a-f]{16}__/', '', basename($stored));

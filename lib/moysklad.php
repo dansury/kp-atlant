@@ -679,21 +679,137 @@ class MoySklad {
         return $cache;
     }
 
-    /** Дополнительные поля заказа покупателя: имя → [id, type]. */
+    /** Дополнительные поля заказа покупателя: имя → [id, type, required, dictionary]. */
     public static function orderAttributes(): array {
-        static $cache = null;
-        if ($cache !== null) return $cache;
-        $cache = [];
-        $data = self::get('/entity/customerorder/metadata/attributes');
+        return self::entityAttributes('customerorder');
+    }
+
+    /**
+     * Доп. поля документа (`customerorder`, `invoiceout`): имя → id, тип,
+     * обязательность и справочник (для `customentity`). Читается один раз.
+     */
+    public static function entityAttributes(string $entity): array {
+        static $cache = [];
+        if (isset($cache[$entity])) return $cache[$entity];
+        $out = [];
+        $data = self::get("/entity/$entity/metadata/attributes");
         foreach ((array)($data['rows'] ?? []) as $a) {
             $name = trim((string)($a['name'] ?? ''));
             if ($name === '') continue;
-            $cache[$name] = [
-                'id'   => self::extractId($a['id'] ?? $a['meta']['href'] ?? ''),
-                'type' => (string)($a['type'] ?? 'string'),
+            $out[$name] = [
+                'id'         => self::extractId($a['id'] ?? $a['meta']['href'] ?? ''),
+                'type'       => (string)($a['type'] ?? 'string'),
+                'required'   => !empty($a['required']),
+                'dictionary' => self::extractId((string)($a['customEntityMeta']['href'] ?? '')),
             ];
         }
-        return $cache;
+        return $cache[$entity] = $out;
+    }
+
+    /**
+     * Доп. поля документа по ИМЕНИ — в тело запроса МойСклад (модуль 052).
+     *
+     * Значение строится по типу поля: строка/текст — как есть; «Сотрудник» —
+     * ссылка на сотрудника менеджера ($manager: moysklad_uid, email, name);
+     * справочник — элемент с тем же названием. Не вышло — имя поля попадает в
+     * $missing, а поле в запрос не идёт.
+     *
+     * @param array<string,string> $values   имя поля → значение строкой
+     * @param array<string,array>  $known    entityAttributes()
+     * @param callable(array):?array $employee  метаданные поля → meta сотрудника
+     * @param callable(string,string):?array $entry  справочник, название → meta элемента
+     */
+    public static function attributesBody(string $entity, array $values, array $known, array &$missing,
+                                          callable $employee, callable $entry): array {
+        $out = [];
+        foreach ($values as $name => $value) {
+            $value = trim((string)$value);
+            if (!isset($known[$name])) { $missing[] = 'доп. поле «' . $name . '»'; continue; }
+            $a = $known[$name];
+            $v = match ($a['type']) {
+                'string', 'text', 'link' => $value !== '' ? $value : null,
+                'employee'     => ($m = $employee($a)) ? ['meta' => $m] : null,
+                'customentity' => ($a['dictionary'] !== '' && $value !== '' && ($m = $entry($a['dictionary'], $value)))
+                                      ? ['meta' => $m] : null,
+                default        => null,
+            };
+            if ($v === null) { $missing[] = 'доп. поле «' . $name . '»'; continue; }
+            $out[] = [
+                'meta'  => [
+                    'href'      => self::$base . "/entity/$entity/metadata/attributes/" . $a['id'],
+                    'type'      => 'attributemetadata',
+                    'mediaType' => 'application/json',
+                ],
+                'value' => $v,
+            ];
+        }
+        return $out;
+    }
+
+    /** attributesBody() с живыми справочниками МойСклад. */
+    private static function liveAttributes(string $entity, array $values, ?array $manager, array &$missing): array {
+        if (!$values) return [];
+        return self::attributesBody($entity, $values, self::entityAttributes($entity), $missing,
+            fn(array $a) => $manager ? self::employeeMeta($manager) : null,
+            fn(string $dict, string $name) => self::customEntityMeta($dict, $name));
+    }
+
+    /**
+     * Сотрудник МойСклад, который стоит за менеджером: по «UID в МойСклад» из
+     * карточки менеджера, затем по почте, затем по ФИО.
+     */
+    public static function employeeMeta(array $manager): ?array {
+        static $cache = [];
+        $uid   = trim((string)($manager['moysklad_uid'] ?? ''));
+        $email = trim((string)($manager['email'] ?? ''));
+        $name  = trim((string)($manager['name'] ?? ''));
+        $key = "$uid|$email|$name";
+        if (array_key_exists($key, $cache)) return $cache[$key];
+        $rows = [];
+        foreach (array_filter(['uid' => $uid, 'email' => $email]) as $field => $v) {
+            $data = self::get('/entity/employee?filter=' . rawurlencode("$field=$v") . '&limit=5');
+            $rows = (array)($data['rows'] ?? []);
+            if ($rows) break;
+        }
+        if (!$rows && $name !== '') {
+            $data = self::get('/entity/employee?limit=1000');
+            $rows = array_values(array_filter((array)($data['rows'] ?? []),
+                fn($e) => self::sameEmployee($e, $name)));
+        }
+        return $cache[$key] = !empty($rows[0]['meta']) ? $rows[0]['meta'] : null;
+    }
+
+    /** ФИО менеджера совпадает с сотрудником: «Яна Петрова» = «Петрова Яна» = «Петрова Я.». */
+    public static function sameEmployee(array $e, string $name): bool {
+        $norm = fn(string $s) => array_values(array_filter(preg_split('/[\s.]+/u',
+            str_replace('ё', 'е', mb_strtolower(trim($s)))) ?: []));
+        $want = $norm($name);
+        if (!$want) return false;
+        sort($want);
+        foreach ([$e['fullName'] ?? '', $e['name'] ?? '',
+                  trim(($e['lastName'] ?? '') . ' ' . ($e['firstName'] ?? ''))] as $cand) {
+            $got = $norm((string)$cand);
+            if (!$got) continue;
+            sort($got);
+            if ($got === $want) return true;
+        }
+        // «Петрова Я.» — фамилия и первая буква имени
+        $last = $norm((string)($e['lastName'] ?? ''));
+        $first = mb_substr((string)($e['firstName'] ?? ''), 0, 1);
+        return $last && $first !== '' && count($want) >= 2
+            && in_array($last[0], $want, true)
+            && (bool)array_filter($want, fn($w) => $w !== $last[0]
+                                             && mb_substr($w, 0, 1) === mb_strtolower($first));
+    }
+
+    /** Элемент справочника МойСклад с этим названием. */
+    public static function customEntityMeta(string $dictionaryId, string $name): ?array {
+        $data = self::get("/entity/customentity/$dictionaryId?search=" . rawurlencode($name) . '&limit=50');
+        $norm = fn(string $s) => str_replace('ё', 'е', mb_strtolower(trim(preg_replace('/\s+/u', ' ', $s))));
+        foreach ((array)($data['rows'] ?? []) as $r) {
+            if ($norm((string)($r['name'] ?? '')) === $norm($name) && !empty($r['meta'])) return $r['meta'];
+        }
+        return null;
     }
 
     // Create customer order (US5)
@@ -747,22 +863,9 @@ class MoySklad {
                 $missing[] = 'статус «' . $data['state_name'] . '»';
             }
         }
-        if (!empty($data['attributes'])) {
-            $known = self::orderAttributes();
-            $attrs = [];
-            foreach ((array)$data['attributes'] as $name => $value) {
-                if (!isset($known[$name])) { $missing[] = 'доп. поле «' . $name . '»'; continue; }
-                $attrs[] = [
-                    'meta' => [
-                        'href'      => self::$base . '/entity/customerorder/metadata/attributes/' . $known[$name]['id'],
-                        'type'      => 'attributemetadata',
-                        'mediaType' => 'application/json',
-                    ],
-                    'value' => $value,
-                ];
-            }
-            if ($attrs) $body['attributes'] = $attrs;
-        }
+        $attrs = self::liveAttributes('customerorder', (array)($data['attributes'] ?? []),
+                                      $data['manager'] ?? null, $missing);
+        if ($attrs) $body['attributes'] = $attrs;
         if (array_key_exists('applicable', $data)) $body['applicable'] = (bool)$data['applicable'];
 
         $resp = self::post('/entity/customerorder', $body);
@@ -833,8 +936,35 @@ class MoySklad {
         if (array_key_exists('vat_enabled', $data))  $body['vatEnabled']  = (bool)$data['vat_enabled'];
         if (array_key_exists('vat_included', $data)) $body['vatIncluded'] = (bool)$data['vat_included'];
 
+        // Доп. поля счёта — «СОТРУДНИК» из карточки менеджера (модуль 052).
+        // Обязательное поле, которое заполнить нечем, МойСклад отвергнет
+        // кодом 412 — говорим заранее и по-человечески.
+        $missing = [];
+        $attrs = self::liveAttributes('invoiceout', (array)($data['attributes'] ?? []),
+                                      $data['manager'] ?? null, $missing);
+        if ($attrs) $body['attributes'] = $attrs;
+        foreach (self::requiredGaps('invoiceout', $attrs) as $name) {
+            $who = trim((string)($data['manager']['name'] ?? ''));
+            throw new MoySkladException("у счёта в МойСклад обязательное доп. поле «{$name}», а заполнить его нечем — "
+                . (array_key_exists($name, (array)($data['attributes'] ?? []))
+                    ? "не нашли сотрудника МойСклад для менеджера" . ($who !== '' ? " «{$who}»" : '')
+                      . '. Укажите «UID в МойСклад» (логин сотрудника) в карточке менеджера: Админ → Менеджеры'
+                    : 'впишите его название в «Настройки → МойСклад → Доп. поле с именем менеджера»'));
+        }
+
         $resp = self::post('/entity/invoiceout', $body);
         return self::mapInvoice($resp);
+    }
+
+    /** Обязательные доп. поля документа, которых нет в $attrs (имена). */
+    private static function requiredGaps(string $entity, array $attrs): array {
+        $filled = [];
+        foreach ($attrs as $a) $filled[basename((string)($a['meta']['href'] ?? ''))] = true;
+        $gaps = [];
+        foreach (self::entityAttributes($entity) as $name => $a) {
+            if ($a['required'] && !isset($filled[$a['id']])) $gaps[] = $name;
+        }
+        return $gaps;
     }
 
     // Get orders by counterparty (US6, US7)
