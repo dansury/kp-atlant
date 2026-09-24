@@ -185,6 +185,23 @@ switch ($action) {
         ]);
     }
 
+    // Задержка отправки письма — своя у каждого (модуль 056); пусто — по умолчанию
+    case 'my_send_delay': {
+        $manager = requireAuth();
+        require_once ROOT . '/lib/mail_schedule.php';
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' || $_SERVER['REQUEST_METHOD'] === 'PUT') {
+            $v = getInput()['delay'] ?? '';
+            MailSchedule::setDelay((int)$manager['id'], $v === '' || $v === null ? null : (int)$v);
+        }
+        $raw = Db::val("SELECT send_delay_sec FROM managers WHERE id=?", [(int)$manager['id']]);
+        jsonData([
+            'delay'     => $raw === null || $raw === false ? '' : (int)$raw,
+            'effective' => MailSchedule::delayFor((int)$manager['id']),
+            'default'   => MailSchedule::DEFAULT_DELAY,
+            'max'       => MailSchedule::MAX_DELAY,
+        ]);
+    }
+
     case 'ui':
         $me = requireAuth();
         // Свой звук менеджера важнее общего (issue #60)

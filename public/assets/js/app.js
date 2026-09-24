@@ -935,11 +935,15 @@ const App = {
         const open = items.filter(i => i.needs_choice).length;
         host.classList.toggle('card--folded', host.dataset.folded === '1');
         host.innerHTML = `
-            <div class="card__title">Подходящие позиции ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}
+            <div class="card__title"><span class="fold-title" onclick="App.toggleMatchFold(this)">Подходящие позиции</span>
+                <span class="muted" data-fold-count>${host.dataset.folded === '1' ? `· ${items.length}` : ''}</span>
+                ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}
                 ${this.hint('match')}
-                <button class="btn btn--outline btn--sm card__fold" onclick="App.toggleMatchFold(this)"
-                        title="Свернуть или развернуть подбор">${host.dataset.folded === '1'
-                            ? `▸ Развернуть (позиций: ${items.length})` : '▾ Свернуть'}</button></div>
+                <!-- Стрелка, а не слово (модуль 056): смысл — в подсказке -->
+                <button type="button" class="block-fold card__fold" onclick="App.toggleMatchFold(this)"
+                        aria-expanded="${host.dataset.folded === '1' ? 'false' : 'true'}"
+                        title="${host.dataset.folded === '1' ? `Развернуть подбор (позиций: ${items.length})` : 'Свернуть подбор'}"
+                        >${host.dataset.folded === '1' ? '▸' : '▾'}</button></div>
             <p class="muted">Подбираются сами при открытии карточки. Начните печатать название —
                подскажет локальная база товаров.</p>
             ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
@@ -948,8 +952,10 @@ const App = {
                  собирают позиции, потом назначают на них цены и сроки -->
             <div class="flex flex--wrap" style="margin-bottom:8px">
                 <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
-                <button class="btn btn--outline btn--sm" onclick="App.foldPickedRows(this)"
-                        title="Свернуть в строку позиции, где товар уже подобран; нажмите ещё раз — развернуть все">▴ Свернуть подобранные</button>
+                <button type="button" class="btn btn--outline btn--sm" data-fold-all onclick="App.foldAllRows(this)"
+                        title="Свернуть все позиции">⇈</button>
+                <button type="button" class="btn btn--outline btn--sm" onclick="App.foldPickedRows(this)"
+                        title="Свернуть подобранные: позиции, где товар уже выбран; нажмите ещё раз — развернуть все">✓⇈</button>
                 <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
                 <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
                         title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
@@ -973,6 +979,7 @@ const App = {
             <div data-kp-slot class="card__keep"></div>
         `;
         this.updateMatchTotal(host);
+        this.syncFoldAll(host);
         this.bindMatchDnd(host);
         this.bindMatchAutosave(host);
         this.watchMatchPhotos(host);
@@ -1037,6 +1044,17 @@ const App = {
                     '<button type="button" class="block-fold" onclick="App.toggleBlock(this)"></button>');
             } else if (!reapply && el.dataset.foldBound === '1') {
                 return;
+            }
+            if (head.dataset.foldClick !== '1') {
+                head.dataset.foldClick = '1';
+                // Заголовок блока тоже сворачивает (модуль 056); кнопки, ссылки и
+                // поля внутри него — нет. Вкладки справа открывает railOpen()
+                head.addEventListener('click', e => {
+                    if (e.target.closest('button, a, input, select, textarea, label, summary, .hint')) return;
+                    if (this.RAIL.includes(name) && !this.isPhone() && el.classList.contains('is-folded')) return;
+                    const btn = head.querySelector(':scope > .block-fold');
+                    if (btn) this.toggleBlock(btn);
+                });
             }
             el.dataset.foldBound = '1';
             this.applyBlockFold(el, !!this.foldGet(name));
@@ -1117,7 +1135,14 @@ const App = {
         host.classList.toggle('card--folded', folded);
         this.foldSet('items', folded);
         const rows = host.querySelectorAll('[data-match-row]').length;
-        btn.textContent = folded ? `▸ Развернуть (позиций: ${rows})` : '▾ Свернуть';
+        const fold = host.querySelector(':scope > .card__title > .card__fold');
+        if (fold) {
+            fold.textContent = folded ? '▸' : '▾';
+            fold.title = folded ? `Развернуть подбор (позиций: ${rows})` : 'Свернуть подбор';
+            fold.setAttribute('aria-expanded', folded ? 'false' : 'true');
+        }
+        const count = host.querySelector(':scope > .card__title > [data-fold-count]');
+        if (count) count.textContent = folded ? `· ${rows}` : '';
     },
 
     /**
@@ -1590,7 +1615,8 @@ const App = {
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
                         <button class="btn btn--primary btn--sm" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
-                        <button class="btn btn--outline btn--sm" onclick="App.openKp(${id}, this)">Свернуть</button>
+                        <button class="btn btn--outline btn--sm" onclick="App.openKp(${id}, this)"
+                                title="Свернуть КП" aria-label="Свернуть КП">▴</button>
                     </span>
                 </div>
                 <!-- Документ открывается листом A4 в редакторе (модуль 051);
@@ -2603,14 +2629,14 @@ const App = {
                         <button type="button" class="match-row__fold" onclick="App.toggleRowFold(this)"
                                 aria-expanded="${folded ? 'false' : 'true'}"
                                 title="${folded ? 'Развернуть позицию' : 'Свернуть позицию в строку'}">${folded ? '▸' : '▾'}</button>
-                        <span class="muted">${i.raw_name ? `из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}` : 'добавлено вручную'}</span>
+                        <span class="muted fold-title" onclick="App.toggleRowFold(this)">${i.raw_name ? `из письма: ${this.esc(i.raw_name)}${conf !== null ? ` · совпадение ${conf}%` : ''}${src ? ` · ${src}` : ''}` : 'добавлено вручную'}</span>
                         <span class="hint-pin">
                         <button class="btn btn--outline btn--sm ${i.is_out_of_scope ? 'btn--primary' : ''}"
                                 title="${i.is_out_of_scope ? 'Вернуть строку в работу' : 'Мы этим не занимаемся: в КП строка встанет серым с прочерками, в ответ клиенту не попадёт'}"
                                 onclick="App.setItemScope(this, ${i.id || 0}, ${i.is_out_of_scope ? 0 : 1})">${i.is_out_of_scope ? '↩' : '🚫'}</button>
                         ${index === 0 && !i.is_out_of_scope ? this.hint('match-scope') : ''}</span>
                     </div>
-                    <div class="match-row__summary" data-row-summary>${this.rowSummary(i)}</div>
+                    <div class="match-row__summary" data-row-summary onclick="App.toggleRowFold(this)" title="Развернуть позицию">${this.rowSummary(i)}</div>
                     ${this.variantNote(i)}
                     ${this.stockNote(i)}
                     ${this.scopeNote(i)}
@@ -3049,6 +3075,27 @@ const App = {
         const sum = row.querySelector('[data-row-summary]');
         if (sum && folded) sum.innerHTML = this.rowSummary(this.rowData(row));
         this.rowFoldRemember((row.querySelector('[data-field="id"]') || {}).value, folded);
+        this.syncFoldAll(this.matchHost(row));
+    },
+
+    /** Кнопка «все позиции»: всё свёрнуто — ⇊ разворачивает, иначе ⇈ сворачивает. */
+    syncFoldAll(host) {
+        const btn = host && host.querySelector('[data-fold-all]');
+        if (!btn) return;
+        const rows = host.querySelectorAll('[data-match-row]');
+        const all = rows.length > 0 && [...rows].every(r => r.classList.contains('match-row--folded'));
+        btn.textContent = all ? '⇊' : '⇈';
+        btn.title = all ? 'Развернуть все позиции' : 'Свернуть все позиции';
+    },
+
+    /** Свернуть все позиции разом; всё уже свёрнуто — развернуть все (модуль 056). */
+    foldAllRows(btn) {
+        const host = this.matchHost(btn);
+        if (!host) return;
+        const rows = [...host.querySelectorAll('[data-match-row]')];
+        if (!rows.length) { this.toast('Позиций пока нет'); return; }
+        const fold = rows.some(r => !r.classList.contains('match-row--folded'));
+        rows.forEach(r => this.setRowFold(r, fold));
     },
 
     toggleRowFold(btn) {
@@ -4446,7 +4493,8 @@ const App = {
                 actions: cp.moysklad_id ? `<a class="btn btn--outline btn--sm" target="_blank" rel="noopener"
                     href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">МойСклад ↗</a>` : '',
                 menu: [
-                    {label: 'Обновить из МойСклад', onclick: `App.syncCompany(${cp.id})`},
+                    {label: 'Обновить из МойСклад', title: 'Подтянуть из МойСклад реквизиты компании, её заказы и счета',
+                     onclick: `App.syncCompany(${cp.id})`},
                     (cp.senders_count || 0) > 1 ? {label: `Разделить по отправителям (${cp.senders_count})`,
                         title: `В карточке ${cp.senders_count} разных отправителей — развести по своим компаниям`,
                         onclick: `App.splitSenders(${cp.id}, ${cp.senders_count})`} : null,
@@ -4599,6 +4647,7 @@ const App = {
         return `
             <article class="${cls.join(' ')}" data-thread="${this.esc(t.thread_key)}">
                 <div class="conv__head" onclick="App.toggleCompanyThread('${key}')">
+                    <button type="button" class="conv__caret" title="Развернуть переписку" aria-expanded="false">▸</button>
                     <span class="conv__who" title="${this.esc(t.last_from_name || '')}">
                         <span class="conv__dir" title="${t.last_direction === 'in' ? 'последнее письмо клиента' : 'последнее письмо наше'}"
                               >${t.last_direction === 'in' ? '📥' : '📤'}</span>
@@ -4636,6 +4685,16 @@ const App = {
             </article>`;
     },
 
+    /** Раскрыта ли переписка — класс и стрелка с подсказкой (модуль 056). */
+    setConvOpen(conv, open) {
+        conv.classList.toggle('conv--open', open);
+        const caret = conv.querySelector(':scope > .conv__head > .conv__caret');
+        if (!caret) return;
+        caret.textContent = open ? '▾' : '▸';
+        caret.title = open ? 'Свернуть переписку' : 'Развернуть переписку';
+        caret.setAttribute('aria-expanded', open ? 'true' : 'false');
+    },
+
     // A thread key is base64-ish («s:9f8c…»), an element id may not be
     threadDomId(key) {
         return String(key).replace(/[^a-zA-Z0-9]/g, '_');
@@ -4662,7 +4721,7 @@ const App = {
         if (!box.hidden) {
             box.hidden = true;
             const conv = box.closest('.conv');
-            if (conv) conv.classList.remove('conv--open');
+            if (conv) this.setConvOpen(conv, false);
             this.setCompanyItems(null);
             return;
         }
@@ -4672,12 +4731,12 @@ const App = {
         document.querySelectorAll('.conv__open:not([hidden])').forEach(el => {
             el.hidden = true;
             const conv = el.closest('.conv');
-            if (conv) conv.classList.remove('conv--open');
+            if (conv) this.setConvOpen(conv, false);
         });
 
         box.hidden = false;
         const own = box.closest('.conv');
-        if (own) own.classList.add('conv--open');
+        if (own) this.setConvOpen(own, true);
         this.companyOpenThread = key;
         // Блоки карточки помнят положение у своей переписки
         this.setFoldKey(key);
@@ -4993,9 +5052,14 @@ const App = {
         const row = btn.closest('.invdock__row');
         const box = row && row.querySelector('[data-inv-preview]');
         if (!box) return;
-        if (box.dataset.open === '1') { box.dataset.open = ''; box.innerHTML = ''; btn.textContent = '👁 Просмотреть счёт'; return; }
+        if (box.dataset.open === '1') {
+            box.dataset.open = ''; box.innerHTML = '';
+            btn.textContent = '👁 Просмотреть счёт'; btn.title = '';
+            return;
+        }
         box.dataset.open = '1';
-        btn.textContent = '👁 Свернуть счёт';
+        btn.textContent = '▴';
+        btn.title = 'Свернуть счёт';
         box.innerHTML = '<div class="muted">Получаем печатную форму из МойСклад...</div>';
         // Сначала файл, потом рамка: ошибка печати — строкой, а не JSON в рамке (модуль 054)
         fetch(`/api/invoices.php?action=pdf&id=${id}`, {credentials: 'same-origin'}).then(async res => {
@@ -5568,6 +5632,66 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
+    /**
+     * Отправка с задержкой на отмену (модуль 056).
+     *
+     * Сервер кладёт письмо в очередь на N секунд своей настройки менеджера;
+     * здесь идёт отсчёт с «Отменить». Результат — ответ отправки, null —
+     * отменили. Закрытая вкладка письмо не теряет: его дошлёт крон.
+     */
+    async sendMail(body) {
+        const res = await this.api('mail.php?action=send', {method: 'POST', body});
+        if (!res.delayed) return res;
+        return this.undoSend(res.delayed);
+    },
+
+    undoSend({id, seconds}) {
+        return new Promise((resolve, reject) => {
+            const el = document.createElement('div');
+            el.className = 'toast toast--info toast--undo';
+            el.innerHTML = `<span class="toast__text"></span>
+                <button type="button" class="toast__act" data-undo>Отменить</button>
+                <button type="button" class="toast__act" data-now title="Не ждать — отправить сразу">Отправить сейчас</button>`;
+            const text = el.querySelector('.toast__text');
+            let left = seconds, done = false;
+            const paint = () => { text.textContent = `Письмо уйдёт через ${left} с`; };
+            const finish = () => { done = true; clearInterval(timer); el.remove(); };
+            const sendNow = async () => {
+                if (done) return;
+                finish();
+                try {
+                    const r = await this.api('mail.php?action=send_now', {method: 'POST', body: {id}});
+                    resolve(r.already ? {already: r.already} : r);
+                } catch (err) { reject(err); }
+            };
+            el.querySelector('[data-undo]').onclick = async () => {
+                if (done) return;
+                finish();
+                try {
+                    await this.api('mail.php?action=schedule_cancel', {method: 'POST', body: {id}});
+                    this.toast('Отправка отменена — письмо осталось в поле', 'success');
+                    resolve(null);
+                } catch (err) {
+                    // Крон успел раньше — письмо ушло, отменять нечего
+                    this.toast(err.message, 'error');
+                    resolve({already: 'sent'});
+                }
+            };
+            el.querySelector('[data-now]').onclick = sendNow;
+            paint();
+            const timer = setInterval(() => { left--; if (left <= 0) sendNow(); else paint(); }, 1000);
+            document.getElementById('toasts').appendChild(el);
+        });
+    },
+
+    /** «Отправлено» и где копия; копия не легла в «Отправленные» — сказать сразу. */
+    sentToast(res) {
+        if (res.already === 'sending') this.toast('Письмо уже отправляется', 'info');
+        else if (res.already) this.toast('Письмо отправлено', 'success');
+        else if (res.warning) this.toast(res.warning, 'error');
+        else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
+    },
+
     async threadSend(key, btn, sendAt = null) {
         const c = this.composerOf(key);
         if (!c) return;
@@ -5575,7 +5699,7 @@ const App = {
         if (!text.trim()) { this.toast('Письмо пустое', 'error'); return; }
         btn.disabled = true;
         try {
-            const res = await this.api('mail.php?action=send', {method: 'POST', body: {
+            const body = {
                 // Пусто — уходит сейчас; время — ложится в очередь (issue #60)
                 send_at:     sendAt || '',
                 to:          c.querySelector('[data-cmp-to]').value.trim(),
@@ -5591,7 +5715,11 @@ const App = {
                 files:       this.composerFiles(c),
                 // Галочка «подпись» снята — письмо уходит ровно как набрано
                 signature:   (c.querySelector('[data-cmp-sign]') || {checked: true}).checked ? 1 : 0,
-            }});
+            };
+            const res = sendAt
+                ? await this.api('mail.php?action=send', {method: 'POST', body})
+                : await this.sendMail(body);
+            if (!res) return;   // отправку отменили — текст остался в поле
             // Отложенное письмо ещё не ушло — и говорить «отправлено» о нём нельзя
             if (res.scheduled) {
                 this.toast('Письмо уйдёт ' + res.scheduled.send_at, 'success');
@@ -5599,10 +5727,7 @@ const App = {
                 if (sbox) sbox.hidden = true;
                 return;
             }
-            // «Отправлено» is only half the news when the copy never reached the
-            // server's «Отправленные» — the manager hears it now, not in a month
-            if (res.warning) this.toast(res.warning, 'error');
-            else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
+            this.sentToast(res);
             // The answer belongs in the conversation it answers — reopen it
             const box = key ? document.getElementById('th_' + this.threadDomId(key)) : null;
             if (box) { box.dataset.loaded = ''; box.hidden = true; this.toggleCompanyThread(key); }
@@ -6072,14 +6197,21 @@ const App = {
         // Background refreshes fire on every focus — don't hammer the MoySklad API
         const now = Date.now();
         if (silent && this._lastSync && this._lastSync.id === id && now - this._lastSync.at < 15000) return;
+        // Второе нажатие, пока идёт первое, ничего не делает (модуль 056)
+        if (!silent && this._syncBusy === id) return;
         this._lastSync = {id, at: now};
 
-        const btn = document.getElementById('syncBtn');
-        if (btn && !silent) { btn.disabled = true; btn.textContent = 'Обновление...'; }
-        // Пункт меню «⋯» закрывается сразу — ход работы виден сообщением
-        else if (!silent) this.toast('Обновляем из МойСклад…', 'info');
+        // Ход работы виден сообщением до ответа, итог — что именно обновилось
+        let wait = null;
+        if (!silent) {
+            this._syncBusy = id;
+            wait = document.createElement('div');
+            wait.className = 'toast toast--info';
+            wait.textContent = 'Обновляем из МойСклад…';
+            document.getElementById('toasts').appendChild(wait);
+        }
         try {
-            await this.api(`invoices.php?action=sync&counterparty_id=${id}`, {method: 'POST'});
+            const r = await this.api(`invoices.php?action=sync&counterparty_id=${id}${silent ? '' : '&full=1'}`, {method: 'POST'});
             const cp = await this.api(`counterparties.php?action=get&id=${id}`);
             const side = document.getElementById('companySide');
             // Фоновое обновление правой колонки не должно съесть недописанную
@@ -6089,12 +6221,24 @@ const App = {
             const note = document.getElementById('noteText');
             if (note && draft) note.value = draft;
             this.loadChat(id);
-            if (!silent) this.toast('Данные из МойСклад обновлены', 'success');
+            if (!silent) this.toast(this.syncReport(r), r.linked ? 'success' : 'info');
         } catch (err) {
             if (!silent) this.toast(err.message, 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Обновить из МойСклад'; }
+            if (wait) wait.remove();
+            if (!silent) this._syncBusy = null;
         }
+    },
+
+    /** Итог «Обновить из МойСклад» словами (модуль 056). */
+    syncReport(r) {
+        const parts = [];
+        if (r.requisites) parts.push('реквизиты обновлены');
+        parts.push(`заказов: ${r.orders || 0}`, `счетов: ${r.invoices || 0}`);
+        return r.linked
+            ? 'МойСклад: ' + parts.join(' · ')
+            : 'Компания не связана с контрагентом МойСклад — реквизиты подтянуть не из чего. '
+              + `Проверены только заказы и счета, заведённые отсюда: ${parts.join(' · ')}`;
     },
 
     // «Отправить счёт» отдельным окном больше нет (модуль 029): счёт цепляется
@@ -7423,10 +7567,43 @@ const App = {
         document.getElementById('adminBody').innerHTML = `
             <div class="card" id="kpSignatureCard"><div class="loading">Читаем подпись...</div></div>
             ${admin ? '<div class="card" id="companySignatureCard"><div class="loading">Читаем подпись организации...</div></div>' : ''}
-            <div class="card" id="mailSignatureCard"><div class="loading">Читаем подпись в письмах...</div></div>`;
+            <div class="card" id="mailSignatureCard"><div class="loading">Читаем подпись в письмах...</div></div>
+            <div class="card" id="sendDelayCard"><div class="loading">Загрузка...</div></div>`;
         this.loadSignature();
         if (admin) this.loadCompanySignature();
         this.loadMailSignature();
+        this.loadSendDelay();
+    },
+
+    /** Задержка отправки — своя у каждого (модуль 056); пусто — по умолчанию. */
+    async loadSendDelay() {
+        const card = document.getElementById('sendDelayCard');
+        if (!card) return;
+        try {
+            const d = await this.api('settings.php?action=my_send_delay');
+            card.innerHTML = `
+                <div class="card__title">Задержка отправки писем</div>
+                <p class="muted">После «Отправить» письмо ждёт столько секунд — пока идёт отсчёт, его можно отменить.
+                   Пусто — по умолчанию (${d.default} с), 0 — отправлять сразу. Сейчас: ${d.effective ? d.effective + ' с' : 'сразу'}.</p>
+                <div class="flex flex--wrap">
+                    <label>секунд <input type="number" id="sendDelay" min="0" max="${d.max}" style="width:6em"
+                           placeholder="${d.default}" value="${this.esc(d.delay)}"></label>
+                    <button class="btn btn--primary btn--sm" onclick="App.saveSendDelay(this)">Сохранить</button>
+                </div>`;
+        } catch (err) {
+            card.innerHTML = `<div class="card__title">Задержка отправки писем</div><p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async saveSendDelay(btn) {
+        btn.disabled = true;
+        try {
+            await this.api('settings.php?action=my_send_delay', {method: 'POST',
+                body: {delay: document.getElementById('sendDelay').value}});
+            this.toast('Задержка отправки сохранена', 'success');
+            this.loadSendDelay();
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
     },
 
     /** Строка, которой КП заканчивается: дата, картинка, расшифровка (без прочерка — модуль 051). */
@@ -8212,6 +8389,8 @@ const App = {
         return `
             <article class="${cls.join(' ')}" data-tmsg data-mail="${m.id}">
                 <header class="lmsg__head" onclick="App.toggleTmsg(this)">
+                    <button type="button" class="lmsg__caret" aria-expanded="${open ? 'true' : 'false'}"
+                            title="${open ? 'Свернуть письмо' : 'Развернуть письмо'}">${open ? '▾' : '▸'}</button>
                     <!-- Кто написал: у пересланного письма это человек из шапки
                          пересылки, а не наш ящик, через который оно пришло -->
                     <span class="lmsg__who">${this.esc(m.real_from_name || m.from_name || m.from_email || '—')}</span>
@@ -8270,8 +8449,12 @@ const App = {
      */
     threadHtml(messages, key) {
         const n = (messages || []).length;
+        // Раскрыто ли хоть одно письмо — тем же правилом, что в threadMessage()
+        const anyOpen = (messages || []).some((m, i) => m.direction === 'in' && (i === n - 1 || Number(m.is_read) === 0));
         return `<section class="lblock" data-block="thread">
-            <div class="lblock__head" data-block-head>Письма <span class="muted">· ${n}</span></div>
+            <div class="lblock__head" data-block-head>Письма <span class="muted">· ${n}</span>
+                ${n > 1 ? `<button type="button" class="fold-all" onclick="App.foldAllLetters(this)"
+                    title="${anyOpen ? 'Свернуть все письма' : 'Развернуть все письма'}">${anyOpen ? '⇈' : '⇊'}</button>` : ''}</div>
             <div class="thread">
                 ${(messages || []).map((m, i) => this.threadMessage(m, i === messages.length - 1, key)).join('')}
             </div>
@@ -9811,12 +9994,45 @@ const App = {
      */
     toggleTmsg(head) {
         const box = head.closest('[data-tmsg]');
-        if (!box) return;
-        box.classList.toggle('lmsg--open');
-        if (box.classList.contains('lmsg--open')) {
+        if (box) this.setTmsgOpen(box, !box.classList.contains('lmsg--open'));
+    },
+
+    setTmsgOpen(box, open) {
+        box.classList.toggle('lmsg--open', open);
+        const caret = box.querySelector(':scope > .lmsg__head > .lmsg__caret');
+        if (caret) {
+            caret.textContent = open ? '▾' : '▸';
+            caret.title = open ? 'Свернуть письмо' : 'Развернуть письмо';
+            caret.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+        if (open) {
             this.mountBodies(box);
             box.querySelectorAll('iframe.html-frame').forEach(f => this.sizeFrame(f));
         }
+        const all = box.closest('[data-block="thread"]');
+        if (all) this.syncFoldAllLetters(all);
+    },
+
+    /** Свернуть все письма переписки; всё свёрнуто — развернуть все (модуль 056). */
+    foldAllLetters(btn) {
+        const block = btn.closest('[data-block="thread"]');
+        if (!block) return;
+        const msgs = [...block.querySelectorAll('[data-tmsg]')];
+        const fold = msgs.some(m => m.classList.contains('lmsg--open'));
+        // Свёрнутый блок «Письма» сначала раскрываем — иначе развернуть нечего увидеть
+        if (!fold && block.classList.contains('is-folded')) {
+            const b = block.querySelector(':scope > .block-head > .block-fold');
+            if (b) this.toggleBlock(b);
+        }
+        msgs.forEach(m => this.setTmsgOpen(m, !fold));
+    },
+
+    syncFoldAllLetters(block) {
+        const btn = block.querySelector('.fold-all');
+        if (!btn) return;
+        const anyOpen = !!block.querySelector('[data-tmsg].lmsg--open');
+        btn.textContent = anyOpen ? '⇈' : '⇊';
+        btn.title = anyOpen ? 'Свернуть все письма' : 'Развернуть все письма';
     },
 
     /**
@@ -9971,7 +10187,7 @@ const App = {
                     </div>` : ''}
                 <textarea id="cmpText" rows="9"></textarea>
             </div>
-            <button class="btn btn--primary btn--block" onclick="App.mailSend(${replyToId || 'null'})">Отправить</button>
+            <button class="btn btn--primary btn--block" data-send-btn onclick="App.mailSend(${replyToId || 'null'})">Отправить</button>
         `);
         if (generate && src && src.direction === 'in') this.mailGenerateReply(replyToId);
     },
@@ -10014,17 +10230,18 @@ const App = {
             reply_to_id: replyToId || null,
             thread_key: this.composeThread || null,
         };
+        const btn = document.querySelector('.modal [data-send-btn]');
+        if (btn) btn.disabled = true;
         try {
-            const res = await this.api('mail.php?action=send', {method: 'POST', body});
+            const res = await this.sendMail(body);
+            if (!res) return;   // отменили — окно с текстом осталось
             this.closeModal();
-            // «Отправлено» is only half the news when the copy never reached the
-            // server's «Отправленные» — the manager hears it now, not in a month
-            if (res.warning) this.toast(res.warning, 'error');
-            else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
+            this.sentToast(res);
             const key = this.composeThread;
             this.composeThread = null;
             if (key) location.hash = 'mail/t/' + encodeURIComponent(key); else this.route();
         } catch (err) { this.toast(err.message, 'error'); }
+        finally { if (btn && btn.isConnected) btn.disabled = false; }
     },
 
     // ==== Settings tabs that only an administrator sees (module 004) ====

@@ -19,6 +19,53 @@ final class MailSchedule {
     /** Больше трёх попыток — это не «сеть моргнула», а сломанное письмо. */
     private const MAX_ATTEMPTS = 3;
 
+    /** Задержка отправки по умолчанию, секунд (модуль 056). */
+    public const DEFAULT_DELAY = 20;
+    public const MAX_DELAY = 120;
+
+    /** Задержка менеджера: NULL в базе — по умолчанию, 0 — без задержки. */
+    public static function delayFor(int $managerId): int {
+        $v = Db::val("SELECT send_delay_sec FROM managers WHERE id=?", [$managerId]);
+        if ($v === null || $v === false || $v === '') return self::DEFAULT_DELAY;
+        return max(0, min(self::MAX_DELAY, (int)$v));
+    }
+
+    /** null — вернуть значение по умолчанию. */
+    public static function setDelay(int $managerId, ?int $seconds): void {
+        Db::update('managers', [
+            'send_delay_sec' => $seconds === null ? null : max(0, min(self::MAX_DELAY, $seconds)),
+        ], 'id=?', [$managerId]);
+    }
+
+    /**
+     * Письмо «на отмену»: ложится в очередь на delay секунд (модуль 056).
+     * Закрытая вкладка его не теряет — уйдёт с кроном.
+     */
+    public static function delay(array $input, int $managerId, int $seconds): array {
+        $row = self::add($input, $managerId, date('Y-m-d H:i:s', time() + $seconds));
+        return ['id' => (int)$row['id'], 'send_at' => $row['send_at'], 'seconds' => $seconds];
+    }
+
+    /** Забрать письмо в отправку: true — только у одного из конкурентов. */
+    private static function claim(int $id): bool {
+        return Db::update('mail_scheduled', ['status' => 'sending'], "id=? AND status='pending'", [$id]) === 1;
+    }
+
+    /**
+     * Отправить письмо из очереди сейчас — отсчёт кончился или «Отправить
+     * сейчас». Крон успел раньше — ответ говорит об этом, а не шлёт второй раз.
+     */
+    public static function sendNow(int $id, int $managerId): array {
+        $row = Db::one("SELECT * FROM mail_scheduled WHERE id=?", [$id]);
+        if (!$row) throw new RuntimeException('Письмо не найдено в очереди');
+        if ((int)$row['manager_id'] !== $managerId) throw new RuntimeException('Это письмо отправляет другой менеджер');
+        if ($row['status'] === 'sent' || $row['status'] === 'sending') return ['already' => $row['status']];
+        if ($row['status'] === 'cancelled') throw new RuntimeException('Отправка этого письма отменена');
+        if (!self::claim($id)) return ['already' => (string)Db::val("SELECT status FROM mail_scheduled WHERE id=?", [$id])];
+        // Ошибку менеджер увидит сразу, а текст остался в поле: повтор кроном дал бы дубль
+        return self::deliver($row, true);
+    }
+
     /** Запланировать письмо. $sendAt — 'Y-m-d H:i:s' в часовом поясе сервиса. */
     public static function add(array $input, int $managerId, string $sendAt): array {
         $ts = strtotime($sendAt);
@@ -65,8 +112,10 @@ final class MailSchedule {
         if (!$isAdmin && (int)$row['manager_id'] !== $managerId) {
             throw new RuntimeException('Это письмо отложил другой менеджер');
         }
-        if ($row['status'] !== 'pending') throw new RuntimeException('Это письмо уже не в очереди');
-        Db::update('mail_scheduled', ['status' => 'cancelled'], 'id=?', [$id]);
+        // Условием, а не проверкой выше: письмо, которое крон уже забрал, не «отменяется»
+        if (Db::update('mail_scheduled', ['status' => 'cancelled'], "id=? AND status='pending'", [$id]) !== 1) {
+            throw new RuntimeException('Письмо уже отправлено — отменить нельзя');
+        }
         Logger::info('mail', 'Отложенное письмо отменено', ['scheduled_id' => $id, 'manager_id' => $managerId]);
     }
 
@@ -91,38 +140,53 @@ final class MailSchedule {
         require_once ROOT . '/lib/mail_compose.php';
         $sent = 0; $failed = 0;
         foreach (self::due() as $row) {
-            $id = (int)$row['id'];
-            $payload = json_decode((string)$row['payload_json'], true);
-            if (!is_array($payload)) {
-                Db::update('mail_scheduled', ['status' => 'failed', 'error' => 'Письмо не разобралось'], 'id=?', [$id]);
-                $failed++;
-                continue;
-            }
-            Db::update('mail_scheduled', ['attempts' => (int)$row['attempts'] + 1], 'id=?', [$id]);
+            if (!self::claim((int)$row['id'])) continue;   // забрала вкладка менеджера
             try {
-                MailCompose::send($payload, (int)$row['manager_id']);
-                Db::update('mail_scheduled', ['status' => 'sent', 'sent_at' => date('Y-m-d H:i:s'),
-                                              'error' => null], 'id=?', [$id]);
+                self::deliver($row);
                 $sent++;
-            } catch (Throwable $e) {
-                $attempts = (int)$row['attempts'] + 1;
-                $done = $attempts >= self::MAX_ATTEMPTS;
-                Db::update('mail_scheduled', [
-                    'status' => $done ? 'failed' : 'pending',
-                    'error'  => mb_substr($e->getMessage(), 0, 500),
-                ], 'id=?', [$id]);
-                Logger::warning('mail', 'Отложенное письмо не ушло: ' . $e->getMessage(),
-                                ['scheduled_id' => $id, 'attempts' => $attempts]);
-                if ($done) {
-                    require_once ROOT . '/lib/notifier.php';
-                    Notifier::notify('mail_bounced', 'Отложенное письмо не отправилось',
-                        (string)$row['to_addr'] . ' — ' . $e->getMessage(), 'mail', null,
-                        (int)$row['manager_id'], '/#mail');
-                }
+            } catch (Throwable) {
                 $failed++;
             }
         }
         return ['sent' => $sent, 'failed' => $failed];
+    }
+
+    /**
+     * Отправить забранное письмо. Упало — назад в очередь, после трёх
+     * попыток — `failed` и уведомление менеджеру. $interactive — ошибку
+     * видит менеджер: сразу `failed`, без повторов. Исключение идёт дальше.
+     */
+    private static function deliver(array $row, bool $interactive = false): array {
+        require_once ROOT . '/lib/mail_compose.php';
+        $id = (int)$row['id'];
+        $payload = json_decode((string)$row['payload_json'], true);
+        if (!is_array($payload)) {
+            Db::update('mail_scheduled', ['status' => 'failed', 'error' => 'Письмо не разобралось'], 'id=?', [$id]);
+            throw new RuntimeException('Письмо не разобралось');
+        }
+        $attempts = (int)$row['attempts'] + 1;
+        Db::update('mail_scheduled', ['attempts' => $attempts], 'id=?', [$id]);
+        try {
+            $res = MailCompose::send($payload, (int)$row['manager_id']);
+            Db::update('mail_scheduled', ['status' => 'sent', 'sent_at' => date('Y-m-d H:i:s'),
+                                          'error' => null], 'id=?', [$id]);
+            return $res;
+        } catch (Throwable $e) {
+            $done = $interactive || $attempts >= self::MAX_ATTEMPTS;
+            Db::update('mail_scheduled', [
+                'status' => $done ? 'failed' : 'pending',
+                'error'  => mb_substr($e->getMessage(), 0, 500),
+            ], 'id=?', [$id]);
+            Logger::warning('mail', 'Отложенное письмо не ушло: ' . $e->getMessage(),
+                            ['scheduled_id' => $id, 'attempts' => $attempts]);
+            if ($done && !$interactive) {
+                require_once ROOT . '/lib/notifier.php';
+                Notifier::notify('mail_bounced', 'Отложенное письмо не отправилось',
+                    (string)$row['to_addr'] . ' — ' . $e->getMessage(), 'mail', null,
+                    (int)$row['manager_id'], '/#mail');
+            }
+            throw $e;
+        }
     }
 
     /**

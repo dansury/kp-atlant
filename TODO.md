@@ -108,3 +108,10 @@ not have.
 - «👁 Просмотреть счёт» / «📎 Прикрепить счёт»: the print-form download no longer
   sends the token to the file storage. If it still fails, the error now names the
   reason (HTTP code + MoySklad text) — check the journal and `MS_INVOICE_TEMPLATE`.
+
+## Module 056 — check on a live system
+- Send delay: send one real letter, let the 20 s countdown run out — the letter
+  leaves via `send_now` with a real SMTP; close the tab mid-countdown once and
+  check cron sends it within a minute.
+- «Обновить из МойСклад» on a linked company: the toast lists requisites,
+  orders and invoices (checked without a live account).

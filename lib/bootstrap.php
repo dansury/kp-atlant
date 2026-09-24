@@ -1981,6 +1981,14 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '47')");
         $current = 47;
     }
+
+    // v48 — module 056: per-manager send delay (NULL = default 20 s, 0 = off)
+    if ($current < 48) {
+        Db::ensureColumn('managers', 'send_delay_sec', 'INTEGER');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '48')");
+        $current = 48;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

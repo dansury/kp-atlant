@@ -612,7 +612,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .lmsg--in  { border-left: 3px solid var(--primary); }
 .lmsg--out { border-left: 3px solid var(--border-strong); background: var(--surface-2); }
 
-.lmsg__head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+.lmsg__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
               padding: 9px 14px 4px; cursor: pointer; font-size: 12px; }
 .lmsg__head:hover { background: var(--surface-2); }
 .lmsg__who { font-weight: 600; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
@@ -1455,3 +1455,27 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
 .chip--file > .chip__x { margin-left: 6px; cursor: pointer; border: 0; background: none; padding: 0 4px;
                          font: inherit; color: var(--text-muted); border-radius: 4px; line-height: 1.4; }
 .chip--file > .chip__x:hover { color: var(--danger, #c62828); background: var(--surface-2); }
+
+/* ==== Module 056: send delay toast, fold arrows everywhere ==== */
+.toast--undo { display: flex; align-items: center; gap: 10px; max-width: 460px; }
+.toast--undo .toast__text { flex: 1 1 auto; }
+.toast__act { flex: 0 0 auto; background: none; border: 1px solid rgba(255,255,255,.55); color: #fff;
+              border-radius: 6px; padding: 3px 9px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.toast__act:hover { background: rgba(255,255,255,.14); }
+
+/* Заголовок, который сворачивает, выглядит нажимаемым */
+.fold-title, .match-row--folded .match-row__summary, [data-block-head], .block-head { cursor: pointer; }
+.fold-title:hover { text-decoration: underline dotted; }
+
+/* Стрелки свернуть/развернуть: смысл — в подсказке */
+.conv__caret, .lmsg__caret { flex: 0 0 auto; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border);
+                             border-radius: 6px; background: var(--surface); color: var(--text-muted);
+                             font-size: 11px; line-height: 1; cursor: pointer; }
+.conv__caret:hover, .lmsg__caret:hover { color: var(--text); border-color: var(--border-strong); }
+
+/* «Свернуть/развернуть все письма» — рядом со стрелкой блока */
+.fold-all { margin-left: auto; border: 1px solid var(--border-strong); background: var(--surface);
+            border-radius: var(--radius-sm); width: 30px; height: 28px; cursor: pointer;
+            color: var(--text-muted); font-size: 14px; line-height: 1; flex: 0 0 auto; }
+.fold-all:hover { color: var(--text); border-color: var(--text-muted); }
+.fold-all ~ .block-fold { margin-left: 0; }

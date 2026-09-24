@@ -54,6 +54,7 @@
 | Bitrix module zip built in the repo, «Сайт (Битрикс)» card in «Каталог» (description priority, sync, module version), Excel export in the Bitrix admin menu | `specs/053-bitrix-zip-and-site-card/spec.md` | Implemented |
 | КП buttons on a folded match table; invoice order in «Резерв» on a store with the employee; attach/remove documents in the letter, invoice print form, signature checkbox in the editor | `specs/054-folded-kp-bar-and-order-reserve/spec.md` | Implemented |
 | Full-text search over letters, companies (INN, phones, contacts), request items and board cards; case-insensitive Cyrillic (`lib/search.php`) | `specs/055-full-text-search/spec.md` | Implemented |
+| Send delay with «Отменить» (per manager, 20 s default), fold arrows + collapse-all on the match table and letters, «Обновить из МойСклад» reports what it did | `specs/056-send-delay-folding-ms-sync/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -102,6 +103,7 @@
 | Модуль 053: архив модуля Битрикс совпадает с исходниками, подписи выбора, версия модуля, меню экспорта | `php tests/module_053.php` |
 | Модуль 054: кнопки КП при свёрнутом подборе, статус по имени, склад по умолчанию, резерв позиций, документы в письме, печатная форма счёта, подпись в поле | `php tests/module_054.php` |
 | Модуль 055: поиск без учёта регистра и «ё», по компании, ИНН, телефону, товару; индекс триггерами | `php tests/module_055.php` |
+| Module 056: send delay (queue, claim, cancel, send now), per-manager delay, fold controls, МойСклад sync report | `php tests/module_056.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

@@ -97,6 +97,13 @@ switch ($action) {
         if (!$cpId) jsonError('counterparty_id required');
         try {
             $res = MsSync::syncCompany($cpId);
+            // Кнопка «Обновить из МойСклад» (модуль 056): ещё реквизиты, и ответ
+            // говорит, что сделано, — фоновое обновление их не тянет
+            $res['linked'] = (bool)Db::val("SELECT moysklad_id FROM counterparties WHERE id=?", [$cpId]);
+            $res['requisites'] = false;
+            if (!empty($_GET['full']) && $res['linked']) {
+                $res['requisites'] = (bool)Requisites::syncCounterparty($cpId);
+            }
         } catch (Throwable $e) {
             jsonError('МойСклад недоступен: ' . $e->getMessage(), 502);
         }
