@@ -225,6 +225,81 @@ final class Catalog {
         return ['min' => min($values), 'max' => max($values)];
     }
 
+    /**
+     * Расшифровка вилки: какая модификация сколько стоит (модуль 058).
+     *
+     * Только по характеристикам, от которых цена ЗАВИСИТ: цвет цену не
+     * меняет — строки называют одни размеры. Одинаковые цены сливаются в
+     * одну строку. Пусто — вилки нет.
+     *
+     * @return array<int,array{label:string,price:float}>
+     */
+    public static function rangeBreakdown(array $product, ?int $counterpartyId = null, ?string $priceType = null): array {
+        require_once __DIR__ . '/variants.php';
+        $id = trim((string)($product['moysklad_id'] ?? ''));
+        if ($id === '' || (string)($product['product_type'] ?? '') === 'variant') return [];
+
+        $rows = [];
+        foreach (Db::all("SELECT moysklad_id, name, price, prices_json, product_type, characteristics
+                          FROM products_cache
+                          WHERE parent_id=? AND COALESCE(is_archived, 0) = 0 ORDER BY id", [$id]) as $v) {
+            $v['parent_id'] = '';   // как в variantRange(): без второго захода к родителю
+            $price = self::priceFor($v, $counterpartyId, $priceType);
+            if ($price > 0) $rows[] = ['chars' => Variants::characteristicPairs($v), 'price' => round($price, 2)];
+        }
+        if (count(array_unique(array_column($rows, 'price'))) < 2) return [];
+
+        // Ключи в порядке появления; лишние — те, без которых цена всё ещё однозначна
+        $keys = [];
+        foreach ($rows as $r) foreach (array_keys($r['chars']) as $k) $keys[$k] = true;
+        $keys = array_keys($keys);
+        if (!self::priceDependsOn($rows, $keys)) {
+            $keys = [];   // даже все характеристики цену не объясняют — строки целиком
+        } else {
+            foreach ($keys as $k) {
+                $rest = array_values(array_diff($keys, [$k]));
+                if (self::priceDependsOn($rows, $rest)) $keys = $rest;
+            }
+        }
+
+        // Группа — набор значений нужных характеристик; одинаковые цены — одна строка
+        $byPrice = [];
+        foreach ($rows as $r) {
+            $parts = [];
+            foreach ($keys ?: array_keys($r['chars']) as $k) {
+                $value = (string)($r['chars'][$k] ?? '');
+                if ($value === '') continue;
+                $parts[] = count($keys) === 1 ? $value : ($k !== '' ? "$k: $value" : $value);
+            }
+            $label = implode(', ', $parts);
+            $key = (string)$r['price'];
+            if (!isset($byPrice[$key])) $byPrice[$key] = ['price' => $r['price'], 'labels' => []];
+            if ($label !== '' && !in_array($label, $byPrice[$key]['labels'], true)) $byPrice[$key]['labels'][] = $label;
+        }
+        usort($byPrice, fn($a, $b) => $a['price'] <=> $b['price']);
+
+        $out = [];
+        foreach ($byPrice as $g) {
+            if (!$g['labels']) continue;
+            $label = count($keys) === 1
+                ? ($keys[0] !== '' ? $keys[0] . ': ' : '') . implode(', ', $g['labels'])
+                : implode('; ', $g['labels']);
+            $out[] = ['label' => $label, 'price' => (float)$g['price']];
+        }
+        return count($out) >= 2 ? $out : [];
+    }
+
+    /** Одна ли цена у каждого сочетания значений $keys. */
+    private static function priceDependsOn(array $rows, array $keys): bool {
+        $seen = [];
+        foreach ($rows as $r) {
+            $sig = implode("\x1f", array_map(fn($k) => (string)($r['chars'][$k] ?? ''), $keys));
+            if (isset($seen[$sig]) && $seen[$sig] !== $r['price']) return false;
+            $seen[$sig] = $r['price'];
+        }
+        return true;
+    }
+
     /** Цены товара-родителя модификации, по типам. Для товара — пустой массив. */
     private static function parentPrices(array $product): array {
         $parentId = trim((string)($product['parent_id'] ?? ''));

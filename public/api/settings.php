@@ -12,7 +12,7 @@ function generalSettings(): array {
     $keys = ['default_conditions_text','default_execution_days','default_validity_days','default_vat_rate',
              'ocr_enabled','ocr_max_pages','attachment_max_mb','unanswered_critical_h','invoice_email_subject',
              'default_warranty_text','default_terms_text','kp_images_note','kp_upsell_intro','kp_upsell_note',
-             'addon_category','kp_show_images','kp_show_upsell','kp_max_images_per_item'];
+             'addon_category','addon_hosts','kp_show_images','kp_show_upsell','kp_max_images_per_item'];
     $out = [];
     foreach ($keys as $k) {
         $out[$k] = Db::val("SELECT value FROM settings WHERE key=?", [$k]) ?: '';

@@ -163,6 +163,10 @@ class PdfGenerator {
             "SELECT * FROM proposal_addons WHERE proposal_id=? AND is_selected=1 ORDER BY position",
             [$proposalId]
         );
+        // Модули — только к «своему» товару, остаток — сегодняшний (модуль 058)
+        if ($addons && !KpContent::addonHostIn($proposalId)) $addons = [];
+        foreach ($addons as &$addon) $addon['notes'] = KpContent::addonNote($addon);
+        unset($addon);
 
         // Ссылку на сайт читает и таблица, и карточка товара, и «есть ли вообще
         // приложение» — значение берётся один раз, до цикла (модуль 034)
@@ -179,6 +183,8 @@ class PdfGenerator {
             // Верх вилки, когда цена стоит только на модификациях и они стоят
             // по-разному (модуль 036). Ноль — вилки нет, печатается одна цена
             $item['effective_price_max'] = Terms::priceTop($item);
+            // Расшифровка вилки по модификациям (модуль 058)
+            $item['range_rows'] = KpContent::rangeRows($item, $proposal);
             $item['wait_note'] = Terms::note($item);
             // Авто-«под заказ» не печатается второй раз перед условиями ожидания,
             // которые начинаются теми же словами (модуль 034)
@@ -258,6 +264,8 @@ class PdfGenerator {
                             $row['price_max'] = $keep > 0 && $keep < 1
                                 ? round($row['effective_price_max'] / $keep, 2) : $row['effective_price_max'];
                         }
+                        foreach ($row['range_rows'] as &$rr) $rr['price'] = round($rr['price'] + $shares[$k], 2);
+                        unset($rr);
                         $row['sum'] = $row['effective_price'] * (float)$row['quantity'];
                         $row['sum_max'] = $row['effective_price_max'] * (float)$row['quantity'];
                     }
@@ -274,6 +282,7 @@ class PdfGenerator {
                 ? (float)$row['price_max'] : 0.0;
             if (!KpContent::hasRange((float)$row['effective_price'], (float)$row['effective_price_max'])) {
                 $row['effective_price_max'] = 0.0;
+                $row['range_rows'] = [];
             }
         }
         unset($row);

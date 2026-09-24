@@ -293,6 +293,14 @@ The range lives only while the row's price IS its low end: a number typed by han
 entirely. It prints the same way in PDF, in Word and in the letter text, and «Итого» then reads
 «от»: the sum of the low ends is where the offer starts. Never add a high end to a low end —
 that is a third sum the offer does not contain.
+Under a range the КП names what costs what (module 058, `Catalog::rangeBreakdown()`), by the
+characteristics the price DEPENDS on and only by them: colour that does not move the price is
+not listed. It is printed only while it agrees with the row's two ends.
+
+The add-on block («Дополнительные модули и доукомплектование») belongs to the product the
+modules fit (`settings.addon_hosts`, `KpContent::addonHostIn()`), not to every КП. An add-on's
+stock is its modifications' (`Variants::freeStock()`), read at print time: a generic product
+row holds zero, and freezing that into the КП printed every module «под заказ».
 
 The price type, the discount and the «под заказ» terms are a decision for the WHOLE КП, not
 for a row, and they sit above the matching table (module 036). The choice is remembered per
