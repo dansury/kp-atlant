@@ -90,6 +90,8 @@ switch ($action) {
             'with_photos' => (int)Db::val("SELECT COUNT(*) FROM products_cache WHERE (images_json IS NOT NULL AND images_json<>'[]') OR (image_urls IS NOT NULL AND image_urls<>'[]')"),
             'with_price'  => (int)Db::val("SELECT COUNT(*) FROM products_cache WHERE price > 0"),
             'from_excel'  => (int)Db::val("SELECT COUNT(*) FROM products_cache WHERE source='excel'"),
+            'with_site_url'         => (int)Db::val("SELECT COUNT(*) FROM products_cache WHERE site_url IS NOT NULL AND site_url<>''"),
+            'with_site_description' => (int)Db::val("SELECT COUNT(*) FROM products_cache WHERE site_description IS NOT NULL AND site_description<>''"),
             'updated_at'  => Db::val("SELECT MAX(updated_at) FROM products_cache"),
             'imported_at' => Db::val("SELECT MAX(imported_at) FROM products_cache"),
         ]);

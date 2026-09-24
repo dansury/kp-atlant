@@ -1,0 +1,37 @@
+name: Bitrix module zip
+
+# Пересобирает bitrix-module/atlant.kpsync.zip из исходников модуля и кладёт в репозиторий.
+on:
+  push:
+    branches: [main]
+    paths: ['bitrix-module/atlant.kpsync/**', 'tools/build_bitrix_zip.php', '.github/workflows/bitrix-zip.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bitrix-zip
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: zip
+      - name: Собрать архив
+        run: php tools/build_bitrix_zip.php
+      - name: Закоммитить, если изменился
+        run: |
+          if git diff --quiet -- bitrix-module/atlant.kpsync.zip && git ls-files --error-unmatch bitrix-module/atlant.kpsync.zip >/dev/null 2>&1; then
+            echo "архив не изменился"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898699+github-actions[bot]@users.noreply.github.com"
+          git add bitrix-module/atlant.kpsync.zip
+          git commit -m "Модуль Битрикс: пересобран atlant.kpsync.zip"
+          git push
