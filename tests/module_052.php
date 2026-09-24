@@ -80,7 +80,7 @@ ok('счёт получает те же доп. поля, что и заказ',
 ok('менеджер берётся из карточки (uid, почта)', str_contains($inv, 'SELECT name, email, moysklad_uid FROM managers'));
 ok('непривязанная компания отвечает ms_unlinked', str_contains($inv, "'ms_unlinked' =>"));
 ok('клиент открывает окно заведения и повторяет счёт', str_contains($js, 'this.msCreateForm(ms)')
-    && str_contains($js, '_msAfter = () => this.kpInvoice(id, btn, orgId)'));
+    && str_contains($js, '_msAfter = () => this.kpInvoice(id, btn, picked)'));
 
 echo "Количество — целое\n";
 ok('2.4 → 2', RequestItems::qty(2.4) === 2);

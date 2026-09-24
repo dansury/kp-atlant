@@ -99,3 +99,12 @@ not have.
   counter; a product without a MoySklad description gets the site one in the КП.
 - The «Bitrix module zip» workflow commits the rebuilt zip to `main`; if branch
   protection rejects the bot push, allow GitHub Actions or rebuild locally.
+
+## Module 054 — needs a live MoySklad
+- Issue an invoice: check the order is in «Резерв», on the chosen store, the goods
+  are reserved there, and «Сотрудник» (owner) is the manager. If the token may not
+  assign other employees, the note «сотрудник МойСклад … (МойСклад не дал назначить)»
+  appears — then give the token's employee that right.
+- «👁 Просмотреть счёт» / «📎 Прикрепить счёт»: the print-form download no longer
+  sends the token to the file storage. If it still fails, the error now names the
+  reason (HTTP code + MoySklad text) — check the journal and `MS_INVOICE_TEMPLATE`.

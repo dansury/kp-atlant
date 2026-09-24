@@ -405,7 +405,8 @@ try {
                 $inv = Db::one("SELECT * FROM invoices WHERE id=?", [$id]);
                 if (!$inv) jsonError('Счёт не найден', 404);
                 $path = MsSync::ensureInvoicePdf($id);
-                if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад', 502);
+                if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад'
+                . (MoySklad::lastExportError() !== '' ? ': ' . MoySklad::lastExportError() : ''), 502);
                 // Имя по шаблону из настроек, и менеджер мог поправить его в
                 // самом письме — присланное побеждает (модуль 029)
                 $name = safeAttachmentName((string)($input['filename'] ?? ''))

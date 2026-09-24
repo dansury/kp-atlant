@@ -111,7 +111,8 @@ switch ($action) {
         if (!$inv) jsonError('Счёт не найден', 404);
 
         $path = MsSync::ensureInvoicePdf($id);
-        if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад', 502);
+        if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад'
+                . (MoySklad::lastExportError() !== '' ? ': ' . MoySklad::lastExportError() : ''), 502);
 
         header('Content-Type: application/pdf');
         header('Content-Disposition: inline; filename="' . rawurlencode('Счёт ' . $inv['name'] . '.pdf') . '"');
@@ -204,6 +205,13 @@ switch ($action) {
         $employeeAttr = array_filter([
             trim((string)Settings::get('MS_EMPLOYEE_ATTR', 'СОТРУДНИК')) => trim((string)($managerCard['name'] ?? '')),
         ], fn($v, $k) => $k !== '' && $v !== '', ARRAY_FILTER_USE_BOTH);
+        // Склад заказа и счёта: выбор менеджера, иначе по умолчанию (модуль 054)
+        try {
+            $storeId = MoySklad::defaultStoreId(trim((string)($_GET['store_id'] ?? '')));
+        } catch (Throwable $e) {
+            $storeId = null;
+            Logger::warning('moysklad', 'Склады не прочитались: ' . $e->getMessage(), ['proposal_id' => $proposalId]);
+        }
         $order = null;
         $orderLocalId = null;
         $orderError = null;
@@ -218,6 +226,7 @@ switch ($action) {
                     'state_name'      => trim((string)Settings::get('MS_ORDER_STATE', 'Резерв')),
                     'attributes'      => $employeeAttr,
                     'manager'         => $managerCard,
+                    'store_id'        => (string)$storeId,
                 ]);
                 $orderMissing = $order['missing'] ?? [];
             } catch (Throwable $e) {
@@ -238,7 +247,10 @@ switch ($action) {
                 'order_id'        => $order['id'] ?? null,
                 'attributes'      => $employeeAttr,
                 'manager'         => $managerCard,
+                'store_id'        => (string)$storeId,
             ]);
+            // Чего не нашлось для счёта (сотрудник) — рядом с тем, что не нашлось для заказа
+            $orderMissing = array_values(array_unique(array_merge($orderMissing, $inv['missing'] ?? [])));
         } catch (MoySkladPermissionException $e) {
             jsonError('МойСклад: нет прав на создание счетов', 403);
         } catch (Throwable $e) {
@@ -301,6 +313,24 @@ switch ($action) {
     }
 
     /**
+     * Склады для выбора при выставлении счёта (модуль 054): неархивные и тот,
+     * что стоит по умолчанию.
+     */
+    case 'stores': {
+        requireAuth();
+        MoySklad::init($GLOBALS['cfg']['MOYSKLAD_TOKEN'] ?? '');
+        try {
+            $all = MoySklad::stores();
+        } catch (Throwable $e) {
+            jsonError('Склады не получены: ' . $e->getMessage(), 502);
+        }
+        $items = array_values(array_map(fn($s) => ['id' => $s['id'], 'name' => $s['name']],
+                                        array_filter($all, fn($s) => !$s['archived'])));
+        jsonOk(['items' => $items, 'default' => MoySklad::pickStore(
+            $all, (string)Settings::get('MS_ORDER_STORE', ''), MoySklad::selectedStores())]);
+    }
+
+    /**
      * Снять резерв: заказ перестаёт быть проведённым в МойСклад (модуль 026).
      *
      * Это кнопка из напоминания «счёт не оплачен две недели». Товар перестаёт
@@ -347,7 +377,8 @@ switch ($action) {
         if (!filter_var($to, FILTER_VALIDATE_EMAIL)) jsonError('Укажите корректный email получателя');
 
         $path = MsSync::ensureInvoicePdf($id);
-        if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад', 502);
+        if (!$path || !is_file($path)) jsonError('Печатная форма счёта недоступна в МойСклад'
+                . (MoySklad::lastExportError() !== '' ? ': ' . MoySklad::lastExportError() : ''), 502);
 
         $subject = trim($input['subject'] ?? '') ?:
             ((string)Db::val("SELECT value FROM settings WHERE key='invoice_email_subject'") . ' № ' . $inv['name']);
