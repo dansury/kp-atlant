@@ -8994,11 +8994,13 @@ const App = {
     boardFilter(q) {
         q = q.trim();
         this.boardQuery = q;
-        const low = q.toLowerCase();
+        // «ё» и «е» — одна буква для поиска (модуль 055)
+        const fold = s => s.toLowerCase().replace(/ё/g, 'е');
+        const low = fold(q);
         let shown = 0;
         document.querySelectorAll('[data-card]').forEach(card => {
             // Поиск сужает то, что уже отобрали фильтры, а не отменяет их
-            const hit = (!q || card.textContent.toLowerCase().includes(low))
+            const hit = (!q || fold(card.textContent).includes(low))
                 && this.boardCardMatchesEl(card);
             card.hidden = !hit;
             if (hit && q) shown++;
@@ -9046,15 +9048,19 @@ const App = {
         try {
             const d = await this.api('mail.php?action=threads&archived=all&limit=30&q=' + encodeURIComponent(q));
             const items = d.items || [];
+            const building = d.indexing
+                ? '<p class="muted">Индекс поиска ещё строится — найдено не всё. Повторите поиск через минуту.</p>'
+                : '';
             if (!items.length) {
-                out.innerHTML = shownLocally
+                out.innerHTML = shownLocally && !building
                     ? ''
                     : `<div class="card"><p class="muted">По запросу «${this.esc(q)}» ничего не нашлось —
-                       ни в темах, ни в тексте писем, ни в адресах, ни в именах вложений.</p></div>`;
+                       ни в письмах и вложениях, ни в компаниях, ИНН и телефонах, ни в товарах запросов.</p>${building}</div>`;
                 return;
             }
             out.innerHTML = `<div class="card">
                 <div class="card__title">Найдено в почте: ${items.length}${d.total > items.length ? ' из ' + d.total : ''}</div>
+                ${building}
                 ${items.map(t => this.threadRow ? this.threadRow(t) : `
                     <div class="mrow" onclick="location.hash='mail/t/${encodeURIComponent(t.thread_key)}'">
                         <div class="mrow__main">

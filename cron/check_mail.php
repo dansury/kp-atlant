@@ -70,6 +70,10 @@ if ($scheduled['sent'] || $scheduled['failed']) {
     echo "отложенные письма — отправлено: {$scheduled['sent']}, не удалось: {$scheduled['failed']}\n";
 }
 
+// Поисковый индекс догоняет новые письма здесь, а не на первом поиске (модуль 055)
+$waiting = SearchIndex::ready(60.0);
+if ($waiting) echo "поисковый индекс: осталось $waiting\n";
+
 // Housekeeping: the log must not grow without bound on shared hosting
 Logger::prune();
 

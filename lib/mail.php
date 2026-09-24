@@ -1007,15 +1007,13 @@ final class MailArchive {
             // из этих мест раньше не просматривалось. Слова ищутся все сразу:
             // «иванов счёт» — это письмо, где есть и то, и другое, а не любое
             // из двух.
-            foreach (self::searchTerms((string)$f['q']) as $term) {
-                $like = '%' . $term . '%';
-                $where[] = '(m.subject LIKE ? OR m.from_email LIKE ? OR m.from_name LIKE ?
-                             OR m.to_emails LIKE ? OR m.cc_emails LIKE ?
-                             OR m.body_text LIKE ? OR m.body_html LIKE ?
-                             OR EXISTS (SELECT 1 FROM attachments a
-                                        WHERE a.mail_message_id = m.id
-                                          AND (a.filename LIKE ? OR a.extracted_text LIKE ?)))';
-                array_push($params, $like, $like, $like, $like, $like, $like, $like, $like, $like);
+            // Регистр и «ё» не мешают, слово ищется и в компании, и в
+            // запросе за письмом (модуль 055)
+            SearchIndex::ready();
+            foreach (SearchIndex::terms((string)$f['q']) as $term) {
+                [$cond, $p] = SearchIndex::messageMatch('m', $term);
+                $where[] = $cond;
+                array_push($params, ...$p);
             }
         }
         $limit  = min(200, max(1, (int)($f['limit'] ?? 50)));

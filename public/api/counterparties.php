@@ -17,13 +17,23 @@ switch ($action) {
         $q = trim($_GET['q'] ?? '');
         if (mb_strlen($q) < 2) jsonError('Слишком короткий запрос');
 
+        // Название, ИНН, телефон, контакты, организации — без учёта регистра (модуль 055)
+        SearchIndex::ready();
+        $where = ['merged_into_id IS NULL'];
+        $params = [];
+        foreach (SearchIndex::terms($q) as $term) {
+            $like = SearchIndex::like($term);
+            $where[] = '(id IN (' . SearchIndex::hitsSql('cp') . ')
+                         OR id IN (SELECT merged_into_id FROM counterparties WHERE id IN (' . SearchIndex::hitsSql('cp') . ')))';
+            array_push($params, $like, $like);
+        }
         $items = Db::all(
             "SELECT id, name, inn, contact_person, contact_email, contact_phone, moysklad_id,
                     last_inbound_at, last_outbound_at
              FROM counterparties
-             WHERE merged_into_id IS NULL AND (name LIKE ? OR inn LIKE ? OR email_domain LIKE ?)
+             WHERE " . implode(' AND ', $where) . "
              ORDER BY name LIMIT 20",
-            ["%$q%", "%$q%", "%$q%"]
+            $params
         );
         foreach ($items as &$i) {
             $i['answer_state'] = Crm::answerState($i['last_inbound_at'], $i['last_outbound_at']);

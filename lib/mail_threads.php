@@ -195,19 +195,15 @@ final class MailThreads {
         if (!empty($f['counterparty_id'])) { $where[] = 'm.counterparty_id = ?'; $params[] = (int)$f['counterparty_id']; }
         if (!empty($f['unread'])) $where[] = "(m.is_read = 0 AND m.direction = 'in')";
         if (!empty($f['category'])) { $where[] = 'm.category = ?'; $params[] = (string)$f['category']; }
+        $indexing = 0;
         if (trim((string)($f['q'] ?? '')) !== '') {
-            // Цепочка попадает в выдачу, если слово нашлось В ЛЮБОМ её письме —
-            // и в теме, и в адресах, и в теле, и в именах вложений (модуль 023)
-            foreach (MailArchive::searchTerms((string)$f['q']) as $term) {
-                $like = '%' . $term . '%';
-                $where[] = 'EXISTS (SELECT 1 FROM mail_messages x
-                                    LEFT JOIN attachments a ON a.mail_message_id = x.id
-                                    WHERE x.thread_key = m.thread_key
-                                      AND (x.subject LIKE ? OR x.from_email LIKE ? OR x.from_name LIKE ?
-                                           OR x.to_emails LIKE ? OR x.cc_emails LIKE ?
-                                           OR x.body_text LIKE ? OR x.body_html LIKE ?
-                                           OR a.filename LIKE ? OR a.extracted_text LIKE ?))';
-                array_push($params, $like, $like, $like, $like, $like, $like, $like, $like, $like);
+            // Цепочка попадает в выдачу, если каждое слово нашлось в любом её
+            // письме, в компании или в запросе за письмом (модуль 055)
+            $indexing = SearchIndex::ready();
+            foreach (SearchIndex::terms((string)$f['q']) as $term) {
+                [$cond, $p] = SearchIndex::messageMatch('x', $term);
+                $where[] = "EXISTS (SELECT 1 FROM mail_messages x WHERE x.thread_key = m.thread_key AND $cond)";
+                array_push($params, ...$p);
             }
         }
         $sqlWhere = implode(' AND ', $where);
@@ -233,6 +229,8 @@ final class MailThreads {
             'items'  => $items,
             'total'  => $total,
             'unread' => self::unreadCount(),
+            // Индекс ещё строится — найдено не всё
+            'indexing' => $indexing,
         ];
     }
 

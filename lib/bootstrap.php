@@ -35,6 +35,7 @@ require_once __DIR__ . '/content_log.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/auto_pull.php';
 require_once __DIR__ . '/kp_terms.php';
+require_once __DIR__ . '/search.php';
 
 // Init DB before the settings layer — the overrides live in it
 Db::init($fileCfg['DB_PATH'] ?? ROOT . '/data/kp.db');
@@ -1970,6 +1971,15 @@ SQL);
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '46')");
         $current = 46;
+    }
+
+    // v47 — module 055: full-text search index; every row queued, built on first search / cron
+    if ($current < 47) {
+        require_once __DIR__ . '/search.php';
+        SearchIndex::install();
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '47')");
+        $current = 47;
     }
 }
 
