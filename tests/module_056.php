@@ -101,7 +101,8 @@ echo "Отправка (по исходнику)\n";
 $src = file_get_contents(ROOT . '/lib/mail_compose.php');
 ok('документы читаются до отправки, стадия — после', strpos($src, 'Outbox::docsOf(') < strpos($src, '$res = Mailer::send(')
     && strpos($src, 'self::afterDocsSent(') > strpos($src, 'MailDrafts::sent('));
-ok('КП из окна КП → «КП отправлено»', str_contains(file_get_contents(ROOT . '/public/api/proposals.php'), "null, 'kp_sent')"));
+// КП уходит только письмом (модуль 060): стадию двигает afterDocsSent
+ok('КП в письме → «КП отправлено»', str_contains($src, "isset(\$kinds['kp']) ? 'kp_sent'"));
 ok('счёт отдельным письмом → «Ждём оплату»', str_contains(file_get_contents(ROOT . '/public/api/invoices.php'), "null, 'payment')"));
 ok('вложение из письма помечается', str_contains(file_get_contents(ROOT . '/public/api/mail.php'), "\$kind === 'invoice' ? 'invoice' : 'kp', \$id)"));
 

@@ -197,10 +197,11 @@ Db::update('proposal_items', ['images_json' => json_encode(["$dir/test-0.png", "
 Db::q("UPDATE products_cache SET images_json=? WHERE moysklad_id='ms-2'",
       [json_encode(["$dir/test-0.png", "$dir/test-1.png"])]);
 $item = Db::one("SELECT * FROM proposal_items WHERE id=?", [$item['id']]);
-ok('без явного выбора в КП идёт одна — первая — фотография',
-   count(KpContent::itemGallery($item, 5)) === 1, (string)count(KpContent::itemGallery($item, 5)));
+// Без выбора — первые $max (модуль 060: одна настройка вместо KP_CARD_PHOTOS)
+ok('без явного выбора в КП идут первые по лимиту',
+   count(KpContent::itemGallery($item, 1)) === 1, (string)count(KpContent::itemGallery($item, 1)));
 $item['selected_images'] = json_encode(['local:0', 'local:1']);
-ok('явный выбор менеджера лимитом не режется', count(KpContent::itemGallery($item, 5)) === 2);
+ok('явный выбор менеджера лимитом не режется', count(KpContent::itemGallery($item, 1)) === 2);
 
 echo "\n8. НДС и реквизиты\n";
 Db::q("UPDATE legal_entities SET pays_vat=1, kpp='770101001', legal_address='г. Москва, ул. Примерная, 1',

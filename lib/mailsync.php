@@ -794,12 +794,13 @@ final class MailSync {
      * Никогда не фатально: убрать письмо с экрана важнее, чем прибраться на
      * доске, и упавшая уборка не должна отменять архивацию.
      */
-    private static function pruneBoard($counterpartyId): void {
+    private static function pruneBoard($counterpartyId): int {
         try {
             require_once __DIR__ . '/boards.php';
-            Boards::pruneEmptyCards($counterpartyId ? (int)$counterpartyId : null);
+            return Boards::pruneEmptyCards($counterpartyId ? (int)$counterpartyId : null);
         } catch (Throwable $e) {
-            Logger::warning('mail', 'Доска не прибралась после архива: ' . $e->getMessage());
+            Logger::warning('mail', 'Доска не прибралась: ' . $e->getMessage());
+            return 0;
         }
     }
 
@@ -880,8 +881,9 @@ final class MailSync {
      * and its row leaves the archive here. A tombstone keeps the UID, so the next
      * sync does not cheerfully download the letter back into the panel.
      *
-     * A conversation card left with no letters at all is removed from the board
-     * too — an empty card is only a dead link.
+     * A card left with no letters at all is removed from the board too — the
+     * conversation's and the company's alike (issue #93): an empty card is only
+     * a dead link.
      */
     public static function deleteMessage(int $mailMessageId, ?int $managerId = null): array {
         $row = Db::one("SELECT * FROM mail_messages WHERE id=?", [$mailMessageId]);
@@ -919,6 +921,8 @@ final class MailSync {
         $threadKey = (string)($row['thread_key'] ?? '');
         $threadEmpty = $threadKey !== '' && !Db::val("SELECT 1 FROM mail_messages WHERE thread_key=? LIMIT 1", [$threadKey]);
         if ($threadEmpty) Db::q("DELETE FROM board_cards WHERE thread_key=? AND counterparty_id IS NULL", [$threadKey]);
+        // Последнее письмо компании — и её карточка уходит с доски (issue #93)
+        $cardRemoved = !empty($row['counterparty_id']) ? self::pruneBoard((int)$row['counterparty_id']) : 0;
 
         Logger::info('mail', "Письмо #$mailMessageId удалено" . ($serverState === 'trashed' ? ' и перемещено в корзину на сервере' : ''),
             ['mail_message_id' => $mailMessageId, 'manager_id' => $managerId,
@@ -928,6 +932,7 @@ final class MailSync {
             'deleted'      => 1,
             'thread_key'   => $threadKey ?: null,
             'thread_empty' => $threadEmpty,
+            'card_removed' => $cardRemoved,
             'server_state' => $serverState,
             'server_error' => $serverError,
         ];

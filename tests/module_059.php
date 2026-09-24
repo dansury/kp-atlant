@@ -179,7 +179,8 @@ ok('«Закрыто» не проверяется', $r['checked'] === 0, json_e
 
 // ===================================================================== 5
 echo "\n5. Интерфейс (по исходнику)\n";
-ok('🎤 в поле ответа и в окне ответа', substr_count($js, "onclick=\"App.dictate(this,") === 2);
+// + два поля поддержки (модуль 060)
+ok('🎤 в поле ответа и в окне ответа', substr_count($js, "onclick=\"App.dictate(this,") === 4);
 ok('запись → mail.php?action=transcribe → текст на место курсора',
    str_contains($js, "/api/mail.php?action=transcribe") && str_contains($js, 'this.insertDictation(target, d.text'));
 ok('эндпоинт распознавания', str_contains(file_get_contents(ROOT . '/public/api/mail.php'), "case 'transcribe':"));

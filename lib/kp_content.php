@@ -93,10 +93,7 @@ class KpContent {
         // Остатки — сегодняшние: «под заказ» не должно быть вчерашней цифрой
         self::refreshStock($proposalId);
         $items = Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$proposalId]);
-        $perItem = Db::val("SELECT photos_per_item FROM proposals WHERE id=?", [$proposalId]);
-        $maxImages = ($perItem !== null && $perItem !== '')
-            ? max(0, (int)$perItem)
-            : (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
+        $maxImages = self::photoLimit($proposalId);
 
         foreach ($items as $item) {
             $msId = $item['moysklad_product_id'] ?? '';
@@ -703,20 +700,24 @@ class KpContent {
     }
 
     /**
-     * Photos of one KP position as data URIs. `selected_images` holds the keys
-     * the manager ticked; an empty selection means «все, что нашлись» — the
-     * behaviour КП had before the picker existed.
+     * Сколько фото у позиции, пока менеджер не выбрал сам (модуль 060): своё
+     * значение КП, иначе «Фото на позицию по умолчанию» из настроек.
+     */
+    public static function photoLimit(?int $proposalId = null): int {
+        $perItem = $proposalId ? Db::val("SELECT photos_per_item FROM proposals WHERE id=?", [$proposalId]) : null;
+        if ($perItem !== null && $perItem !== '' && $perItem !== false) return max(0, (int)$perItem);
+        $v = Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'");
+        return ($v === null || $v === false || $v === '') ? 5 : max(0, (int)$v);
+    }
+
+    /**
+     * Photos of one KP position as data URIs (module 060, issue #92):
+     * no pick — the first `$max`; a pick — EVERY ticked photo, never capped;
+     * an explicitly empty pick — none.
      */
     public static function itemGallery(array $item, int $max = 5): array {
         $selected = json_decode((string)($item['selected_images'] ?? ''), true);
         $msId = (string)($item['moysklad_product_id'] ?? '');
-
-        // With no explicit pick the card carries the product's FIRST photo, as
-        // the manager asked (module 013) — `KP_CARD_PHOTOS`. A manager who
-        // ticked photos by hand meant those, and that choice is not capped here.
-        if (!is_array($selected)) {
-            $max = max(1, min($max, (int)Settings::get('KP_CARD_PHOTOS', 1)));
-        }
 
         // No catalog link (a hand-typed position) — only what is already on the item
         if ($msId === '') return self::imagesForPdf($item['images_json'] ?? null, $max);
@@ -728,8 +729,10 @@ class KpContent {
             return [];   // an explicitly empty selection means «без фото»
         }
 
+        // Отмеченное руками идёт целиком — лимит только для выбора по умолчанию
+        if (!is_array($selected)) $list = array_slice($list, 0, $max);
         $out = [];
-        foreach (array_slice($list, 0, $max) as $img) {
+        foreach ($list as $img) {
             $binary = $img['source'] === 'file' ? @file_get_contents($img['ref']) : self::fetchUrl($img['ref']);
             if (!$binary) continue;
             $out[] = 'data:' . self::mimeOf($img['ref'], $binary) . ';base64,' . base64_encode($binary);

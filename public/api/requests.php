@@ -217,7 +217,8 @@ switch ($action) {
         ], KpContent::productImageList($msId));
 
         $selected = json_decode((string)($item['selected_images'] ?? ''), true);
-        jsonData(['available' => $available, 'selected' => is_array($selected) ? $selected : null]);
+        jsonData(['available' => $available, 'selected' => is_array($selected) ? $selected : null,
+                  'default_count' => KpContent::photoLimit()]);
     }
 
     case 'item_images_save': {

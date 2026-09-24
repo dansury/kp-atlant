@@ -448,13 +448,20 @@ try {
             } elseif ($kind === 'kp' || $kind === 'kp_docx') {
                 require_once ROOT . '/lib/pdf.php';
                 require_once ROOT . '/lib/docx.php';
+                require_once ROOT . '/lib/kp_confirm.php';
                 if (!Db::val("SELECT 1 FROM proposals WHERE id=?", [$id])) jsonError('КП не найдено', 404);
+                // Вложение и есть подтверждение (модуль 060): вопрос о позициях
+                // без цены, уроки из правок, свежие остатки — до сборки файла
+                $gap = KpConfirm::priceGate($id, $input, (int)$manager['id']);
+                if ($gap) jsonError($gap['message'], 409, ['no_price' => $gap]);
+                KpConfirm::prepare($id, (int)$manager['id']);
                 if ($kind === 'kp_docx') {
                     $path = DocxGenerator::generate($id);
                     $name = DocxGenerator::filename($id);
                 } else {
+                    // Пересобирается всегда: остатки только что обновлены
+                    PdfGenerator::generate($id);
                     $path = (string)Db::val("SELECT pdf_path FROM proposals WHERE id=?", [$id]);
-                    if (!$path || !is_file($path)) { PdfGenerator::generate($id); $path = (string)Db::val("SELECT pdf_path FROM proposals WHERE id=?", [$id]); }
                     $name = PdfGenerator::fileName($id, 'pdf');
                 }
                 if (!$path || !is_file($path)) jsonError('Файл КП не собрался', 500);

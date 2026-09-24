@@ -80,7 +80,8 @@ ok('клиент шлёт склад', str_contains($js, '&store_id=${encodeURIC
 ok('окно выбора склада', str_contains($js, 'data-pick-store') && str_contains($js, 'pickInvoiceTarget()'));
 
 echo "Документы в письме\n";
-ok('kpAttach объявлен один раз', substr_count($js, '    async kpAttach(') === 1 && str_contains($js, 'async kpAttachFiles(input)'));
+// kpAttachFiles ушёл вместе с «Отправкой» на странице КП (модуль 060)
+ok('kpAttach объявлен один раз', substr_count($js, '    async kpAttach(') === 1);
 ok('у файла кнопка ✕ «Убрать из письма»', str_contains($js, 'onclick="App.removeFileChip(this)"'));
 ok('тот же документ не дублируется', str_contains($js, 'addFileChip(composer, f)'));
 ok('документ идёт в видимое письмо', str_contains($js, 'const composer = this.activeComposer();'));
