@@ -132,16 +132,19 @@ ok('Word: разрывы — приложение и вторая карточк
    (string)substr_count($xml, 'w:type="page"'));
 
 // ===================================================================== 4
-echo "\n4. Подпись: своя → организации → МойСклад → по умолчанию\n";
+echo "\n4. Подпись организации: настройки → МойСклад → по умолчанию (по выбору менеджера, модуль 051)\n";
 
+Signatures::setMode($mgr, 'company');
 Db::q("UPDATE legal_entities SET signatory_name='Иванов Иван Иванович' WHERE is_active=1");
-ok('без своей — подписант МойСклад', Signatures::forManager($mgr, Db::one("SELECT * FROM legal_entities WHERE is_active=1"))['name'] === 'Иванов Иван Иванович');
+ok('подпись организации — подписант МойСклад', Signatures::forManager($mgr, Db::one("SELECT * FROM legal_entities WHERE is_active=1"))['name'] === 'Иванов Иван Иванович');
 Signatures::saveCompanyName('Сурков Кирилл Александрович');
 $legal = Db::one("SELECT * FROM legal_entities WHERE is_active=1");
 ok('подпись организации из настроек важнее МойСклад', Signatures::forManager($mgr, $legal)['name'] === 'Сурков Кирилл Александрович');
 Db::update('managers', ['signatory_name' => 'Яна Петрова'], 'id=?', [$mgr]);
-ok('своя расшифровка важнее всех', Signatures::forManager($mgr, $legal)['name'] === 'Яна Петрова');
+Signatures::setMode($mgr, 'own');
+ok('«Моя подпись» — своя расшифровка', Signatures::forManager($mgr, $legal)['name'] === 'Яна Петрова');
 ok('в документе — она же', str_contains(PdfGenerator::html($pid), 'Яна Петрова'));
+Signatures::setMode($mgr, 'company');
 
 $png = sys_get_temp_dir() . '/kp048-sig-' . getmypid() . '.png';
 $im = imagecreatetruecolor(20, 10); imagepng($im, $png);

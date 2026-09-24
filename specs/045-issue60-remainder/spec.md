@@ -98,16 +98,16 @@ A4, который можно править, и потом экспортиро
   `save()` (≤ 2 MB, must have `<body>`), `reset()`; `editable()` — not for a
   `sent` / `order_created` КП.
 - API: `html` (GET), `html_save` (POST `{html}`), `html_reset` (POST), `kp_img`.
-- UI (`App.openKp()`): «📝 Страница A4» (default) / «PDF». The page is an
+- UI (`App.openKp()`): «✎ Редактировать вручную» (default; module 051 — WYSIWYG toolbar and pages) / «PDF». The page is an
   `iframe sandbox="allow-same-origin"` (no scripts) with `designMode = on`,
   shown as an A4 sheet. «💾 Сохранить правки»; «↺ Вернуть автоматическую
   сборку» once an edit exists; ⬇ Word / ⬇ PDF save a dirty page first.
 - The hand edit stays until reset, and the bar says that changes in the match
-  table will not reach it. Saving the field-by-field text editor
-  (`doc_text_save`) or the full КП editor (`update`, anything besides the cover
-  letter) rebuilds the document and clears the override.
-- Fixes on the way: `proposals.php` never defined `$input`, so `doc_text_save`
-  always answered «Нечего сохранять»; `Object.assign(div, {dataset: …})` threw
+  table will not reach it. Saving the full КП editor (`update`, anything
+  besides the cover letter) rebuilds the document and clears the override.
+  The field-by-field editor (`doc_text`) is removed in module 051.
+- Fixes on the way: `proposals.php` defines one `$input` for every action;
+  `Object.assign(div, {dataset: …})` threw
   (dataset is read-only), so «Открыть» never opened the КП under the letter —
   now `App.dataDiv(key)`.
 - The delivery row of the match table says «включена в стоимость товаров» or

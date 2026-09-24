@@ -42,9 +42,10 @@
     .signature { margin-top: 0; font-size: 10pt; }
     .appendix-ref { margin: 0; }
     .signature__date { margin-right: 6px; }
-    .signature__line { letter-spacing: 0; }
     .signature img.sign-img { max-height: 46px; max-width: 115px; margin-bottom: -6px; }
     .signature .sign-name { margin-left: 8px; }
+    /* Разрыв страницы, вставленный в редакторе (модуль 051) */
+    .kp-page-break { page-break-before: always; height: 0; }
     .stock-warning { color: #c00; font-size: 9pt; }
     .note { font-size: 9pt; color: #666; }
     /* Чем клиент называл позицию, вместо которой стоит наша (модуль 036).
@@ -178,13 +179,17 @@
      прямо в «Коммерческое предложение». -->
 <p class="title-gap">&nbsp;</p>
 
+<?php
+/* Метки текстов для редактора (модуль 051): в PDF и Word печатается ровно то же, что и раньше */
+$kpEditor = !empty($kpEditor);
+$fa = fn(string $field) => KpFields::attr($field, $kpEditor);
+$ft = fn(string $raw, array $vars = [], bool $br = true) => KpFields::html($raw, $vars, $kpEditor, $br);
+?>
 <!-- Title -->
 <div class="title">Коммерческое предложение</div>
 
 <!-- Intro text -->
-<div class="intro">
-    <?= nl2br(htmlspecialchars($introText)) ?>
-</div>
+<div class="intro"<?= $fa('intro_text') ?>><?= $ft($introRaw, $introVars) ?></div>
 
 <!-- Correspondence table (module 013): the request line by line, answered.
      Printed when the request arrived as a table or a спецификация — the client
@@ -247,8 +252,8 @@
 <?php endif; ?>
 
 <!-- Pre-table block (optional) -->
-<?php if (!empty($preTableText)): ?>
-<div class="block"><?= nl2br(htmlspecialchars($preTableText)) ?></div>
+<?php if (!empty($preTableText) || $kpEditor): ?>
+<div class="block"<?= $fa('pre_table_text') ?>><?= $ft((string)$preTableText) ?></div>
 <?php endif; ?>
 
 <!-- Items table -->
@@ -358,7 +363,7 @@
 <?php if (!empty($unmatched)): ?>
 <div class="unmatched">
     <div class="unmatched__title">Позиции запроса, по которым нужно уточнение</div>
-    <div class="unmatched__note"><?= nl2br(htmlspecialchars($unmatchedNote)) ?></div>
+    <div class="unmatched__note"<?= $fa('unmatched_note') ?>><?= $ft((string)$unmatchedNote) ?></div>
     <ul>
         <?php foreach ($unmatched as $row): ?>
         <li><?= htmlspecialchars($row['requested']) ?> — <?= htmlspecialchars((string)$row['quantity']) ?> <?= htmlspecialchars($row['unit']) ?></li>
@@ -368,15 +373,15 @@
 <?php endif; ?>
 
 <!-- Post-table block (optional) -->
-<?php if (!empty($postTableText)): ?>
-<div class="block"><?= nl2br(htmlspecialchars($postTableText)) ?></div>
+<?php if (!empty($postTableText) || $kpEditor): ?>
+<div class="block"<?= $fa('post_table_text') ?>><?= $ft((string)$postTableText) ?></div>
 <?php endif; ?>
 
 <!-- Условия поставки — один блок, который правит менеджер (модуль 026).
      Раньше здесь стояли четыре абзаца, написанные прямо в шаблоне: гарантия на
      год и «стоимость включает» были неправдой, а поправить их было негде. -->
-<?php if (trim((string)$termsText) !== ''): ?>
-<div class="conditions"><?= nl2br(htmlspecialchars($termsText)) ?></div>
+<?php if (trim((string)$termsText) !== '' || $kpEditor): ?>
+<div class="conditions"<?= $fa('terms_text') ?>><?= $ft($termsRaw, $termsVars) ?></div>
 <?php endif; ?>
 
 <!-- Договор и покупатель: то, чего в шапке нет.
@@ -398,8 +403,8 @@
 <?php if ($showUpsell && $addons): ?>
 <div class="upsell">
     <div class="upsell__title">Дополнительные модули и доукомплектование</div>
-    <?php if (!empty($upsellIntro)): ?>
-    <div class="upsell__intro"><?= nl2br(htmlspecialchars($upsellIntro)) ?></div>
+    <?php if (!empty($upsellIntro) || $kpEditor): ?>
+    <div class="upsell__intro"<?= $fa('upsell_intro') ?>><?= $ft((string)$upsellIntro) ?></div>
     <?php endif; ?>
 
     <table class="addons">
@@ -424,8 +429,8 @@
     </table>
 
     <?php if ($upsellGallery): ?>
-    <?php if (!empty($upsellNote)): ?>
-    <div class="upsell__intro"><?= htmlspecialchars($upsellNote) ?></div>
+    <?php if (!empty($upsellNote) || $kpEditor): ?>
+    <div class="upsell__intro"<?= $fa('upsell_note') ?>><?= $ft((string)$upsellNote, [], false) ?></div>
     <?php endif; ?>
     <div class="gallery">
         <?php foreach ($upsellGallery as $img): ?>
@@ -450,8 +455,9 @@
      Пустой строки под подпись здесь больше нет: место, оставленное «под
      роспись», в подписанном документе читается как незаполненный бланк
      (модуль 022).
-     Картинка — подпись МЕНЕДЖЕРА этого КП, расшифровка — его же; ничего своего
-     он не завёл — печатается подписант организации. -->
+     Картинка и расшифровка — те, что менеджер КП выбрал в «Подписи»: свои,
+     организации или никаких (модуль 051) — тогда строка несёт одну дату.
+     Прочерка под роспись нет: он читался как незаполненный бланк. -->
 <p class="title-gap">&nbsp;</p>
 <div class="signature">
     <span class="signature__date"><?= $date ?></span>
@@ -461,8 +467,9 @@
          эту картинку текст не раздвигает (модуль 035) -->
     <img class="sign-img" src="<?= $signaturePath ?>" alt="Подпись">
     <?php endif; ?>
-    <span class="signature__line">_____________________________</span>
+    <?php if (trim((string)$signatoryName) !== ''): ?>
     <span class="sign-name"><?= htmlspecialchars($signatoryName) ?></span>
+    <?php endif; ?>
 </div>
 
 
@@ -501,7 +508,7 @@
         <img src="<?= $img ?>" alt="<?= htmlspecialchars($item['product_name']) ?>">
         <?php endforeach; ?>
         <?php if (!empty($imagesNote)): ?>
-        <div class="disclaimer">* <?= htmlspecialchars($imagesNote) ?></div>
+        <div class="disclaimer">* <span<?= $fa('images_note') ?>><?= $ft((string)$imagesNote, [], false) ?></span></div>
         <?php endif; ?>
     </div>
     <?php endif; ?>

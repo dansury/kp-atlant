@@ -39,7 +39,7 @@ document is never rewritten.
 
 Более подробное описание товаров приведено в приложении №1.   (only with an appendix)
 
-<date> <signature image> _____________________________ <signatory>
+<date> [<signature image>] [<signatory>]      (module 051: no «_____» line)
 ```
 
 The date and signature line is the LAST line before the appendix. The blank
@@ -54,10 +54,11 @@ A КП edited by hand on the A4 page (`html_override`) prints what was saved;
 `Настройки → Подпись` (open to every manager) holds, each card loaded on its
 own so one failing request never hides the others:
 
-1. **Подпись под КП** (mine): «Расшифровка» field, image upload/remove, and a
-   preview of the printed line: `23.09.2026г. [image] _____ <name>`.
-2. **Подпись организации** (admin only): the name and the image used when a
-   manager has none of their own.
+1. **Подпись под КП** (mine): the choice «Без подписи / Моя подпись / Подпись
+   организации» (module 051), «Расшифровка» field, image upload/remove, and a
+   preview of the printed line: `23.09.2026г. [image] <name>`.
+2. **Подпись организации** (admin only): the name and the image printed under
+   the КП of a manager who chose «Подпись организации».
    - name → `settings.kp_signatory_name`; image → `legal_entities.signature_path`
      (`storage/signatures/signature.<ext>`);
    - admin API: `admin.php?action=company_signature` (GET describe / POST
@@ -68,9 +69,11 @@ own so one failing request never hides the others:
 «Мой звук уведомления» moves to «Это устройство». «Оформление КП» links to the
 new tab instead of carrying the card.
 
-`Signatures::forManager()` resolves the name in this order: the manager's own →
-`kp_signatory_name` → the MoySklad signatory (`legal_entities.signatory_name`) →
-`Signatures::DEFAULT_NAME`. The image: the manager's own → the company one.
+`Signatures::forManager()` follows the manager's `kp_signature_mode` (module
+051, no fallback between modes): `own` — the manager's name and image;
+`company` — `kp_signatory_name` → the MoySklad signatory
+(`legal_entities.signatory_name`) → `Signatures::DEFAULT_NAME`, and the company
+image; `none` (default) — nothing.
 `kp_signatory_name` is a separate setting because the requisites sync
 overwrites `legal_entities.signatory_name` from MoySklad.
 

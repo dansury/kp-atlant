@@ -35,7 +35,8 @@ working: `#mail` and `#mail/board` still open the board when it was last used.
   cards when none is unread). The chosen status is in the URL
   (`#mail/list/<columnId>`). Below: «Архив», «Корзина». On a phone the sidebar
   is a horizontally scrolling chip row above the list.
-- **Row**: checkbox · company (bold when it has unread mail) + letter count ·
+- **Row**: checkbox · company (bold when it has unread mail or waits for an
+  answer — module 051) + letter count ·
   status chip (column colour **and** column name) · subject — preview ·
   📎 · date (today → `HH:MM`, this year → `12 сен`, older → `12.09.24`).
   «Ждёт ответа» is a dot with a text alternative, never colour alone; a draft

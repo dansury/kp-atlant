@@ -1563,22 +1563,20 @@ const App = {
         slot.dataset.open = String(id);
         const height = Number(localStorage.getItem('kpHeight')) || 60;
         slot.innerHTML = `
-            <div class="card card--inline kp-open" data-block="kp" style="margin-top:10px">
+            <div class="card kp-open" data-block="kp">
                 <div class="flex flex--between flex--wrap">
                     <strong>КП #${id}</strong>
                     <span class="flex flex--wrap">
                         <!-- Высота окна — ползунком и за нижний край рамки;
                              выбранная запоминается на этом устройстве (модуль 029) -->
-                        <label class="kp-size" title="Высота окна КП">
+                        <label class="kp-size" title="Высота окна КП — или тяните за полосу под листом">
                             <input type="range" min="25" max="160" value="${height}"
-                                   oninput="App.kpResize(this)"><span data-kp-size>${height}vh</span>
+                                   oninput="App.kpSetHeight(this.closest('.kp-open'), this.value)"><span data-kp-size>${height}vh</span>
                         </label>
                         <button class="btn btn--outline btn--sm"
                                 onclick="App.kpDownload(${id}, 'docx', this)">⬇ Word</button>
                         <button class="btn btn--outline btn--sm"
                                 onclick="App.kpDownload(${id}, 'pdf', this)">⬇ PDF</button>
-                        <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this)"
-                                title="Текст документа по полям: вступление, названия, условия">✎ Текст по полям</button>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
                         <button class="btn btn--primary btn--sm" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
@@ -1587,12 +1585,11 @@ const App = {
                         <button class="btn btn--outline btn--sm" onclick="App.openKp(${id}, this)">Свернуть</button>
                     </span>
                 </div>
-                <div data-kp-edit></div>
-                <!-- Документ открывается страницей A4, которую можно править прямо
-                     здесь (issue #60); PDF — второй вид того же документа -->
+                <!-- Документ открывается листом A4 в редакторе (модуль 051);
+                     PDF — второй вид того же документа -->
                 <div class="kp-modes">
                     <button class="btn btn--sm btn--primary" data-kp-mode="page"
-                            onclick="App.kpMode(this, 'page', ${id})">📝 Страница A4</button>
+                            onclick="App.kpMode(this, 'page', ${id})">✎ Редактировать вручную</button>
                     <button class="btn btn--sm btn--outline" data-kp-mode="pdf"
                             onclick="App.kpMode(this, 'pdf', ${id})">PDF</button>
                     <!-- Масштаб листа: пальцами, Ctrl + колесо / щипок тачпада, кнопками -->
@@ -1605,9 +1602,10 @@ const App = {
                 </div>
                 <div data-kp-pagewrap>
                     <div data-kp-page-bar></div>
+                    <div data-kp-tb></div>
                     <div data-kp-page-state class="loading">Собираем документ...</div>
                     <iframe class="kp-page" style="height:${height}vh;display:none" sandbox="allow-same-origin"
-                            title="КП #${id} — страница A4"></iframe>
+                            title="КП #${id} — лист A4"></iframe>
                 </div>
                 <div data-kp-pdf hidden>
                     <!-- Пока документ собирается, в рамке был белый прямоугольник, и
@@ -1616,6 +1614,12 @@ const App = {
                     <iframe class="kp-preview" style="height:${height}vh;display:none"
                             title="Предпросмотр КП #${id}"></iframe>
                 </div>
+                <!-- Высота окна — за эту полосу (модуль 051): угол рамки у iframe
+                     не тянется, мышь уходит внутрь документа -->
+                <div class="kp-grip" role="separator" aria-orientation="horizontal" tabindex="0"
+                     aria-label="Высота окна КП: тяните мышью или стрелками вверх и вниз"
+                     title="Тяните, чтобы изменить высоту окна"
+                     onpointerdown="App.kpGripStart(event, this)" onkeydown="App.kpGripKey(event, this)"></div>
             </div>`;
         slot.scrollIntoView({behavior: 'smooth', block: 'start'});
         this.fillKpPage(slot, id);
@@ -1638,12 +1642,21 @@ const App = {
             const run = () => {
                 const frame = card.querySelector('.kp-preview');
                 if (frame && !frame.getAttribute('src')) this.fillKpPreview(card.parentElement, id);
-                else if (frame) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+                else if (frame) frame.src = this.kpPdfUrl(card, id, true);
             };
             // Несохранённая правка страницы сначала сохраняется — PDF собирается из неё
             if (card.dataset.dirty === '1') this.kpPageSave(id, card).then(ok => ok && run());
             else run();
         }
+    },
+
+    /**
+     * PDF в масштабе листа (модуль 051): просмотрщик PDF в браузере понимает
+     * `#zoom=`, и страница PDF выходит той же ширины, что лист в редакторе.
+     */
+    kpPdfUrl(card, id, fresh = false) {
+        const z = Math.round(((card && card._kpZoom) || 1) * 100);
+        return `/api/proposals.php?action=preview&id=${id}${fresh ? '&t=' + Date.now() : ''}#zoom=${z}`;
     },
 
     /**
@@ -1657,6 +1670,7 @@ const App = {
         const state = slot.querySelector('[data-kp-page-state]');
         const frame = slot.querySelector('.kp-page');
         const bar = slot.querySelector('[data-kp-page-bar]');
+        const tb = slot.querySelector('[data-kp-tb]');
         const card = slot.querySelector('.kp-open');
         if (!state || !frame || !card) return;
         state.hidden = false;
@@ -1667,21 +1681,20 @@ const App = {
             if (!slot.isConnected || slot.dataset.open !== String(id)) return;
             card.dataset.dirty = '';
             bar.innerHTML = this.kpPageBar(id, d);
-            // Лист A4 на сером поле — только в редакторе; перед сохранением
-            // этот стиль убирается (и сервер его вырезает тоже)
-            const sheet = `<style data-kp-editor>html{background:#e9e9e9}
-                body{width:210mm;min-height:297mm;margin:12px auto!important;padding:10mm 15mm!important;
-                box-sizing:border-box;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25)}
-                ${d.editable ? 'body:focus,body *:focus{outline:1px dashed #b0b0b0}' : ''}</style>`;
+            if (tb) tb.innerHTML = d.editable ? this.kpToolbar() : '';
             const html = String(d.html || '');
+            const sheet = this.kpSheetStyle(d.editable);
             frame.onload = () => {
                 const doc = frame.contentDocument;
                 if (!doc) return;
-                if (d.editable) {
-                    doc.designMode = 'on';
-                    doc.addEventListener('input', () => { card.dataset.dirty = '1'; this.kpPageDirty(card, true); });
-                }
+                if (d.editable) this.kpEditorBind(frame, card, id);
                 this.kpBindZoom(frame, card);
+                // Разбивка на страницы — когда встанут шрифт и фотографии
+                this.kpRepaginate(card);
+                if (doc.fonts && doc.fonts.ready) doc.fonts.ready.then(() => this.kpRepaginate(card));
+                doc.querySelectorAll('img').forEach(img => {
+                    if (!img.complete) img.addEventListener('load', () => this.kpRepaginateSoon(card), {once: true});
+                });
             };
             frame.srcdoc = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, sheet + '</head>') : sheet + html;
             frame.style.display = '';
@@ -1692,6 +1705,287 @@ const App = {
                 <button class="btn btn--outline btn--sm" style="margin-left:8px"
                         onclick="App.fillKpPage(this.closest('.kp-open').parentElement, ${id})">Повторить</button>`;
         }
+    },
+
+    /**
+     * Стиль листа — только в редакторе; перед сохранением он убирается (и
+     * сервер его вырезает тоже). Шрифт тот же, что у mPDF, — строки
+     * переносятся как в PDF (модуль 051).
+     */
+    kpSheetStyle(editable) {
+        const font = (f, w, st) => `@font-face{font-family:"DejaVu Sans";font-weight:${w};font-style:${st};
+            src:url(/api/proposals.php?action=font&f=${f}) format("truetype")}`;
+        return `<style data-kp-editor>
+            ${font('r', 'normal', 'normal')}${font('b', 'bold', 'normal')}
+            ${font('i', 'normal', 'italic')}${font('bi', 'bold', 'italic')}
+            html{background:#e9e9e9}
+            body{width:210mm;min-height:var(--kp-min,297mm);margin:12px auto!important;padding:10mm 15mm 15mm!important;
+                box-sizing:border-box;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+            .kp-pgap{position:relative;height:0;margin:0;padding:0;border:0;user-select:none}
+            .kp-pgap__band{position:absolute;bottom:10mm;height:14px;background:#e9e9e9;
+                box-shadow:inset 0 4px 4px -3px rgba(0,0,0,.3),inset 0 -4px 4px -3px rgba(0,0,0,.3);
+                font:10px/14px sans-serif;color:#777;text-align:center}
+            tr.kp-pgap-row td{padding:0!important;border:0!important;background:transparent!important}
+            .kp-page-break{height:0;border-top:1px dashed #b0b0b0;margin:0}
+            ${editable ? `
+            body:focus,body *:focus{outline:1px dashed #b0b0b0}
+            [data-kp-field]{min-height:1.4em;border-radius:2px}
+            [data-kp-field]:hover{box-shadow:0 0 0 1px #d6e2ff}
+            [data-kp-field]:empty::before{content:attr(data-kp-hint);color:#a0a0a0;font-style:italic}
+            [data-kp-var]{background:#eef3ff;border-radius:2px}` : ''}
+        </style>`;
+    },
+
+    /** Панель редактора: действия над выделением на листе (модуль 051). */
+    kpToolbar() {
+        const b = (cmd, label, title, arg = '') => `<button type="button" class="kp-tb__btn" data-cmd="${cmd}"
+            ${arg ? `data-arg="${arg}"` : ''} title="${title}" aria-label="${title}" aria-pressed="false">${label}</button>`;
+        const sep = '<span class="kp-tb__sep" aria-hidden="true"></span>';
+        return `<div class="kp-tb" role="toolbar" aria-label="Оформление текста КП">
+            ${b('undo', '↶', 'Отменить (Ctrl+Z)')}${b('redo', '↷', 'Повторить (Ctrl+Y)')}${sep}
+            <select class="kp-tb__select" data-cmd="formatBlock" title="Стиль абзаца" aria-label="Стиль абзаца">
+                <option value="p">Обычный текст</option><option value="h1">Заголовок 1</option>
+                <option value="h2">Заголовок 2</option><option value="h3">Заголовок 3</option>
+            </select>${sep}
+            ${b('bold', '<b>Ж</b>', 'Жирный (Ctrl+B)')}${b('italic', '<i>К</i>', 'Курсив (Ctrl+I)')}
+            ${b('underline', '<u>Ч</u>', 'Подчёркнутый (Ctrl+U)')}${b('strikeThrough', '<s>З</s>', 'Зачёркнутый')}${sep}
+            ${b('foreColor', '<span class="kp-tb__sw" style="background:#222"></span>', 'Цвет текста: чёрный', '#222222')}
+            ${b('foreColor', '<span class="kp-tb__sw" style="background:#c00000"></span>', 'Цвет текста: красный', '#c00000')}
+            ${b('foreColor', '<span class="kp-tb__sw" style="background:#777"></span>', 'Цвет текста: серый', '#777777')}${sep}
+            ${b('justifyLeft', '⯇≡', 'По левому краю')}${b('justifyCenter', '≡', 'По центру')}
+            ${b('justifyRight', '≡⯈', 'По правому краю')}${b('justifyFull', '☰', 'По ширине')}${sep}
+            ${b('insertUnorderedList', '• ≡', 'Маркированный список')}${b('insertOrderedList', '1. ≡', 'Нумерованный список')}${sep}
+            ${b('createLink', '🔗', 'Ссылка')}${b('unlink', '⛓̸', 'Убрать ссылку')}
+            ${b('pageBreak', '⤓', 'Разрыв страницы: дальше — с новой страницы')}${sep}
+            ${b('removeFormat', '⌫', 'Очистить оформление')}
+        </div>`;
+    },
+
+    /** Лист становится редактором: панель, вставка без мусора, Ctrl+S, страницы. */
+    kpEditorBind(frame, card, id) {
+        const doc = frame.contentDocument;
+        doc.designMode = 'on';
+        try { doc.execCommand('styleWithCSS', false, false); } catch { /* старый браузер */ }
+        doc.querySelectorAll('.kp-page-break').forEach(el => el.setAttribute('contenteditable', 'false'));
+        const dirty = () => { card.dataset.dirty = '1'; this.kpPageDirty(card, true); this.kpRepaginateSoon(card); };
+        doc.addEventListener('input', dirty);
+        doc.addEventListener('keydown', e => {
+            if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'ы')) {
+                e.preventDefault();
+                this.kpPageSave(id, card);
+            }
+        });
+        doc.addEventListener('paste', e => {
+            const cd = e.clipboardData;
+            if (!cd) return;
+            e.preventDefault();
+            const html = cd.getData('text/html');
+            if (html) doc.execCommand('insertHTML', false, this.kpCleanPaste(html));
+            else doc.execCommand('insertText', false, cd.getData('text/plain'));
+        });
+        doc.addEventListener('selectionchange', () => this.kpToolbarState(card));
+
+        const tb = card.querySelector('.kp-tb');
+        if (!tb) return;
+        // Кнопка не забирает выделение у листа
+        tb.addEventListener('mousedown', e => { if (e.target.closest('button')) e.preventDefault(); });
+        tb.addEventListener('click', e => {
+            const btn = e.target.closest('button[data-cmd]');
+            if (btn) this.kpExec(card, btn.dataset.cmd, btn.dataset.arg || null);
+        });
+        const sel = tb.querySelector('select[data-cmd]');
+        if (sel) sel.addEventListener('change', () => this.kpExec(card, 'formatBlock', '<' + sel.value + '>'));
+        this.kpToolbarState(card);
+    },
+
+    kpExec(card, cmd, arg) {
+        const frame = card.querySelector('.kp-page');
+        const doc = frame && frame.contentDocument;
+        if (!doc) return;
+        frame.contentWindow.focus();
+        if (cmd === 'createLink') {
+            arg = prompt('Адрес ссылки', 'https://');
+            if (!arg || !/^(https?:\/\/|mailto:)/i.test(arg.trim())) return;
+            arg = arg.trim();
+        }
+        if (cmd === 'pageBreak') {
+            doc.execCommand('insertHTML', false,
+                '<div class="kp-page-break" style="page-break-before:always" contenteditable="false"></div><p><br></p>');
+        } else {
+            doc.execCommand(cmd, false, arg);
+        }
+        card.dataset.dirty = '1';
+        this.kpPageDirty(card, true);
+        this.kpToolbarState(card);
+        this.kpRepaginateSoon(card);
+    },
+
+    /** Нажатые кнопки и стиль абзаца — по выделению на листе. */
+    kpToolbarState(card) {
+        const doc = card.querySelector('.kp-page')?.contentDocument;
+        const tb = card.querySelector('.kp-tb');
+        if (!doc || !tb) return;
+        tb.querySelectorAll('button[data-cmd]').forEach(b => {
+            if (b.dataset.arg || ['undo', 'redo', 'createLink', 'unlink', 'pageBreak', 'removeFormat'].includes(b.dataset.cmd)) return;
+            let on = false;
+            try { on = doc.queryCommandState(b.dataset.cmd); } catch { /* команда не поддерживается */ }
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+        const sel = tb.querySelector('select[data-cmd]');
+        if (sel) {
+            let v = '';
+            try { v = String(doc.queryCommandValue('formatBlock') || '').toLowerCase().replace(/[<>]/g, ''); } catch { /* нет */ }
+            sel.value = ['h1', 'h2', 'h3'].includes(v) ? v : 'p';
+        }
+    },
+
+    /**
+     * Вставка из Word и с сайтов: остаются абзацы, списки, заголовки, жирный,
+     * курсив, подчёркивание и ссылки — без классов, стилей и шрифтов.
+     */
+    kpCleanPaste(html) {
+        const src = new DOMParser().parseFromString(html, 'text/html');
+        const keep = {P: 'p', BR: 'br', B: 'b', STRONG: 'b', I: 'i', EM: 'i', U: 'u', S: 's', STRIKE: 's',
+                      UL: 'ul', OL: 'ol', LI: 'li', H1: 'h1', H2: 'h2', H3: 'h3', H4: 'h3', A: 'a',
+                      DIV: 'p', TR: 'p'};
+        const out = document.createElement('div');
+        const walk = (from, to) => {
+            for (const n of from.childNodes) {
+                if (n.nodeType === 3) { to.appendChild(document.createTextNode(n.nodeValue.replace(/\s+/g, ' '))); continue; }
+                if (n.nodeType !== 1 || /^(SCRIPT|STYLE|META|LINK|TITLE|XML|O:P)$/i.test(n.nodeName)) continue;
+                const tag = keep[n.nodeName];
+                if (!tag) {
+                    walk(n, to);
+                    if (/^(TD|TH)$/.test(n.nodeName)) to.appendChild(document.createTextNode(' '));
+                    continue;
+                }
+                const el = document.createElement(tag);
+                if (tag === 'a') {
+                    const href = n.getAttribute('href') || '';
+                    if (/^(https?:|mailto:)/i.test(href)) el.setAttribute('href', href);
+                }
+                if (tag !== 'br') walk(n, el);
+                to.appendChild(el);
+            }
+        };
+        walk(src.body, out);
+        return out.innerHTML;
+    },
+
+    /** Пересчитать страницы, когда правка затихла. */
+    kpRepaginateSoon(card) {
+        clearTimeout(card._kpPagTimer);
+        card._kpPagTimer = setTimeout(() => this.kpRepaginate(card), 500);
+    },
+
+    /**
+     * ==== Страницы на листе (модуль 051) ====
+     *
+     * Лист делится там же, где делит mPDF: A4, поля 10 / 15 мм, строка таблицы,
+     * абзац и пункт списка переходят на новую страницу целиком; `.appendix`,
+     * `.card--break` и `.kp-page-break` всегда начинают страницу. Между
+     * страницами встаёт разделитель `[data-kp-editor-ui]` — в сохранение он не
+     * попадает. Координаты — в пикселях самого листа, масштаб их не меняет.
+     */
+    kpRepaginate(card) {
+        const frame = card && card.querySelector('.kp-page');
+        const doc = frame && frame.contentDocument;
+        const body = doc && doc.body;
+        if (!body || !doc.defaultView) return;
+        const win = doc.defaultView;
+        doc.querySelectorAll('[data-kp-editor-ui]').forEach(el => el.remove());
+
+        const MM = 96 / 25.4;
+        const H = 272 * MM, TOP = 10 * MM, BOTTOM = 15 * MM, GAP = 14;
+        const bodyRect = body.getBoundingClientRect();
+        const scale = bodyRect.width / (210 * MM) || 1;
+        const origin = bodyRect.top / scale + TOP;
+
+        const inlineish = d => /^(inline|inline-block|inline-flex|contents|none)$/.test(d);
+        const blockKids = el => [...el.children].some(c => {
+            const cs = win.getComputedStyle(c);
+            return !inlineish(cs.display) && cs.float === 'none' && cs.position !== 'absolute';
+        });
+        const forcedBy = (el, cs) => el.matches('.appendix, .card--break, .kp-page-break')
+            || /always|page/.test(cs.pageBreakBefore || '') || cs.breakBefore === 'page';
+
+        const units = [];
+        const walk = (el) => {
+            for (const c of el.children) {
+                const cs = win.getComputedStyle(c);
+                if (cs.display === 'none' || cs.float !== 'none' || /absolute|fixed/.test(cs.position)) continue;
+                if (inlineish(cs.display) && c.tagName !== 'IMG') continue;
+                const force = forcedBy(c, cs);
+                const first = units.length;
+                if (c.tagName === 'TABLE') {
+                    const cols = Math.max(1, ...[...c.rows].map(r => r.cells.length));
+                    [...c.rows].forEach(r => units.push({el: r, row: true, cols}));
+                } else if (c.tagName !== 'IMG' && blockKids(c)) {
+                    walk(c);
+                } else {
+                    units.push({el: c});
+                }
+                if (force) {
+                    if (units.length > first) units[first].force = true;
+                    else units.push({el: c, force: true});
+                }
+            }
+        };
+        walk(body);
+        units.forEach(u => {
+            const r = u.el.getBoundingClientRect();
+            u.top = r.top / scale - origin;
+            u.bottom = r.bottom / scale - origin;
+        });
+
+        let pageTop = 0, shift = 0;
+        const gaps = [];
+        for (const u of units) {
+            const top = u.top + shift;
+            const bottom = u.bottom + shift;
+            while (top >= pageTop + H) pageTop += H;       // абзац выше страницы — PDF режет его строками
+            const over = bottom > pageTop + H + 0.5 && (u.bottom - u.top) <= H / 3;
+            if (!(u.force || over) || top <= pageTop + 1) continue;
+            const h = pageTop + H - top + BOTTOM + GAP + TOP;
+            gaps.push(this.kpInsertGap(doc, u, h, scale, bodyRect));
+            shift += h;
+            pageTop = top + h;
+        }
+        const last = units.length ? units[units.length - 1].bottom + shift : 0;
+        while (last > pageTop + H) pageTop += H;
+        const pages = gaps.length + 1;
+        gaps.forEach((g, i) => { g.textContent = `стр. ${i + 2} из ${pages}`; });
+        doc.documentElement.style.setProperty('--kp-min', (pageTop + H + TOP + BOTTOM) + 'px');
+    },
+
+    /** Разделитель страниц перед единицей потока; в таблице — строкой. Возвращает подпись. */
+    kpInsertGap(doc, u, h, scale, bodyRect) {
+        const gap = doc.createElement('div');
+        gap.className = 'kp-pgap';
+        gap.setAttribute('contenteditable', 'false');
+        gap.style.height = h + 'px';
+        const band = doc.createElement('span');
+        band.className = 'kp-pgap__band';
+        gap.appendChild(band);
+        if (u.row) {
+            const tr = doc.createElement('tr');
+            tr.className = 'kp-pgap-row';
+            tr.setAttribute('data-kp-editor-ui', '1');
+            tr.setAttribute('contenteditable', 'false');
+            const td = doc.createElement('td');
+            td.colSpan = u.cols;
+            td.appendChild(gap);
+            tr.appendChild(td);
+            u.el.parentNode.insertBefore(tr, u.el);
+        } else {
+            gap.setAttribute('data-kp-editor-ui', '1');
+            u.el.parentNode.insertBefore(gap, u.el);
+        }
+        // Серая полоса — на всю ширину листа, где бы ни стоял разделитель
+        const dx = (gap.getBoundingClientRect().left - bodyRect.left) / scale;
+        band.style.left = (-dx) + 'px';
+        band.style.width = (210 * 96 / 25.4) + 'px';
+        return band;
     },
 
     /**
@@ -1785,7 +2079,7 @@ const App = {
                            onchange="App.kpToggleOutOfScope(${id}, this)"> Показать в КП отсутствующую номенклатуру (${oos.count})</label>` : ''}
                 <span class="muted" data-kp-page-status>${d.override_at
                     ? `Документ поправлен руками ${this.esc(d.override_at)}. Изменения подбора в него не попадут, пока не вернёте автоматическую сборку.`
-                    : 'Щёлкните по тексту на листе и правьте. Сохранённая правка уйдёт в PDF и Word.'}</span>
+                    : 'Щёлкните по тексту на листе и правьте. Сохранённая правка уйдёт в PDF и Word; вступление, условия и тексты вокруг таблицы станут заготовкой для следующих КП.'}</span>
                 <button class="btn btn--primary btn--sm" data-kp-page-save
                         onclick="App.kpPageSave(${id}, this.closest('.kp-open'))">💾 Сохранить правки</button>
                 ${d.override_at ? `<button class="btn btn--outline btn--sm"
@@ -1827,8 +2121,10 @@ const App = {
         if (btn) { btn.disabled = true; btn.textContent = 'Сохраняем...'; }
         try {
             const root = doc.documentElement.cloneNode(true);
-            root.querySelectorAll('style[data-kp-editor]').forEach(el => el.remove());
+            root.querySelectorAll('style[data-kp-editor], [data-kp-editor-ui]').forEach(el => el.remove());
+            root.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
             root.style.removeProperty('zoom');
+            root.style.removeProperty('--kp-min');
             if (!root.getAttribute('style')) root.removeAttribute('style');
             const html = '<!DOCTYPE html>\n' + root.outerHTML;
             const r = await this.api(`proposals.php?action=html_save&id=${id}`, {method: 'POST', body: {html}});
@@ -1837,8 +2133,10 @@ const App = {
             if (bar) bar.innerHTML = this.kpPageBar(id, {editable: true, override_at: r.override_at});
             // PDF, если его уже смотрели, — свежий
             const pdf = card.querySelector('.kp-preview');
-            if (pdf && pdf.getAttribute('src')) pdf.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
-            this.toast('Правки сохранены — PDF и Word соберутся из этой страницы', 'success');
+            if (pdf && pdf.getAttribute('src')) pdf.src = this.kpPdfUrl(card, id, true);
+            const learned = r.learned || [];
+            this.toast('Правки сохранены — PDF и Word соберутся из этой страницы'
+                + (learned.length ? `. Заготовка для следующих КП: ${learned.join(', ')}` : ''), 'success');
             return true;
         } catch (err) {
             this.toast(err.message, 'error');
@@ -1857,7 +2155,7 @@ const App = {
             await this.api(`proposals.php?action=html_reset&id=${id}`, {method: 'POST', body: {}});
             this.toast('Документ собран заново из подбора', 'success');
             const pdf = card.querySelector('.kp-preview');
-            if (pdf && pdf.getAttribute('src')) pdf.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+            if (pdf && pdf.getAttribute('src')) pdf.src = this.kpPdfUrl(card, id, true);
             this.fillKpPage(card.parentElement, id);
         } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
     },
@@ -1884,6 +2182,7 @@ const App = {
         state.className = 'loading';
         state.textContent = 'Собираем документ...';
         const url = `/api/proposals.php?action=preview&id=${id}`;
+        const card = slot.querySelector('.kp-open');
         // Сборка PDF на живом каталоге идёт секундами — говорим об этом вслух
         const slow = setTimeout(() => {
             if (state.isConnected) state.textContent = 'Собираем документ — фотографии товаров считаются дольше всего...';
@@ -1893,7 +2192,7 @@ const App = {
             if (!res.ok) throw new Error(await this.errorTextOf(res));
             // Сервер ответил документом — можно показывать
             if (!slot.isConnected || slot.dataset.open !== String(id)) return;
-            frame.src = url;
+            frame.src = card ? this.kpPdfUrl(card, id) : url;
             frame.style.display = '';
             state.remove();
         } catch (err) {
@@ -1928,56 +2227,49 @@ const App = {
         return document.getElementById('kpWide');
     },
 
-    /** Ползунок высоты окна КП. Значение живёт в этом браузере. */
-    kpResize(input) {
-        const card = input.closest('.kp-open');
-        const frames = card ? card.querySelectorAll('.kp-preview, .kp-page') : [];
-        const label = card && card.querySelector('[data-kp-size]');
-        if (!frames.length) return;
-        frames.forEach(f => { f.style.height = input.value + 'vh'; });
-        if (label) label.textContent = input.value + 'vh';
-        try { localStorage.setItem('kpHeight', input.value); } catch { /* приватный режим — просто не запомним */ }
+    /** Высота окна КП (лист и PDF вместе), vh. Значение живёт в этом браузере. */
+    kpSetHeight(card, vh) {
+        if (!card) return;
+        vh = Math.round(Math.min(160, Math.max(25, Number(vh) || 60)));
+        card.querySelectorAll('.kp-preview, .kp-page').forEach(f => { f.style.height = vh + 'vh'; });
+        const range = card.querySelector('.kp-size input');
+        if (range && Number(range.value) !== vh) range.value = vh;
+        const label = card.querySelector('[data-kp-size]');
+        if (label) label.textContent = vh + 'vh';
+        try { localStorage.setItem('kpHeight', String(vh)); } catch { /* приватный режим — просто не запомним */ }
     },
 
     /**
-     * Править текст документа прямо в браузере (issue #38).
-     *
-     * Word и PDF собираются из базы, поэтому «редактировать документ» — это
-     * править его текст, а не байты файла: менеджер переписывает абзац здесь,
-     * жмёт «Сохранить», и оба файла пересобираются с его текстом. Блоки идут
-     * в порядке документа, а не полями таблицы, — как читает клиент.
+     * Полоса под листом тянет высоту окна (модуль 051). Пока тянут, рамки не
+     * ловят мышь — иначе iframe забирает движение и тянуть «перестаёт».
      */
-    async openKpEditor(id, btn) {
-        const card = btn.closest('.kp-open');
-        const box = card && card.querySelector('[data-kp-edit]');
-        if (!box) return;
-        if (box.dataset.open === '1') { box.dataset.open = ''; box.innerHTML = ''; return; }
-        box.dataset.open = '1';
-        box.innerHTML = '<div class="loading">Читаем документ...</div>';
-        try {
-            const d = await this.api(`proposals.php?action=doc_text&id=${id}`);
-            box.innerHTML = `
-                <div class="kp-edit">
-                    <p class="muted">Текст документа, сверху вниз — как его читает клиент.
-                       Сохранение пересобирает и PDF, и Word; правки видит администратор.</p>
-                    ${(d.blocks || []).map(b => `
-                        <label class="kp-edit__row">
-                            <span class="kp-edit__label">${this.esc(b.label)}
-                                ${b.hint ? `<span class="muted">— ${this.esc(b.hint)}</span>` : ''}</span>
-                            ${Number(b.rows) <= 1
-                                ? `<input type="text" data-doc-key="${this.esc(b.key)}" value="${this.esc(b.value)}">`
-                                : `<textarea data-doc-key="${this.esc(b.key)}" rows="${Number(b.rows) || 3}"
-                                     >${this.esc(b.value)}</textarea>`}
-                        </label>`).join('')}
-                    <div class="flex flex--wrap" style="margin-top:10px">
-                        <button class="btn btn--primary btn--sm" onclick="App.saveKpEditor(${id}, this)">Сохранить и пересобрать</button>
-                        <button class="btn btn--outline btn--sm" onclick="App.openKpEditor(${id}, this.closest('.kp-open').querySelector('[onclick*=openKpEditor]'))">Закрыть</button>
-                    </div>
-                </div>`;
-        } catch (err) {
-            box.dataset.open = '';
-            box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
-        }
+    kpGripStart(e, grip) {
+        const card = grip.closest('.kp-open');
+        const frame = card && [...card.querySelectorAll('.kp-page, .kp-preview')].find(f => f.offsetParent);
+        if (!frame || e.button > 0) return;
+        e.preventDefault();
+        const startY = e.clientY;
+        const startH = frame.getBoundingClientRect().height;
+        card.classList.add('kp-open--drag');
+        grip.setPointerCapture(e.pointerId);
+        const move = ev => this.kpSetHeight(card, (Math.max(200, startH + ev.clientY - startY) / window.innerHeight) * 100);
+        const up = () => {
+            card.classList.remove('kp-open--drag');
+            grip.removeEventListener('pointermove', move);
+            grip.removeEventListener('pointerup', up);
+            grip.removeEventListener('pointercancel', up);
+        };
+        grip.addEventListener('pointermove', move);
+        grip.addEventListener('pointerup', up);
+        grip.addEventListener('pointercancel', up);
+    },
+
+    kpGripKey(e, grip) {
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        const card = grip.closest('.kp-open');
+        const now = Number((card.querySelector('.kp-size input') || {}).value) || 60;
+        this.kpSetHeight(card, now + (e.key === 'ArrowDown' ? 5 : -5));
     },
 
     /**
@@ -2112,25 +2404,6 @@ const App = {
             composer.scrollIntoView({behavior: 'smooth', block: 'center'});
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
-    },
-
-    async saveKpEditor(id, btn) {
-        const card = btn.closest('.kp-open');
-        const blocks = [...card.querySelectorAll('[data-doc-key]')]
-            .map(el => ({key: el.dataset.docKey, value: el.value}));
-        btn.disabled = true;
-        const label = btn.textContent;
-        btn.textContent = 'Пересобираем...';
-        try {
-            const r = await this.api(`proposals.php?action=doc_text_save&id=${id}`, {method: 'POST', body: {blocks}});
-            this.toast(r.changed ? `Документ пересобран, правок: ${r.changed}` : 'Правок не было', r.changed ? 'success' : 'info');
-            // Предпросмотр показывает свежий файл, а не тот, что браузер закэшировал
-            const frame = card.querySelector('.kp-preview');
-            if (frame && frame.getAttribute('src')) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
-            // Правка по полям собирает документ заново — лист тоже
-            if (r.changed && card.querySelector('.kp-page')) this.fillKpPage(card.parentElement, id);
-        } catch (err) { this.toast(err.message, 'error'); }
-        finally { btn.disabled = false; btn.textContent = label; }
     },
 
     /** The block one position belongs to — a page may hold several tables. */
@@ -5652,7 +5925,7 @@ const App = {
         // Настройки
         'kp-settings':  ['Оформление КП', 'Тексты и значения по умолчанию для каждого нового КП: условия поставки, сроки, подписи под фотографиями. В самом КП их можно переписать — здесь стоит то, с чего КП начинается, и сюда же приезжает последняя правка условий из любого КП.'],
         'mail-signature': ['Подпись в письмах', 'Дописывается в конец каждого письма, которое вы отправляете из сервиса, и в конец черновика нейросети. Второй раз не приписывается — если подпись в письме уже стоит, она остаётся одна. Пусто — берётся общая подпись компании из настроек почты.'],
-        'signature':    ['Подпись под КП', 'КП подписывает тот, кто его отправляет. Загрузите картинку своей подписи и напишите расшифровку — они встанут под вашими КП после «_____». Пусто — печатается подпись организации (её задаёт администратор ниже).'],
+        'signature':    ['Подпись под КП', 'Выберите, чем подписывать ваши КП: без подписи (строка несёт только дату), своей подписью — картинка и расшифровка ниже, или подписью организации (её задаёт администратор).'],
         'knowledge':    ['База знаний', 'Вики компании из репозитория GitHub. В промпт она попадает не целиком, а теми разделами, которые относятся к тексту письма. Это ЗНАНИЯ О ТОВАРЕ — инструкции про кнопки сюда класть нельзя, они мешают модели отвечать.'],
         'knowledge-check': ['Проверка подбора', 'Вставьте текст письма — увидите, какие разделы вики попадут в промпт и что сервис на это ответит. Ответ можно тут же забраковать кнопкой 👎 и написать, как он должен был звучать: эта правка уйдёт в обучение.'],
         'rethink':      ['Переосмыслить правки', 'Модель читает последние правки менеджеров и отправленные письма и собирает из них короткий свод правил. Свод сам никуда не уходит: его читают, правят и одной кнопкой подмешивают в выбранный промпт — отдельным блоком «ИЗ ПРАВОК МЕНЕДЖЕРОВ». Модель для этой работы выбирается здесь же: читать сотню писем лучше моделью поумнее.'],
@@ -6688,7 +6961,7 @@ const App = {
 
                 <div class="card">
                     <div class="card__title">Подпись под КП</div>
-                    <p class="muted">Картинка подписи и расшифровка «_____ Фамилия Имя Отчество» — во вкладке
+                    <p class="muted">Подписывать КП или нет, своей подписью или подписью организации — во вкладке
                        <a href="#settings/signature">«Подпись»</a>.</p>
                 </div>
 
@@ -6763,13 +7036,13 @@ const App = {
         this.loadMailSignature();
     },
 
-    /** Строка, которой КП заканчивается: дата, картинка, линия, расшифровка. */
+    /** Строка, которой КП заканчивается: дата, картинка, расшифровка (без прочерка — модуль 051). */
     signaturePreview(name, imgUrl) {
         const d = new Date();
         const date = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}г.`;
         return `<div class="sig-line"><span>${date}</span>
-            <span class="sig-line__mark">${imgUrl ? `<img src="${imgUrl}" alt="Подпись">` : ''}_____________________________</span>
-            <strong>${this.esc(name || '')}</strong></div>`;
+            ${imgUrl ? `<span class="sig-line__mark"><img src="${imgUrl}" alt="Подпись"></span>` : ''}
+            ${name ? `<strong>${this.esc(name)}</strong>` : ''}</div>`;
     },
 
     async loadSignature() {
@@ -6777,18 +7050,26 @@ const App = {
         if (!card) return;
         try {
             const d = await this.api('admin.php?action=signature');
-            const img = d.has_image ? `api/settings.php?action=signature_image&v=${Date.now()}` : '';
+            const mode = d.mode || 'none';
+            const own = d.has_image ? `api/settings.php?action=signature_image&v=${Date.now()}` : '';
+            const company = d.has_company_image ? `api/settings.php?action=company_signature_image&v=${Date.now()}` : '';
+            const opt = (v, label, note) => `<label class="sig-mode__opt">
+                <input type="radio" name="sigMode" value="${v}" ${mode === v ? 'checked' : ''}
+                       onchange="App.saveSignatureMode(this.value)">
+                <span><strong>${label}</strong><span class="muted"> — ${note}</span></span></label>`;
             card.innerHTML = `
                 <div class="card__title">Подпись под КП${this.hint('signature')}</div>
-                <p class="muted">Ставится под теми КП, которые отправляете вы. Пусто — печатается подпись
-                   организации: <strong>${this.esc(d.default_name || '')}</strong>.</p>
-                <div class="form-group"><label>Расшифровка подписи — печатается после «_____»</label>
+                <p class="muted">Ставится под теми КП, которые делаете вы.</p>
+                <fieldset class="sig-mode">
+                    <legend class="sr-only">Чем подписывать КП</legend>
+                    ${opt('none', 'Без подписи', 'под КП только дата')}
+                    ${opt('own', 'Моя подпись', 'картинка и расшифровка ниже')}
+                    ${opt('company', 'Подпись организации', this.esc(d.default_name || 'задаёт администратор'))}
+                </fieldset>
+                ${mode === 'own' ? `
+                <div class="form-group"><label for="sigName">Расшифровка подписи</label>
                     <input type="text" id="sigName" value="${this.esc(d.signatory_name || '')}"
-                           placeholder="${this.esc(d.default_name || 'Фамилия Имя Отчество')}"></div>
-                <p class="muted">Так заканчивается ваше КП:</p>
-                ${this.signaturePreview(d.effective_name, img)}
-                ${d.has_image ? '' : `<p class="muted">Картинка подписи не загружена${
-                    d.has_company_image ? ' — печатается картинка организации' : ''}.</p>`}
+                           placeholder="${this.esc(this.manager && this.manager.name || 'Фамилия Имя Отчество')}"></div>
                 <div class="flex flex--wrap">
                     <button class="btn btn--primary" onclick="App.saveSignatoryName(this)">Сохранить расшифровку</button>
                     <label class="btn btn--outline" style="cursor:pointer">
@@ -6797,11 +7078,21 @@ const App = {
                     </label>
                     ${d.has_image ? '<button class="btn btn--outline btn--danger" onclick="App.resetSignature()">Убрать картинку</button>' : ''}
                 </div>
-                <p class="muted" style="margin-top:6px">PNG или JPG, лучше на прозрачном или белом фоне, высотой около 200 px.</p>
+                <p class="muted" style="margin-top:6px">PNG или JPG, лучше на прозрачном или белом фоне, высотой около 200 px.</p>` : ''}
+                <p class="muted">Так заканчивается ваше КП:</p>
+                ${this.signaturePreview(d.effective_name, mode === 'own' ? own : mode === 'company' ? company : '')}
                 <div id="sigOut" style="margin-top:8px"></div>`;
         } catch (err) {
             card.innerHTML = `<div class="card__title">Подпись под КП</div><p class="no">${this.esc(err.message)}</p>`;
         }
+    },
+
+    async saveSignatureMode(mode) {
+        try {
+            await this.api('settings.php?action=signature_mode', {method: 'POST', body: {mode}});
+            this.toast(mode === 'none' ? 'Ваши КП уходят без подписи' : 'Подпись под КП выбрана', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+        this.loadSignature();
     },
 
     /** Подпись организации — под КП менеджера, который своей не завёл (модуль 048). */
@@ -6813,7 +7104,7 @@ const App = {
             const img = d.has_image ? `api/settings.php?action=company_signature_image&v=${Date.now()}` : '';
             card.innerHTML = `
                 <div class="card__title">Подпись организации</div>
-                <p class="muted">Печатается под КП менеджера, у которого нет своей расшифровки или картинки.
+                <p class="muted">Печатается под КП менеджеров, выбравших «Подпись организации».
                    ${d.moysklad_name ? `Подписант в МойСклад: <strong>${this.esc(d.moysklad_name)}</strong> — поле ниже важнее.` : ''}</p>
                 <div class="form-group"><label>Расшифровка подписи организации</label>
                     <input type="text" id="companySigName" value="${this.esc(d.signatory_name || '')}"
@@ -7785,7 +8076,7 @@ const App = {
     drawMailSide(cols) {
         const side = document.getElementById('mailSide');
         if (!side) return;
-        const unread = cards => cards.filter(x => x.unread).length;
+        const unread = cards => cards.filter(x => x.unread || x.unanswered).length;
         const allCards = cols.flatMap(c => c.cards || []);
         const item = (href, label, cards, color, on) => {
             const u = unread(cards);
@@ -7795,7 +8086,7 @@ const App = {
                     <span class="mside__dot ${color ? '' : 'mside__dot--all'}" aria-hidden="true"></span>
                     <span class="mside__name">${this.esc(label)}</span>
                     <span class="mside__n ${u ? 'mside__n--unread' : ''}"
-                          title="${u ? 'непрочитанных' : 'всего'}">${u || cards.length || ''}<span class="sr-only">${u ? ' непрочитанных' : ' всего'}</span></span>
+                          title="${u ? 'новых и неотвеченных' : 'всего'}">${u || cards.length || ''}<span class="sr-only">${u ? ' новых и неотвеченных' : ' всего'}</span></span>
                 </a>`;
         };
         side.innerHTML = `
@@ -7823,7 +8114,8 @@ const App = {
         const letters = c.letters || t.count || 0;
         const at = this.mailRowAt(card);
         const cls = ['grow'];
-        if (card.unread) cls.push('grow--unread');
+        // Жирным — новое и неотвеченное, как на доске (модуль 051)
+        if (card.unread || card.unanswered) cls.push('grow--unread');
         if (risen) cls.push('grow--risen');
         const tags = [
             `<span class="stag" style="--col:${this.esc(col.color || '#8a8f98')}">${this.esc(col.title)}</span>`,

@@ -196,6 +196,10 @@ $signPath = $signDir . '/test-034.png';
 file_put_contents($signPath, $bigPng);
 register_shutdown_function(fn() => @unlink($signPath));
 Db::q("UPDATE legal_entities SET signature_path=? WHERE is_active=1", [$signPath]);
+// Подпись организации — по выбору менеджера КП (модуль 051)
+$signer = Db::insert('managers', ['login' => 'signer034', 'name' => 'Подписант', 'password_hash' => 'x',
+                                  'is_admin' => 0, 'kp_signature_mode' => 'company']);
+Db::update('proposals', ['manager_id' => $signer], 'id=?', [$proposalId]);
 
 $path = DocxGenerator::generate($proposalId);
 ok('файл .docx собрался', is_file($path) && filesize($path) > 0);
