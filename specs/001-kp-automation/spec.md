@@ -274,7 +274,7 @@
 
 ### C-007: NeuroPro LLM-wrapper
 **Decision**: Использовать lib/llm.php из NeuroPro-main.zip как отправную точку  
-**Rationale**: В claude.md указано: «Use OpenRouter + Yandex Foundation Models wrapper from NeuroPro (lib/llm.php pattern)». NeuroPro-main.zip лежит в папке проекта. Извлечь оттуда LLM-обёртку, адаптировать под нужды КП-системы (json-mode для парсинга запросов, text-mode для генерации писем).
+**Rationale**: CLAUDE.md says: «Use OpenRouter + Yandex Foundation Models wrapper from NeuroPro (lib/llm.php pattern)». NeuroPro-main.zip лежит в папке проекта. Извлечь оттуда LLM-обёртку, адаптировать под нужды КП-системы (json-mode для парсинга запросов, text-mode для генерации писем).
 
 ### C-008: Подпись в PDF
 **Decision**: Растровое изображение подписи, загружаемое через настройки  
