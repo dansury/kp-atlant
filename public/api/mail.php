@@ -168,6 +168,17 @@ try {
                 }
                 jsonOk(['scheduled' => $row]);
             }
+            // Задержка на отмену (модуль 057): письмо ждёт в очереди, вкладка
+            // досылает его по `send_now`, закрытую вкладку подстрахует крон
+            require_once ROOT . '/lib/mail_schedule.php';
+            $delay = MailSchedule::delayFor((int)$manager['id']);
+            if ($delay > 0) {
+                try {
+                    jsonOk(['delayed' => MailSchedule::delay($input, (int)$manager['id'], $delay)]);
+                } catch (InvalidArgumentException|RuntimeException $e) {
+                    jsonError($e->getMessage(), 400);
+                }
+            }
             require_once ROOT . '/lib/mail_compose.php';
             try {
                 $res = MailCompose::send($input, (int)$manager['id']);
@@ -184,6 +195,17 @@ try {
                 'items'   => MailSchedule::pending(!empty($manager['is_admin']) ? null : (int)$manager['id']),
                 'presets' => MailSchedule::presets(),
             ]);
+        }
+
+        // Отсчёт кончился или «Отправить сейчас» (модуль 057)
+        case 'send_now': {
+            require_once ROOT . '/lib/mail_schedule.php';
+            try {
+                $res = MailSchedule::sendNow((int)($input['id'] ?? $_GET['id'] ?? 0), (int)$manager['id']);
+            } catch (Throwable $e) {
+                jsonError($e->getMessage(), 400);
+            }
+            jsonOk($res);
         }
 
         case 'schedule_cancel': {

@@ -112,3 +112,10 @@ not have.
 ## Module 056 — check on the live board
 - Send a letter with «📎 В письмо» КП → the card goes to «КП отправлено»; send the
   invoice → «Ждём оплату»; send another КП after that → the card stays.
+
+## Module 057 — check on a live system
+- Send delay: send one real letter, let the 20 s countdown run out — the letter
+  leaves via `send_now` with a real SMTP; close the tab mid-countdown once and
+  check cron sends it within a minute.
+- «Обновить из МойСклад» on a linked company: the toast lists requisites,
+  orders and invoices (checked without a live account).
