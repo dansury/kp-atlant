@@ -42,8 +42,48 @@ final class MailSchedule {
      * Закрытая вкладка его не теряет — уйдёт с кроном.
      */
     public static function delay(array $input, int $managerId, int $seconds): array {
+        // Повторное нажатие — не второе письмо: то же письмо в очереди отдаётся как есть
+        $twin = self::twin($input, $managerId);
+        if ($twin && $twin['status'] === 'sent') return ['already' => 'sent'];
+        if ($twin) {
+            return ['id' => (int)$twin['id'], 'send_at' => $twin['send_at'],
+                    'seconds' => max(1, strtotime($twin['send_at']) - time())];
+        }
         $row = self::add($input, $managerId, date('Y-m-d H:i:s', time() + $seconds));
         return ['id' => (int)$row['id'], 'send_at' => $row['send_at'], 'seconds' => $seconds];
+    }
+
+    /** Окно, в котором то же письмо считается повтором, а не новой отправкой. */
+    public const RESEND_GUARD_SEC = 120;
+
+    /** Отпечаток письма: кому, тема, текст, файлы, на что отвечает. */
+    public static function fingerprint(array $p): string {
+        $files = array_map('strval', (array)($p['files'] ?? []));
+        sort($files);
+        return sha1(json_encode([
+            mb_strtolower(trim((string)($p['to'] ?? ''))),
+            mb_strtolower(trim((string)($p['cc'] ?? ''))),
+            trim((string)($p['subject'] ?? '')),
+            preg_replace('/\s+/u', ' ', trim((string)($p['text'] ?? ''))),
+            $files,
+            (int)($p['reply_to_id'] ?? 0),
+        ], JSON_UNESCAPED_UNICODE));
+    }
+
+    /** То же письмо этого менеджера: ждёт, уходит или ушло только что. */
+    private static function twin(array $input, int $managerId): ?array {
+        $fp = self::fingerprint($input);
+        $rows = Db::all("SELECT id, send_at, status, sent_at, payload_json FROM mail_scheduled
+                         WHERE manager_id=? AND to_addr=? AND status IN ('pending','sending','sent')
+                         ORDER BY id DESC LIMIT 20",
+                        [$managerId, mb_substr(trim((string)($input['to'] ?? '')), 0, 300)]);
+        foreach ($rows as $r) {
+            if ($r['status'] === 'sent'
+                && (!$r['sent_at'] || strtotime($r['sent_at']) < time() - self::RESEND_GUARD_SEC)) continue;
+            $p = json_decode((string)$r['payload_json'], true);
+            if (is_array($p) && self::fingerprint($p) === $fp) return $r;
+        }
+        return null;
     }
 
     /** Забрать письмо в отправку: true — только у одного из конкурентов. */

@@ -5680,18 +5680,46 @@ const App = {
     /** «Отправлено» и где копия; копия не легла в «Отправленные» — сказать сразу. */
     sentToast(res) {
         if (res.already === 'sending') this.toast('Письмо уже отправляется', 'info');
-        else if (res.already) this.toast('Письмо отправлено', 'success');
+        else if (res.already) this.toast('Это письмо уже отправлено', 'success');
         else if (res.warning) this.toast(res.warning, 'error');
         else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : '')
                         + (res.stage ? ` · карточка → «${res.stage}»` : ''), 'success');
     },
 
+    /**
+     * Поле письма на время отправки (модуль 057): только чтение, все кнопки
+     * погашены — второе нажатие во время отсчёта невозможно.
+     */
+    lockComposer(c, on) {
+        if (on) { c.dataset.sending = '1'; clearTimeout(this._draftTimer); }
+        else delete c.dataset.sending;
+        c.classList.toggle('composer--sending', on);
+        const rte = c.querySelector('[data-cmp-rte]');
+        if (rte) rte.contentEditable = on ? 'false' : 'true';
+        c.querySelectorAll('button, input, select').forEach(el => {
+            if (on) { el.dataset.wasDisabled = el.disabled ? '1' : ''; el.disabled = true; }
+            else if ('wasDisabled' in el.dataset) { el.disabled = el.dataset.wasDisabled === '1'; delete el.dataset.wasDisabled; }
+        });
+    },
+
+    /** Письмо ушло — в поле не остаётся ничего, что можно отправить второй раз. */
+    clearComposer(c) {
+        const rte = c.querySelector('[data-cmp-rte]');
+        if (rte) rte.innerHTML = '';
+        const files = c.querySelector('[data-cmp-files]');
+        if (files) files.innerHTML = '';
+        const draft = c.querySelector('[data-cmp-draft-id]');
+        if (draft) draft.value = '';
+        const saved = c.querySelector('[data-cmp-saved]');
+        if (saved) saved.textContent = '';
+    },
+
     async threadSend(key, btn, sendAt = null) {
         const c = this.composerOf(key);
-        if (!c) return;
+        if (!c || c.dataset.sending) return;
         const {text, html} = this.composerBody(c);
         if (!text.trim()) { this.toast('Письмо пустое', 'error'); return; }
-        btn.disabled = true;
+        this.lockComposer(c, true);
         try {
             const body = {
                 // Пусто — уходит сейчас; время — ложится в очередь (issue #60)
@@ -5714,6 +5742,8 @@ const App = {
                 ? await this.api('mail.php?action=send', {method: 'POST', body})
                 : await this.sendMail(body);
             if (!res) return;   // отправку отменили — текст остался в поле
+            // Письмо ушло или легло в очередь — в поле ему больше не место
+            this.clearComposer(c);
             // Отложенное письмо ещё не ушло — и говорить «отправлено» о нём нельзя
             if (res.scheduled) {
                 this.toast('Письмо уйдёт ' + res.scheduled.send_at, 'success');
@@ -5722,15 +5752,26 @@ const App = {
                 return;
             }
             this.sentToast(res);
-            // Письмо со страницы «Написать» ушло — страница своё отработала
-            if ((location.hash || '').startsWith('#mail/compose')) { location.hash = '#mail'; return; }
-            // The answer belongs in the conversation it answers — reopen it
-            const box = key ? document.getElementById('th_' + this.threadDomId(key)) : null;
-            if (box) { box.dataset.loaded = ''; box.hidden = true; this.toggleCompanyThread(key); }
-            const cp = this.openCompanyId();
-            if (cp) { this.loadCompanyThreads(cp); this.loadChat(cp); }
+            this.afterSend(key);
         } catch (err) { this.toast(err.message, 'error'); }
-        finally { btn.disabled = false; }
+        finally { if (c.isConnected) this.lockComposer(c, false); }
+    },
+
+    /**
+     * Экран после отправки перерисовывается С СЕРВЕРА там, где стояло поле:
+     * иначе ушедшее письмо не видно в переписке, а поле зовёт нажать ещё раз.
+     */
+    afterSend(key) {
+        const hash = location.hash || '';
+        // Письмо со страницы «Написать» ушло — страница своё отработала
+        if (hash.startsWith('#mail/compose')) { location.hash = '#mail'; return; }
+        // The answer belongs in the conversation it answers — reopen it
+        const box = key ? document.getElementById('th_' + this.threadDomId(key)) : null;
+        if (box) { box.dataset.loaded = ''; box.hidden = true; this.toggleCompanyThread(key); }
+        const cp = this.openCompanyId();
+        if (cp) { this.loadCompanyThreads(cp); this.loadChat(cp); return; }
+        // Страница письма #mail/t/… — перерисовать её целиком
+        if (!box) this.route();
     },
 
     /**
