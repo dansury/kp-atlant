@@ -152,13 +152,9 @@ class PdfGenerator {
         // в котором клиент сам должен заметить, что его просьбу потеряли.
         $unmatched = KpContent::unmatchedRows($proposalId);
 
-        // Сколько фотографий печатать. Настройка задаёт общий потолок, а
-        // редактор КП может поставить свой на ЭТОТ документ (модуль 023):
-        // раз количество ограничивается в настройках, ограничивать его должно
-        // быть можно и на сборке.
-        $maxImages = $proposal['photos_per_item'] !== null && $proposal['photos_per_item'] !== ''
-            ? max(0, (int)$proposal['photos_per_item'])
-            : (int)(Db::val("SELECT value FROM settings WHERE key='kp_max_images_per_item'") ?: 5);
+        // Сколько фото у позиции без ручного выбора: настройка или своё число
+        // КП (модуль 023). Отмеченные вручную идут все (модуль 060)
+        $maxImages = KpContent::photoLimit($proposalId);
         $addons = Db::all(
             "SELECT * FROM proposal_addons WHERE proposal_id=? AND is_selected=1 ORDER BY position",
             [$proposalId]

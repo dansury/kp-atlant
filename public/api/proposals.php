@@ -1,6 +1,6 @@
 <?php
 /**
- * API: Proposals — generate, update, preview, confirm, send.
+ * API: Proposals — generate, update, preview. A КП is sent from the letter editor.
  */
 require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/parser.php';
@@ -134,53 +134,6 @@ function buildProposal(array $req, array $manager): array {
     Db::update('requests', ['status' => 'draft_ready', 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$requestId]);
 
     return [$proposalId, $coverLetter];
-}
-
-/**
- * SC-005 with teeth (module 018).
- *
- * «Ни одно КП не уходит клиенту без подтверждения менеджером» was a click, not
- * a statement about the document: a КП with «Итого: 0,00 руб.» was confirmed and
- * sent exactly like a priced one. Nothing is blocked dead here — the manager is
- * asked once, by position, and his answer is kept on the proposal so
- * «Подтвердить» and «Отправить» do not ask twice for the same document. A price
- * edited afterwards drops the answer and the question comes back.
- */
-function requireNoPriceAck(int $proposalId, array $input, array $manager): void {
-    $gaps = KpContent::priceGaps($proposalId);
-    if (!$gaps['items'] && !$gaps['empty']) return;
-
-    $stored = json_decode((string)(Db::val("SELECT no_price_ack_json FROM proposals WHERE id=?", [$proposalId]) ?: ''), true);
-    $ackedIds = is_array($stored) ? array_map('intval', (array)($stored['items'] ?? [])) : [];
-    $ackedEmpty = is_array($stored) && !empty($stored['empty']);
-
-    $gapIds = array_map('intval', array_column($gaps['items'], 'id'));
-    $openIds = array_values(array_diff($gapIds, $ackedIds));
-    // Every position already answered for, and an empty КП answered for as such
-    if (!$openIds && (!$gaps['empty'] || $ackedEmpty)) return;
-
-    if (empty($input['no_price_ack'])) {
-        $msg = $gaps['empty']
-            ? 'В КП нет ни одной позиции — подтвердите, что отправляем его таким.'
-            : 'Без цены: ' . count($gaps['items']) . ' поз. Подтвердите, что отправляем КП без цены по ним.';
-        jsonError($msg, 409, ['no_price' => [
-            'items' => $gaps['items'],
-            'total' => $gaps['total'],
-            'empty' => $gaps['empty'],
-        ]]);
-    }
-
-    Db::update('proposals', ['no_price_ack_json' => json_encode([
-        'items'      => $gapIds,
-        'empty'      => $gaps['empty'],
-        'manager_id' => (int)$manager['id'],
-        'at'         => date('Y-m-d H:i:s'),
-    ], JSON_UNESCAPED_UNICODE)], 'id=?', [$proposalId]);
-
-    Logger::warning('kp', 'КП подтверждено без цены по ' . count($gaps['items']) . ' поз.', [
-        'proposal_id' => $proposalId, 'manager_id' => (int)$manager['id'],
-        'positions'   => array_column($gaps['items'], 'position'),
-    ]);
 }
 
 /**
@@ -621,163 +574,14 @@ switch ($action) {
         jsonOk(['request_id' => $requestId]);
     }
 
-    case 'confirm':
-        $manager = requireAuth();
-        $id = (int)($_GET['id'] ?? 0);
-        $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
-        if (!$proposal) jsonError('Not found', 404);
-
-        // A КП that prices nothing is not confirmed on the same click as one
-        // that does — the manager answers for those positions by name (SC-005)
-        requireNoPriceAck($id, getInput(), $manager);
-
-        // Save corrections (US4). Everything the manager wrote by hand is a
-        // lesson: the letter he rewrote, the paragraphs he added around the
-        // table, and every position where he offered an analogue instead of the
-        // brand the client asked for (module 011).
-        $learn = function (string $field, string $auto, string $text, array $ctx = []) use ($proposal, $manager) {
-            if (trim($text) === '' || trim($auto) === trim($text)) return;
-            // Confirming the same КП twice must not teach the same lesson twice
-            // «IS» rather than «=»: a manual КП has no request, and NULL = NULL is not a match
-            if (Db::one("SELECT id FROM corrections WHERE field=? AND auto_text=? AND manager_text=? AND request_id IS ? LIMIT 1",
-                        [$field, $auto, $text, $proposal['request_id']])) return;
-            Db::insert('corrections', [
-                'request_id'   => $proposal['request_id'],
-                'field'        => $field,
-                'auto_text'    => $auto,
-                'manager_text' => $text,
-                'manager_id'   => $manager['id'],
-                'context_json' => json_encode($ctx + ['counterparty_id' => $proposal['counterparty_id']], JSON_UNESCAPED_UNICODE),
-            ]);
-        };
-
-        if ($proposal['cover_letter'] && $proposal['cover_letter_final']) {
-            $learn('cover_letter', (string)$proposal['cover_letter'], (string)$proposal['cover_letter_final']);
-        }
-        // The previous КП is what these were generated from — a paragraph that
-        // did not change is not a correction and must not be learned twice
-        $prev = Db::one("SELECT pre_table_text, post_table_text FROM proposals
-                         WHERE id<>? AND status<>'draft' ORDER BY id DESC LIMIT 1", [$id]);
-        $learn('pre_table',  (string)($prev['pre_table_text'] ?? ''),  (string)$proposal['pre_table_text']);
-        $learn('post_table', (string)($prev['post_table_text'] ?? ''), (string)$proposal['post_table_text']);
-
-        foreach (KpContent::substitutions(Db::all("SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY position", [$id])) as $s) {
-            $learn('item_substitution', $s['requested'],
-                   $s['offered'] . ($s['note'] !== '' ? ' — ' . $s['note'] : ''),
-                   ['proposal_id' => $id]);
-        }
-
-        // Regenerate final PDF
-        KpContent::refreshStock($id);
-        PdfGenerator::generate($id);
-
-        Db::update('proposals', ['status' => 'confirmed', 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$id]);
-        $proposal = Db::one("SELECT pdf_path FROM proposals WHERE id=?", [$id]);
-        jsonOk(['pdf_path' => $proposal['pdf_path']]);
-
-    case 'send':
-        $manager = requireAuth();
-        $id = (int)($_GET['id'] ?? 0);
-        $proposal = Db::one("SELECT p.*, r.email_from, c.name as counterparty_name, c.contact_email
-                             FROM proposals p
-                             JOIN requests r ON p.request_id = r.id
-                             LEFT JOIN counterparties c ON p.counterparty_id = c.id
-                             WHERE p.id=?", [$id]);
-        if (!$proposal) jsonError('Not found', 404);
-        $input = getInput();
-        $to = $input['to'] ?? $proposal['email_from'] ?? $proposal['contact_email'] ?? '';
-        if (!$to) jsonError('Recipient email required');
-
-        // The same question the confirm asked. Answered there and unchanged
-        // since, it does not come back; a price edited in between brings it back.
-        requireNoPriceAck($id, $input, $manager);
-
-        // 35 of the 37 КП in the archive left as a Word file — a закупщик puts
-        // our positions into his own form, and cannot do that with a printout
-        // (module 016). The manager's choice for THIS letter beats the setting.
-        // `text` — КП прямо в теле письма, без файла: то же самое, теми же
-        // цифрами, только без QR (модуль 023). Человеку, спросившему «сколько
-        // стоит шлем», вложение мешает, а закупщику по-прежнему нужен Word.
-        $format = (string)($input['format'] ?? Settings::get('KP_ATTACH_FORMAT', 'docx'));
-        if (!in_array($format, ['docx', 'pdf', 'both', 'text'], true)) $format = 'docx';
-        $attachments = [];
-        $docxPath = null;
-        if ($format === 'docx' || $format === 'both') {
-            $docxPath = DocxGenerator::generate($id);
-            $attachments[] = $docxPath;
-        }
-        if ($format === 'pdf' || $format === 'both') {
-            if (!$proposal['pdf_path'] || !file_exists($proposal['pdf_path'])) PdfGenerator::generate($id);
-            $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$id]) + $proposal;
-            $attachments[] = $proposal['pdf_path'];
-        }
-
-        // Файлы, которые менеджер приложил сам: он мог переделать документ
-        // руками и прислать свой (модуль 023)
-        // `resolve()` отдаёт пару «путь + имя в письме»: приставка, под которой
-        // файл лежит на диске, клиенту не показывается (модуль 040)
-        foreach (Outbox::resolve((array)($input['files'] ?? []), (int)$manager['id']) as $file) {
-            $attachments[] = $file;
-        }
-
-        $subject = $input['subject'] ?? 'Коммерческое предложение от Atlant Armour';
-        $body = $proposal['cover_letter_final'] ?? $proposal['cover_letter'] ?? '';
-        // Доставка «оплачивается отдельно» — её цена в тексте письма (модуль 049)
-        $body = DeliveryShare::appendToLetter((string)$body, $proposal);
-        if ($format === 'text') {
-            $kp = KpText::render($id);
-            $body = trim($body) !== '' ? rtrim($body) . "\n\n" . $kp['text'] : $kp['text'];
-        }
-        // «см. на сайте» — ссылкой со словами, а не голым адресом (модуль 045)
-        require_once ROOT . '/lib/mail_text.php';
-        $htmlBody = MailText::textToHtml($body);
-
-        // Goes out through the manager's mailbox and lands in the mail archive
-        Mailer::send([
-            'to'              => $to,
-            'subject'         => $subject,
-            'html'            => $htmlBody,
-            'text'            => $body,
-            'mailbox_id'      => $input['mailbox_id'] ?? null,
-            'manager_id'      => (int)$manager['id'],
-            'counterparty_id' => $proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null,
-            'request_id'      => (int)$proposal['request_id'],
-            'attachments'     => $attachments,
-        ]);
-
-        // Feed entry — an outbound message clears the unanswered highlight (FR-038)
-        Crm::logEvent($proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null, 'out', $body, [
-            'request_id' => $proposal['request_id'],
-            'subject'    => $subject,
-            'email_to'   => $to,
-            'manager_id' => $manager['id'] ?? null,
-            'event_type' => 'kp_sent',
-            'meta'       => ['proposal_id' => (int)$id, 'format' => $format,
-                             'files' => array_map('basename', $attachments)],
-        ]);
-        Db::q("UPDATE correspondence SET has_attachment=1, attachment_path=? WHERE id=(SELECT MAX(id) FROM correspondence)",
-              [$attachments[0] ?? $proposal['pdf_path']]);
-
-        $now = date('Y-m-d H:i:s');
-        Db::update('proposals', ['status' => 'sent', 'sent_at' => $now, 'updated_at' => $now], 'id=?', [$id]);
-        Db::update('requests', ['status' => 'sent', 'updated_at' => $now], 'id=?', [$proposal['request_id']]);
-
-        // КП ушло — карточка в «КП отправлено», если не дальше (модуль 056)
-        $stage = null;
-        try {
-            require_once ROOT . '/lib/boards.php';
-            $stage = Boards::advance($proposal['counterparty_id'] ? (int)$proposal['counterparty_id'] : null, null, 'kp_sent');
-        } catch (Throwable $e) {
-            Logger::warning('boards', 'Карточка не передвинулась: ' . $e->getMessage(), ['proposal_id' => $id]);
-        }
-
-        jsonOk(['sent_at' => $now, 'stage' => $stage]);
+    // «Подтвердить» и «Отправить» отсюда ушли: КП уходит только из редактора
+    // письма, подтверждается при вложении (KpConfirm, модуль 060)
 
     // Photos available for one KP position, with the manager's current pick
     case 'item_images':
         requireAuth();
         $itemId = (int)($_GET['item_id'] ?? 0);
-        $item = Db::one("SELECT id, moysklad_product_id, selected_images FROM proposal_items WHERE id=?", [$itemId]);
+        $item = Db::one("SELECT id, proposal_id, moysklad_product_id, selected_images FROM proposal_items WHERE id=?", [$itemId]);
         if (!$item) jsonError('Позиция не найдена', 404);
 
         $msId = (string)($item['moysklad_product_id'] ?? '');
@@ -789,8 +593,9 @@ switch ($action) {
         $selected = json_decode((string)($item['selected_images'] ?? ''), true);
         jsonData([
             'available' => $available,
-            // null — «выбор не делали»: в КП идут все найденные фото
+            // null — «выбор не делали»: в КП идут первые default_count (модуль 060)
             'selected'  => is_array($selected) ? $selected : null,
+            'default_count' => KpContent::photoLimit((int)$item['proposal_id']),
         ]);
 
     case 'addons_suggest':

@@ -22,7 +22,7 @@ frames and the height grip:
 Both save an unsaved edit of the A4 sheet first (`kpPageSave`), so the file
 is exactly what is on screen. `kpAttach` then calls `attachDoc(kind, id)` →
 `mail.php?action=attach_doc`. The top bar keeps «🧾 Счёт в МойСклад»,
-«Подтвердить и отправить», «Свернуть»; ⬇ Word/PDF moved to the bar under the
+«Свернуть» (no send button: module 060); ⬇ Word/PDF moved to the bar under the
 sheet. **«Все настройки КП →» is removed** (it duplicated the main window);
 the `#mail/proposal/N` page itself stays reachable by URL.
 

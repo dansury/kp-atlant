@@ -1616,7 +1616,7 @@ const App = {
                         </label>
                         <button class="btn btn--outline btn--sm" onclick="App.kpInvoice(${id}, this)"
                                 title="Выставить счёт в МойСклад теми же позициями и приложить его к письму">🧾 Счёт в МойСклад</button>
-                        <button class="btn btn--primary btn--sm" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>
+                        <!-- КП уходит только из редактора письма (issue #94) -->
                         <button class="btn btn--outline btn--sm" onclick="App.openKp(${id}, this)"
                                 title="Свернуть КП" aria-label="Свернуть КП">▴</button>
                     </span>
@@ -2510,7 +2510,9 @@ const App = {
         if (!composer) { this.toast('Сначала откройте письмо, к которому приложить', 'error'); return; }
         btn.disabled = true;
         try {
-            const r = await this.api('mail.php?action=attach_doc', {method: 'POST', body: {kind, id}});
+            // Вложение КП и есть подтверждение: без цены — спросим (модуль 060)
+            const r = await this.postWithNoPriceAck('mail.php?action=attach_doc', {kind, id});
+            if (!r) return;
             const f = r.file;
             this.addFileChip(composer, f);
             this.toast(`Приложено: ${f.filename} — нажмите на него в письме, чтобы скачать и проверить`, 'success');
@@ -3609,6 +3611,9 @@ const App = {
 
     closeModal() {
         const el = document.getElementById('modal');
+        // Запись в закрытом окне не нужна никому (модуль 060)
+        const rec = this.dictation && this.dictation.recorder;
+        if (el && rec && rec.state === 'recording') rec.stop();
         if (el) el.remove();
         this._msAfter = null;
         // Окно с вопросом закрыли крестиком или уходом со страницы — тот, кто
@@ -3732,8 +3737,7 @@ const App = {
                 title: `КП #${this.esc(proposal.number) || id}`,
                 after: this.hint('kp-editor'),
                 actions: `
-                    <button class="btn btn--outline" onclick="App.refreshPreview(${id})">Обновить PDF</button>
-                    <button class="btn btn--primary" onclick="App.confirmAndSend(${id})">Подтвердить и отправить</button>`,
+                    <button class="btn btn--outline" onclick="App.refreshPreview(${id})">Обновить PDF</button>`,
             })}
             ${this.proposalWarnings(proposal)}
             <div class="grid grid--2">
@@ -3842,7 +3846,7 @@ const App = {
                         <!-- Количество фото ограничивается в настройках — значит,
                              ограничить его должно быть можно и здесь (модуль 023) -->
                         <div class="form-group" style="max-width:260px">
-                            <label>Фото на позицию в этом КП</label>
+                            <label>Фото на позицию по умолчанию в этом КП</label>
                             <input type="number" id="photosPerItem" min="0" max="12"
                                    placeholder="как в настройках"
                                    value="${proposal.photos_per_item ?? ''}">
@@ -3881,36 +3885,12 @@ const App = {
                     </div>
                 </div>
             </div>
+            <!-- Отправка — только из редактора письма (issue #94) -->
             <div class="card" style="margin-top:16px">
                 <div class="card__title">Отправка</div>
-                <div class="grid grid--2">
-                    <div class="form-group">
-                        <label>Email получателя</label>
-                        <input type="email" id="sendTo" placeholder="client@company.ru" value="${this.esc(proposal.email_from || proposal.contact_email || '')}">
-                    </div>
-                    <div class="form-group">
-                        <label>Тема письма</label>
-                        <input type="text" id="sendSubject" value="Коммерческое предложение от Atlant Armour">
-                    </div>
-                </div>
-                <div class="form-group" style="max-width:320px">
-                    <label>Чем приложить КП</label>
-                    <select id="sendFormat">
-                        <option value="docx">Word (.docx) — редактируемый</option>
-                        <option value="pdf">PDF</option>
-                        <option value="both">И Word, и PDF</option>
-                        <option value="text">Только текстом в письме — без файла</option>
-                    </select>
-                    <div class="muted" style="margin-top:4px">В текстовом варианте то же самое:
-                        позиции, цены, условия и комментарии. Нет только QR-кода.</div>
-                </div>
-                <!-- Свои файлы к письму: менеджер мог переделать документ руками (модуль 023) -->
-                <div class="form-group" style="max-width:420px">
-                    <label>Свои файлы к письму</label>
-                    <input type="file" multiple onchange="App.kpAttachFiles(this)">
-                    <div class="composer__files" id="kpFiles"></div>
-                </div>
-                <button class="btn btn--primary" onclick="App.sendProposal(${id})">Отправить КП</button>
+                <p class="muted">КП уходит клиенту письмом: откройте переписку и приложите КП кнопкой
+                   «📎 В письмо» (Word или PDF). Подтверждение и проверка позиций без цены — там же.</p>
+                <a class="btn btn--outline btn--sm" href="${proposal.request_id ? `#mail/request/${proposal.request_id}` : '#mail'}">← К письму</a>
             </div>
         `;
         // Thumbnails load per position, so a KP with many photos still opens fast
@@ -3918,7 +3898,7 @@ const App = {
     },
 
     /**
-     * What is wrong with this КП, said before «Подтвердить» is pressed (module 018).
+     * What is wrong with this КП, said before it is attached to a letter (module 018).
      *
      * Three holes the manager used to find out about only from the client:
      * positions with no price, positions the catalog never answered, and a
@@ -4060,6 +4040,16 @@ const App = {
     },
 
     /**
+     * Какие фото отмечены (модуль 060): выбор менеджера целиком, а без выбора —
+     * первые default_count, ровно то, что напечатает КП.
+     */
+    photoChosen(d) {
+        if (Array.isArray(d.selected)) return d.selected;
+        const n = Number.isFinite(Number(d.default_count)) ? Number(d.default_count) : 5;
+        return d.available.slice(0, Math.max(0, n)).map(a => a.key);
+    },
+
+    /**
      * Photo picker of one KP position (FR-046). Photos come from both sources —
      * downloaded through the МойСклад API and the CDN links of the Excel export
      * — and the manager ticks the ones this particular KP should carry.
@@ -4075,8 +4065,7 @@ const App = {
                               + 'или импорт каталога из Excel.</div>';
                 return;
             }
-            // No stored choice means «все, что нашлись» — the behaviour before the picker
-            const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
+            const chosen = this.photoChosen(d);
             box.innerHTML = `
                 <div class="photos__head">
                     <span class="muted">Фото в этом КП (<span data-photo-count>${chosen.length}</span> из ${d.available.length}):</span>
@@ -4157,8 +4146,7 @@ const App = {
                               + 'с МойСклад или импорт каталога из Excel.</div>';
                 return;
             }
-            // «Выбор не делали» — это все фотографии, как было до выбора
-            const chosen = d.selected === null ? d.available.map(a => a.key) : d.selected;
+            const chosen = this.photoChosen(d);
             box.innerHTML = `
                 <div class="photos__head">
                     <span class="muted">В КП пойдут отмеченные (<span data-photo-count>${chosen.length}</span> из ${d.available.length}):</span>
@@ -4388,12 +4376,11 @@ const App = {
      * only on a second, explicit answer (SC-005, module 018). The server decides
      * — this just asks the question it sent back and repeats the call.
      *
-     * Returns true when the call went through, false when the manager said no.
+     * Returns the server's answer, or null when the manager said no.
      */
     async postWithNoPriceAck(url, body = {}) {
         try {
-            await this.api(url, {method: 'POST', body});
-            return true;
+            return await this.api(url, {method: 'POST', body});
         } catch (err) {
             const gap = err.data && err.data.no_price;
             if (!gap) throw err;
@@ -4403,54 +4390,10 @@ const App = {
                 : `Без цены ${lines.length} поз.:\n${lines.join('\n')}\n\nИтого по КП: ${this.fmtMoney(gap.total)}`;
             if (!confirm(`${what}\n\nОтправляем клиенту в таком виде?`)) {
                 this.toast('Отменено — проставьте цены и повторите', 'info');
-                return false;
+                return null;
             }
-            await this.api(url, {method: 'POST', body: {...body, no_price_ack: true}});
-            return true;
+            return await this.api(url, {method: 'POST', body: {...body, no_price_ack: true}});
         }
-    },
-
-    // Confirm and prepare for sending
-    async confirmAndSend(id) {
-        try {
-            if (!await this.postWithNoPriceAck(`proposals.php?action=confirm&id=${id}`)) return;
-            this.toast('КП подтверждено', 'success');
-            this.refreshPreview(id);
-        } catch (err) { this.toast(err.message, 'error'); }
-    },
-
-    // Send proposal email
-    async sendProposal(id) {
-        const to = document.getElementById('sendTo').value.trim();
-        if (!to) return this.toast('Укажите email получателя', 'error');
-        try {
-            const sent = await this.postWithNoPriceAck(`proposals.php?action=send&id=${id}`, {
-                to,
-                subject: document.getElementById('sendSubject').value,
-                format: document.getElementById('sendFormat')?.value || undefined,
-                files: [...document.querySelectorAll('#kpFiles [data-cmp-file]')].map(el => el.dataset.cmpFile),
-            });
-            if (sent) this.toast('КП отправлено!', 'success');
-        } catch (err) { this.toast(err.message, 'error'); }
-    },
-
-    /** Свои файлы к письму с КП — тот же выгрузчик, что у ответа на письмо. */
-    async kpAttachFiles(input) {
-        const list = document.getElementById('kpFiles');
-        if (!list || !input.files || !input.files.length) return;
-        for (const file of [...input.files]) {
-            const fd = new FormData();
-            fd.append('file', file);
-            try {
-                const res = await fetch('/api/mail.php?action=upload', {
-                    method: 'POST', body: fd, credentials: 'same-origin',
-                });
-                const data = await res.json();
-                if (!res.ok || data.error) throw new Error(data.error || 'Файл не загрузился');
-                list.insertAdjacentHTML('beforeend', this.fileChip(data.file));
-            } catch (err) { this.toast(err.message, 'error'); }
-        }
-        input.value = '';
     },
 
     // Counterparties list — unanswered first (FR-038)
@@ -7577,8 +7520,10 @@ const App = {
                             <input type="number" id="kpExec" value="${this.esc(g.default_execution_days || 30)}"></div>
                         <div class="form-group"><label>Срок действия КП, дней</label>
                             <input type="number" id="kpValid" value="${this.esc(g.default_validity_days || 14)}"></div>
-                        <div class="form-group"><label>Фото на позицию, максимум</label>
-                            <input type="number" id="kpMaxImages" min="0" max="12" value="${this.esc(g.kp_max_images_per_item || 5)}"></div>
+                        <div class="form-group"><label>Фото на позицию по умолчанию</label>
+                            <input type="number" id="kpMaxImages" min="0" max="12" value="${this.esc(g.kp_max_images_per_item ?? 5)}">
+                            <div class="muted">Столько первых фото отмечено у позиции, пока менеджер не выбрал сам.
+                               Отмеченные вручную попадают в КП все (issue #92).</div></div>
                         <div class="form-group"><label>Папка модулей в МойСклад</label>
                             <input type="text" id="kpAddonCategory" value="${this.esc(g.addon_category || '')}">
                             <div class="muted">Товары из этой папки каталога МойСклад — «модули» для допродажи:
@@ -9890,6 +9835,12 @@ const App = {
                      : 'Письмо удалено из панели';
             this.toast(r.warning || ok, r.warning ? 'error' : 'success');
 
+            // Последнее письмо компании — карточки больше нет, назад на доску (issue #93)
+            if (r.card_removed) {
+                this.toast('Писем у компании не осталось — карточка убрана с доски', 'info');
+                this.goAfterDelete('mail');
+                return;
+            }
             // Последнее письмо переписки — переписки больше нет, список надо
             // перечитать целиком; иначе перерисовываем только её ленту
             if (r.thread_empty) {
@@ -12830,11 +12781,20 @@ Object.assign(App, {
             <div class="form-group">
                 <label>Коротко</label>
                 <input type="text" id="supTitle" placeholder="Например: не отправляется КП из карточки">
+                <!-- Поля поддержки тоже диктуются (issue #95) -->
+                <button type="button" class="btn btn--outline btn--sm mic" data-mic style="margin-top:6px"
+                        title="Надиктовать: нажмите, говорите, нажмите ещё раз"
+                        onmousedown="event.preventDefault()"
+                        onclick="App.dictate(this, document.getElementById('supTitle'))">🎤 голосом</button>
             </div>
             <div class="form-group">
                 <label>Что случилось</label>
                 <textarea id="supBody" rows="6"
                           placeholder="Что делали, что ожидали увидеть и что увидели. Скриншот — Ctrl+V в любом месте окна"></textarea>
+                <button type="button" class="btn btn--outline btn--sm mic" data-mic style="margin-top:6px"
+                        title="Надиктовать: нажмите, говорите, нажмите ещё раз"
+                        onmousedown="event.preventDefault()"
+                        onclick="App.dictate(this, document.getElementById('supBody'))">🎤 голосом</button>
             </div>
             <div class="form-group">
                 <label>Файлы</label>
@@ -13425,8 +13385,8 @@ Object.assign(App, {
             clearInterval(st.tick);
             ui(false);
             st.recorder = null;
-            // Случайное касание — не запись
-            if (Date.now() - started < 600) { btn.textContent = label; return; }
+            // Случайное касание — не запись; поле закрыли — распознавать некуда
+            if (Date.now() - started < 600 || !target.isConnected) { btn.textContent = label; return; }
             const type = rec.mimeType || mime || 'audio/webm';
             const blob = new Blob(chunks, {type});
             if (!blob.size) { btn.textContent = label; this.toast('Запись пустая', 'error'); return; }
