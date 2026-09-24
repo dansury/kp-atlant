@@ -97,7 +97,7 @@ switch ($action) {
         if (!$cpId) jsonError('counterparty_id required');
         try {
             $res = MsSync::syncCompany($cpId);
-            // Кнопка «Обновить из МойСклад» (модуль 056): ещё реквизиты, и ответ
+            // Кнопка «Обновить из МойСклад» (модуль 057): ещё реквизиты, и ответ
             // говорит, что сделано, — фоновое обновление их не тянет
             $res['linked'] = (bool)Db::val("SELECT moysklad_id FROM counterparties WHERE id=?", [$cpId]);
             $res['requisites'] = false;
@@ -425,7 +425,16 @@ switch ($action) {
             'meta'       => ['invoice_id' => $id, 'invoice_name' => $inv['name'], 'sum' => (float)$inv['sum']],
         ]);
 
-        jsonOk(['sent_to' => $to]);
+        // Счёт ушёл — карточка ждёт оплату (модуль 056)
+        $stage = null;
+        try {
+            require_once ROOT . '/lib/boards.php';
+            $stage = Boards::advance($inv['counterparty_id'] ? (int)$inv['counterparty_id'] : null, null, 'payment');
+        } catch (Throwable $e) {
+            Logger::warning('boards', 'Карточка не передвинулась: ' . $e->getMessage(), ['invoice_id' => $id]);
+        }
+
+        jsonOk(['sent_to' => $to, 'stage' => $stage]);
     }
 
     default:

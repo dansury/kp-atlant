@@ -168,7 +168,7 @@ try {
                 }
                 jsonOk(['scheduled' => $row]);
             }
-            // Задержка на отмену (модуль 056): письмо ждёт в очереди, вкладка
+            // Задержка на отмену (модуль 057): письмо ждёт в очереди, вкладка
             // досылает его по `send_now`, закрытую вкладку подстрахует крон
             require_once ROOT . '/lib/mail_schedule.php';
             $delay = MailSchedule::delayFor((int)$manager['id']);
@@ -197,7 +197,7 @@ try {
             ]);
         }
 
-        // Отсчёт кончился или «Отправить сейчас» (модуль 056)
+        // Отсчёт кончился или «Отправить сейчас» (модуль 057)
         case 'send_now': {
             require_once ROOT . '/lib/mail_schedule.php';
             try {
@@ -450,7 +450,9 @@ try {
                 jsonError('Неизвестный документ');
             }
 
-            jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'])]);
+            // Счёт или КП — помечается: письмо с ним передвинет карточку (модуль 056)
+            jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'],
+                                            $kind === 'invoice' ? 'invoice' : 'kp', $id)]);
         }
 
         // Приложенный файл — назад, скачать и проверить до отправки (модуль 052)

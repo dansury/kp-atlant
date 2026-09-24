@@ -939,7 +939,7 @@ const App = {
                 <span class="muted" data-fold-count>${host.dataset.folded === '1' ? `· ${items.length}` : ''}</span>
                 ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}
                 ${this.hint('match')}
-                <!-- Стрелка, а не слово (модуль 056): смысл — в подсказке -->
+                <!-- Стрелка, а не слово (модуль 057): смысл — в подсказке -->
                 <button type="button" class="block-fold card__fold" onclick="App.toggleMatchFold(this)"
                         aria-expanded="${host.dataset.folded === '1' ? 'false' : 'true'}"
                         title="${host.dataset.folded === '1' ? `Развернуть подбор (позиций: ${items.length})` : 'Свернуть подбор'}"
@@ -1047,7 +1047,7 @@ const App = {
             }
             if (head.dataset.foldClick !== '1') {
                 head.dataset.foldClick = '1';
-                // Заголовок блока тоже сворачивает (модуль 056); кнопки, ссылки и
+                // Заголовок блока тоже сворачивает (модуль 057); кнопки, ссылки и
                 // поля внутри него — нет. Вкладки справа открывает railOpen()
                 head.addEventListener('click', e => {
                     if (e.target.closest('button, a, input, select, textarea, label, summary, .hint')) return;
@@ -3088,7 +3088,7 @@ const App = {
         btn.title = all ? 'Развернуть все позиции' : 'Свернуть все позиции';
     },
 
-    /** Свернуть все позиции разом; всё уже свёрнуто — развернуть все (модуль 056). */
+    /** Свернуть все позиции разом; всё уже свёрнуто — развернуть все (модуль 057). */
     foldAllRows(btn) {
         const host = this.matchHost(btn);
         if (!host) return;
@@ -4685,7 +4685,7 @@ const App = {
             </article>`;
     },
 
-    /** Раскрыта ли переписка — класс и стрелка с подсказкой (модуль 056). */
+    /** Раскрыта ли переписка — класс и стрелка с подсказкой (модуль 057). */
     setConvOpen(conv, open) {
         conv.classList.toggle('conv--open', open);
         const caret = conv.querySelector(':scope > .conv__head > .conv__caret');
@@ -5633,7 +5633,7 @@ const App = {
     },
 
     /**
-     * Отправка с задержкой на отмену (модуль 056).
+     * Отправка с задержкой на отмену (модуль 057).
      *
      * Сервер кладёт письмо в очередь на N секунд своей настройки менеджера;
      * здесь идёт отсчёт с «Отменить». Результат — ответ отправки, null —
@@ -5689,7 +5689,8 @@ const App = {
         if (res.already === 'sending') this.toast('Письмо уже отправляется', 'info');
         else if (res.already) this.toast('Письмо отправлено', 'success');
         else if (res.warning) this.toast(res.warning, 'error');
-        else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : ''), 'success');
+        else this.toast('Письмо отправлено' + (res.sent_folder ? ` · копия в «${res.sent_folder}»` : '')
+                        + (res.stage ? ` · карточка → «${res.stage}»` : ''), 'success');
     },
 
     async threadSend(key, btn, sendAt = null) {
@@ -6197,7 +6198,7 @@ const App = {
         // Background refreshes fire on every focus — don't hammer the MoySklad API
         const now = Date.now();
         if (silent && this._lastSync && this._lastSync.id === id && now - this._lastSync.at < 15000) return;
-        // Второе нажатие, пока идёт первое, ничего не делает (модуль 056)
+        // Второе нажатие, пока идёт первое, ничего не делает (модуль 057)
         if (!silent && this._syncBusy === id) return;
         this._lastSync = {id, at: now};
 
@@ -6230,7 +6231,7 @@ const App = {
         }
     },
 
-    /** Итог «Обновить из МойСклад» словами (модуль 056). */
+    /** Итог «Обновить из МойСклад» словами (модуль 057). */
     syncReport(r) {
         const parts = [];
         if (r.requisites) parts.push('реквизиты обновлены');
@@ -7575,7 +7576,7 @@ const App = {
         this.loadSendDelay();
     },
 
-    /** Задержка отправки — своя у каждого (модуль 056); пусто — по умолчанию. */
+    /** Задержка отправки — своя у каждого (модуль 057); пусто — по умолчанию. */
     async loadSendDelay() {
         const card = document.getElementById('sendDelayCard');
         if (!card) return;
@@ -10013,7 +10014,7 @@ const App = {
         if (all) this.syncFoldAllLetters(all);
     },
 
-    /** Свернуть все письма переписки; всё свёрнуто — развернуть все (модуль 056). */
+    /** Свернуть все письма переписки; всё свёрнуто — развернуть все (модуль 057). */
     foldAllLetters(btn) {
         const block = btn.closest('[data-block="thread"]');
         if (!block) return;

@@ -1,4 +1,4 @@
-# 056 — Send delay (undo send), fold controls everywhere, «Обновить из МойСклад» that reports back
+# 057 — Send delay (undo send), fold controls everywhere, «Обновить из МойСклад» that reports back
 
 ## 1. Send delay («тайм-аут отправки»)
 
@@ -6,7 +6,7 @@ A letter sent from the reply box or the compose window does not leave at once:
 it waits N seconds, and a toast «Письмо уйдёт через N с · Отменить · Отправить
 сейчас» counts down. «Отменить» keeps the text in the field.
 
-- Per manager: `managers.send_delay_sec INTEGER NULL` (schema v48). `NULL` —
+- Per manager: `managers.send_delay_sec INTEGER NULL` (schema v49). `NULL` —
   default `MailSchedule::DEFAULT_DELAY` = 20 s; `0` — no delay; max 120.
 - `settings.php?action=my_send_delay` — GET `{delay, default}`, POST `{delay}`
   (empty → default). UI: card «Задержка отправки» in «Настройки → Подпись»,

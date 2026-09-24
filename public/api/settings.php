@@ -185,7 +185,7 @@ switch ($action) {
         ]);
     }
 
-    // Задержка отправки письма — своя у каждого (модуль 056); пусто — по умолчанию
+    // Задержка отправки письма — своя у каждого (модуль 057); пусто — по умолчанию
     case 'my_send_delay': {
         $manager = requireAuth();
         require_once ROOT . '/lib/mail_schedule.php';

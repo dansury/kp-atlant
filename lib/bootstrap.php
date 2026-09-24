@@ -1982,12 +1982,33 @@ SQL);
         $current = 47;
     }
 
-    // v48 — module 056: per-manager send delay (NULL = default 20 s, 0 = off)
+    // v48 — module 056: stage columns by kind, what documents a letter carries
     if ($current < 48) {
-        Db::ensureColumn('managers', 'send_delay_sec', 'INTEGER');
+        Db::q("UPDATE board_columns SET kind='kp_sent' WHERE kind IS NULL
+               AND (LOWER(title) LIKE 'кп отправлен%' OR LOWER(title) LIKE 'кп выслан%'
+                    OR title LIKE 'КП отправлен%' OR title LIKE 'КП выслан%')");
+        Db::q("UPDATE board_columns SET kind='payment' WHERE kind IS NULL
+               AND (title LIKE 'Ждём оплат%' OR title LIKE 'Ждем оплат%'
+                    OR LOWER(title) LIKE 'ждём оплат%' OR LOWER(title) LIKE 'ждем оплат%')");
+        Db::q("
+        CREATE TABLE IF NOT EXISTS outbox_docs (
+            name       TEXT PRIMARY KEY,
+            manager_id INTEGER NOT NULL,
+            kind       TEXT NOT NULL,
+            doc_id     INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )");
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '48')");
         $current = 48;
+    }
+
+    // v49 — module 057: per-manager send delay (NULL = default 20 s, 0 = off)
+    if ($current < 49) {
+        Db::ensureColumn('managers', 'send_delay_sec', 'INTEGER');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '49')");
+        $current = 49;
     }
 }
 

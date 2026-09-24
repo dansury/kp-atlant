@@ -1371,7 +1371,10 @@ class MoySklad {
      * сразу — ссылка опрашивается, редирект хранилища проходится руками.
      */
     private static function downloadExport(string $url): ?string {
-        for ($i = 0; $i < 8; $i++) {
+        // Новую форму МойСклад готовит долго, недавнюю отдаёт сразу — ждём до 40 с
+        if (function_exists('set_time_limit')) @set_time_limit(120);
+        $deadline = microtime(true) + 40;
+        for ($i = 0; microtime(true) < $deadline; $i++) {
             $ownHost = parse_url($url, PHP_URL_HOST) === parse_url(self::$base, PHP_URL_HOST);
             [$code, $raw, $headers] = self::requestRawUrl('GET', $url, null, $ownHost);
             if ($code === 200 && str_starts_with($raw, '%PDF')) return $raw;
@@ -1382,7 +1385,7 @@ class MoySklad {
             self::$exportError = "файл печатной формы: HTTP $code" . self::errorText($raw);
             // 202 / 404 — форма ещё готовится; остальное — ждать нечего
             if (!in_array($code, [202, 404, 429, 0], true) && $code < 500) return null;
-            usleep(700000 + $i * 300000);
+            usleep(min(4000000, 700000 + $i * 400000));
         }
         return null;
     }

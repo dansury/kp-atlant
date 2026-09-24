@@ -109,7 +109,11 @@ not have.
   sends the token to the file storage. If it still fails, the error now names the
   reason (HTTP code + MoySklad text) — check the journal and `MS_INVOICE_TEMPLATE`.
 
-## Module 056 — check on a live system
+## Module 056 — check on the live board
+- Send a letter with «📎 В письмо» КП → the card goes to «КП отправлено»; send the
+  invoice → «Ждём оплату»; send another КП after that → the card stays.
+
+## Module 057 — check on a live system
 - Send delay: send one real letter, let the 20 s countdown run out — the letter
   leaves via `send_now` with a real SMTP; close the tab mid-countdown once and
   check cron sends it within a minute.

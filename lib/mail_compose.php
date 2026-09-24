@@ -94,6 +94,9 @@ final class MailCompose {
         $text = $quoted['text'];
         $html = $quoted['html'];
 
+        // Счёт и КП среди вложений — до отправки, пока их отметки на месте (модуль 056)
+        $docs = Outbox::docsOf((array)($input['files'] ?? []), $managerId);
+
         $res = Mailer::send([
             'to'              => $to,
             'cc'              => array_filter(array_map('trim', explode(',', (string)($input['cc'] ?? '')))),
@@ -122,6 +125,9 @@ final class MailCompose {
                 : $to,
             'manager_id'      => $managerId,
         ]);
+
+        // Ушёл счёт — карточка ждёт оплату, ушло КП — «КП отправлено» (модуль 056)
+        $stage = $docs ? self::afterDocsSent($docs, $counterpartyId, $threadKey, $to) : null;
 
         /**
          * Каждое отправленное письмо — образец для промптов (модуль 041).
@@ -155,8 +161,40 @@ final class MailCompose {
         }
         // «Отправлено» is not the whole truth when the copy never reached the
         // server's «Отправленные» — say so instead of letting it be found later
-        return $res + ['warning' => $res['sent_state'] === 'failed'
+        return $res + ['stage' => $stage, 'warning' => $res['sent_state'] === 'failed'
             ? 'Письмо ушло, но копия не попала в «Отправленные»: ' . (string)$res['sent_error']
             : null];
+    }
+
+    /**
+     * Документы письма ушли клиенту (модуль 056): счёт помечается отправленным,
+     * КП — тоже, карточка встаёт в стадию. Счёт главнее КП.
+     *
+     * @param list<array{kind:string,doc_id:int,name:string}> $docs
+     * @return ?string колонка, куда встала карточка
+     */
+    public static function afterDocsSent(array $docs, ?int $counterpartyId, ?string $threadKey, string $to): ?string {
+        $now = date('Y-m-d H:i:s');
+        $kinds = [];
+        foreach ($docs as $d) {
+            $kinds[$d['kind']] = true;
+            if ($d['kind'] === 'invoice') {
+                Db::q("UPDATE invoices SET sent_at=?, sent_to=? WHERE id=? AND sent_at IS NULL", [$now, $to, $d['doc_id']]);
+            } elseif ($d['kind'] === 'kp') {
+                Db::q("UPDATE proposals SET status='sent', sent_at=COALESCE(sent_at, ?), updated_at=? WHERE id=?",
+                      [$now, $now, $d['doc_id']]);
+            }
+        }
+        Outbox::forgetDocs($docs);
+        $kind = isset($kinds['invoice']) ? 'payment' : (isset($kinds['kp']) ? 'kp_sent' : null);
+        if (!$kind) return null;
+        try {
+            return Boards::advance($counterpartyId, $threadKey, $kind);
+        } catch (Throwable $e) {
+            // Письмо ушло — доска не повод сказать «не отправлено»
+            Logger::warning('boards', 'Карточка не передвинулась: ' . $e->getMessage(),
+                            ['counterparty_id' => $counterpartyId]);
+            return null;
+        }
     }
 }

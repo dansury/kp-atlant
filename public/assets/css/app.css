@@ -1456,7 +1456,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
                          font: inherit; color: var(--text-muted); border-radius: 4px; line-height: 1.4; }
 .chip--file > .chip__x:hover { color: var(--danger, #c62828); background: var(--surface-2); }
 
-/* ==== Module 056: send delay toast, fold arrows everywhere ==== */
+/* ==== Module 057: send delay toast, fold arrows everywhere ==== */
 .toast--undo { display: flex; align-items: center; gap: 10px; max-width: 460px; }
 .toast--undo .toast__text { flex: 1 1 auto; }
 .toast__act { flex: 0 0 auto; background: none; border: 1px solid rgba(255,255,255,.55); color: #fff;

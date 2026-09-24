@@ -19,7 +19,7 @@ final class MailSchedule {
     /** Больше трёх попыток — это не «сеть моргнула», а сломанное письмо. */
     private const MAX_ATTEMPTS = 3;
 
-    /** Задержка отправки по умолчанию, секунд (модуль 056). */
+    /** Задержка отправки по умолчанию, секунд (модуль 057). */
     public const DEFAULT_DELAY = 20;
     public const MAX_DELAY = 120;
 
@@ -38,7 +38,7 @@ final class MailSchedule {
     }
 
     /**
-     * Письмо «на отмену»: ложится в очередь на delay секунд (модуль 056).
+     * Письмо «на отмену»: ложится в очередь на delay секунд (модуль 057).
      * Закрытая вкладка его не теряет — уйдёт с кроном.
      */
     public static function delay(array $input, int $managerId, int $seconds): array {
