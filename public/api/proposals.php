@@ -243,6 +243,8 @@ switch ($action) {
         }
         unset($it);
         $proposal['addons'] = Db::all("SELECT * FROM proposal_addons WHERE proposal_id=? ORDER BY position", [$id]);
+        // Есть ли в КП товар, к которому подходят модули (модуль 058)
+        $proposal['addon_host'] = KpContent::addonHostIn($id);
         // What the editor warns about before the manager reaches «Подтвердить»:
         // positions with no money on them, positions the catalog never answered,
         // and a buyer whose name is still an e-mail address (module 018)

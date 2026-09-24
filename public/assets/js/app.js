@@ -3720,6 +3720,8 @@ const App = {
                         <div class="card__title">Доукомплектование (апселл)</div>
                         <div class="form-group">
                             <label><input type="checkbox" id="showUpsell" ${proposal.show_upsell != 0 ? 'checked' : ''}> Показывать блок в КП</label>
+                            ${proposal.addon_host === false ? `<div class="muted">В этом КП нет товара, к которому подходят модули
+                                («Настройки → Оформление КП → Модули подходят к товарам»), — блок не печатается.</div>` : ''}
                         </div>
                         <div class="form-group">
                             <label>Вступительный текст</label>
@@ -4247,7 +4249,6 @@ const App = {
             <div class="addon-row flex" data-addon style="gap:6px;margin-bottom:6px">
                 <input type="checkbox" data-field="is_selected" ${a.is_selected != 0 ? 'checked' : ''} title="Включить в КП">
                 <input type="text" data-field="product_name" value="${this.esc(a.product_name || '')}" placeholder="Название модуля" style="flex:3">
-                <input type="text" data-field="unit" value="${this.esc(a.unit || 'шт.')}" style="flex:1">
                 <input type="number" step="0.01" data-field="price" value="${a.price || 0}" placeholder="Цена" style="flex:1">
                 <input type="hidden" data-field="moysklad_product_id" value="${this.esc(a.moysklad_product_id || '')}">
                 <button class="btn btn--outline" onclick="this.closest('.addon-row').remove()">×</button>
@@ -7532,6 +7533,11 @@ const App = {
                             <div class="muted">Товары из этой папки каталога МойСклад — «модули» для допродажи:
                                новое КП получает их таблицей «Дополнительные модули и доукомплектование»
                                (до 12 самых дешёвых, кроме уже стоящих в КП). Пусто — блока нет.</div></div>
+                        <!-- Модули подходят не ко всем бронежилетам (модуль 058) -->
+                        <div class="form-group"><label>Модули подходят к товарам</label>
+                            <textarea id="kpAddonHosts" rows="2">${this.esc(g.addon_hosts || '')}</textarea>
+                            <div class="muted">По одному названию в строке. Блок модулей попадает только в КП,
+                               где есть такой товар или его модификация. Пусто — в любое КП.</div></div>
                     </div>
                     <!-- Условия одним блоком (модуль 026). Четыре зашитых абзаца внизу
                          КП — упаковка, гарантия, срок исполнения, срок действия цены —
@@ -7873,6 +7879,7 @@ const App = {
                 default_validity_days: document.getElementById('kpValid').value,
                 kp_max_images_per_item: document.getElementById('kpMaxImages').value,
                 addon_category: document.getElementById('kpAddonCategory').value,
+                addon_hosts: document.getElementById('kpAddonHosts').value,
                 default_terms_text: document.getElementById('kpTerms').value,
                 kp_images_note: document.getElementById('kpImagesNote').value,
             }});

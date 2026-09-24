@@ -119,3 +119,11 @@ not have.
   check cron sends it within a minute.
 - «Обновить из МойСклад» on a linked company: the toast lists requisites,
   orders and invoices (checked without a live account).
+
+## Module 058 — needs the user / a live system
+- КП buttons on a folded «Подходящие позиции» (request of 2026-09-24): in the
+  current code they stay visible (module 054). Checked in headless Chromium
+  on the letter screen and the company card, at 1300 px and 412 px. Waiting
+  for the user to say which screen still hides them.
+- Open a КП with a price range in real Word and check the breakdown lines
+  under the price (the .docx is built from the same HTML).

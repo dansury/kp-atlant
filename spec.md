@@ -56,6 +56,7 @@
 | Full-text search over letters, companies (INN, phones, contacts), request items and board cards; case-insensitive Cyrillic (`lib/search.php`) | `specs/055-full-text-search/spec.md` | Implemented |
 | The card moves by itself: КП sent → «КП отправлено», invoice sent → «Ждём оплату» (priority), forward only | `specs/056-auto-stage-on-send/spec.md` | Implemented |
 | Send delay with «Отменить» (per manager, 20 s default), fold arrows + collapse-all on the match table and letters, «Обновить из МойСклад» reports what it did | `specs/057-send-delay-folding-ms-sync/spec.md` | Implemented |
+| Price range breakdown by the characteristics the price depends on; add-on modules only for their host product, without «Ед. изм.», with stock from modifications | `specs/058-range-breakdown-addon-hosts/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -106,6 +107,7 @@
 | Модуль 055: поиск без учёта регистра и «ё», по компании, ИНН, телефону, товару; индекс триггерами | `php tests/module_055.php` |
 | Модуль 056: карточка сама переходит в «КП отправлено» / «Ждём оплату» при отправке, только вперёд | `php tests/module_056.php` |
 | Module 057: send delay (queue, claim, cancel, send now), per-manager delay, fold controls, МойСклад sync report | `php tests/module_057.php` |
+| Module 058: range breakdown by the characteristics the price depends on, add-ons only for their host product, add-on stock from modifications, no «Ед. изм.» | `php tests/module_058.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |
 

@@ -2010,6 +2010,15 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '49')");
         $current = 49;
     }
+
+    // v50 — module 058: add-on modules fit one product, not every vest
+    if ($current < 50) {
+        Db::q("INSERT OR IGNORE INTO settings (key, value) VALUES ('addon_hosts', ?)",
+              ['Бронежилет Атлант базовый Бр2 (без доп.модулей, без бронеплит)']);
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '50')");
+        $current = 50;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

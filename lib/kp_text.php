@@ -69,6 +69,13 @@ final class KpText {
                          : self::money($sum)
             );
 
+            // Расшифровка вилки — та же, что под ценой в файле (модуль 058)
+            if ($top > 0) {
+                foreach (KpContent::rangeRows($item, $proposal) as $rr) {
+                    $lines[] = '   ' . $rr['label'] . ' — ' . self::money(round($rr['price'] + $shares[$k], 2));
+                }
+            }
+
             // Скидка — словами, как столбец «Со скидкой» в файле (issue #60)
             $discount = Terms::totalDiscount($item);
             $manual = (float)($item['discount_percent'] ?? 0);

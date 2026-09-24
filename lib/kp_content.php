@@ -10,6 +10,7 @@ require_once __DIR__ . '/request_shape.php';
 require_once __DIR__ . '/markup.php';
 require_once __DIR__ . '/terms.php';
 require_once __DIR__ . '/variants.php';
+require_once __DIR__ . '/catalog.php';
 
 class KpContent {
 
@@ -466,13 +467,45 @@ class KpContent {
         return $out;
     }
 
+    /**
+     * Расшифровка вилки строки КП по модификациям (модуль 058), цены — со
+     * скидками строки. Печатается, только пока она сходится со строкой: низ —
+     * это `price`, верх — `price_max`. Тип цены на строке не хранится, поэтому
+     * ищется тот, чья вилка совпала: тип контрагента/настройки, затем любой.
+     *
+     * @return array<int,array{label:string,price:float}>
+     */
+    public static function rangeRows(array $item, array $proposal): array {
+        $low = (float)($item['price'] ?? 0);
+        $high = (float)($item['price_max'] ?? 0);
+        $id = trim((string)($item['moysklad_product_id'] ?? ''));
+        if ($id === '' || !self::hasRange($low, $high)) return [];
+        $product = Db::one("SELECT moysklad_id, product_type FROM products_cache WHERE moysklad_id=?", [$id]);
+        if (!$product) return [];
+
+        $cp = (int)($proposal['counterparty_id'] ?? 0) ?: null;
+        $types = [null];
+        foreach (Db::all("SELECT prices_json FROM products_cache WHERE parent_id=?", [$id]) as $v) {
+            foreach (array_keys(Catalog::decodePrices($v['prices_json'])) as $t) $types[(string)$t] = (string)$t;
+        }
+        foreach ($types as $type) {
+            $rows = Catalog::rangeBreakdown($product, $cp, $type);
+            if (!$rows) continue;
+            $prices = array_column($rows, 'price');
+            if (abs(min($prices) - $low) > 0.005 || abs(max($prices) - $high) > 0.005) continue;
+            return array_map(fn($r) => ['label' => $r['label'],
+                                        'price' => Terms::price(['price' => $r['price']] + $item)], $rows);
+        }
+        return [];
+    }
+
     // Suggest upsell modules for a proposal: products flagged as addons in the
     // MoySklad addon folder, cheapest-first, excluding what is already in the KP.
     public static function suggestAddons(int $proposalId, int $limit = 12): array {
         $inKp = Db::all("SELECT moysklad_product_id FROM proposal_items WHERE proposal_id=? AND moysklad_product_id IS NOT NULL", [$proposalId]);
         $exclude = array_column($inKp, 'moysklad_product_id');
 
-        $sql = "SELECT moysklad_id, name, unit, price, stock FROM products_cache WHERE is_addon=1";
+        $sql = "SELECT moysklad_id, name, unit, price, stock, reserved, product_type FROM products_cache WHERE is_addon=1";
         $params = [];
         if ($exclude) {
             $sql .= ' AND moysklad_id NOT IN (' . implode(',', array_fill(0, count($exclude), '?')) . ')';
@@ -480,7 +513,68 @@ class KpContent {
         }
         $sql .= ' ORDER BY price ASC, name ASC LIMIT ' . (int)$limit;
 
-        return Db::all($sql, $params);
+        // Остаток модуля — сумма модификаций, а не ноль общего товара (модуль 058)
+        return array_map(fn($p) => ['stock' => Variants::freeStock($p)] + $p, Db::all($sql, $params));
+    }
+
+    /**
+     * Есть ли в КП товар, к которому подходят модули (модуль 058).
+     *
+     * Модули доукомплектования подходят к одному бронежилету, а не ко всем:
+     * `settings.addon_hosts` — названия таких товаров, по одному в строке.
+     * Совпадение — начало названия позиции или её товара-родителя. Пустая
+     * настройка — ограничения нет.
+     */
+    public static function addonHostIn(int $proposalId): bool {
+        $hosts = self::addonHosts();
+        if (!$hosts) return true;
+        foreach (self::printedItems($proposalId) as $item) {
+            $names = [(string)$item['product_name']];
+            $id = trim((string)($item['moysklad_product_id'] ?? ''));
+            if ($id !== '') {
+                $row = Db::one("SELECT p.name, par.name AS parent_name FROM products_cache p
+                                LEFT JOIN products_cache par ON par.moysklad_id = p.parent_id
+                                WHERE p.moysklad_id=?", [$id]);
+                if ($row) array_push($names, (string)$row['name'], (string)$row['parent_name']);
+            }
+            foreach ($names as $name) {
+                $name = self::hostKey($name);
+                if ($name === '') continue;
+                foreach ($hosts as $host) {
+                    if (str_starts_with($name, $host)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Строки настройки «Модули подходят к товарам», приведённые к сравнению. */
+    public static function addonHosts(): array {
+        $raw = (string)(Db::val("SELECT value FROM settings WHERE key='addon_hosts'") ?: '');
+        $out = [];
+        foreach (preg_split('/\R/u', $raw) ?: [] as $line) {
+            $line = self::hostKey($line);
+            if ($line !== '') $out[] = $line;
+        }
+        return array_values(array_unique($out));
+    }
+
+    private static function hostKey(string $s): string {
+        $s = str_replace('ё', 'е', mb_strtolower($s));
+        return trim((string)preg_replace('/\s+/u', ' ', $s));
+    }
+
+    /**
+     * Примечание модуля в таблице — по сегодняшнему остатку (модуль 058).
+     * Авто-«под заказ» и пустое пересчитываются, своё менеджера остаётся.
+     */
+    public static function addonNote(array $addon): ?string {
+        $id = trim((string)($addon['moysklad_product_id'] ?? ''));
+        $note = trim((string)($addon['notes'] ?? ''));
+        if ($id === '' || ($note !== '' && $note !== Terms::AUTO_NOTE)) return $note !== '' ? $note : null;
+        $p = Db::one("SELECT moysklad_id, stock, reserved, product_type FROM products_cache WHERE moysklad_id=?", [$id]);
+        if (!$p) return $note !== '' ? $note : null;
+        return Terms::stockNote(null, Variants::freeStock($p), true);
     }
 
     // Replace the upsell rows of a proposal with the given selection.
@@ -507,6 +601,8 @@ class KpContent {
     // filled table rather than an empty one.
     public static function seedAddons(int $proposalId): void {
         if (Db::val("SELECT COUNT(*) FROM proposal_addons WHERE proposal_id=?", [$proposalId])) return;
+        // Модули — только к «своему» товару (модуль 058)
+        if (!self::addonHostIn($proposalId)) return;
         $suggested = self::suggestAddons($proposalId);
         if (!$suggested) return;
         self::setAddons($proposalId, array_map(fn($p) => [
