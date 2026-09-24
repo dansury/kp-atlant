@@ -206,8 +206,7 @@ function kpPreviewError(int $id, string $title, string $detail, int $code): neve
 }
 
 $action = $_GET['action'] ?? '';
-// Тело POST-запроса — одно на все действия. `doc_text_save` читал `$input`,
-// которого нигде не было, и правки текста КП не сохранялись (модуль 045)
+// Тело POST-запроса — одно на все действия (модуль 045)
 $input = in_array($_SERVER['REQUEST_METHOD'] ?? 'GET', ['POST', 'PUT'], true) ? getInput() : [];
 
 switch ($action) {
@@ -406,130 +405,6 @@ switch ($action) {
         jsonOk(['pdf_preview_url' => "/api/proposals.php?action=preview&id=$id"]);
 
     /**
-     * Текст документа — как он идёт в документе (issue #38).
-     *
-     * «Редактировать docx и pdf прямо в интерфейсе» — это про содержание, а не
-     * про байты файла: менеджер хочет переписать абзац и переотправить КП, не
-     * выгружая Word и не загружая его обратно. Документ целиком описан базой,
-     * поэтому править надо базу — но показывать её надо ПОРЯДКОМ ДОКУМЕНТА, а
-     * не полями таблицы. Отсюда этот список: сверху вниз, как читает клиент.
-     */
-    case 'doc_text': {
-        requireAuth();
-        $id = (int)($_GET['id'] ?? 0);
-        $p = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
-        if (!$p) jsonError('КП не найдено', 404);
-
-        $blocks = [];
-        $add = function (string $key, string $label, ?string $value, string $hint = '', int $rows = 3)
-                        use (&$blocks): void {
-            $blocks[] = ['key' => $key, 'label' => $label, 'hint' => $hint,
-                         'rows' => $rows, 'value' => (string)($value ?? '')];
-        };
-
-        // Текст письма правится только в поле письма (модуль 049)
-        $add('intro_text',      'Вступление в документе', $p['intro_text'] ?? '');
-        $add('pre_table_text',  'Текст перед таблицей',   $p['pre_table_text'] ?? '');
-
-        foreach (Db::all("SELECT id, position, product_name, comment_text, notes
-                          FROM proposal_items WHERE proposal_id=? ORDER BY position", [$id]) as $n => $it) {
-            $no = $n + 1;
-            $add("item.{$it['id']}.product_name", "Позиция $no · название в документе", $it['product_name'], '', 1);
-            $add("item.{$it['id']}.comment_text", "Позиция $no · комментарий",          $it['comment_text'],
-                 'Уйдёт и в документ, и в письмо клиенту', 3);
-            $add("item.{$it['id']}.notes",        "Позиция $no · примечание в таблице", $it['notes'], '', 1);
-        }
-
-        $add('post_table_text',  'Текст после таблицы',     $p['post_table_text'] ?? '');
-        $add('match_table_note', 'Пояснение над таблицей соответствия', $p['match_table_note'] ?? '');
-        $add('terms_text',       'Условия поставки',        KpTerms::rawForProposal($p),
-             '{execution_term} — срок исполнения словами: дни из поля КП, а если что-то под заказ, '
-             . 'то срок ожидания из таблицы подбора. {validity_days} — срок действия цены. '
-             . 'Последняя правка станет заготовкой для следующих КП', 5);
-        $add('images_note',      'Оговорка под фотографиями', $p['images_note'] ?? '', '', 2);
-        $add('upsell_intro',     'Доукомплектование · вступление', $p['upsell_intro'] ?? '', '', 2);
-        $add('upsell_note',      'Доукомплектование · подпись',    $p['upsell_note'] ?? '', '', 2);
-
-        jsonData(['id' => $id, 'blocks' => $blocks]);
-    }
-
-    /**
-     * Сохранить правки текста документа и пересобрать файлы.
-     *
-     * Правки видит админ: каждая уходит в ленту «Что изменили менеджеры» тем же
-     * способом, что и правки оформления КП, — «падали админу» из issue #38.
-     */
-    case 'doc_text_save': {
-        $manager = requireAuth();
-        $id = (int)($_GET['id'] ?? 0);
-        $p = Db::one("SELECT * FROM proposals WHERE id=?", [$id]);
-        if (!$p) jsonError('КП не найдено', 404);
-
-        $blocks = $input['blocks'] ?? [];
-        if (!is_array($blocks) || !$blocks) jsonError('Нечего сохранять');
-
-        $ownFields = ['cover_letter_final', 'intro_text', 'pre_table_text', 'post_table_text',
-                      'match_table_note', 'terms_text', 'conditions_text', 'warranty_text', 'images_note',
-                      'upsell_intro', 'upsell_note'];
-        $itemFields = ['product_name', 'comment_text', 'notes'];
-
-        $fields = [];
-        $changed = 0;
-        foreach ($blocks as $b) {
-            $key   = (string)($b['key'] ?? '');
-            $value = (string)($b['value'] ?? '');
-            if (str_starts_with($key, 'item.')) {
-                [, $itemId, $field] = array_pad(explode('.', $key, 3), 3, '');
-                if (!in_array($field, $itemFields, true)) continue;
-                $itemId = (int)$itemId;
-                $before = (string)Db::val("SELECT $field FROM proposal_items WHERE id=? AND proposal_id=?",
-                                          [$itemId, $id]);
-                // Комментарий печатается разметкой, а правится текстом — как везде
-                $store = $field === 'comment_text' ? Markup::toMarkdown($value) : $value;
-                if ($store === $before) continue;
-                Db::update('proposal_items', [$field => $store], 'id=? AND proposal_id=?', [$itemId, $id]);
-                $changed++;
-                continue;
-            }
-            if (!in_array($key, $ownFields, true)) continue;
-            // У КП, собранного до модуля 026, своего блока условий нет, и
-            // редактор показывает сложенный из прежних полей. Сравниваем с тем
-            // же текстом — иначе нетронутый блок считался бы правкой и уезжал
-            // в заготовку следующих КП.
-            $before = $key === 'terms_text' ? KpTerms::rawForProposal($p) : (string)($p[$key] ?? '');
-            if ($before === $value) continue;
-            $fields[$key] = $value;
-            $changed++;
-        }
-
-        if (isset($fields['terms_text'])) KpTerms::remember((string)$fields['terms_text']);
-        // Правка текста по полям — это новая сборка документа: ручная правка
-        // страницы (модуль 045) её бы перекрыла, поэтому она снимается
-        if ($changed) {
-            $fields['html_override'] = null;
-            $fields['html_override_at'] = null;
-        }
-        if ($fields) {
-            $fields['updated_at'] = date('Y-m-d H:i:s');
-            Db::update('proposals', $fields, 'id=?', [$id]);
-        }
-        if (!$changed) jsonOk(['changed' => 0, 'pdf_preview_url' => "/api/proposals.php?action=preview&id=$id"]);
-
-        ContentLog::record('kp', "proposal.$id", "Текст КП #$id правил менеджер",
-                           (int)$manager['id'], '', "изменено блоков: $changed");
-        Logger::info('kp', "Текст КП #$id отредактирован в браузере ($changed бл.)",
-                     ['proposal_id' => $id, 'manager_id' => (int)$manager['id']]);
-
-        // Файлы пересобираются сразу: предпросмотр и Word должны показывать то,
-        // что менеджер только что написал, а не прошлую версию
-        // Word собирается на каждое скачивание заново, так что чинить надо
-        // только PDF: он лежит файлом и иначе показал бы прошлую версию
-        PdfGenerator::generate($id);
-
-        jsonOk(['changed' => $changed, 'pdf_preview_url' => "/api/proposals.php?action=preview&id=$id"]);
-    }
-
-    /**
      * ==== КП страницей A4, которую можно править (модуль 045, issue #60) ====
      *
      * `html` — страница для редактора (фото — короткими ссылками `kp_img`),
@@ -572,16 +447,17 @@ switch ($action) {
         if (!$p) jsonError('КП не найдено', 404);
         if (!KpEditor::editable($p)) jsonError('КП уже отправлено клиенту — отправленный документ не правится', 409);
         try {
-            KpEditor::save($id, (string)($input['html'] ?? ''));
+            $learned = KpEditor::save($id, (string)($input['html'] ?? ''), (int)$manager['id']);
         } catch (InvalidArgumentException $e) {
             jsonError($e->getMessage());
         } catch (Throwable $e) {
             Logger::exception('kp', $e, ['proposal_id' => $id, 'stage' => 'html_save']);
             jsonError('Правка сохранилась, но PDF не собрался: ' . $e->getMessage(), 500);
         }
-        ContentLog::record('kp', "proposal.$id", "КП #$id поправлено на странице A4",
-                           (int)$manager['id'], '', 'ручная правка документа');
-        jsonOk(['id' => $id, 'override_at' => date('Y-m-d H:i:s')]);
+        ContentLog::record('kp', "proposal.$id", "КП #$id поправлено вручную",
+                           (int)$manager['id'], '', 'ручная правка документа'
+                           . ($learned ? '; заготовка следующих КП: ' . implode(', ', $learned) : ''));
+        jsonOk(['id' => $id, 'override_at' => date('Y-m-d H:i:s'), 'learned' => $learned]);
     }
 
     case 'html_reset': {
@@ -592,6 +468,20 @@ switch ($action) {
         if (!KpEditor::editable($p)) jsonError('КП уже отправлено клиенту — отправленный документ не правится', 409);
         KpEditor::reset($id);
         jsonOk(['id' => $id]);
+    }
+
+    // Шрифт документа для редактора (модуль 051): строки переносятся как в PDF
+    case 'font': {
+        requireAuth();
+        $fonts = ['r' => 'DejaVuSans.ttf', 'b' => 'DejaVuSans-Bold.ttf',
+                  'i' => 'DejaVuSans-Oblique.ttf', 'bi' => 'DejaVuSans-BoldOblique.ttf'];
+        $file = ROOT . '/vendor/mpdf/mpdf/ttfonts/' . ($fonts[(string)($_GET['f'] ?? '')] ?? '');
+        if (!isset($fonts[(string)($_GET['f'] ?? '')]) || !is_file($file)) jsonError('Нет такого шрифта', 404);
+        header('Content-Type: font/ttf');
+        header('Cache-Control: private, max-age=31536000, immutable');
+        header('Content-Length: ' . filesize($file));
+        readfile($file);
+        exit;
     }
 
     // Фото страницы-редактора: файл по хешу содержимого, неизменяемый

@@ -167,7 +167,8 @@ final class Html2Docx {
 
     /** Блок, который в документе начинает новую страницу. */
     private function startsPage(DOMElement $n): bool {
-        return (bool)preg_match('/(^|\s)(appendix|card--break)(\s|$)/',
+        // kp-page-break — разрыв, вставленный в редакторе (модуль 051)
+        return (bool)preg_match('/(^|\s)(appendix|card--break|kp-page-break)(\s|$)/',
                                 (string)$n->getAttribute('class'));
     }
 
@@ -280,10 +281,28 @@ final class Html2Docx {
         }
         // Выравнивание, прописанное в самом элементе, — сильнее класса
         $inline = str_replace(' ', '', mb_strtolower((string)$n->getAttribute('style')));
-        foreach (['center', 'right', 'left'] as $side) {
-            if (str_contains($inline, 'text-align:' . $side)) { $style['align'] = $side; break; }
+        foreach (['center' => 'center', 'right' => 'right', 'left' => 'left', 'justify' => 'both'] as $side => $jc) {
+            if (str_contains($inline, 'text-align:' . $side)) { $style['align'] = $jc; break; }
         }
+        // Цвет из редактора (модуль 051): <font color> или style="color:…"
+        $color = strtolower($n->tagName) === 'font' ? (string)$n->getAttribute('color') : '';
+        if (preg_match('/(?:^|;)color:([^;]+)/', $inline, $m)) $color = $m[1];
+        $hex = self::hexColor($color);
+        if ($hex !== '') $style['color'] = $hex;
         return $style;
+    }
+
+    /** «#c00000», «#c00», «rgb(192, 0, 0)» → «C00000»; остальное — ''. */
+    public static function hexColor(string $css): string {
+        $css = strtolower(str_replace(' ', '', trim($css)));
+        if (preg_match('/^#([0-9a-f]{6})$/', $css, $m)) return strtoupper($m[1]);
+        if (preg_match('/^#([0-9a-f])([0-9a-f])([0-9a-f])$/', $css, $m)) {
+            return strtoupper($m[1] . $m[1] . $m[2] . $m[2] . $m[3] . $m[3]);
+        }
+        if (preg_match('/^rgba?\((\d+),(\d+),(\d+)/', $css, $m)) {
+            return sprintf('%02X%02X%02X', min(255, (int)$m[1]), min(255, (int)$m[2]), min(255, (int)$m[3]));
+        }
+        return '';
     }
 
     // ----------------------------------------------------------------- tables

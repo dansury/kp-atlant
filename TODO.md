@@ -76,3 +76,13 @@ not have.
 - The list view (`#mail/list`) sorts by the date of the last letter. Columns
   with a «Лимит карточек» still cut their cards in the list too — if managers
   expect the list to show every conversation, the limit must become board-only.
+
+## Module 051 — check on a live system
+- Real Word: a page break inserted with «⤓» and text coloured / justified in
+  the editor come out in the .docx (checked by the XML only).
+- The PDF view opens at the sheet's zoom via `#zoom=` — Chrome and Firefox
+  viewers honour it; Safari ignores it (the frame is still full width).
+- Pages on the sheet were checked against mPDF on a synthetic КП (17 = 17);
+  compare the break points on a real КП with photos.
+- Yandex `qwen3-235b-a22b-fp8`: confirm `/no_think` makes mail triage answer
+  well under `LLM_TIMEOUT_SEC` (90 s) and the JSON still parses.

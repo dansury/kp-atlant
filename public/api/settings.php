@@ -75,9 +75,9 @@ switch ($action) {
         readfile($path);
         exit;
 
-    // Общая подпись организации — только администратору (модуль 048)
+    // Общая подпись организации: видят все — её выбирают под свои КП (модуль 051)
     case 'company_signature_image':
-        requireAdmin();
+        requireAuth();
         $path = (string)(Db::val("SELECT signature_path FROM legal_entities WHERE is_active=1 LIMIT 1") ?: '');
         if ($path === '' || !is_file($path)) jsonError('Подпись не загружена', 404);
         require_once ROOT . '/lib/branding.php';
@@ -85,6 +85,17 @@ switch ($action) {
         header('Cache-Control: private, max-age=60');
         readfile($path);
         exit;
+
+    // Чем подписывать свои КП: без подписи, своей или организации (модуль 051)
+    case 'signature_mode':
+        $manager = requireAuth();
+        require_once ROOT . '/lib/signatures.php';
+        try {
+            Signatures::setMode((int)$manager['id'], (string)(getInput()['mode'] ?? ''));
+        } catch (InvalidArgumentException $e) {
+            jsonError($e->getMessage());
+        }
+        jsonOk(Signatures::describe((int)$manager['id']));
 
     // Расшифровка подписи менеджера: то, что печатается под КП строкой
     case 'signatory_name':

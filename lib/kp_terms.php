@@ -133,25 +133,36 @@ TEXT;
      * сами ждём квартал.
      */
     public static function fill(string $text, array $proposal): string {
-        $term = self::executionTerm($proposal);
-        $text = (string)preg_replace(
-            '/\{execution_days\}\s*календарн\w+\s+(?:дн\w+|день)/u', $term, $text);
+        return strtr(self::legacyTerm($text, $proposal), self::vars($proposal));
+    }
+
+    /** Старое «{execution_days} календарных дней» — целиком сроком словами. */
+    public static function legacyTerm(string $text, array $proposal): string {
+        return (string)preg_replace(
+            '/\{execution_days\}\s*календарн\w+\s+(?:дн\w+|день)/u', self::executionTerm($proposal), $text);
+    }
+
+    /**
+     * Значения подстановок условий этого КП: «{name}» => текст (модуль 051 —
+     * редактор вернёт их на место по этим же значениям).
+     * @return array<string,string>
+     */
+    public static function vars(array $proposal): array {
         // Режим доставки этого КП (модуль 049); условия говорят тем же
         // текстом, что печатает документ
         require_once __DIR__ . '/delivery_share.php';
         $mode = DeliveryShare::mode($proposal);
-        $included = $mode === 'included';
-        return strtr($text, [
-            '{execution_term}' => $term,
+        return [
+            '{execution_term}' => self::executionTerm($proposal),
             '{execution_days}' => (string)(int)($proposal['execution_days'] ?? 30),
             '{validity_days}'  => (string)(int)($proposal['validity_days'] ?? 14),
-            '{delivery_in_price}' => $included ? 'доставку, ' : '',
+            '{delivery_in_price}' => $mode === 'included' ? 'доставку, ' : '',
             '{delivery_separate_clause}' => match ($mode) {
                 'separate' => "Доставка в стоимость не включена и оплачивается отдельно.\n",
                 'line'     => "Доставка в стоимость не включена и оплачивается при получении по тарифам СДЭК.\n",
                 default    => '',
             },
-        ]);
+        ];
     }
 
     /**

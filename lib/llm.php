@@ -923,7 +923,7 @@ class LLM {
 
     private static function coolDownMessage(string $provider): string {
         $left = max(1, (int)ceil(((self::$pausedUntil[$provider] ?? 0) - time()) / 60));
-        return "$provider: не отвечал подряд, пропущен на ~$left мин. — сеть до него не доходит";
+        return "$provider: не отвечал подряд, пропущен на ~$left мин. — сеть до него не доходит или модель не успевает ответить за таймаут";
     }
 
     private static function noteFailure(string $provider, string $message): void {
@@ -964,7 +964,7 @@ class LLM {
         $body = [
             'model' => $model,
             'messages' => [
-                ['role' => 'system', 'content' => $system],
+                ['role' => 'system', 'content' => self::noThink($model, $system)],
                 ['role' => 'user', 'content' => $user],
             ],
             'temperature' => $temp,
@@ -1019,7 +1019,7 @@ class LLM {
                 'maxTokens' => self::maxTokens(),
             ],
             'messages' => [
-                ['role' => 'system', 'text' => $system],
+                ['role' => 'system', 'text' => self::noThink($model, $system)],
                 ['role' => 'user', 'text' => $user],
             ],
         ];
@@ -1061,7 +1061,7 @@ class LLM {
         $body = [
             'model' => $uri,
             'messages' => [
-                ['role' => 'system', 'content' => $system],
+                ['role' => 'system', 'content' => self::noThink($model, $system)],
                 ['role' => 'user', 'content' => $user],
             ],
             'temperature' => $temp,
@@ -1104,7 +1104,21 @@ class LLM {
     }
 
     private static function timeout(): int {
-        return max(5, (int)(self::$cfg['LLM_TIMEOUT_SEC'] ?? 30));
+        return max(5, (int)(self::$cfg['LLM_TIMEOUT_SEC'] ?? 90));
+    }
+
+    /** Соединение — отдельно и коротко: мёртвый маршрут не ждёт полторы минуты (модуль 051). */
+    private static function connectTimeout(): int {
+        return min(15, self::timeout());
+    }
+
+    /**
+     * Qwen3 по умолчанию сначала рассуждает — десятки секунд до первого байта,
+     * а рассуждение всё равно вырезается из ответа (модуль 051).
+     */
+    public static function noThink(string $model, string $system): string {
+        if (stripos($model, 'qwen3') === false || str_contains($system, '/no_think')) return $system;
+        return rtrim($system) . "\n\n/no_think";
     }
 
     /** GET used by the catalog refresh and the connectivity probe. */
@@ -1114,6 +1128,7 @@ class LLM {
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER     => $headers,
             CURLOPT_TIMEOUT        => $short ? min(15, self::timeout()) : self::timeout(),
+            CURLOPT_CONNECTTIMEOUT => self::connectTimeout(),
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_USERAGENT      => 'AtlantArmourKP/1.0',
         ]);
@@ -1142,6 +1157,7 @@ class LLM {
             CURLOPT_HTTPHEADER => array_merge(['Content-Type: application/json'], $headers),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => self::timeout(),
+            CURLOPT_CONNECTTIMEOUT => self::connectTimeout(),
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_USERAGENT => 'AtlantArmourKP/1.0',
         ]);
@@ -1149,6 +1165,13 @@ class LLM {
         $resp = curl_exec($ch);
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
+        // Запрос ушёл, а ответа нет — модель думает дольше таймаута; это не фильтр
+        if ($resp === false && curl_errno($ch) === CURLE_OPERATION_TIMEDOUT
+            && (float)curl_getinfo($ch, CURLINFO_PRETRANSFER_TIME) > 0) {
+            self::$lastHttp[$provider] = ['code' => 0, 'body' => '', 'error' => $err];
+            self::$lastFinish = '';
+            throw new LLMException(self::slowAnswer($provider, $err));
+        }
 
         self::$lastHttp[$provider] = ['code' => (int)$code, 'body' => mb_substr((string)$resp, 0, 500), 'error' => $err];
         self::$lastFinish = '';
@@ -1204,6 +1227,13 @@ class LLM {
             if (str_contains($head, $needle)) return true;
         }
         return false;
+    }
+
+    /** Таймаут после отправленного запроса: соединение было, ответа не дождались. */
+    public static function slowAnswer(string $provider, string $curlError): string {
+        return "cURL error ($provider): $curlError. Запрос дошёл до провайдера, но модель не успела ответить за "
+             . self::timeout() . ' с — это не фильтр и не ключ. Увеличьте «Таймаут запроса» '
+             . '(«Настройки → Нейросети», LLM_TIMEOUT_SEC) или выберите модель быстрее.';
     }
 
     /** Error text a non-developer can act on. */

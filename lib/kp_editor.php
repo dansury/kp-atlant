@@ -12,6 +12,8 @@
  * by content hash), and swapped back before mPDF / Html2Docx see the page — so
  * the editor round-trips kilobytes, not the photos.
  */
+require_once __DIR__ . '/kp_fields.php';
+
 final class KpEditor {
 
     /** Largest page accepted from the editor, photos already externalized. */
@@ -28,9 +30,9 @@ final class KpEditor {
         return !in_array((string)($proposal['status'] ?? ''), ['sent', 'order_created'], true);
     }
 
-    /** The page for the editor: template or saved edit, photos as URLs. */
+    /** The page for the editor: template (with field marks, module 051) or saved edit, photos as URLs. */
     public static function page(int $proposalId): string {
-        return self::externalize(PdfGenerator::html($proposalId));
+        return self::externalize(PdfGenerator::html($proposalId, true));
     }
 
     /** data: images → files in data/kp_img, src → short URL. */
@@ -54,8 +56,14 @@ final class KpEditor {
         );
     }
 
-    /** Short URLs → data: images again, for mPDF and Word. Unknown hash → no image. */
+    /**
+     * Short URLs → data: images again, for mPDF and Word. Unknown hash → no image.
+     * The editor's marks go too: an empty text slot prints nothing, the
+     * zero-width space of an empty placeholder is dropped (module 051).
+     */
     public static function internalize(string $html): string {
+        $html = str_replace(KpFields::ZWSP, '', $html);
+        $html = (string)preg_replace('#<div\b[^>]*\bdata-kp-field="[^"]*"[^>]*>(?:\s|&nbsp;|<br\s*/?>)*</div>#i', '', $html);
         return (string)preg_replace_callback('#<img\b[^>]*>#i', function (array $m): string {
             if (!preg_match('#\bsrc="[^"]*?action=kp_img&(?:amp;)?h=([0-9a-f]{40})"#i', $m[0], $h)) return $m[0];
             $data = self::image($h[1]);
@@ -82,6 +90,10 @@ final class KpEditor {
         $html = (string)preg_replace('#<(script|iframe|object|embed|form)\b.*?</\1\s*>#is', '', $html);
         $html = (string)preg_replace('#<(script|iframe|object|embed|form|base|meta\s+http-equiv)\b[^>]*>#i', '', $html);
         $html = (string)preg_replace('#<style\b[^>]*data-kp-editor[^>]*>.*?</style>#is', '', $html);
+        // Разбивка на страницы редактора (модуль 051): разделитель — div со
+        // span внутри, в таблице — строка с одной ячейкой
+        $html = (string)preg_replace('#<tr\b[^>]*data-kp-editor-ui[^>]*>.*?</tr>#is', '', $html);
+        $html = (string)preg_replace('#<div\b[^>]*data-kp-editor-ui[^>]*>.*?</div>#is', '', $html);
         // Attributes are cleaned inside tags only — the text of the КП is left alone
         $html = (string)preg_replace_callback('#<[a-z][^>]*>#i', function (array $m): string {
             $tag = (string)preg_replace('#\s+(on[a-z]+|contenteditable|spellcheck)\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#i', '', $m[0]);
@@ -90,8 +102,12 @@ final class KpEditor {
         return trim($html);
     }
 
-    /** Store the edited page and rebuild the PDF from it. */
-    public static function save(int $proposalId, string $html): void {
+    /**
+     * Store the edited page and rebuild the PDF from it. Texts marked on the
+     * page go back into the КП and become defaults for the next КП (module 051).
+     * @return list<string> labels of the texts that became defaults
+     */
+    public static function save(int $proposalId, string $html, int $managerId = 0): array {
         $html = self::sanitize($html);
         if ($html === '' || stripos($html, '<body') === false) {
             throw new InvalidArgumentException('Пустой документ — сохранять нечего');
@@ -100,12 +116,14 @@ final class KpEditor {
             throw new InvalidArgumentException('Документ слишком большой для сохранения');
         }
         if (stripos($html, '<!doctype') !== 0) $html = "<!DOCTYPE html>\n" . $html;
+        $learned = KpFields::apply($proposalId, KpFields::extract($html), $managerId);
         Db::update('proposals', [
             'html_override'    => $html,
             'html_override_at' => date('Y-m-d H:i:s'),
             'updated_at'       => date('Y-m-d H:i:s'),
         ], 'id=?', [$proposalId]);
         PdfGenerator::generate($proposalId);
+        return $learned;
     }
 
     /** Back to the template: the next PDF/Word is built from the database again. */

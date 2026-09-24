@@ -10,6 +10,7 @@ require_once __DIR__ . '/signatures.php';
 require_once __DIR__ . '/terms.php';
 require_once __DIR__ . '/kp_terms.php';
 require_once __DIR__ . '/delivery_share.php';
+require_once __DIR__ . '/kp_fields.php';
 
 class PdfGenerator {
 
@@ -111,8 +112,11 @@ class PdfGenerator {
      * directly: a PDF stores Cyrillic as glyph indices, so nothing can be
      * checked in the file itself. Same variables, same template — this IS the
      * КП, one step earlier.
+     *
+     * $editor — страница для редактора (модуль 051): тексты и подстановки
+     * помечены, чтобы правка вернулась в КП и в заготовку следующих КП.
      */
-    public static function html(int $proposalId): string {
+    public static function html(int $proposalId, bool $editor = false): string {
         $proposal = Db::one("SELECT * FROM proposals WHERE id=?", [$proposalId]);
         if (!$proposal) throw new RuntimeException("Proposal $proposalId not found");
 
@@ -295,12 +299,16 @@ class PdfGenerator {
         // Default intro
         // Короткое имя, а не «ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ …»: так
         // названа компания в шапке документа и в образце КП (модуль 034)
-        $introText = $proposal['intro_text'] ?: self::defaultIntro($requisites, $legal);
+        // Вступление — заготовка с подстановками {seller} и {by_request} (модуль 051)
+        $introRaw = $proposal['intro_text'] ?: KpFields::introTemplate();
+        $introVars = KpFields::introVars($requisites, $legal);
 
         // Условия поставки — один правимый блок (модуль 026). КП, собранное до
         // него, печатает те же четыре абзаца, что и печатало: документ,
         // переоткрытый через полгода, обязан выглядеть как подписанный.
-        $termsText = KpTerms::forProposal($proposal);
+        $termsRaw = KpTerms::legacyTerm(KpTerms::rawForProposal($proposal), $proposal);
+        $termsVars = KpTerms::vars($proposal);
+        $termsText = strtr($termsRaw, $termsVars);
 
         $imagesNote = $proposal['images_note']
             ?: Db::val("SELECT value FROM settings WHERE key='kp_images_note'") ?: '';
@@ -347,7 +355,11 @@ class PdfGenerator {
         $templateVars = [
             'legal' => $legal,
             'logo' => $logo,
-            'introText' => $introText,
+            'kpEditor' => $editor,
+            'introRaw' => $introRaw,
+            'introVars' => $introVars,
+            'termsRaw' => $termsRaw,
+            'termsVars' => $termsVars,
             'preTableText' => $proposal['pre_table_text'] ?? '',
             'postTableText' => $proposal['post_table_text'] ?? '',
             'items' => $items,
@@ -411,13 +423,7 @@ class PdfGenerator {
      * продавец — из снимка МойСклад, покупатель — юрлицо клиента из него же.
      */
     public static function defaultIntro(array $requisites, array $legal): string {
-        $seller = $requisites['seller'] ?? [];
-        $sellerName = trim((string)(($seller['short_name'] ?? '') ?: ($legal['short_name'] ?? '')))
-            ?: trim((string)(($seller['full_name'] ?? '') ?: ($legal['full_name'] ?? '')));
-        $buyer = trim((string)(($requisites['buyer']['legal_title'] ?? '') ?: ($requisites['buyer']['name'] ?? '')));
-        return $buyer !== ''
-            ? sprintf('%s по запросу %s имеет возможность поставить следующее вещевое имущество:', $sellerName, $buyer)
-            : sprintf('%s по Вашему запросу имеет возможность поставить следующее вещевое имущество:', $sellerName);
+        return strtr(KpFields::introTemplate(), KpFields::introVars($requisites, $legal));
     }
 
     /**

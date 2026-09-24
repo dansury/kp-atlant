@@ -5,10 +5,10 @@ Source: the request of 2026-09-23 (six points).
 ## 1. No cover letter among the КП settings
 
 The letter text is written and edited in one place only — the letter field
-(composer) of the correspondence. The full КП editor (`#mail/proposal/N`) and
-«✎ Текст по полям» (`proposals.php?action=doc_text`) show no «Сопроводительное
-письмо» field. `proposals.php?action=save` / `doc_text_save` still accept
-`cover_letter_final` from older clients, but nothing in the UI sends it.
+(composer) of the correspondence. The full КП editor (`#mail/proposal/N`) shows
+no «Сопроводительное письмо» field (the field-by-field editor was removed in
+module 051). `proposals.php?action=save` still accepts `cover_letter_final`
+from older clients, but nothing in the UI sends it.
 
 ## 2. Delivery mode per КП
 

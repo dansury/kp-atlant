@@ -1957,6 +1957,20 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '45')");
         $current = 45;
     }
+
+    // v46 — module 051: the signature under a КП is the manager's choice, none by default;
+    // a stored LLM timeout of 30 s (the old default saved by the form) becomes 90 s
+    if ($current < 46) {
+        Db::ensureColumn('managers', 'kp_signature_mode', 'TEXT');
+        Db::q("UPDATE managers SET kp_signature_mode='own'
+               WHERE kp_signature_mode IS NULL
+                 AND (TRIM(COALESCE(signatory_name,''))<>'' OR TRIM(COALESCE(signature_path,''))<>'')");
+        Db::q("UPDATE managers SET kp_signature_mode='none' WHERE kp_signature_mode IS NULL");
+        Db::q("UPDATE settings SET value='90' WHERE key='cfg.LLM_TIMEOUT_SEC' AND TRIM(value)='30'");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '46')");
+        $current = 46;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

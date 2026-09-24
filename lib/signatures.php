@@ -7,10 +7,9 @@
  * кто бы его ни сделал. Прочерк убран: пустое место под подпись в подписанном
  * документе читается как незаполненный бланк.
  *
- * Теперь подпись принадлежит МЕНЕДЖЕРУ: своя расшифровка и своя картинка у
- * каждого, кто отправляет КП. Ничего не заполнено — печатается подписант
- * организации, а он по умолчанию «Сурков Кирилл Александрович»: так было, так
- * и останется, пока менеджер не заведёт свою.
+ * Теперь подпись принадлежит МЕНЕДЖЕРУ, и он сам выбирает, чем подписывать
+ * свои КП (модуль 051): «Без подписи» (по умолчанию), «Моя подпись» или
+ * «Подпись организации». Подписи организации по умолчанию больше нет.
  *
  * Картинка кладётся в `storage/signatures/manager-<id>.<ext>` — вне
  * репозитория, как и логотипы: деплой перезаписывает `public/`.
@@ -18,6 +17,7 @@
 final class Signatures {
 
     public const DEFAULT_NAME = 'Сурков Кирилл Александрович';
+    public const MODES = ['none', 'own', 'company'];
     private const EXTENSIONS = ['png', 'jpg', 'jpeg'];
 
     public static function dir(): string {
@@ -27,39 +27,47 @@ final class Signatures {
     }
 
     /**
-     * Чем подписывается это КП: картинка (data:URI или '') и расшифровка.
+     * Чем подписывается это КП: картинка (data:URI или '') и расшифровка —
+     * по выбору менеджера КП. КП без менеджера не подписывается.
      *
-     * Порядок именно такой — менеджер КП, затем подписант организации, затем
-     * значение по умолчанию: документ никогда не уходит с пустой строкой вместо
-     * фамилии.
-     *
-     * @return array{image:string,name:string,manager_id:int}
+     * @return array{image:string,name:string,manager_id:int,mode:string}
      */
     public static function forProposal(int $proposalId, array $legal = []): array {
         $managerId = (int)(Db::val("SELECT manager_id FROM proposals WHERE id=?", [$proposalId]) ?: 0);
         return self::forManager($managerId, $legal);
     }
 
-    /** @return array{image:string,name:string,manager_id:int} */
+    /** @return array{image:string,name:string,manager_id:int,mode:string} */
     public static function forManager(int $managerId, array $legal = []): array {
         $manager = $managerId > 0
-            ? Db::one("SELECT id, name, signatory_name, signature_path FROM managers WHERE id=?", [$managerId])
+            ? Db::one("SELECT id, name, signatory_name, signature_path, kp_signature_mode FROM managers WHERE id=?", [$managerId])
             : null;
+        $mode = self::modeOf($manager);
 
-        $name = trim((string)($manager['signatory_name'] ?? ''));
-        if ($name === '') $name = self::companyName($legal);
-
-        // Своя картинка менеджера, затем общая подпись организации
-        $candidates = array_filter([
-            trim((string)($manager['signature_path'] ?? '')),
-            trim((string)($legal['signature_path'] ?? '')),
-        ]);
+        [$name, $image] = match ($mode) {
+            'own'     => [trim((string)($manager['signatory_name'] ?? '')) ?: trim((string)($manager['name'] ?? '')),
+                          trim((string)($manager['signature_path'] ?? ''))],
+            'company' => [self::companyName($legal), trim((string)($legal['signature_path'] ?? ''))],
+            default   => ['', ''],
+        };
 
         return [
-            'image'      => self::dataUri($candidates),
+            'image'      => self::dataUri(array_filter([$image])),
             'name'       => $name,
             'manager_id' => $managerId,
+            'mode'       => $mode,
         ];
+    }
+
+    /** Выбор менеджера; ничего не выбрано — без подписи. */
+    public static function modeOf(?array $manager): string {
+        $mode = (string)($manager['kp_signature_mode'] ?? '');
+        return in_array($mode, self::MODES, true) ? $mode : 'none';
+    }
+
+    public static function setMode(int $managerId, string $mode): void {
+        if (!in_array($mode, self::MODES, true)) throw new InvalidArgumentException('Неизвестный вид подписи');
+        Db::update('managers', ['kp_signature_mode' => $mode, 'updated_at' => date('Y-m-d H:i:s')], 'id=?', [$managerId]);
     }
 
     /** Ключ настройки: расшифровка организации, которую МойСклад не перепишет (модуль 048). */
@@ -159,10 +167,11 @@ final class Signatures {
     /** Состояние для панели: что подпишет КП этого менеджера. */
     public static function describe(int $managerId): array {
         $legal = Db::one("SELECT signatory_name, signature_path FROM legal_entities WHERE is_active=1 LIMIT 1") ?: [];
-        $row = Db::one("SELECT signatory_name, signature_path FROM managers WHERE id=?", [$managerId]) ?: [];
+        $row = Db::one("SELECT signatory_name, signature_path, kp_signature_mode FROM managers WHERE id=?", [$managerId]) ?: [];
         $resolved = self::forManager($managerId, $legal);
         return [
             'manager_id'     => $managerId,
+            'mode'           => self::modeOf($row),
             'signatory_name' => (string)($row['signatory_name'] ?? ''),
             'has_image'      => trim((string)($row['signature_path'] ?? '')) !== ''
                                 && is_file((string)$row['signature_path']),

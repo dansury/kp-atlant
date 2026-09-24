@@ -328,19 +328,18 @@ ok('список напечатан списком', str_contains($html, '<li>К
 ok('экранированных тегов в документе нет', !str_contains($html, '&lt;ul&gt;'));
 
 ok('логотип вставлен', str_contains($html, '<img src="data:image/') && str_contains($html, 'class="logo"'));
-// Модуль 035: строка подписи вернулась — так собран образец, по которому КП
-// уходит клиенту. Пустым бланком она больше не читается: картинка подписи
-// лежит ПОВЕРХ неё, а не отдельным абзацем над расшифровкой.
-ok('строка подписи на месте', str_contains($html, '_______________'));
-ok('а картинка подписи ложится ПОВЕРХ неё, а не отдельным абзацем',
+// Модуль 051: прочерка «_____» нет, а КП без менеджера не подписывается —
+// подписи организации по умолчанию больше нет
+ok('прочерка под подпись нет', !str_contains($html, '_______________'));
+ok('картинка подписи стоит в строке, а не отдельным абзацем',
    str_contains(file_get_contents(ROOT . '/templates/kp.html'), '<img class="sign-img"'));
-ok('подписант назван', str_contains($html, 'Сурков Кирилл Александрович'));
+ok('КП без менеджера не подписано', !str_contains(substr($html, (int)strrpos($html, 'class="signature"')), 'Сурков'));
 ok('второго блока реквизитов поставщика нет', !str_contains($html, 'Реквизиты поставщика'));
 
 // Своя подпись менеджера перебивает подписанта организации
 $managerId = Db::insert('managers', ['login' => 'ivanov', 'name' => 'Иванов И.И.',
                                      'password_hash' => 'x', 'is_admin' => 0,
-                                     'signatory_name' => 'Иванов Иван Иванович']);
+                                     'signatory_name' => 'Иванов Иван Иванович', 'kp_signature_mode' => 'own']);
 Db::update('proposals', ['manager_id' => $managerId], 'id=?', [$proposalId]);
 $html2 = PdfGenerator::html($proposalId);
 ok('КП подписывает тот, кто его отправляет', str_contains($html2, 'Иванов Иван Иванович'));
