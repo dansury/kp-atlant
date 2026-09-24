@@ -482,6 +482,29 @@ final class Variants {
         return $name;
     }
 
+    /**
+     * Характеристики парами: «Цвет: олива; Размер: L» → [Цвет => олива, Размер => L]
+     * (модуль 058). API пишет через «;», Excel — через «,», импорт без колонки —
+     * в скобках имени. Значение без названия получает ключ «».
+     */
+    public static function characteristicPairs(array $variant): array {
+        $source = trim((string)($variant['characteristics'] ?? ''));
+        if ($source === '' && preg_match('/\(([^)]+)\)\s*$/u', (string)($variant['name'] ?? ''), $m)) {
+            $source = $m[1];
+        }
+        $out = [];
+        // Делим только перед «Название:», чтобы запятая внутри значения его не рвала
+        foreach (preg_split('/[;\n]+|,(?=\s*[^,:;]+:)/u', $source) ?: [] as $chunk) {
+            $chunk = trim($chunk);
+            if ($chunk === '') continue;
+            $colon = mb_strpos($chunk, ':');
+            $name = $colon === false ? '' : trim(mb_substr($chunk, 0, $colon));
+            $value = trim($colon === false ? $chunk : mb_substr($chunk, $colon + 1));
+            if ($value !== '' && !isset($out[$name])) $out[$name] = $value;
+        }
+        return $out;
+    }
+
     /** Значения характеристик: «Цвет: олива; Размер: L» → [«олива», «L»]. */
     private static function labelValues(array $variant): array {
         $source = trim((string)($variant['characteristics'] ?? ''));

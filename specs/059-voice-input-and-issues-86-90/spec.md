@@ -34,7 +34,7 @@ MediaRecorder recorder in `assets/app.js`).
 ## 2. Issue #86 — «под заказ» comes back
 
 - `request_items.wait_manual`, `proposal_items.wait_manual` INTEGER DEFAULT 0
-  (schema v50): the manager set or cleared «под заказ» by hand.
+  (schema v51): the manager set or cleared «под заказ» by hand.
 - UI (`matchRowExtra`): the box is auto-checked for an out-of-stock row only
   while `wait_manual = 0`; any click sets the hidden `wait_manual = 1`.
 - `RequestItems::save()` stores it; `toProposalItems()` / `KpSet::itemRow()`

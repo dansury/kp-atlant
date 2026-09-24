@@ -47,6 +47,7 @@
     /* Разрыв страницы, вставленный в редакторе (модуль 051) */
     .kp-page-break { page-break-before: always; height: 0; }
     .stock-warning { color: #c00; font-size: 9pt; }
+    .range-row { color: #555; font-size: 8pt; text-align: left; white-space: normal; margin-top: 2px; }
     .note { font-size: 9pt; color: #666; }
     /* Чем клиент называл позицию, вместо которой стоит наша (модуль 036).
        Серый на белом 4.6:1 — WCAG AA для мелкого текста */
@@ -322,12 +323,17 @@ $ft = fn(string $raw, array $vars = [], bool $br = true) => KpFields::html($raw,
 <?php $old = $from . $rub($item['price']) . ($priceTop > 0 ? ' до ' . $rub($priceTop) : '') . ' руб.'; ?>
     <?php /* «Цена за ед.» — исходная цена; при скидке она зачёркнута, а цена
              со скидкой стоит в соседнем столбце (issue #60, #67) */ ?>
-    <td class="price"><?= $hasDisc ? '<span class="was">' . htmlspecialchars($old) . '</span>' : htmlspecialchars($old) ?></td>
+<?php /* Расшифровка вилки (модуль 058): под ценой, которую платит клиент,
+         только по характеристикам, от которых цена зависит */ ?>
+<?php $rangeHtml = ''; foreach (($item['range_rows'] ?? []) as $rr) {
+    $rangeHtml .= '<div class="range-row">' . htmlspecialchars($rr['label']) . ' — ' . $rub($rr['price']) . ' руб.</div>';
+} ?>
+    <td class="price"><?= $hasDisc ? '<span class="was">' . htmlspecialchars($old) . '</span>' : htmlspecialchars($old) ?><?= $showDisc ? '' : $rangeHtml ?></td>
     <?php if ($showDisc): ?>
     <td class="price discount"><?php if ($hasDisc): ?><?php
         if (($discountColumn['uniform'] ?? '') === ''): ?><span class="disc">-<?= htmlspecialchars($item['discount_shown']) ?>%</span><br><?php endif;
         ?><?= ($discPriceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= $rub($item['effective_price']) ?><?php
-        if ($discPriceTop > 0) echo ' до ' . $rub($discPriceTop); ?> руб.<?php endif; ?></td>
+        if ($discPriceTop > 0) echo ' до ' . $rub($discPriceTop); ?> руб.<?php endif; ?><?= $rangeHtml ?></td>
     <?php endif; ?>
     <td class="sum"><?= ($discPriceTop > 0 || !empty($item['price_from'])) ? 'от ' : '' ?><?= $rub($item['sum']) ?><?php
         if ($discPriceTop > 0) echo ' до ' . $rub((float)($item['sum_max'] ?? 0)); ?> руб.</td>
@@ -409,7 +415,7 @@ $ft = fn(string $raw, array $vars = [], bool $br = true) => KpFields::html($raw,
 
     <table class="addons">
     <thead>
-    <tr><th>№</th><th>Модуль</th><th>Ед.изм.</th><th>Цена за ед., <?= htmlspecialchars($vatStatement) ?></th></tr>
+    <tr><th>№</th><th>Модуль</th><th>Цена за ед., <?= htmlspecialchars($vatStatement) ?></th></tr>
     </thead>
     <tbody>
     <?php foreach ($addons as $j => $addon): ?>
@@ -421,7 +427,6 @@ $ft = fn(string $raw, array $vars = [], bool $br = true) => KpFields::html($raw,
             <br><span class="stock-warning"><?= htmlspecialchars($addon['notes']) ?></span>
             <?php endif; ?>
         </td>
-        <td class="unit"><?= htmlspecialchars($addon['unit']) ?></td>
         <td class="price"><?= $addon['price'] > 0 ? KpContent::rub((float)$addon['price']) . ' руб.' : 'по запросу' ?></td>
     </tr>
     <?php endforeach; ?>

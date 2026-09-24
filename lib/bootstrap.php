@@ -2011,12 +2011,21 @@ SQL);
         $current = 49;
     }
 
-    // v50 — issue #86: «под заказ» set by the manager's own hand is never re-raised
+    // v50 — module 058: add-on modules fit one product, not every vest
     if ($current < 50) {
-        foreach (['proposal_items', 'request_items'] as $table) Db::ensureColumn($table, 'wait_manual', 'INTEGER', '0');
+        Db::q("INSERT OR IGNORE INTO settings (key, value) VALUES ('addon_hosts', ?)",
+              ['Бронежилет Атлант базовый Бр2 (без доп.модулей, без бронеплит)']);
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '50')");
         $current = 50;
+    }
+
+    // v51 — issue #86: «под заказ» set by the manager's own hand is never re-raised
+    if ($current < 51) {
+        foreach (['proposal_items', 'request_items'] as $table) Db::ensureColumn($table, 'wait_manual', 'INTEGER', '0');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '51')");
+        $current = 51;
     }
 }
 
