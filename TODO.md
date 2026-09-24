@@ -39,10 +39,6 @@ not have.
   and the QR sits in a table cell left of the link — check both look right.
   LibreOffice in the build container does not start, so the .docx was checked
   by its XML only.
-- Bitrix module 1.1.0 on the live site: press «Экспорт товаров в Excel» and
-  check the modifications column (offer properties differ per shop); reinstall
-  the module if `kp.php?action=export_xlsx` is needed. Descriptions from the
-  site arrive with the next «sync from site» run.
 - `kp_requirements`: the parse prompt asks for it, but a prompt already
   overridden in «Админ → Промпты» keeps the old text — re-save it from the
   default there. Check one real letter with «укажите в КП …» end to end.
@@ -94,7 +90,17 @@ not have.
 - «Счёт в МойСклад» on a company without MoySklad: the creation window opens,
   after «Создать» the invoice is issued without reloading the page.
 
-## Module 053 — needs a live MoySklad
+## Module 053 — check on the live site
+- Install Bitrix module 1.2.0 from `bitrix-module/atlant.kpsync.zip` (Удалить →
+  Установить): «Сервисы → Атлант: экспорт товаров в Excel» appears; the file's
+  modifications column is right for this shop's offer properties.
+- КП → «Каталог товаров → Сайт (Битрикс)»: «Проверить связь» says the version
+  is the latest; «Загрузить ссылки и описания с сайта» fills the description
+  counter; a product without a MoySklad description gets the site one in the КП.
+- The «Bitrix module zip» workflow commits the rebuilt zip to `main`; if branch
+  protection rejects the bot push, allow GitHub Actions or rebuild locally.
+
+## Module 054 — needs a live MoySklad
 - Issue an invoice: check the order is in «Резерв», on the chosen store, the goods
   are reserved there, and «Сотрудник» (owner) is the manager. If the token may not
   assign other employees, the note «сотрудник МойСклад … (МойСклад не дал назначить)»

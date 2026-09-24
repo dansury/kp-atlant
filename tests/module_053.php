@@ -1,13 +1,11 @@
 <?php
 /**
- * Модуль 053 — на выбрасываемой базе и без сети:
+ * Модуль 053 — без сети и без Битрикса:
  *
- *   — доп. поле «СОТРУДНИК» строится по типу поля: строка, сотрудник, справочник;
- *   — сотрудник находится по ФИО в любом порядке и с инициалом;
- *   — количество в подборе — целое;
- *   — приложенный файл отдаётся только из папки своего менеджера;
- *   — интерфейс (по исходнику): кнопки под КП, чип со скачиванием, «+ Позиция»
- *     внизу, сворачивание строк, закреплённые «?», стрелки вкладок.
+ *   — atlant.kpsync.zip совпадает с исходниками модуля;
+ *   — версия модуля одна: в репозитории, в ping и в карточке «Сайт (Битрикс)»;
+ *   — «Откуда брать описание» — с подписями, в группе «Сайт (Битрикс)», работает;
+ *   — экспорт в Excel есть в меню «Сервисы» и ставится установщиком.
  *
  * Запуск:  php tests/module_053.php
  */
@@ -29,9 +27,8 @@ register_shutdown_function(function () use ($configPath, $savedConfig, $tmpDb) {
 });
 
 require dirname(__DIR__) . '/lib/bootstrap.php';
-require_once ROOT . '/lib/request_items.php';
-require_once ROOT . '/lib/moysklad.php';
-require_once ROOT . '/lib/outbox.php';
+require_once ROOT . '/lib/bitrix.php';
+require_once ROOT . '/lib/kp_content.php';
 
 $fail = 0;
 function ok(string $what, bool $cond, string $extra = '') {
@@ -39,45 +36,72 @@ function ok(string $what, bool $cond, string $extra = '') {
     echo ($cond ? "  ok   " : "  FAIL ") . $what . ($extra !== '' ? "  [$extra]" : '') . "\n";
     if (!$cond) $fail++;
 }
-$js  = file_get_contents(ROOT . '/public/assets/js/app.js');
-$css = file_get_contents(ROOT . '/public/assets/css/app.css');
-$inv = file_get_contents(ROOT . '/public/api/invoices.php');
-$ms  = file_get_contents(ROOT . '/lib/moysklad.php');
 
-echo "Свёрнутый подбор\n";
-ok('свёрнутый блок не прячет .card__keep', str_contains($css, '.card--folded > :not(.card__title):not(.card__keep) { display: none !important; }'));
-ok('кнопки КП — .card__keep', (bool)preg_match('/class="flex flex--wrap card__keep"[^>]*>\s*<!--[^>]*-->\s*<span class="muted" data-match-saved><\/span>\s*<span data-kp-buttons/s', $js));
-ok('счета под кнопками — .card__keep', str_contains($js, '<div data-kp-invoices class="muted card__keep"'));
-ok('КП на телефоне — .card__keep', str_contains($js, '<div data-kp-slot class="card__keep"></div>'));
+$mod = ROOT . '/bitrix-module/atlant.kpsync';
 
-echo "Статус по имени\n";
-$states = ['Новый' => 's1', 'Резерв' => 's2', 'Отгружен' => 's3'];
-ok('точное имя', MoySklad::stateId($states, 'Резерв') === 's2');
-ok('регистр и пробелы', MoySklad::stateId($states, '  резерв ') === 's2');
-ok('нет такого — null', MoySklad::stateId($states, 'Архив') === null);
-ok('пустое — null', MoySklad::stateId($states, '') === null);
+echo "Архив модуля\n";
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(ROOT . '/tools/build_bitrix_zip.php') . ' --check 2>&1', $o, $rc);
+ok('atlant.kpsync.zip совпадает с исходниками', $rc === 0, implode(' ', $o));
+$z = new ZipArchive();
+ok('в корне архива папка atlant.kpsync/', $z->open(Bitrix::moduleZip()) === true
+    && $z->locateName('atlant.kpsync/install/index.php') !== false);
+$z->close();
 
-echo "Склад\n";
-$stores = [
-    ['id' => 'a', 'name' => 'Архивный', 'archived' => true],
-    ['id' => 'b', 'name' => 'Основной', 'archived' => false],
-    ['id' => 'c', 'name' => 'Витрина', 'archived' => false],
-];
-ok('выбранный живой склад', MoySklad::pickStore($stores, 'c', []) === 'c');
-ok('архивный не выбирается', MoySklad::pickStore($stores, 'a', []) === 'b');
-ok('затем первый из складов остатков', MoySklad::pickStore($stores, '', ['x', 'c']) === 'c');
-ok('затем первый неархивный', MoySklad::pickStore($stores, '', []) === 'b');
-ok('складов нет — null', MoySklad::pickStore([], 'b', ['b']) === null);
-ok('настройка склада есть', (Settings::SPEC['MS_ORDER_STORE'][2] ?? '') === 'store');
+echo "Версия\n";
+ok('версия в репозитории 1.2.0', Bitrix::bundledVersion() === '1.2.0', Bitrix::bundledVersion());
+$config = file_get_contents($mod . '/lib/config.php');
+ok('Config::version() читает install/version.php', str_contains($config, "install/version.php"));
+ok('ping отдаёт версию', str_contains(file_get_contents($mod . '/lib/catalog.php'), "'version'       => Config::version()"));
+ok('диагностика несёт версию репозитория', array_key_exists('bundled', Bitrix::diagnose()));
+ok('настройки модуля показывают версию и папку', str_contains(file_get_contents($mod . '/options.php'), 'ATLANT_KPSYNC_VERSION'));
 
-echo "Заказ и счёт (по исходнику)\n";
-ok('позиции товара встают в резерв', str_contains($ms, "'reserve' => (\$storeId !== '' && \$meta['meta']['type'] !== 'service') ? \$p['quantity'] : null"));
-ok('склад в заказе и счёте', substr_count($ms, "self::storeMeta(") >= 2);
-ok('сотрудник (owner) в заказе и счёте', str_contains($ms, "postWithOwner('/entity/customerorder'") && str_contains($ms, "postWithOwner('/entity/invoiceout'"));
-ok('склад передаётся из запроса', str_contains($inv, "MoySklad::defaultStoreId(trim((string)(\$_GET['store_id'] ?? '')))"));
-ok('список складов для выбора', str_contains($inv, "case 'stores':"));
-ok('клиент шлёт склад', str_contains($js, '&store_id=${encodeURIComponent(picked.store || \'\')}'));
-ok('окно выбора склада', str_contains($js, 'data-pick-store') && str_contains($js, 'pickInvoiceTarget()'));
+echo "Источник описания\n";
+$spec = Settings::SPEC['KP_DESCRIPTION_SOURCE'];
+ok('в группе «Сайт (Битрикс)»', $spec[0] === 'bitrix');
+ok('варианты с подписями', str_contains($spec[2], 'moysklad_first=') && str_contains($spec[2], 'bitrix_first='));
+ok('в подписях нет запятых (разделитель вариантов)', count(explode(',', substr($spec[2], 7))) === 2);
+ok('по умолчанию МойСклад', KpContent::pickDescription('ms', 'site') === 'ms');
+Settings::set('KP_DESCRIPTION_SOURCE', 'bitrix_first');
+ok('bitrix_first — сайт первым', KpContent::pickDescription('ms', 'site') === 'site');
+ok('bitrix_first — пустой сайт → МойСклад', KpContent::pickDescription('ms', '') === 'ms');
+Settings::forget('KP_DESCRIPTION_SOURCE');
+
+echo "Счётчики с сайта\n";
+Db::q("INSERT INTO products_cache (moysklad_id, name, article, site_url, site_description) VALUES ('p53', 'Жилет', 'A-53', 'https://s/1', 'Описание')");
+ok('ссылки с сайта считаются', (int)Db::val("SELECT COUNT(*) FROM products_cache WHERE site_url IS NOT NULL AND site_url<>''") === 1);
+$api = file_get_contents(ROOT . '/public/api/products.php');
+ok('stats отдаёт with_site_url и with_site_description', str_contains($api, "'with_site_url'") && str_contains($api, "'with_site_description'"));
+
+echo "Интерфейс (по исходнику)\n";
+$js = file_get_contents(ROOT . '/public/assets/js/app.js');
+ok('select с подписями — общий помощник', str_contains($js, 'selectOptions(type, value)') && str_contains($js, 'this.selectOptions(it.type, it.value)'));
+ok('карточка «Сайт (Битрикс)» в каталоге', str_contains($js, "id=\"bitrixCard\"") && str_contains($js, 'this.loadBitrixCard();'));
+ok('выбор источника сохраняется сразу', str_contains($js, 'values: {KP_DESCRIPTION_SOURCE: sel.value}'));
+ok('кнопка загрузки с сайта', str_contains($js, "admin.php?action=bitrix_sync_catalog"));
+ok('кнопка проверки связи', str_contains($js, "admin.php?action=bitrix_diagnose"));
+ok('ссылка на архив модуля', str_contains($js, 'api/admin.php?action=bitrix_module_zip'));
+ok('архив отдаётся из admin.php', str_contains(file_get_contents(ROOT . '/public/api/admin.php'), "case 'bitrix_module_zip':"));
+
+echo "Модуль Битрикс: экспорт в меню\n";
+$menu = file_get_contents($mod . '/admin/menu.php');
+ok('пункт в «Сервисах»', str_contains($menu, "'parent_menu' => 'global_menu_services'"));
+ok('без страницы в /bitrix/admin ведёт в настройки', str_contains($menu, 'settings.php?mid=atlant.kpsync'));
+ok('страница экспорта отдаёт файл по sessid', str_contains(file_get_contents($mod . '/admin/export.php'), "check_bitrix_sessid()"));
+$inst = file_get_contents($mod . '/install/index.php');
+ok('установщик копирует страницу в /bitrix/admin', str_contains($inst, "__DIR__ . '/admin', \$_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin'"));
+ok('удаление убирает её', str_contains($inst, "DeleteDirFiles(__DIR__ . '/admin'"));
+ok('заглушка ищет модуль в /local и /bitrix', str_contains(file_get_contents($mod . '/install/admin/atlant_kpsync_export.php'), '/local/modules/atlant.kpsync/admin/export.php'));
+foreach (['admin/menu.php', 'admin/export.php'] as $f) {
+    ok("есть перевод для $f", is_file($mod . '/lang/ru/' . $f));
+}
+$bad = [];
+$it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($mod, FilesystemIterator::SKIP_DOTS));
+foreach ($it as $f) {
+    if ($f->getExtension() !== 'php') continue;
+    exec(escapeshellarg(PHP_BINARY) . ' -l ' . escapeshellarg($f->getPathname()) . ' 2>&1', $lo, $lrc);
+    if ($lrc !== 0) $bad[] = $f->getFilename();
+}
+ok('все файлы модуля без синтаксических ошибок', !$bad, implode(', ', $bad));
 
 echo $fail ? "\nFAILED: $fail\n" : "\nAll passed\n";
 exit($fail ? 1 : 0);

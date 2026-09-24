@@ -204,7 +204,7 @@ switch ($action) {
         $employeeAttr = array_filter([
             trim((string)Settings::get('MS_EMPLOYEE_ATTR', 'СОТРУДНИК')) => trim((string)($managerCard['name'] ?? '')),
         ], fn($v, $k) => $k !== '' && $v !== '', ARRAY_FILTER_USE_BOTH);
-        // Склад заказа и счёта: выбор менеджера, иначе по умолчанию (модуль 053)
+        // Склад заказа и счёта: выбор менеджера, иначе по умолчанию (модуль 054)
         try {
             $storeId = MoySklad::defaultStoreId(trim((string)($_GET['store_id'] ?? '')));
         } catch (Throwable $e) {
@@ -312,7 +312,7 @@ switch ($action) {
     }
 
     /**
-     * Склады для выбора при выставлении счёта (модуль 053): неархивные и тот,
+     * Склады для выбора при выставлении счёта (модуль 054): неархивные и тот,
      * что стоит по умолчанию.
      */
     case 'stores': {

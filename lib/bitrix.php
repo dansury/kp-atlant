@@ -136,6 +136,7 @@ final class Bitrix {
             'webhook'  => self::webhook() !== '' ? 'задан' : 'не задан',
             'template' => (string)Settings::get('BITRIX_URL_TEMPLATE', ''),
             'module'   => self::modulePing(),
+            'bundled'  => self::bundledVersion(),
             'sample'   => null,
         ];
         $row = Db::one("SELECT moysklad_id, name, article, code, parent_id FROM products_cache
@@ -144,6 +145,20 @@ final class Bitrix {
             $out['sample'] = ['name' => $row['name'], 'article' => $row['article'], 'url' => self::resolve($row)];
         }
         return $out;
+    }
+
+    /** Версия модуля сайта в репозитории — с ней сравнивается `ping.version` (модуль 053). */
+    public static function bundledVersion(): string {
+        $file = ROOT . '/bitrix-module/atlant.kpsync/install/version.php';
+        if (!is_file($file)) return '';
+        $arModuleVersion = [];
+        include $file;
+        return (string)($arModuleVersion['VERSION'] ?? '');
+    }
+
+    /** Архив модуля сайта, собранный `tools/build_bitrix_zip.php`. */
+    public static function moduleZip(): string {
+        return ROOT . '/bitrix-module/atlant.kpsync.zip';
     }
 
     // ------------------------------------------------------- catalog export

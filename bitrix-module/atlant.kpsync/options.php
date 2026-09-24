@@ -61,6 +61,13 @@ $https = ($_SERVER['HTTPS'] ?? '') === 'on';
 $endpoint = ($https ? 'https://' : 'http://') . $host . '/bitrix/tools/atlant.kpsync/kp.php'
           . ($token !== '' ? '?token=' . $token : '');
 
+// Какая копия модуля работает: старая в /local/modules перекрывает /bitrix/modules
+$version = \Atlant\KpSync\Config::version();
+$root    = rtrim(str_replace('\\', '/', (string)$_SERVER['DOCUMENT_ROOT']), '/');
+$folder  = str_replace('\\', '/', __DIR__);
+if ($root !== '' && str_starts_with($folder, $root)) $folder = substr($folder, strlen($root));
+$exportPage = is_file($_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin/atlant_kpsync_export.php');
+
 $tabControl = new CAdminTabControl('tabControl', [
     ['DIV' => 'edit', 'TAB' => Loc::getMessage('ATLANT_KPSYNC_TAB'),
      'TITLE' => Loc::getMessage('ATLANT_KPSYNC_TAB_TITLE')],
@@ -72,6 +79,10 @@ $tabControl->Begin();
 <?php $tabControl->BeginNextTab(); ?>
 
     <tr>
+        <td width="40%"><?= Loc::getMessage('ATLANT_KPSYNC_VERSION') ?></td>
+        <td><b><?= htmlspecialcharsbx($version) ?></b> · <?= htmlspecialcharsbx($folder) ?></td>
+    </tr>
+    <tr>
         <td width="40%"><?= Loc::getMessage('ATLANT_KPSYNC_OPT_ENDPOINT') ?></td>
         <td><input type="text" size="70" readonly value="<?= htmlspecialcharsbx($endpoint) ?>"></td>
     </tr>
@@ -81,6 +92,7 @@ $tabControl->Begin();
             <a class="adm-btn" href="<?= $APPLICATION->GetCurPage() ?>?mid=<?= urlencode($module_id) ?>&amp;lang=<?= LANGUAGE_ID ?>&amp;export_xlsx=Y&amp;<?= bitrix_sessid_get() ?>"
                ><?= Loc::getMessage('ATLANT_KPSYNC_EXPORT_BTN') ?></a>
             <div style="color:#888;font-size:11px"><?= Loc::getMessage('ATLANT_KPSYNC_EXPORT_HINT') ?></div>
+            <div style="color:#888;font-size:11px"><?= Loc::getMessage($exportPage ? 'ATLANT_KPSYNC_EXPORT_MENU' : 'ATLANT_KPSYNC_EXPORT_REINSTALL') ?></div>
         </td>
     </tr>
     <tr class="heading"><td colspan="2"><?= Loc::getMessage('ATLANT_KPSYNC_OPT_SECTION') ?></td></tr>

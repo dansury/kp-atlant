@@ -24,3 +24,6 @@ $MESS['ATLANT_KPSYNC_EXPORT']             = 'Выгрузка каталога';
 $MESS['ATLANT_KPSYNC_EXPORT_BTN']         = 'Экспорт товаров в Excel';
 $MESS['ATLANT_KPSYNC_EXPORT_HINT']        = 'Файл .xlsx: внешний код, название, модификации с характеристиками, описание, ссылка на сайте. Те же инфоблоки и «только активные», что ниже';
 $MESS['ATLANT_KPSYNC_EXPORT_FAIL']        = 'Выгрузка не собралась:';
+$MESS['ATLANT_KPSYNC_VERSION']            = 'Версия модуля и папка';
+$MESS['ATLANT_KPSYNC_EXPORT_MENU']        = 'Та же выгрузка — в меню «Сервисы → Атлант: экспорт товаров в Excel»';
+$MESS['ATLANT_KPSYNC_EXPORT_REINSTALL']   = 'Чтобы выгрузка появилась и в меню «Сервисы», переустановите модуль (Удалить → Установить; токен и настройки сохранятся)';

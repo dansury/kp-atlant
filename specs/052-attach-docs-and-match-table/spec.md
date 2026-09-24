@@ -81,9 +81,9 @@ with its subject in `.hint-pin` (`inline-flex`, `nowrap`): «аналог» + ?,
 `ms_unlinked: {counterparty_id, org_id, name, inn, email}`. The client opens
 the existing «Контрагент в МойСклад» window (`msCreateForm`) prefilled with
 it; after «Создать в МойСклад» the invoice is issued again for the same
-choice (`kpInvoice(id, btn, picked)`, module 053), without reloading the page
+choice (`kpInvoice(id, btn, picked)`, module 054), without reloading the page
 (`App._msAfter`, cleared by `closeModal`). An unlinked organisation in the
-«Выставить счёт» dialog (module 053) is no longer disabled — choosing it opens
+«Выставить счёт» dialog (module 054) is no longer disabled — choosing it opens
 the same window.
 
 ## 5. «СОТРУДНИК» in the invoice

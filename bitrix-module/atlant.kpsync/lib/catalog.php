@@ -113,6 +113,7 @@ final class Catalog
         }
         return [
             'module'        => Config::MODULE_ID,
+            'version'       => Config::version(),
             'iblock_module' => $ok,
             'iblocks'       => $iblocks,
             'elements'      => $count,

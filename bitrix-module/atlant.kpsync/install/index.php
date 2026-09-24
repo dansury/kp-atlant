@@ -7,8 +7,8 @@ Loc::loadMessages(__FILE__);
 /**
  * Installer for «Атлант: выгрузка каталога для КП».
  *
- * Installing copies one file — the endpoint — into /bitrix/tools and writes a
- * random token. Nothing in the shop's data is touched, on install or on
+ * Installing copies the endpoint into /bitrix/tools, the export page stub into
+ * /bitrix/admin, and writes a random token. Nothing in the shop's data is touched, on install or on
  * removal: the module only reads the catalog, so uninstalling it can never
  * cost anything.
  */
@@ -77,12 +77,15 @@ class atlant_kpsync extends CModule
             true,
             true
         );
+        // «Сервисы → Атлант: экспорт товаров в Excel»
+        CopyDirFiles(__DIR__ . '/admin', $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin', true, true);
         return true;
     }
 
     public function UnInstallFiles(): bool
     {
         DeleteDirFilesEx(self::TOOLS_PATH);
+        DeleteDirFiles(__DIR__ . '/admin', $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin');
         return true;
     }
 }

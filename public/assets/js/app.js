@@ -962,7 +962,7 @@ const App = {
                 <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
             </div>
             <div data-delivery>${this.deliveryRow(opts.delivery)}</div>
-            <!-- .card__keep — видно и в свёрнутом подборе (модуль 053) -->
+            <!-- .card__keep — видно и в свёрнутом подборе (модуль 054) -->
             <div class="flex flex--wrap card__keep" style="margin-top:10px">
                 <!-- «Сохранить» больше нет: правки сохраняются сами (issue #60) -->
                 <span class="muted" data-match-saved></span>
@@ -2307,7 +2307,7 @@ const App = {
      * одной кнопкой или забрать отдельным файлом — как и просили.
      */
     async kpInvoice(id, btn, picked = null) {
-        // На какую организацию (модуль 029) и с какого склада (модуль 053) —
+        // На какую организацию (модуль 029) и с какого склада (модуль 054) —
         // решает менеджер; выбирать нечего — вопроса нет. Повтор после
         // заведения в МойСклад — с тем же выбором.
         picked = picked || await this.pickInvoiceTarget();
@@ -2361,7 +2361,7 @@ const App = {
     },
 
     /**
-     * На какую организацию счёт (модуль 029) и с какого склада (модуль 053).
+     * На какую организацию счёт (модуль 029) и с какого склада (модуль 054).
      *
      * Возвращает {org, store}: org — id организации, 0 — сама карточка;
      * store — id склада, '' — по умолчанию; `null` — менеджер передумал.
@@ -6134,6 +6134,16 @@ const App = {
                         onclick="App.showHint(event, this)">?</button>`;
     },
 
+    /** `select:value=Подпись,value2` → <option>; значение без «=» подписано само собой (модуль 053). */
+    selectOptions(type, value) {
+        return type.slice(7).split(',').map(o => {
+            const eq = o.indexOf('=');
+            const v = eq < 0 ? o : o.slice(0, eq);
+            const label = eq < 0 ? (o || '(без шифрования)') : o.slice(eq + 1);
+            return `<option value="${this.esc(v)}" ${String(value) === v ? 'selected' : ''}>${this.esc(label)}</option>`;
+        }).join('');
+    },
+
     /** Показать подсказку. Второе нажатие по тому же значку её закрывает. */
     showHint(ev, btn) {
         ev.stopPropagation();
@@ -6713,6 +6723,7 @@ const App = {
                 <button class="btn btn--primary" id="catalogImportBtn" onclick="App.importCatalog()">Загрузить файл</button>
                 <div id="catalogImportResult" style="margin-top:12px"></div>
             </div>
+            ${this.manager && this.manager.is_admin ? '<div class="card" id="bitrixCard"><div class="loading">Проверяем сайт...</div></div>' : ''}
             <div class="card" id="vectorCard"><div class="loading">Проверяем векторный индекс...</div></div>
             <div class="card">
                 <div class="card__title">Проверить поиск</div>
@@ -6727,6 +6738,7 @@ const App = {
         `;
         this.loadCatalogStats();
         this.loadVectorStats();
+        this.loadBitrixCard();
         this.loadPriceTypeList();
         try {
             const s = await this.api('admin.php?action=settings');
@@ -6737,6 +6749,96 @@ const App = {
             const def = (s.items || []).find(i => i.key === 'CATALOG_DEFAULT_PRICE_TYPE');
             if (el) el.value = (col && col.value) || (def && def.value) || '';
         } catch { /* a plain manager cannot read settings — the field just stays empty */ }
+    },
+
+    /**
+     * «Сайт (Битрикс)» в каталоге (модуль 053): откуда описание, загрузка ссылок
+     * и описаний с сайта, версия модуля на сайте и архив модуля из репозитория.
+     */
+    async loadBitrixCard() {
+        const card = document.getElementById('bitrixCard');
+        if (!card) return;
+        try {
+            const [s, st] = await Promise.all([
+                this.api('admin.php?action=settings'),
+                this.api('products.php?action=stats'),
+            ]);
+            const get = k => (s.items || []).find(i => i.key === k) || {};
+            const src = get('KP_DESCRIPTION_SOURCE');
+            const on = String(get('BITRIX_ENABLED').value) === '1';
+            const hook = !!get('BITRIX_WEBHOOK_URL').filled;
+            card.innerHTML = `
+                <div class="card__title">Сайт (Битрикс)${this.hint('bitrix', 'Модуль atlant.kpsync на сайте отдаёт ссылки на карточки товаров и их описания. Ссылка печатается в КП вместе с QR-кодом, описание подставляется, когда его нет в МойСклад (или первым — по выбору ниже).')}</div>
+                <p class="${on && hook ? 'muted' : 'no'}">Связь с сайтом: <b>${on ? 'включена' : 'выключена'}</b>
+                   · вебхук модуля: <b>${hook ? 'задан' : 'не задан'}</b>
+                   ${on && hook ? '' : ' — включите и вставьте адрес из модуля в <a href="#settings/all">«Все параметры → Сайт (Битрикс)»</a>'}</p>
+                <div class="form-group">
+                    <label for="bxDescSource">Откуда брать описание товара</label>
+                    <select id="bxDescSource" onchange="App.saveDescSource(this)">${this.selectOptions(src.type || 'select:moysklad_first,bitrix_first', src.value)}</select>
+                    <div class="muted">Для подбора и для КП: первый источник, а если там пусто — второй.</div>
+                </div>
+                <p>С сайта: ссылок <strong>${st.with_site_url ?? 0}</strong> · описаний <strong>${st.with_site_description ?? 0}</strong> из ${st.total}</p>
+                <div class="flex flex--wrap">
+                    <button class="btn btn--primary btn--sm" id="bxSyncBtn" onclick="App.bitrixSync()" ${on && hook ? '' : 'disabled'}>Загрузить ссылки и описания с сайта</button>
+                    <button class="btn btn--outline btn--sm" onclick="App.bitrixDiagnose()" ${on ? '' : 'disabled'}>Проверить связь</button>
+                    <a class="btn btn--outline btn--sm" href="api/admin.php?action=bitrix_module_zip">⬇ Модуль для сайта (.zip)</a>
+                </div>
+                <div id="bxOut" style="margin-top:8px"></div>
+                <p class="muted" style="margin-top:8px">Модуль: распаковать архив в <code>/local/modules/</code> поверх старой папки,
+                   затем в Битриксе «Установленные решения» → «Удалить» → «Установить» (токен и настройки сохранятся).
+                   Экспорт в Excel — в меню «Сервисы → Атлант: экспорт товаров в Excel» и в настройках модуля.</p>`;
+        } catch (err) {
+            card.innerHTML = `<div class="card__title">Сайт (Битрикс)</div><p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async saveDescSource(sel) {
+        try {
+            await this.api('admin.php?action=settings', {method: 'PUT', body: {values: {KP_DESCRIPTION_SOURCE: sel.value}}});
+            this.toast('Источник описания сохранён', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /** Выгрузка идёт кусками: пока сервер говорит «не всё», просим ещё. */
+    async bitrixSync() {
+        const btn = document.getElementById('bxSyncBtn');
+        const out = document.getElementById('bxOut');
+        const idle = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Загружаем с сайта...';
+        let checked = 0, updated = 0;
+        try {
+            for (let round = 0; round < 20; round++) {
+                const r = (await this.api('admin.php?action=bitrix_sync_catalog', {method: 'POST', body: {}})).sync;
+                checked += r.checked; updated += r.updated;
+                out.innerHTML = `<p class="muted">Просмотрено на сайте: ${checked} · сопоставлено с каталогом: ${updated}</p>`;
+                if (r.done || r.checked === 0) break;
+            }
+            if (!checked) out.innerHTML = '<p class="no">Сайт не отдал ни одного товара — нажмите «Проверить связь».</p>';
+            else this.toast('Ссылки и описания с сайта обновлены', 'success');
+            this.loadBitrixCard();
+        } catch (err) {
+            out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
+            btn.disabled = false; btn.textContent = idle;
+        }
+    },
+
+    async bitrixDiagnose() {
+        const out = document.getElementById('bxOut');
+        out.innerHTML = '<div class="loading">Спрашиваем сайт...</div>';
+        try {
+            const d = (await this.api('admin.php?action=bitrix_diagnose')).diag;
+            const m = d.module;
+            const lines = [`Сайт: <b>${this.esc(d.base || '—')}</b> · вебхук ${this.esc(d.webhook)}`];
+            if (!m) lines.push('<span class="no">Модуль atlant.kpsync не ответил: проверьте адрес вебхука с токеном и что модуль установлен.</span>');
+            else {
+                lines.push(`Модуль видит товаров: <b>${m.elements ?? 0}</b> · инфоблоки ${this.esc((m.iblocks || []).join(', ') || '—')} · артикул в ${this.esc(m.article_prop || '—')}`);
+                lines.push(m.version && m.version === d.bundled
+                    ? `Версия модуля: <b>${this.esc(m.version)}</b> — последняя`
+                    : `<span class="no">Версия модуля на сайте: <b>${this.esc(m.version || 'до 1.2.0')}</b>, в репозитории — <b>${this.esc(d.bundled)}</b>. Скачайте архив и переустановите модуль.</span>`);
+            }
+            if (d.sample) lines.push(`Пример: ${this.esc(d.sample.name)} (${this.esc(d.sample.article)}) → ${d.sample.url ? `<a href="${this.esc(d.sample.url)}" target="_blank" rel="noopener">${this.esc(d.sample.url)}</a>` : 'ссылка не найдена'}`);
+            out.innerHTML = lines.map(l => `<p>${l}</p>`).join('');
+        } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
     /** Типы цен, которые каталог реально знает — и после API, и после Excel. */
@@ -10241,8 +10343,7 @@ const App = {
                 if (it.type === 'bool') return `<select id="${id}">
                     <option value="1" ${String(it.value) === '1' ? 'selected' : ''}>Да</option>
                     <option value="0" ${String(it.value) !== '1' ? 'selected' : ''}>Нет</option></select>`;
-                if (it.type.startsWith('select:')) return `<select id="${id}">
-                    ${it.type.slice(7).split(',').map(o => `<option value="${o}" ${String(it.value) === o ? 'selected' : ''}>${o || '(без шифрования)'}</option>`).join('')}</select>`;
+                if (it.type.startsWith('select:')) return `<select id="${id}">${this.selectOptions(it.type, it.value)}</select>`;
                 if (it.type.startsWith('model:')) return this.modelSelect(id, catalogs[it.type.slice(6)] || [], String(it.value));
                 if (it.secret) return `<input type="password" id="${id}" placeholder="${it.filled ? 'задан ' + this.esc(it.tail) + ' — оставьте пустым, чтобы не менять' : 'не задан'}">`;
                 if (it.type === 'int') return `<input type="number" id="${id}" value="${this.esc(it.value)}">`;
@@ -10263,7 +10364,7 @@ const App = {
                         <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первая организация аккаунта)'}</option>
                     </select>`;
                 }
-                // Склад заказа под счёт — из списка складов МойСклад (модуль 053)
+                // Склад заказа под счёт — из списка складов МойСклад (модуль 054)
                 if (it.type === 'store') {
                     this.loadStoreOptions(id, String(it.value));
                     return `<select id="${id}">

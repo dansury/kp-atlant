@@ -150,6 +150,19 @@ try {
             require_once ROOT . '/lib/bitrix.php';
             jsonOk(['sync' => Bitrix::syncFromSite()]);
 
+        // Архив модуля сайта из репозитория (модуль 053)
+        case 'bitrix_module_zip':
+            require_once ROOT . '/lib/bitrix.php';
+            $zip = Bitrix::moduleZip();
+            if (!is_file($zip)) jsonError('Архива модуля нет на сервере — обновите код из GitHub', 404);
+            header('Content-Type: application/zip');
+            header('Content-Disposition: attachment; filename="atlant.kpsync-' . Bitrix::bundledVersion() . '.zip"');
+            header('Content-Length: ' . filesize($zip));
+            header('Cache-Control: no-store');
+            while (ob_get_level()) ob_end_clean();
+            readfile($zip);
+            exit;
+
         case 'test_llm':
             $provider = (string)($input['provider'] ?? $_GET['provider'] ?? '');
             try {

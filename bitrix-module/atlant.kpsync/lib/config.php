@@ -36,6 +36,14 @@ final class Config
         return (string)Option::get(self::MODULE_ID, $name, self::DEFAULTS[$name] ?? '');
     }
 
+    /** Версия из install/version.php — сервис КП сравнивает её со своей. */
+    public static function version(): string
+    {
+        $arModuleVersion = [];
+        include dirname(__DIR__) . '/install/version.php';
+        return (string)($arModuleVersion['VERSION'] ?? '');
+    }
+
     public static function enabled(): bool
     {
         return self::get('ENABLED') === 'Y';

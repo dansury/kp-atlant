@@ -1,4 +1,4 @@
-# Module 053 — КП buttons on a folded match table, the invoice's order in «Резерв» on a store with an employee
+# Module 054 — КП buttons on a folded match table, the invoice's order in «Резерв» on a store with an employee
 
 Source: the request of 2026-09-24: the КП buttons (🔄 Пересобрать · Открыть ·
 ⬇ Word · ⬇ PDF · 📎 В письмо · 🧾 Счёт · Убрать) must stay visible when the
