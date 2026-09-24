@@ -1,3 +1,30 @@
+## 0 Task intake — never skip a request (highest priority)
+
+Applies to every user message, including follow-ups and "also…" remarks.
+
+0.1 **Split.** Before any other tool call, split the message into atomic items:
+one verb + one object each. Every sentence, list item, comma-joined clause,
+"и/также/ещё/кстати", aside in parentheses, and pasted screenshot/issue text is a
+candidate item. Implied requirements count too ("same as X" → X's behaviour).
+Unclear item → still list it, mark `?`, decide by best practice or ask.
+
+0.2 **Register.** Put every item into the task list (TaskCreate) with the user's
+wording quoted, numbered R1…Rn. Show the numbered list to the user in the first
+reply ("Понял так: R1 …, R2 …") so a misread is caught early. Items that
+arrive mid-work are appended as new R-numbers, never folded silently into others.
+
+0.3 **Work.** Mark one item in_progress at a time; mark completed only when
+code + spec are done for it. Never mark completed on "almost" — split the rest
+into a new item.
+
+0.4 **Verify before the final reply.** Re-read the ORIGINAL user message(s) word
+by word (not the task list — the list may already be wrong) and check nothing
+is missing from R1…Rn. Then run the checks (tests/lint, visual check for UI).
+
+0.5 **Report as a table**, one row per item, no exceptions:
+`| # | Request (quote) | Status ✅/⚠️/❌ | Where (file:line / commit) |`.
+⚠️/❌ rows say why and go to TODO.md. Never write "all done" without the table.
+
 ## 1 SPEC-driven development
 
 1.1 Lookup file -> spec mapping in spec.md. It is a thin navigation index — read once, then open ONE /specs/<module>.md for the relevant area. Never read the whole /specs/ folder.
