@@ -62,29 +62,45 @@ final class Fulfillment {
      * Карточки доски во всех колонках, кроме «Закрыто» (issue #88): заказы, по
      * которым склад вписал трек-номер, получают черновик письма клиенту.
      *
-     * @return array{checked:int,shipped:int,errors:list<string>}
+     * Отгрузки (issue #112): у заказа их может быть несколько, и трек склад
+     * вписывает то в заказ, то в саму отгрузку. Каждая отгрузка запоминается
+     * один раз (`order_demands`): новая — уведомление, которое помечает
+     * карточку; с треком — ещё и трек в черновике ответа.
+     *
+     * $onlyCp — только эта компания: «Обновить из МойСклад» в её карточке.
+     *
+     * @return array{checked:int,shipped:int,demands:int,errors:list<string>}
      */
-    public static function checkShipments(int $limit = 30): array {
-        $res = ['checked' => 0, 'shipped' => 0, 'errors' => []];
-        $boardId = (int)Boards::singleton()['id'];
-        $cps = array_map('intval', array_column(Db::all(
-            "SELECT DISTINCT bc.counterparty_id FROM board_cards bc
-               JOIN board_columns col ON col.id = bc.column_id
-             WHERE col.board_id=? AND COALESCE(col.kind, '') <> 'closed'
-               AND bc.counterparty_id IS NOT NULL AND bc.dismissed_at IS NULL", [$boardId]), 'counterparty_id'));
+    public static function checkShipments(int $limit = 30, ?int $onlyCp = null): array {
+        $res = ['checked' => 0, 'shipped' => 0, 'demands' => 0, 'errors' => []];
+        if ($onlyCp) {
+            $cps = [Crm::rootId($onlyCp)];
+        } else {
+            $boardId = (int)Boards::singleton()['id'];
+            $cps = array_map('intval', array_column(Db::all(
+                "SELECT DISTINCT bc.counterparty_id FROM board_cards bc
+                   JOIN board_columns col ON col.id = bc.column_id
+                 WHERE col.board_id=? AND COALESCE(col.kind, '') <> 'closed'
+                   AND bc.counterparty_id IS NOT NULL AND bc.dismissed_at IS NULL", [$boardId]), 'counterparty_id'));
+        }
         if (!$cps) return $res;
 
         $in = implode(',', array_fill(0, count($cps), '?'));
         $ids = array_merge($cps, array_map('intval', array_column(
             Db::all("SELECT id FROM counterparties WHERE merged_into_id IN ($in)", $cps), 'id')));
         $in = implode(',', array_fill(0, count($ids), '?'));
+        // Ещё не отправленные — первыми: у них отгрузка вот-вот появится.
+        // Отправленный заказ смотрим ещё 30 дней — вторая отгрузка тоже новость
         $orders = Db::all(
-            "SELECT * FROM orders WHERE counterparty_id IN ($in) AND shipped_notified_at IS NULL
-               AND COALESCE(moment, created_at) >= ? ORDER BY id DESC LIMIT " . max(1, $limit),
-            [...$ids, date('Y-m-d H:i:s', time() - 120 * 86400)]);
+            "SELECT * FROM orders WHERE counterparty_id IN ($in)
+               AND COALESCE(moment, created_at) >= ?
+               AND (shipped_notified_at IS NULL OR shipped_notified_at >= ?)
+             ORDER BY (shipped_notified_at IS NULL) DESC, id DESC LIMIT " . max(1, $limit),
+            [...$ids, date('Y-m-d H:i:s', time() - 120 * 86400), date('Y-m-d H:i:s', time() - 30 * 86400)]);
 
         $serviceAttr = (string)Settings::get('MS_SHIP_SERVICE_ATTR', 'СЛУЖБА ДОСТАВКИ');
         $trackAttr   = (string)Settings::get('MS_TRACK_ATTR', 'ТРЕК-НОМЕР');
+        $hasDemands  = Db::hasTable('order_demands');
         foreach ($orders as $o) {
             $res['checked']++;
             try {
@@ -95,12 +111,83 @@ final class Fulfillment {
                 continue;
             }
             $attrs = (array)($ms['attributes'] ?? []);
-            $track = self::attr($attrs, $trackAttr);
-            if ($track === '') continue;
-            self::shipped($o, self::attr($attrs, $serviceAttr), $track);
-            $res['shipped']++;
+            $orderTrack   = self::attr($attrs, $trackAttr);
+            $orderService = self::attr($attrs, $serviceAttr);
+
+            $demands = [];
+            if ($hasDemands) {
+                try {
+                    $demands = self::$fetchDemands ? (array)(self::$fetchDemands)((string)$o['moysklad_id'])
+                                                   : MoySklad::getDemandsByOrder((string)$o['moysklad_id']);
+                } catch (Throwable $e) {
+                    $res['errors'][] = "Отгрузки заказа {$o['name']}: " . $e->getMessage();
+                }
+            }
+            $notified = [];   // треки, о которых по этому заказу уже сказано
+            if (!empty($o['shipped_notified_at']) && (string)$o['ship_track'] !== '') $notified[] = (string)$o['ship_track'];
+            foreach ($demands as $d) {
+                $r = self::demand($o, $d, count($demands) === 1 ? $orderTrack : '', $orderService,
+                                  $trackAttr, $serviceAttr, $notified);
+                $res['demands'] += $r['new'];
+                $res['shipped'] += $r['shipped'];
+            }
+            // Трек в самом заказе, отгрузки ещё нет (или её не прочитать) — как раньше
+            if ($orderTrack !== '' && empty($o['shipped_notified_at']) && !in_array($orderTrack, $notified, true)) {
+                self::shipped($o, $orderService, $orderTrack);
+                $res['shipped']++;
+            }
         }
         return $res;
+    }
+
+    /** Подмена чтения отгрузок в тестах: fn(string $msOrderId): list<array> */
+    public static $fetchDemands = null;
+
+    /**
+     * Одна отгрузка заказа: запомнить, сказать о новой, отдать трек в письмо.
+     * @param list<string> $notified треки заказа, о которых уже сказано (дополняется)
+     * @return array{new:int,shipped:int}
+     */
+    private static function demand(array $o, array $d, string $orderTrack, string $orderService,
+                                   string $trackAttr, string $serviceAttr, array &$notified): array {
+        $out = ['new' => 0, 'shipped' => 0];
+        $msId = (string)($d['id'] ?? '');
+        if ($msId === '') return $out;
+        $attrs = (array)($d['attributes'] ?? []);
+        $track = self::attr($attrs, $trackAttr) ?: $orderTrack;
+        $service = self::attr($attrs, $serviceAttr) ?: $orderService;
+        $name = (string)($d['name'] ?? '');
+
+        $row = Db::one("SELECT * FROM order_demands WHERE moysklad_id=?", [$msId]);
+        if (!$row) {
+            $id = Db::insert('order_demands', [
+                'order_id' => (int)$o['id'], 'moysklad_id' => $msId, 'name' => $name ?: null,
+                'moment' => (string)($d['moment'] ?? '') ?: null,
+                'ship_service' => $service ?: null, 'ship_track' => $track ?: null,
+                'seen_at' => date('Y-m-d H:i:s'),
+            ]);
+            $row = Db::one("SELECT * FROM order_demands WHERE id=?", [$id]);
+            $out['new'] = 1;
+        } elseif ($track !== '' && (string)$row['ship_track'] !== $track) {
+            Db::update('order_demands', ['ship_track' => $track, 'ship_service' => $service ?: null], 'id=?', [(int)$row['id']]);
+        }
+
+        if ($track !== '' && empty($row['notified_at'])) {
+            if (!in_array($track, $notified, true)) {
+                self::shipped($o, $service, $track, $name);
+                $out['shipped'] = 1;
+                $notified[] = $track;
+            }
+            Db::update('order_demands', ['notified_at' => date('Y-m-d H:i:s')], 'id=?', [(int)$row['id']]);
+        } elseif ($out['new'] && $track === '') {
+            // Отгрузка есть, трека ещё нет — карточка помечается, письмо подождёт трек
+            $cpId = Crm::rootId((int)$o['counterparty_id']);
+            $company = (string)(Db::val("SELECT name FROM counterparties WHERE id=?", [$cpId]) ?: '');
+            Notifier::notify('order_shipped', "Отгрузка" . ($name !== '' ? " $name" : '') . " по заказу {$o['name']}",
+                             trim(($company !== '' ? "$company: " : '') . 'трек-номер ещё не вписан — письмо появится, когда склад его внесёт'),
+                             'counterparty', $cpId, self::managerFor($o, $cpId), '/#mail/company/' . $cpId);
+        }
+        return $out;
     }
 
     /** Значение доп. поля по имени, без учёта регистра и «ё». */
@@ -113,21 +200,36 @@ final class Fulfillment {
     }
 
     /** Трек есть: черновик письма, карточка с ним, уведомление. */
-    public static function shipped(array $order, string $service, string $track): int {
+    public static function shipped(array $order, string $service, string $track, string $demandName = ''): int {
         $cpId = Crm::rootId((int)$order['counterparty_id']);
         $company = (string)(Db::val("SELECT name FROM counterparties WHERE id=?", [$cpId]) ?: '');
         $managerId = self::managerFor($order, $cpId);
         $msg = self::shipmentText((string)$order['name'], $service, $track);
 
-        // Ответом в переписку запроса, если там у менеджера нет своего черновика
+        // Ответом в переписку запроса
         $letter = null;
         if (!empty($order['request_id'])) {
             $letter = Db::one("SELECT id, thread_key FROM mail_messages WHERE request_id=? AND direction='in'
                                ORDER BY date_at DESC, id DESC LIMIT 1", [(int)$order['request_id']]);
         }
-        if ($letter && Db::val("SELECT 1 FROM mail_drafts WHERE manager_id=? AND (mail_message_id=? OR thread_key=?)",
-                               [$managerId, (int)$letter['id'], (string)$letter['thread_key']])) {
-            $letter = null;
+        // У менеджера уже пишется ответ в эту переписку (или компании) — трек
+        // встаёт в ЕГО черновик, а не во второй рядом (issue #112)
+        $own = $letter
+            ? Db::one("SELECT id, body FROM mail_drafts WHERE manager_id=? AND (mail_message_id=? OR thread_key=?)
+                       ORDER BY id DESC LIMIT 1", [$managerId, (int)$letter['id'], (string)$letter['thread_key']])
+            : Db::one("SELECT id, body FROM mail_drafts WHERE manager_id=? AND counterparty_id=?
+                       ORDER BY id DESC LIMIT 1", [$managerId, $cpId]);
+        if ($own) {
+            $body = (string)$own['body'];
+            if (!str_contains($body, $track)) {
+                Db::update('mail_drafts', ['body' => $body . self::trackParagraph((string)$order['name'], $service, $track),
+                                           'updated_at' => date('Y-m-d H:i:s')], 'id=?', [(int)$own['id']]);
+            }
+            $draftId = (int)$own['id'];
+            Boards::draftCard($draftId, ['counterparty_id' => $cpId, 'title' => $company, 'manager_id' => $managerId]);
+            self::markShipped($order, $service, $track);
+            self::notifyShipped($order, $company, $service, $track, $demandName, $cpId, $managerId);
+            return $draftId;
         }
 
         $draftId = Db::insert('mail_drafts', [
@@ -142,13 +244,34 @@ final class Fulfillment {
             'updated_at'      => date('Y-m-d H:i:s'),
         ]);
         Boards::draftCard($draftId, ['counterparty_id' => $cpId, 'title' => $company, 'manager_id' => $managerId]);
+        self::markShipped($order, $service, $track);
+        self::notifyShipped($order, $company, $service, $track, $demandName, $cpId, $managerId);
+        return $draftId;
+    }
+
+    private static function markShipped(array $order, string $service, string $track): void {
         Db::update('orders', ['ship_service' => $service ?: null, 'ship_track' => $track,
                               'shipped_notified_at' => date('Y-m-d H:i:s')], 'id=?', [(int)$order['id']]);
+    }
 
+    private static function notifyShipped(array $order, string $company, string $service, string $track,
+                                          string $demandName, int $cpId, int $managerId): void {
         Notifier::notify('order_shipped', "Заказ {$order['name']} отправлен — письмо клиенту готово",
-                         trim("$company: " . ($service !== '' ? "$service, " : '') . "трек $track"),
+                         trim("$company: " . ($demandName !== '' ? "отгрузка $demandName, " : '')
+                              . ($service !== '' ? "$service, " : '') . "трек $track"),
                          'counterparty', $cpId, $managerId, '/#mail/company/' . $cpId);
-        return $draftId;
+    }
+
+    /** Абзац с треком — дописывается в черновик, который менеджер уже пишет. */
+    public static function trackParagraph(string $orderName, string $service, string $track): string {
+        $e = fn(string $s) => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
+        $html = '<p>Заказ № ' . $e($orderName) . ' отправлен' . ($service !== '' ? ' службой ' . $e($service) : '')
+              . '. Трек-номер: <b>' . $e($track) . '</b>';
+        if (self::isCdek($service)) {
+            $url = $e(self::cdekUrl($track));
+            $html .= '<br>Отследить: <a href="' . $url . '">' . $url . '</a>';
+        }
+        return $html . '</p>';
     }
 
     /** Чей черновик: менеджер заказа, карточки, первый администратор. */

@@ -5,11 +5,13 @@
  */
 class Db {
     private static ?PDO $pdo = null;
+    private static string $path = '';
 
     // Init DB connection
     public static function init(string $path): void {
         $dir = dirname($path);
         if (!is_dir($dir)) mkdir($dir, 0755, true);
+        self::$path = $path;
         self::$pdo = new PDO("sqlite:$path", null, null, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -17,6 +19,17 @@ class Db {
         self::$pdo->exec('PRAGMA journal_mode=WAL');
         self::$pdo->exec('PRAGMA foreign_keys=ON');
         self::$pdo->exec('PRAGMA busy_timeout=15000');
+    }
+
+    /** File of the open database ('' before init). */
+    public static function path(): string {
+        return self::$path;
+    }
+
+    /** SQLITE_BUSY / SQLITE_LOCKED — another writer holds the file. */
+    public static function isLocked(Throwable $e): bool {
+        $m = $e->getMessage();
+        return stripos($m, 'database is locked') !== false || stripos($m, 'database table is locked') !== false;
     }
 
     public static function pdo(): PDO {

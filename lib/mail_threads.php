@@ -241,14 +241,33 @@ final class MailThreads {
      * него в переписке стоит наше письмо, оно прочитано делом, а не галочкой.
      * Счётчик «Письма 2» висел и тогда, когда на доске давно всё разобрано.
      */
-    public static function unreadCount(): int {
+    public static function unreadCount(?array $manager = null): int {
+        // Считаются только письма, которые менеджер может увидеть и погасить
+        // (issue #97): письмо чужого ящика или с карточки, снятой с доски после
+        // него, держало на кнопке «2», которое убрать было нечем
+        $where = '';
+        $params = [];
+        if ($manager && empty($manager['is_admin'])) {
+            $ids = array_map(fn($b) => (int)$b['id'], Mailboxes::forManager($manager));
+            $where = $ids ? ' AND (m.mailbox_id IS NULL OR m.mailbox_id IN (' . implode(',', $ids) . '))'
+                          : ' AND m.mailbox_id IS NULL';
+        }
+        $dismissed = Db::hasColumn('board_cards', 'dismissed_at')
+            ? " AND NOT EXISTS (SELECT 1 FROM board_cards d
+                               WHERE d.dismissed_at IS NOT NULL AND d.dismissed_at >= m.date_at
+                                 AND (d.thread_key = m.thread_key
+                                      OR (m.counterparty_id IS NOT NULL
+                                          AND d.counterparty_id IN (m.counterparty_id,
+                                              (SELECT merged_into_id FROM counterparties WHERE id = m.counterparty_id)))))"
+            : '';
         return (int)Db::val(
             "SELECT COUNT(*) FROM mail_messages m
              WHERE m.direction='in' AND m.is_read=0 AND m.archived_at IS NULL
                AND NOT EXISTS (SELECT 1 FROM mail_messages o
                                WHERE o.thread_key = m.thread_key AND o.thread_key IS NOT NULL
                                  AND o.direction='out'
-                                 AND (o.date_at > m.date_at OR (o.date_at = m.date_at AND o.id > m.id)))");
+                                 AND (o.date_at > m.date_at OR (o.date_at = m.date_at AND o.id > m.id)))"
+            . $dismissed . $where, $params);
     }
 
     /**

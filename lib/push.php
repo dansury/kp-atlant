@@ -157,6 +157,9 @@ final class Push {
 
     /** Absolute URL the notification opens — the phone has no relative context. */
     private static function appUrl(string $path): string {
+        // An issue link is already a whole address — prefixing it made
+        // https://kp…/https://github.com/… (issue #104)
+        if (preg_match('#^https?://#i', $path)) return $path;
         $base = rtrim((string)Settings::get('APP_URL', ''), '/');
         if ($base === '') {
             $scheme = (($_SERVER['HTTPS'] ?? '') !== '' && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';

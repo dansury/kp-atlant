@@ -158,6 +158,7 @@ $board = Boards::singleton();
 $work = Boards::workColumn((int)$board['id']);
 $cardId = Boards::addCard((int)$work['id'], ['counterparty_id' => $cpId]);
 Db::insert('orders', ['moysklad_id' => 'ms-o1', 'name' => '2010322940883-1', 'sum' => 5000, 'counterparty_id' => $cpId, 'manager_id' => $managerId]);
+Fulfillment::$fetchDemands = fn($id) => [];
 Fulfillment::$fetchOrder = fn($id) => ['attributes' => ['СЛУЖБА ДОСТАВКИ' => 'СДЭК', 'ТРЕК-НОМЕР' => '2010322940883']];
 $r = Fulfillment::checkShipments();
 ok('заказ карточки «В работе» проверен', $r['checked'] === 1 && $r['shipped'] === 1, json_encode($r));
@@ -174,8 +175,10 @@ $cp2 = Db::insert('counterparties', ['name' => 'ООО «Закрыто»']);
 $closed = Db::one("SELECT id FROM board_columns WHERE board_id=? AND kind='closed'", [(int)$board['id']]);
 Boards::addCard((int)$closed['id'], ['counterparty_id' => $cp2]);
 Db::insert('orders', ['moysklad_id' => 'ms-o2', 'name' => '77', 'sum' => 1, 'counterparty_id' => $cp2]);
+$asked = [];
+Fulfillment::$fetchOrder = function ($id) use (&$asked) { $asked[] = $id; return ['attributes' => []]; };
 $r = Fulfillment::checkShipments();
-ok('«Закрыто» не проверяется', $r['checked'] === 0, json_encode($r));
+ok('«Закрыто» не проверяется', !in_array('ms-o2', $asked, true), json_encode($asked));
 
 // ===================================================================== 5
 echo "\n5. Интерфейс (по исходнику)\n";

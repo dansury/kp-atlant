@@ -337,7 +337,7 @@ final class RequestItems {
             }
             unset($cand);
             $row['variant_stock'] = $variantStock[(string)($row['moysklad_product_id'] ?? '')]['items'] ?? [];
-            $row['price_options'] = $prices[$row['moysklad_product_id']] ?? [];
+            $row['price_options'] = $prices[(string)($row['moysklad_product_id'] ?? '')] ?? [];
             // Вилка цен общего товара (модуль 036): своей цены у него нет, а у
             // модификаций она разная — строка стоит «от» дешёвой «до» дорогой.
             // Вилка живёт, только пока цена строки и есть низ этой вилки:

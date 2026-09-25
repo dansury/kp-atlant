@@ -208,7 +208,8 @@ ok('уведомление создано', $n !== null);
 ok('и адресовано администратору', (int)($n['manager_id'] ?? 0) === $mgr);
 ok('в заголовке — откуда ошибка', str_contains((string)($n['title'] ?? ''), 'moysklad'), (string)($n['title'] ?? ''));
 ok('в теле — текст ошибки', str_contains((string)($n['body'] ?? ''), 'не принял счёт'));
-ok('ссылка ведёт в журнал ошибок', ($n['url'] ?? '') === '/#settings/logs/error', (string)($n['url'] ?? ''));
+// Ведёт на саму запись журнала (issue #113)
+ok('ссылка ведёт в журнал ошибок', str_starts_with((string)($n['url'] ?? ''), '/#settings/logs/error/'), (string)($n['url'] ?? ''));
 
 // Повтор той же ошибки внутри окна дедупликации не звонит второй раз
 $before = (int)Db::val("SELECT COUNT(*) FROM notifications WHERE type='app_error'");

@@ -150,11 +150,43 @@ final class MailSync {
             // the company it was written to (module 021).
             if ($direction === 'out') self::registerOutbound($id);
         }
+        if ($direction === 'in') {
+            try { self::syncSeen($box, $folder, $reader); }
+            catch (Throwable $e) { Logger::exception('mail', $e, ['mailbox_id' => $box['id'], 'step' => 'seen']); }
+        }
         $reader->close();
 
         if ($maxUid > $since) Db::update('mailboxes', [$uidColumn => $maxUid], 'id=?', [$box['id']]);
         if ($stored) Logger::info('mail', "Ящик «{$box['name']}»: $folder — новых писем $stored", ['mailbox_id' => $box['id']]);
         return $stored;
+    }
+
+    /**
+     * Прочитанное в самом ящике — прочитано и здесь (issue #97). Счётчик
+     * непрочитанных стоял на «2» неделями: письма давно открыли в веб-почте,
+     * а сервис об этом не знал. Спрашиваем только свои непрочитанные письма,
+     * последние 300 — это одна короткая команда FETCH FLAGS.
+     *
+     * @param object $reader EmailReader с открытой папкой (или заглушка в тестах)
+     * @return int сколько писем стало прочитанными
+     */
+    public static function syncSeen(array $box, string $folder, $reader): int {
+        if ((int)Settings::get('MAIL_SYNC_SEEN', 1) !== 1) return 0;
+        $rows = Db::all(
+            "SELECT id, uid FROM mail_messages
+             WHERE mailbox_id=? AND direction='in' AND is_read=0 AND uid > 0 AND folder=?
+             ORDER BY id DESC LIMIT 300", [(int)$box['id'], $folder]);
+        if (!$rows) return 0;
+        $byUid = [];
+        foreach ($rows as $r) $byUid[(int)$r['uid']][] = (int)$r['id'];
+        $n = 0;
+        foreach ($reader->seenUids(array_keys($byUid)) as $uid) {
+            foreach ($byUid[(int)$uid] ?? [] as $id) {
+                $n += Db::update('mail_messages', ['is_read' => 1], 'id=? AND is_read=0', [$id]);
+            }
+        }
+        if ($n) Logger::info('mail', "Ящик «{$box['name']}»: прочитано в почте — $n", ['mailbox_id' => $box['id']]);
+        return $n;
     }
 
     /**

@@ -95,7 +95,8 @@ final class Logger {
             if (!$admins) return;
             $title = 'Ошибка: ' . $channel;
             $body  = self::clip($message, 300);
-            $url   = '/#settings/logs/error';
+            // Ведёт на саму запись: из уведомления её копируют одним нажатием (issue #113)
+            $url   = '/#settings/logs/error/' . $logId;
             foreach ($admins as $a) {
                 Notifier::notify('app_error', $title, $body, 'log', $logId, (int)$a['id'], $url);
             }
@@ -164,6 +165,60 @@ final class Logger {
             'channels' => array_column(Db::all("SELECT DISTINCT channel FROM app_log ORDER BY channel"), 'channel'),
             'counts'   => self::counts(),
         ];
+    }
+
+    /** One row by id — the entry a notification points at. */
+    public static function get(int $id): ?array {
+        return Db::one("SELECT * FROM app_log WHERE id=?", [$id]);
+    }
+
+    /**
+     * Запись лога текстом — со всем контекстом, как её копируют в поддержку
+     * (issue #113): уровень, источник, когда и сколько раз, сообщение, файл,
+     * адрес запроса и контекст JSON. Один формат на кнопку «Копировать»,
+     * выгрузку журнала и файл в обращении.
+     */
+    public static function entryText(array $r): string {
+        $head = $r['level'] . ' · ' . $r['channel'] . ' · ' . self::human((string)$r['created_at']);
+        if ((int)($r['repeat_count'] ?? 1) > 1) {
+            $head .= ' · повторилось ' . (int)$r['repeat_count'] . ' раз, последний ' . self::human((string)($r['last_at'] ?? ''));
+        }
+        $parts = [$head, (string)$r['message']];
+        if (!empty($r['source'])) $parts[] = (string)$r['source'];
+        if (!empty($r['request_uri'])) $parts[] = (string)$r['request_uri'];
+        $ctx = (string)($r['context'] ?? '');
+        if ($ctx !== '') {
+            $j = json_decode($ctx, true);
+            $parts[] = is_array($j) ? (string)json_encode($j, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : $ctx;
+        }
+        return implode("\n\n", $parts);
+    }
+
+    /**
+     * Весь актуальный журнал одним текстом — для «Скачать журнал» и файла в
+     * обращении. Фильтр тот же, что у списка; предел — 5000 записей.
+     */
+    public static function export(array $f = []): string {
+        $rows = [];
+        $offset = 0;
+        do {
+            $page = self::query($f + ['limit' => 500, 'offset' => $offset])['items'];
+            array_push($rows, ...$page);
+            $offset += 500;
+        } while (count($page) === 500 && $offset < 5000);
+        $head = 'Журнал Atlant КП · выгружен ' . self::human(self::now())
+              . ' · записей: ' . count($rows)
+              . (!empty($f['level']) ? ' · уровень от ' . $f['level'] : '')
+              . (!empty($f['channel']) ? ' · источник ' . $f['channel'] : '')
+              . (!empty($f['q']) ? ' · поиск «' . $f['q'] . '»' : '');
+        $sep = "\n\n" . str_repeat('─', 60) . "\n\n";
+        return $head . $sep . implode($sep, array_map([self::class, 'entryText'], $rows)) . "\n";
+    }
+
+    /** «25.09.2026, 03:52:34» — как дата стоит на экране. */
+    private static function human(string $at): string {
+        $ts = strtotime($at);
+        return $ts ? date('d.m.Y, H:i:s', $ts) : $at;
     }
 
     /** Errors and warnings of the last 24 hours — the badge in the header. */

@@ -39,6 +39,8 @@ try {
         case 'submit':
             if (!Support::enabled()) jsonError('Обратная связь выключена в настройках');
             // Администратор сам и есть ревью: его обращение сразу уходит в issue (issue #90)
+            // Журнал прикладывает только тот, кто его видит, — администратор
+            if (!$isAdmin) unset($input['attach_log']);
             $res = Support::submit((int)$manager['id'], $input + ($isAdmin ? ['quiet' => 1] : []),
                                    (array)($input['files'] ?? []));
             if ($isAdmin && Support::repo() !== '' && Support::token() !== '') {

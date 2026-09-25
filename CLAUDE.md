@@ -375,7 +375,9 @@ The company feed («Заметки и события») carries NOTES and MILEST
 still records every letter — `last_inbound_at`/`last_outbound_at` and the unanswered highlight
 depend on it — so narrow what is SHOWN, never what is written. Inside a conversation the
 folding is a mail client's: our own answers and letters already read collapse to one line with
-the beginning of their text, and what is open is the unread and the client's last letter.
+the beginning of their text, and what is open is the unread and the LAST letter — ours
+included, and the company card lands focused on it (module 061): a card is opened to see where
+the conversation stopped.
 
 One letter is ONE row of the archive (module 021). `MailArchive::exists()` is the only place
 that decides a letter is already here, and with `MAIL_DEDUP` — on out of the box — it looks
@@ -404,6 +406,11 @@ asked otherwise — a three-year archive would open a company card per newslette
 calls `Crm::logEvent()`, which would stamp `last_inbound_at = now` and make a 2022 letter look
 like a client waiting for an answer today. An mbox is parsed by `Mime`, in plain PHP: importing
 one is exactly what an operator does when the host has no `ext/imap` at all. The file itself arrives in PIECES: a Gmail export is hundreds of megabytes, nginx answers `413` with an HTML page before PHP is reached, and Google will not cut the export below a gigabyte — so the browser cuts it (`mbox_upload_init` / `_chunk` / `_finish`, `storage/mbox/.parts/`), halves the piece on every refusal and resumes from the byte the server actually holds. A piece the file already has is never appended twice and a piece out of place is refused: a letter cut in half is worse than a failed upload.
+
+A МойСклад shipment (отгрузка) is news once (`order_demands`, module 061): a new one marks the
+card, and its track goes INTO the reply the manager is already writing, not into a second
+draft beside it. A document МойСклад filed under another counterparty is linked to the card by
+its number (`MsSync::linkDocuments()`) — a manual link beats the automatic one.
 
 Anything that archives a letter must set `thread_key`, and an answer must inherit the thread
 of the letter it answers, whichever mailbox it leaves from. A copy in the IMAP
@@ -525,6 +532,15 @@ must never lie: dragging draws the move itself, so after the drop the board is r
 SERVER'S ANSWER, and a drag that ended in nothing puts it back as it was. What is shown and what
 is saved are one and the same, otherwise a page refresh undoes work the person already saw
 done. Filters, search and checkmarks survive such a redraw.
+A notice that asks for an action — «Сообщить складу», an order shipped, a bounced letter —
+MARKS its card (module 061, `Notifier::cardNotices()`): the card glows and rises until the
+manager ticks «✓ Сделано» in the card itself. Opening the card or tapping the push clears
+nothing. A column with a «Лимит карточек» shows its first batch and loads the rest by «▾ ещё»,
+batch by batch; a search still reaches the cards past the limit (`Boards::searchCards()`).
+The unread counter counts only what the manager can see and clear
+(`MailThreads::unreadCount($manager)`), and a letter read in webmail is read here too
+(`MailSync::syncSeen()`) — a «2» nobody can make go away is a counter nobody trusts.
+
 Cards are also checked BY STATUS — awaiting reply, unread, with a КП: a filter does not fit,
 it HIDES the rest, while checking has to happen with the whole board still visible. A card's
 state is resolved in one place (`App.cardInState()`), shared with the filter.

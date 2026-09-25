@@ -280,11 +280,7 @@ const App = {
                 if (err && err.status === 401) { this.stopPolling(); this.manager = null; this.renderLogin(); return; }
             }
             // Unread mail and, for admins, fresh errors are visible from any page
-            try {
-                const mail = await this.api('mail.php?action=list&limit=1');
-                const mb = document.getElementById('mailBadge');
-                if (mb) mb.innerHTML = mail.unread > 0 ? ` <span class="pill">${mail.unread}</span>` : '';
-            } catch {}
+            await this.refreshMailBadge();
             if (this.manager && this.manager.is_admin) {
                 try {
                     const c = await this.api('admin.php?action=logs_counts');
@@ -295,6 +291,16 @@ const App = {
         };
         poll();
         this.pollTimer = setInterval(poll, 30000);
+    },
+
+    /** Счётчик у «Письма» — сразу после перехода, а не через полминуты (issue #97). */
+    async refreshMailBadge() {
+        try {
+            const mail = await this.api('mail.php?action=unread');
+            this.unreadMail = Number(mail.unread || 0);
+            const mb = document.getElementById('mailBadge');
+            if (mb) mb.innerHTML = this.unreadMail > 0 ? ` <span class="pill">${this.unreadMail}</span>` : '';
+        } catch { /* счётчик — подсказка, не работа */ }
     },
 
     stopPolling() {
@@ -393,6 +399,9 @@ const App = {
         // бы чужие счета под полем ответа и чужая серость в ленте (модуль 029)
         this.companyRequestId = '';
         this.closeModal();
+        // Прочитанное на прошлом экране гасит счётчик сразу
+        clearTimeout(this._badgeTimer);
+        this._badgeTimer = setTimeout(() => this.refreshMailBadge(), 1500);
         // Гайд и подсказка прошлого экрана не висят над новым (модуль 050)
         if (this.tourSteps) this.tourEnd(); else this.closeHint();
         // Доска канбан идёт во всю ширину экрана: пять колонок в 1280px не
@@ -446,7 +455,7 @@ const App = {
                     return;
                 }
                 case 'notifications': return this.pageNotifications();
-                case 'settings': return this.pageSettings(params[0], params[1]);
+                case 'settings': return this.pageSettings(params[0], params[1], params[2]);
                 // Bookmarks and links from before the merge still work
                 case 'requests': location.replace('#mail'); return;
                 case 'new': location.replace('#mail/new'); return;
@@ -627,8 +636,9 @@ const App = {
             <button class="btn btn--outline btn--sm btn--icon" onclick="App.boardSync()"
                     aria-label="Забрать почту" title="Забрать почту">⟳</button>
             <button class="btn btn--primary btn--sm" onclick="App.mailCompose()">✉ Написать</button>
+            <span id="installGlow">${this.installGlowHtml()}</span>
             ${this.menuHtml([
-                {href: '#mail/new', label: '+ Запрос не из почты',
+                {href: '#mail/new', label: '+ Составить КП по ручному запросу',
                  title: 'Запрос пришёл в мессенджер или по телефону — вставьте текст и файлы'},
                 view === 'board' && !archived ? {onclick: 'App.boardAddColumn()', label: '+ Колонка'} : null,
                 archived ? {onclick: "App.setBoardFilter('archived', 0)", label: '← К письмам'}
@@ -1346,7 +1356,8 @@ const App = {
         const id = kp.proposal_id;
         return `<button class="btn btn--outline btn--sm" onclick="App.kpRebuild(${requestId}, ${id}, this)"
                         title="Собрать КП заново из этих позиций">🔄 Пересобрать</button>
-                <button class="btn btn--primary btn--sm" onclick="App.openKp(${id}, this)">Открыть</button>
+                <button class="btn btn--primary btn--sm" data-kp-toggle="${id}"
+                        onclick="App.openKp(${id}, this)">${this.kpIsOpen(id) ? 'Закрыть' : 'Открыть'}</button>
                 <button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'docx')"
                         title="Скачать КП файлом Word">⬇ Word</button>
                 <button class="btn btn--outline btn--sm" onclick="App.buildKpFile(${requestId}, this, 'pdf')"
@@ -1434,6 +1445,7 @@ const App = {
             const slot = this.kpSlot() || (host && host.querySelector('[data-kp-slot]'));
             if (slot && slot.dataset.open === String(proposalId)) { slot.innerHTML = ''; slot.dataset.open = ''; }
             this.setKpButtons(requestId, host, {proposal_id: null});
+            this.kpToggleLabels();
             this.toast('КП убрано', 'success');
         } catch (err) { this.toast(err.message, 'error'); }
     },
@@ -1578,6 +1590,17 @@ const App = {
         this.openKp(proposalId, btn, true);
     },
 
+    /** КП раскрыто в карточке — кнопка «Открыть» тогда читается «Закрыть» (issue #106). */
+    kpIsOpen(id) {
+        return !!document.querySelector(`[data-kp-under-letter][data-open="${id}"], [data-kp-slot][data-open="${id}"], #kpWide[data-open="${id}"]`);
+    },
+
+    kpToggleLabels() {
+        document.querySelectorAll('[data-kp-toggle]').forEach(b => {
+            b.textContent = this.kpIsOpen(b.dataset.kpToggle) ? 'Закрыть' : 'Открыть';
+        });
+    },
+
     async openKp(proposalId, btn, keepOpen = false) {
         const id = Number(proposalId) || 0;
         if (!id) { this.toast('КП ещё не собрано — нажмите «Сформировать КП»', 'error'); return; }
@@ -1599,9 +1622,11 @@ const App = {
             if (keepOpen) { slot.scrollIntoView({behavior: 'smooth', block: 'start'}); return; }
             slot.innerHTML = '';
             slot.dataset.open = '';
+            this.kpToggleLabels();
             return;
         }
         slot.dataset.open = String(id);
+        this.kpToggleLabels();
         const height = Number(localStorage.getItem('kpHeight')) || 60;
         slot.innerHTML = `
             <div class="card kp-open" data-block="kp">
@@ -4469,11 +4494,15 @@ const App = {
                 menu: [
                     {label: 'Обновить из МойСклад', title: 'Подтянуть из МойСклад реквизиты компании, её заказы и счета',
                      onclick: `App.syncCompany(${cp.id})`},
+                    {label: 'Привязать заказ или счёт МойСклад…',
+                     title: 'Заказ или счёт заведён в МойСклад на другого контрагента или без него — привязать его к этой карточке по номеру',
+                     onclick: `App.linkMsDoc(${cp.id})`},
                     (cp.senders_count || 0) > 1 ? {label: `Разделить по отправителям (${cp.senders_count})`,
                         title: `В карточке ${cp.senders_count} разных отправителей — развести по своим компаниям`,
                         onclick: `App.splitSenders(${cp.id}, ${cp.senders_count})`} : null,
                 ],
             })}
+            <div id="cardNotices"></div>
             <div id="cardPlacement"></div>
             <!-- Одна раскладка для письма, откуда его ни открой: переписка
                  слева, подбор позиций справа на десктопе и снизу на телефоне.
@@ -4508,6 +4537,7 @@ const App = {
         `;
         this.loadCompanyThreads(cp.id);
         this.loadCardPlacement(cp.id);
+        this.loadCardNotices(cp.id);
         this.loadChat(cp.id);
 
         // Returning from the MoySklad tab refreshes the card (FR-030)
@@ -4557,8 +4587,7 @@ const App = {
             const latest = this.companyThreads[this.companyThreads.length - 1];
             if (latest) {
                 await this.toggleCompanyThread(latest.thread_key, {markRead: false});
-                const row = box.querySelector(`[data-thread="${CSS.escape(latest.thread_key)}"]`);
-                if (row) row.scrollIntoView({block: 'center'});
+                this.focusLastLetter(latest.thread_key);
             } else {
                 this.setCompanyItems(null);
             }
@@ -4755,6 +4784,27 @@ const App = {
         }
     },
 
+    /**
+     * Фокус — на последнем письме переписки, раскрытом (issue #109): чаще
+     * всего это наш ответ, и с него продолжают.
+     */
+    focusLastLetter(key) {
+        const box = document.getElementById('th_' + this.threadDomId(key));
+        const letters = box ? box.querySelectorAll('[data-tmsg]') : [];
+        const last = letters[letters.length - 1];
+        if (!last) {
+            const row = document.querySelector(`[data-thread="${CSS.escape(key)}"]`);
+            if (row) row.scrollIntoView({block: 'center'});
+            return;
+        }
+        if (!last.classList.contains('lmsg--open')) this.setTmsgOpen(last, true);
+        last.setAttribute('tabindex', '-1');
+        last.scrollIntoView({block: 'start'});
+        try { last.focus({preventScroll: true}); } catch { /* старый браузер */ }
+        last.classList.add('lmsg--focus');
+        setTimeout(() => last.classList.remove('lmsg--focus'), 2000);
+    },
+
     /** Вернуть панель подбора в боковую колонку карточки компании. */
     parkCompanyItems() {
         const side = document.getElementById('cpItems');
@@ -4925,6 +4975,15 @@ const App = {
                 <input type="hidden" data-cmp-draft-id value="${reply.draft_id || ''}">
                 <input type="text" data-cmp-subject value="${this.esc(reply.subject || '')}" placeholder="Тема"
                        oninput="App.composerChanged('${this.jsStr(key)}')">
+                <!-- Черновик от нейросети — ПЕРВЫЙ шаг ответа, поэтому над полем
+                     письма, а «Отправить» — под ним (issue #105): на телефоне
+                     кнопки отправки больше не тонут под категорией и генерацией -->
+                <div class="composer__gen">
+                    <span class="hint-pin">${this.categorySelect(reply.category)}${this.hint('category')}</span>
+                    <button class="btn btn--outline btn--sm" data-cmp-draft
+                            ${reply.reply_to_id ? '' : 'disabled title="Отвечать нечего: в переписке нет входящего письма"'}
+                            onclick="App.threadDraft('${this.jsStr(key)}', this)">✨ Сгенерировать ответ</button>
+                </div>
                 <!-- Текст письма оформляется как текст, а не как разметка (модуль 023):
                      жирный, курсив, списки и ссылки — кнопками, без единого тега на экране -->
                 <div class="composer__tools">
@@ -4953,19 +5012,17 @@ const App = {
                     <span data-cmp-sign-text></span>
                 </label>
                 <div class="composer__files" data-cmp-files></div>
+                <!-- На телефоне эта строка прилипает к низу экрана, пока письмо
+                     на экране: «Отправить» всегда под пальцем (issue #105) -->
                 <div class="composer__actions">
-                    <span class="hint-pin">${this.categorySelect(reply.category)}${this.hint('category')}</span>
-                    <label class="btn btn--outline btn--sm" title="Приложить свой файл к письму">
-                        📎 Файл<input type="file" multiple hidden onchange="App.composerAttach('${this.jsStr(key)}', this)">
-                    </label>
                     <button class="btn btn--primary btn--sm" onclick="App.threadSend('${this.jsStr(key)}', this)">Отправить</button>
                     <!-- Отложенная отправка (issue #60): письмо, написанное ночью,
                          приходит клиенту утром -->
                     <button class="btn btn--outline btn--sm" title="Отправить позже — в выбранный день и час"
-                            onclick="App.scheduleMenu('${this.jsStr(key)}', this)">⏱ Отложить</button>
-                    <button class="btn btn--outline btn--sm" data-cmp-draft
-                            ${reply.reply_to_id ? '' : 'disabled title="Отвечать нечего: в переписке нет входящего письма"'}
-                            onclick="App.threadDraft('${this.jsStr(key)}', this)">✨ Сгенерировать ответ</button>
+                            onclick="App.scheduleMenu('${this.jsStr(key)}', this)">⏱ Отправить позже</button>
+                    <label class="btn btn--outline btn--sm" title="Приложить свой файл к письму">
+                        📎<span class="cmp-lbl"> Файл</span><input type="file" multiple hidden onchange="App.composerAttach('${this.jsStr(key)}', this)">
+                    </label>
                     <span class="muted" data-cmp-note></span>
                     <span class="muted" data-cmp-saved></span>
                 </div>
@@ -5588,19 +5645,43 @@ const App = {
         try {
             const d = await this.api('mail.php?action=scheduled');
             const mine = d.items || [];
+            // Окно выбора, а не полоска (issue #108): подсказки плитками с
+            // датой под названием, своё время — день и час отдельными полями
+            const presets = d.presets || [];
+            const pad = n => String(n).padStart(2, '0');
+            const t = new Date(); t.setDate(t.getDate() + 1);
+            const base = (presets.find(p => p.key === 'tomorrow') || {}).at || '';
+            const day = base.slice(0, 10) || `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+            const hour = base.slice(11, 16) || '09:00';
+            const now = new Date();
+            const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+            const human = at => {
+                const x = new Date(String(at).replace(' ', 'T'));
+                return isNaN(x) ? at : x.toLocaleString('ru-RU', {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'});
+            };
             box.innerHTML = `
-                <div class="flex flex--wrap">
-                    ${(d.presets || []).map(p => `<button class="btn btn--outline btn--sm"
-                        onclick="App.threadSend('${this.jsStr(key)}', this, '${this.jsStr(p.at)}')">${this.esc(p.label)}</button>`).join('')}
-                    <label>своё время
-                        <input type="datetime-local" data-cmp-when>
-                    </label>
-                    <button class="btn btn--primary btn--sm" onclick="App.threadSendAtCustom('${this.jsStr(key)}', this)">Отложить</button>
-                </div>
-                ${mine.length ? `<div class="muted" style="margin-top:6px">В очереди:
-                    ${mine.map(r => `<span class="sched-item">${this.esc(r.send_at)} — ${this.esc(r.to_addr || '')}
-                        <a onclick="App.cancelScheduled(${r.id}, '${this.jsStr(key)}')" title="Отменить отправку">×</a></span>`).join(' ')}
-                    </div>` : ''}`;
+                <div class="sched">
+                    <div class="sched__head">
+                        <strong>Отправить позже</strong>
+                        <button type="button" class="btn btn--ghost btn--sm btn--icon" aria-label="Закрыть" title="Закрыть"
+                                onclick="this.closest('[data-cmp-schedule]').hidden = true">✕</button>
+                    </div>
+                    <div class="sched__presets">
+                        ${presets.map(p => `<button type="button" class="sched__preset"
+                            onclick="App.threadSend('${this.jsStr(key)}', this, '${this.jsStr(p.at)}')">
+                            <span>${this.esc(p.label)}</span><small>${this.esc(human(p.at))}</small></button>`).join('')}
+                    </div>
+                    <div class="sched__custom">
+                        <label>День<input type="date" data-cmp-date value="${day}" min="${today}"></label>
+                        <label>Время<input type="time" data-cmp-time value="${hour}" step="300"></label>
+                        <button type="button" class="btn btn--primary btn--sm"
+                                onclick="App.threadSendAtCustom('${this.jsStr(key)}', this)">Отправить в это время</button>
+                    </div>
+                    ${mine.length ? `<div class="sched__queue muted">В очереди:
+                        ${mine.map(r => `<span class="sched-item">${this.esc(human(r.send_at))} — ${this.esc(r.to_addr || '')}
+                            <a onclick="App.cancelScheduled(${r.id}, '${this.jsStr(key)}')" title="Отменить отправку">×</a></span>`).join(' ')}
+                        </div>` : ''}
+                </div>`;
         } catch (err) {
             box.innerHTML = `<div class="no">${this.esc(err.message)}</div>`;
         }
@@ -5609,10 +5690,12 @@ const App = {
     /** Время, выставленное руками, — в том же виде, что и подсказки. */
     threadSendAtCustom(key, btn) {
         const c = this.composerOf(key);
-        const when = c && c.querySelector('[data-cmp-when]');
-        if (!when || !when.value) { this.toast('Выберите день и время', 'error'); return; }
-        // datetime-local отдаёт «2026-09-23T09:00» — сервер ждёт секунды
-        this.threadSend(key, btn, when.value.replace('T', ' ') + ':00');
+        const day = c && c.querySelector('[data-cmp-date]');
+        const time = c && c.querySelector('[data-cmp-time]');
+        if (!day || !day.value || !time || !time.value) { this.toast('Выберите день и время', 'error'); return; }
+        const at = `${day.value} ${time.value}:00`;
+        if (new Date(at.replace(' ', 'T')) <= new Date()) { this.toast('Это время уже прошло', 'error'); return; }
+        this.threadSend(key, btn, at);
     },
 
     async cancelScheduled(id, key) {
@@ -6230,6 +6313,45 @@ const App = {
     },
 
     // Pull fresh orders and invoices, then repaint the right column (FR-030)
+    /** Заказ и счёт МойСклад — к этой карточке по номеру (issue #111). */
+    linkMsDoc(cpId) {
+        this.modal('Привязать заказ или счёт МойСклад', `
+            <p class="muted">Документ заведён в МойСклад на другого контрагента или без письма — впишите его номер,
+               и он встанет в эту карточку: в ленту, под письмо, в счета. Можно одно из двух.</p>
+            <div class="grid grid--2">
+                <div class="form-group"><label for="msLinkOrder">Номер заказа покупателя</label>
+                    <input type="text" id="msLinkOrder" inputmode="numeric" placeholder="например, 00123"></div>
+                <div class="form-group"><label for="msLinkInvoice">Номер счёта покупателю</label>
+                    <input type="text" id="msLinkInvoice" inputmode="numeric" placeholder="например, 00456"></div>
+            </div>
+            <div class="flex flex--end" style="gap:8px">
+                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
+                <button class="btn btn--primary" onclick="App.linkMsDocSave(${Number(cpId)}, this)">Привязать</button>
+            </div>`);
+    },
+
+    async linkMsDocSave(cpId, btn) {
+        const order = document.getElementById('msLinkOrder').value.trim();
+        const invoice = document.getElementById('msLinkInvoice').value.trim();
+        if (!order && !invoice) return this.toast('Впишите номер заказа или счёта', 'error');
+        btn.disabled = true;
+        try {
+            const r = await this.api('invoices.php?action=link', {method: 'POST', body: {
+                counterparty_id: cpId, order, invoice,
+                request_id: Number(this.companyRequestId) || null,
+            }});
+            this.closeModal();
+            const done = [r.order ? `заказ ${r.order.name}` : '', r.invoice ? `счёт ${r.invoice.name}` : ''].filter(Boolean);
+            this.toast('Привязано: ' + done.join(', ') + ((r.errors || []).length ? ' · ' + r.errors.join('; ') : ''),
+                       (r.errors || []).length ? 'info' : 'success');
+            const side = document.getElementById('companySide');
+            if (side) side.innerHTML = this.companySide(await this.api(`counterparties.php?action=get&id=${cpId}`));
+            this.loadChat(cpId);
+            const dock = document.querySelector('[data-composer] [data-invoice-dock]');
+            if (dock) { dock.dataset.request = ''; this.loadInvoiceDock(); }
+        } catch (err) { btn.disabled = false; this.toast(err.message, 'error'); }
+    },
+
     async syncCompany(id, silent = false) {
         // Background refreshes fire on every focus — don't hammer the MoySklad API
         const now = Date.now();
@@ -6258,6 +6380,11 @@ const App = {
             const note = document.getElementById('noteText');
             if (note && draft) note.value = draft;
             this.loadChat(id);
+            // Новая отгрузка пометила карточку и дописала черновик — показываем сразу
+            if (r.shipped || r.demands) {
+                this.loadCardNotices(id);
+                if (r.shipped) this.loadCompanyThreads(id);
+            }
             if (!silent) this.toast(this.syncReport(r), r.linked ? 'success' : 'info');
         } catch (err) {
             if (!silent) this.toast(err.message, 'error');
@@ -6272,6 +6399,8 @@ const App = {
         const parts = [];
         if (r.requisites) parts.push('реквизиты обновлены');
         parts.push(`заказов: ${r.orders || 0}`, `счетов: ${r.invoices || 0}`);
+        if (r.demands) parts.push(`новых отгрузок: ${r.demands}`);
+        if (r.shipped) parts.push(`трек в черновике ответа: ${r.shipped}`);
         return r.linked
             ? 'МойСклад: ' + parts.join(' · ')
             : 'Компания не связана с контрагентом МойСклад — реквизиты подтянуть не из чего. '
@@ -6350,9 +6479,47 @@ const App = {
     // itself for new mail), with the old ref_type guess for rows written before
     notifLink(n) {
         const url = n.url || (n.ref_type === 'request' && n.ref_id ? '/#mail/request/' + n.ref_id : '');
+        // Ссылка наружу (issue на GitHub) — открывается как есть, в новой вкладке
+        if (/^https?:\/\//i.test(url)) {
+            return `<a href="${this.esc(url)}" target="_blank" rel="noopener" class="btn btn--sm btn--outline">Открыть ↗</a>`;
+        }
         const at = url.indexOf('#');
         if (at < 0) return '';   // «/» leads nowhere in particular — no button for it
         return `<a href="${this.esc(url.slice(at))}" class="btn btn--sm btn--outline">Открыть</a>`;
+    },
+
+    /**
+     * Уведомления этой компании — полоской над перепиской (issue #103). Карточка
+     * на доске выделена, пока здесь не поставят галочку: переход по push сам
+     * по себе ничего не гасит, работа — это действие, а не открытие экрана.
+     */
+    async loadCardNotices(cpId) {
+        const box = document.getElementById('cardNotices');
+        if (!box) return;
+        try {
+            const d = await this.api('notifications.php?action=for_company&id=' + cpId);
+            const items = d.items || [];
+            box.innerHTML = items.length ? `
+                <div class="card card--notice" role="status">
+                    ${items.map(n => `
+                        <div class="cnotice" data-notif="${n.id}">
+                            <span class="cnotice__ico" aria-hidden="true">🔔</span>
+                            <span class="cnotice__text"><strong>${this.esc(n.title)}</strong>
+                                ${n.body ? `<span class="muted"> — ${this.esc(n.body)}</span>` : ''}
+                                <small class="muted">${this.fmtDate(n.created_at)}</small></span>
+                            <button class="btn btn--sm btn--outline" onclick="App.doneCardNotice(${n.id}, ${cpId}, this)"
+                                    aria-label="Сделано: ${this.esc(n.title)}" title="Сделано — карточка перестанет быть выделенной">✓ Сделано</button>
+                        </div>`).join('')}
+                </div>` : '';
+        } catch { box.innerHTML = ''; }
+    },
+
+    async doneCardNotice(id, cpId, btn) {
+        btn.disabled = true;
+        try {
+            await this.api(`notifications.php?action=read&id=${id}`, {method: 'POST'});
+            this.loadCardNotices(cpId);
+        } catch (err) { btn.disabled = false; this.toast(err.message, 'error'); }
     },
 
     async readNotif(id, btn) {
@@ -6615,7 +6782,7 @@ const App = {
         ['Система',          ['learning', 'all', 'logs']],
     ],
 
-    pageSettings(tab, arg) {
+    pageSettings(tab, arg, arg2) {
         const tabs = this.settingsTabs();
         // «#settings/logs/error» — журнал, открытый сразу на нужном уровне:
         // уведомление об ошибке и счётчик на «Обзоре» ведут именно сюда (модуль 029)
@@ -6623,6 +6790,8 @@ const App = {
             this.logState = Object.assign(this.logState || {},
                                           {level: arg === 'all' ? '' : arg, channel: '', q: '', offset: 0});
         }
+        // «#settings/logs/error/123» — ещё и сама запись, раскрытая (issue #113)
+        this.logOpenId = tab === 'logs' && /^\d+$/.test(String(arg2 || '')) ? Number(arg2) : 0;
         // Без явной вкладки админ попадает в «Обзор» — он заходит сюда работать,
         // а менеджер в «Ликбез»: ему здесь нужно объяснение, а не тумблеры
         if (!tabs.some(([k]) => k === tab)) tab = (this.manager && this.manager.is_admin) ? 'overview' : 'guide';
@@ -8420,7 +8589,9 @@ const App = {
         // A bounced answer is not a delivered one: the client is still waiting
         const sentBad = m.direction === 'out'
             && ['failed', 'bounced', 'bounce_soft'].includes(m.sent_state);
-        const open = m.direction === 'in' && (isLast || Number(m.is_read) === 0);
+        // Последнее письмо раскрыто всегда, и наше отправленное тоже (issue #109):
+        // карточку открывают посмотреть, на чём остановились
+        const open = isLast || (m.direction === 'in' && Number(m.is_read) === 0);
         // Свёрнутое письмо показывает начало текста в ТОМ ЖЕ поле, где потом
         // раскроется тело: два поля подряд читались как два письма (модуль 037)
         const preview = (m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
@@ -8495,7 +8666,7 @@ const App = {
     threadHtml(messages, key) {
         const n = (messages || []).length;
         // Раскрыто ли хоть одно письмо — тем же правилом, что в threadMessage()
-        const anyOpen = (messages || []).some((m, i) => m.direction === 'in' && (i === n - 1 || Number(m.is_read) === 0));
+        const anyOpen = (messages || []).some((m, i) => i === n - 1 || (m.direction === 'in' && Number(m.is_read) === 0));
         return `<section class="lblock" data-block="thread">
             <div class="lblock__head" data-block-head>Письма <span class="muted">· ${n}</span>
                 ${n > 1 ? `<button type="button" class="fold-all" onclick="App.foldAllLetters(this)"
@@ -8614,6 +8785,8 @@ const App = {
         const b = await this.api('boards.php?action=get');
         this.board = b;
         this.boardPicked = new Set();
+        this.boardShown = {};
+        this._searchDone = '';
         document.getElementById('mailBody').innerHTML = `
             ${this.boardFiltersHtml(b)}
             <div id="boardSupport"></div>
@@ -8644,6 +8817,8 @@ const App = {
         const b = await this.api('boards.php?action=get');
         this.board = b;
         this.boardPicked = new Set();
+        this.boardShown = {};
+        this._searchDone = '';
         document.getElementById('mailBody').innerHTML = `
             ${this.boardFiltersHtml(b, {list: true})}
             <div id="boardSupport"></div>
@@ -8699,10 +8874,31 @@ const App = {
                 const x = this.mailRowAt(a), y = this.mailRowAt(b);
                 return x === y ? b.id - a.id : (x < y ? 1 : -1);
             });
+        // Колонки с лимитом держат часть писем за стрелкой — и в списке тоже (issue #110)
+        const limited = cols.filter(c => (!this.mailListCol || String(c.id) === this.mailListCol)
+                                         && (c.total || 0) > this.boardOwnCards(c).length);
+        const left = limited.reduce((n, c) => n + (c.total - this.boardOwnCards(c).length), 0);
         list.innerHTML = rows.map(card =>
-            this.mailListRow(card, colOf.get(String(card.id)), risen.has(String(card.id)))).join('');
+            this.mailListRow(card, colOf.get(String(card.id)), risen.has(String(card.id)))).join('')
+            + (left ? `<li class="glist__more"><button type="button" class="bcol__more" onclick="App.mailListMore(this)"
+                          aria-label="Показать ещё письма">▾ ещё письма (скрыто лимитом: ${left})</button></li>` : '');
         this.applyBoardFilters();
         if (this.boardQuery) this.boardFilter(this.boardQuery);
+    },
+
+    async mailListMore(btn) {
+        if (btn) { btn.disabled = true; btn.textContent = '…'; }
+        const cols = ((this.board && this.board.columns) || [])
+            .filter(c => (!this.mailListCol || String(c.id) === this.mailListCol)
+                         && (c.total || 0) > this.boardOwnCards(c).length);
+        this.boardShown = this.boardShown || {};
+        try {
+            for (const c of cols) {
+                await this.boardLoadMore(c, Number(c.card_limit) || 0);
+                this.boardShown[c.id] = this.boardOwnCards(c).length;
+            }
+        } catch (err) { this.toast(err.message, 'error'); }
+        this.drawMailList();
     },
 
     drawMailSide(cols) {
@@ -8721,7 +8917,10 @@ const App = {
                           title="${u ? 'новых и неотвеченных' : 'всего'}">${u || cards.length || ''}<span class="sr-only">${u ? ' новых и неотвеченных' : ' всего'}</span></span>
                 </a>`;
         };
+        // Ручной запрос стоит над письмами и в списке, как над «Входящими» на доске (issue #99)
         side.innerHTML = `
+            <a class="mside__new" href="#mail/new"
+               title="Запрос принесли не почтой: мессенджер, звонок, файл">+ Составить КП по ручному запросу</a>
             ${item('#mail/list', 'Все письма', allCards, '', !this.mailListCol)}
             <div class="mside__head">Статусы</div>
             ${cols.map(c => item('#mail/list/' + c.id, c.title, c.cards || [], c.color || '#8a8f98',
@@ -8751,7 +8950,9 @@ const App = {
         if (risen) cls.push('grow--risen');
         // Трек СДЭК вписан, письмо со ссылкой отслеживания ждёт отправки (issue #88)
         if (card.cdek) cls.push('grow--cdek');
+        if ((card.notices || []).length) cls.push('grow--notice');
         const tags = [
+            (card.notices || []).length ? `<span class="grow__notice" title="${this.esc(card.notices.map(n => n.title).join('\n'))}">🔔 ${this.esc(card.notices[0].title)}</span>` : '',
             `<span class="stag" style="--col:${this.esc(col.color || '#8a8f98')}">${this.esc(col.title)}</span>`,
             card.attention ? '<span class="grow__draft">письмо готово</span>' : (d ? '<span class="grow__draft">Черновик</span>' : ''),
             c.proposal_status ? this.proposalBadge(c.proposal_status) : '',
@@ -8768,7 +8969,7 @@ const App = {
             ${c.has_attachment ? '<span class="grow__clip" title="Есть вложения">📎<span class="sr-only">Есть вложения.</span></span>' : ''}
             <time class="grow__date" ${at ? `datetime="${this.esc(at.replace(' ', 'T'))}" title="${this.esc(this.fmtDate(at))}"` : ''}>${this.fmtShort(at)}</time>`;
         return `
-            <li class="${cls.join(' ')}" data-card="${id}" style="--col:${this.esc(col.color || '#8a8f98')}">
+            <li class="${cls.join(' ')}" data-card="${id}"${card.found ? ` data-found="${this.esc(card.found)}"` : ''} style="--col:${this.esc(col.color || '#8a8f98')}">
                 <input type="checkbox" class="bcard__pick" aria-label="Отметить: ${this.esc(card.title)}"
                        onchange="App.boardCardPick(${id}, this.checked)">
                 <span class="grow__wait">${card.unanswered
@@ -9230,7 +9431,7 @@ const App = {
         let shown = 0;
         document.querySelectorAll('[data-card]').forEach(card => {
             // Поиск сужает то, что уже отобрали фильтры, а не отменяет их
-            const hit = (!q || fold(card.textContent).includes(low))
+            const hit = (!q || fold(card.textContent).includes(low) || card.dataset.found === low)
                 && this.boardCardMatchesEl(card);
             card.hidden = !hit;
             if (hit && q) shown++;
@@ -9243,13 +9444,114 @@ const App = {
         // это умеет только сервер (модуль 023).
         clearTimeout(this._boardSearchTimer);
         const out = document.getElementById('boardSearchOut');
-        if (out && q.length < 2) { out.innerHTML = ''; return; }
+        if (out && q.length < 2) { out.innerHTML = ''; this._searchDone = ''; return; }
+        // Перерисовка после найденного не запускает тот же поиск ещё раз
+        if (this._searchDone === q) return;
         this._boardSearchTimer = setTimeout(() => this.boardSearchServer(q, shown), 350);
+    },
+
+    /** Свои карточки колонки — без подтянутых поиском (issue #110). */
+    boardOwnCards(c) {
+        return (c.cards || []).filter(x => !x.found);
+    },
+
+    /** Стрелка «ещё» под колонкой с лимитом: следующая пачка того же размера. */
+    boardMoreHtml(c) {
+        const own = this.boardOwnCards(c).length;
+        const left = (c.total || 0) - own;
+        if (left <= 0) return '';
+        const next = Math.min(left, Number(c.card_limit) || left);
+        return `<button type="button" class="bcol__more" onclick="App.boardMore(${c.id}, this)"
+                        title="Показать ещё ${next} из ${left} скрытых лимитом колонки"
+                        aria-label="Показать ещё ${next} карточек">▾ ещё ${next}</button>`;
+    },
+
+    /**
+     * Следующая пачка колонки (issue #110) — только когда её попросили:
+     * «Закрыто» на тысячу карточек не грузится целиком ради десяти верхних.
+     */
+    async boardMore(colId, btn) {
+        const col = ((this.board && this.board.columns) || []).find(c => c.id === Number(colId));
+        if (!col) return;
+        if (btn) { btn.disabled = true; btn.textContent = '…'; }
+        try {
+            await this.boardLoadMore(col, Number(col.card_limit) || 0);
+            this.boardShown = this.boardShown || {};
+            this.boardShown[col.id] = this.boardOwnCards(col).length;
+            this.boardRedrawColumn(col.id);
+        } catch (err) {
+            this.toast(err.message, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '▾ ещё'; }
+        }
+    },
+
+    async boardLoadMore(col, limit) {
+        const offset = this.boardOwnCards(col).length;
+        const d = await this.api(`boards.php?action=column_cards&id=${col.id}&offset=${offset}&limit=${limit}`);
+        const have = new Set((col.cards || []).map(x => String(x.id)));
+        // Карточка, уже подтянутая поиском, становится своей — без дубля
+        (d.cards || []).forEach(card => {
+            if (have.has(String(card.id))) {
+                const was = col.cards.find(x => String(x.id) === String(card.id));
+                if (was) delete was.found;
+            } else col.cards.push(card);
+        });
+        col.total = d.total;
+    },
+
+    boardRedrawColumn(colId) {
+        if (document.getElementById('mailList')) { this.drawMailList(); return; }
+        const col = ((this.board && this.board.columns) || []).find(c => c.id === Number(colId));
+        const el = document.querySelector(`#board .bcol[data-col="${colId}"]`);
+        if (!col || !el) return;
+        el.outerHTML = this.boardColumn(col);
+        this.applyBoardFilters();
+        if (this.boardQuery) this.boardFilter(this.boardQuery);
+        this.boardSyncPicks && this.boardSyncPicks();
+    },
+
+    /** Раскрытые стрелкой пачки переживают перерисовку доски ответом сервера. */
+    async boardRestoreShown() {
+        const want = this.boardShown || {};
+        for (const col of ((this.board && this.board.columns) || [])) {
+            const n = Number(want[col.id] || 0);
+            const own = this.boardOwnCards(col).length;
+            if (n > own && (col.total || 0) > own) {
+                try { await this.boardLoadMore(col, n - own); this.boardRedrawColumn(col.id); } catch { /* останется как есть */ }
+            }
+        }
+    },
+
+    /** Поиск нашёл карточки, срезанные лимитом, — они встают в свои колонки. */
+    async boardPullFound(q) {
+        const d = await this.api('boards.php?action=search_cards&q=' + encodeURIComponent(q));
+        const fold = s => s.toLowerCase().replace(/ё/g, 'е');
+        const cols = (this.board && this.board.columns) || [];
+        const touched = new Set();
+        (d.items || []).forEach(card => {
+            const col = cols.find(c => c.id === Number(card.column_id));
+            if (!col) return;
+            const was = (col.cards || []).find(x => String(x.id) === String(card.id));
+            if (was) { if (was.found) was.found = fold(q); return; }
+            card.found = fold(q);
+            col.cards.push(card);
+            touched.add(col.id);
+        });
+        if (!touched.size) return;
+        if (document.getElementById('mailList')) this.drawMailList();
+        else touched.forEach(id => this.boardRedrawColumn(id));
     },
 
     /** Очистить поиск: поле и выдача пустеют вместе. */
     boardFilterClear() {
         this.boardQuery = '';
+        this._searchDone = '';
+        // Подтянутые поиском карточки уходят вместе с поиском
+        const cols = (this.board && this.board.columns) || [];
+        if (cols.some(c => (c.cards || []).some(x => x.found))) {
+            cols.forEach(c => { c.cards = this.boardOwnCards(c); });
+            this.boardRedraw();
+        }
         const input = document.getElementById('boardFilter');
         if (input) { input.value = ''; input.focus(); }
         const out = document.getElementById('boardSearchOut');
@@ -9275,6 +9577,9 @@ const App = {
         const out = document.getElementById('boardSearchOut');
         if (!out) return;
         out.innerHTML = '<div class="loading">Ищем по всем письмам...</div>';
+        this._searchDone = q;
+        // Карточки за лимитом колонки — в свои колонки (issue #110)
+        this.boardPullFound(q).catch(() => {});
         try {
             const d = await this.api('mail.php?action=threads&archived=all&limit=30&q=' + encodeURIComponent(q));
             const items = d.items || [];
@@ -9322,7 +9627,7 @@ const App = {
                     <span class="bcol__title" title="Переименовать колонку"
                           onclick="App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')">${this.esc(c.title)}</span>
                     ${kind ? `<span class="bcol__kind" title="${this.esc(kind[1])}">${kind[0]}</span>` : ''}
-                    <span class="bcol__count" title="Показано карточек в колонке${c.card_limit ? ' (лимит ' + c.card_limit + ')' : ''}">${c.cards.length}</span>
+                    <span class="bcol__count" title="Показано карточек в колонке${c.card_limit ? ' (лимит ' + c.card_limit + ')' : ''}">${this.boardOwnCards(c).length}${(c.total || 0) > this.boardOwnCards(c).length ? ' из ' + c.total : ''}</span>
                     ${this.menuHtml([
                         {label: 'Переименовать', onclick: `App.boardRenameColumn(${c.id}, '${this.jsStr(c.title)}')`},
                         {label: 'Цвет статуса…', onclick: `App.boardColumnColor(${c.id}, '${this.jsStr(c.color || '')}')`},
@@ -9333,10 +9638,11 @@ const App = {
                 </div>
                 ${c.kind === 'inbox' ? `
                     <a class="bcol__new" href="#mail/new"
-                       title="Запрос принесли не почтой: мессенджер, звонок, файл">+ Запрос не из почты</a>` : ''}
+                       title="Запрос принесли не почтой: мессенджер, звонок, файл">+ Составить КП по ручному запросу</a>` : ''}
                 <div class="bcol__cards" data-drop="${c.id}">
                     ${c.cards.map(card => this.boardCard(card)).join('')}
                 </div>
+                ${this.boardMoreHtml(c)}
                 <button class="bcol__add" onclick="App.boardAddCard(${c.id})">+ карточка</button>
             </div>`;
     },
@@ -9356,6 +9662,9 @@ const App = {
         // Готово письмо «заказ отправлен» — карточка жирная, пока его не отправят (модуль 047)
         if (card.attention) cls.push('bcard--attention');
         if (card.cdek) cls.push('bcard--cdek');
+        // Помечена уведомлением — выделена, пока не поставят галочку в карточке (issue #103)
+        const notices = card.notices || [];
+        if (notices.length) cls.push('bcard--notice');
         const href = card.counterparty_id
             ? `#mail/company/${card.counterparty_id}`
             : (card.thread_key ? `#mail/t/${encodeURIComponent(card.thread_key)}` : '');
@@ -9367,7 +9676,7 @@ const App = {
         const subject = (d && (d.subject || d.preview)) || c.subject || t.subject || '';
         const kp = c.proposal_status ? this.proposalBadge(c.proposal_status) : '';
         return `
-            <div class="${cls.join(' ')}" draggable="true" data-card="${card.id}">
+            <div class="${cls.join(' ')}" draggable="true" data-card="${card.id}"${card.found ? ` data-found="${this.esc(card.found)}"` : ''}>
                 <div class="bcard__title">
                     <input type="checkbox" class="bcard__pick" title="Отметить для группового действия"
                            onclick="event.stopPropagation()" onchange="App.boardCardPick(${card.id}, this.checked)">
@@ -9375,6 +9684,7 @@ const App = {
                     ${href ? `<a href="${href}">${this.esc(card.title)}</a>` : this.esc(card.title)}
                     ${card.unread ? `<span class="pill pill--danger" title="непрочитанных писем">${card.unread}</span>` : ''}
                 </div>
+                ${notices.length ? `<div class="bcard__notice" title="${this.esc(notices.map(n => n.title).join('\n'))}">🔔 ${this.esc(notices[0].title)}${notices.length > 1 ? ` <b>+${notices.length - 1}</b>` : ''}</div>` : ''}
                 ${subject ? `<div class="bcard__subject">${d ? '✎ ' : ''}${this.esc(subject)}</div>` : ''}
                 ${card.note ? `<div class="bcard__note">${this.esc(card.note)}</div>` : ''}
                 <div class="bcard__meta">
@@ -9503,6 +9813,7 @@ const App = {
      */
     boardRedraw(board) {
         if (board) this.board = board;
+        if (board) this.boardRestoreShown();
         if (document.getElementById('mailList')) { this.drawMailList(); return; }
         const box = document.getElementById('board');
         if (!box || !this.board) return;
@@ -11061,6 +11372,23 @@ const App = {
                         <div id="llmTest_${p.provider}" style="margin-top:10px"></div>
                     </div>`;
                 }).join('')}
+                <!-- Голосовой ввод — своя модель, не YandexGPT (issue #98) -->
+                <div class="card">
+                    <div class="card__title">Yandex SpeechKit — голосовой ввод</div>
+                    <p class="muted">Распознаёт надиктованное кнопкой «🎤 голосом». Ключ и Folder ID — те же, что у Yandex выше;
+                       сервисному аккаунту нужна роль <code>ai.speechkit-stt.user</code>.</p>
+                    <div class="grid grid--3">
+                        <div class="form-group"><label for="set_SPEECH_MODEL">Модель распознавания</label>
+                            <select id="set_SPEECH_MODEL">${this.selectOptions(secret('SPEECH_MODEL').type || 'select:general', val('SPEECH_MODEL') || 'general')}</select></div>
+                        <div class="form-group"><label for="set_SPEECH_LANG">Язык</label>
+                            <select id="set_SPEECH_LANG">${this.selectOptions(secret('SPEECH_LANG').type || 'select:ru-RU', val('SPEECH_LANG') || 'ru-RU')}</select></div>
+                        <div class="form-group"><label for="set_SPEECH_PROFANITY">Фильтр ненормативной лексики</label>
+                            <select id="set_SPEECH_PROFANITY">
+                                <option value="0" ${val('SPEECH_PROFANITY') !== '1' ? 'selected' : ''}>Выключен</option>
+                                <option value="1" ${val('SPEECH_PROFANITY') === '1' ? 'selected' : ''}>Включён</option>
+                            </select></div>
+                    </div>
+                </div>
                 <div class="flex flex--end"><button class="btn btn--primary" onclick="App.saveSettings()">Сохранить</button></div>
             `;
             this.settingsSpec = s.items.filter(i => document.getElementById('set_' + i.key));
@@ -12406,6 +12734,11 @@ const App = {
                     <span class="muted">Записей: ${d.total} · за сутки ошибок ${d.counts.errors_24h}, предупреждений ${d.counts.warnings_24h}
                           <br>Повторы одного и того же сообщения собираются в одну строку со счётчиком</span>
                     <button class="btn btn--sm btn--outline" onclick="App.adminLogs()">⟳ Обновить</button>
+                    <!-- Весь журнал файлом и в обращение (issue #113) -->
+                    <a class="btn btn--sm btn--outline" href="/api/admin.php?action=logs_export&${this.esc(new URLSearchParams({level: st.level, channel: st.channel, q: st.q}).toString())}"
+                       download title="Скачать весь журнал с этим фильтром — со всем контекстом записей">⬇ Скачать журнал</a>
+                    <button class="btn btn--sm btn--outline" onclick="App.logToSupport()"
+                            title="Написать в поддержку и приложить журнал файлом">📎 В поддержку</button>
                     <button class="btn btn--sm btn--danger" onclick="App.clearLogs()">Очистить</button>
                 </div>
                 <div class="card">
@@ -12420,7 +12753,11 @@ const App = {
                                     <td>${levelBadge(r.level)}
                                         ${Number(r.repeat_count) > 1 ? `<div class="badge badge--new">×${r.repeat_count}</div>` : ''}</td>
                                     <td class="log__source">${this.esc(r.channel)}<div class="muted">${this.esc(r.source || '')}</div></td>
-                                    <td class="log__msg">${this.esc(r.message)}
+                                    <td class="log__msg">
+                                        <button type="button" class="log__copy" title="Скопировать запись со всем контекстом"
+                                                aria-label="Скопировать запись"
+                                                onclick="event.stopPropagation(); App.copyLog(${r.id}, this)">⧉</button>
+                                        ${this.esc(r.message)}
                                         ${r.request_uri ? `<div class="muted">${this.esc(r.request_uri)}</div>` : ''}</td>
                                 </tr>`).join('')}
                             ${d.items.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">Записей нет</td></tr>' : ''}
@@ -12433,7 +12770,60 @@ const App = {
                 </div>
             `;
             this.logRows = d.items;
+            if (this.logOpenId) { const id = this.logOpenId; this.logOpenId = 0; this.logDetails(id); }
         } catch (err) { this.adminFail(err); }
+    },
+
+    /**
+     * Запись текстом, как её копируют в поддержку (issue #113) — тот же формат,
+     * что у `Logger::entryText()` на сервере.
+     */
+    logText(r) {
+        const f = at => this.fmtDate(at);
+        let head = `${r.level} · ${r.channel} · ${f(r.created_at)}`;
+        if (Number(r.repeat_count) > 1) head += ` · повторилось ${r.repeat_count} раз, последний ${f(r.last_at)}`;
+        const parts = [head, r.message];
+        if (r.source) parts.push(r.source);
+        if (r.request_uri) parts.push(r.request_uri);
+        if (r.context) {
+            let ctx = r.context;
+            try { ctx = JSON.stringify(JSON.parse(ctx), null, 2); } catch { /* как есть */ }
+            parts.push(ctx);
+        }
+        return parts.join('\n\n');
+    },
+
+    async copyLog(id, btn) {
+        let r = (this.logRows || []).find(x => x.id === id) || (this._logOpen && this._logOpen.id === id ? this._logOpen : null);
+        if (!r) return;
+        const ok = await this.copyText(this.logText(r));
+        if (btn) { const was = btn.textContent; btn.textContent = ok ? '✓' : '✕'; setTimeout(() => { btn.textContent = was; }, 1400); }
+        this.toast(ok ? 'Запись скопирована' : 'Не скопировалось — выделите текст вручную', ok ? 'success' : 'error');
+    },
+
+    /** В буфер обмена — и на http, и на телефоне, где Clipboard API может не быть. */
+    async copyText(text) {
+        try {
+            if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+        } catch { /* ниже — запасной путь */ }
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch { ok = false; }
+        ta.remove();
+        return ok;
+    },
+
+    logToSupport(id) {
+        const r = id ? ((this.logRows || []).find(x => x.id === id) || this._logOpen) : null;
+        this.supportModal('bug', {attachLog: true,
+                                  title: r ? `${r.level}: ${String(r.message).slice(0, 80)}` : '',
+                                  body: r ? this.logText(r) : ''});
     },
 
     logFilter(patch) {
@@ -12446,12 +12836,22 @@ const App = {
         this.adminLogs();
     },
 
-    logDetails(id) {
-        const r = (this.logRows || []).find(x => x.id === id);
+    async logDetails(id) {
+        let r = (this.logRows || []).find(x => x.id === id);
+        // Запись из уведомления может быть за пределами открытой страницы
+        if (!r) {
+            try { r = (await this.api('admin.php?action=log_get&id=' + id)).item; }
+            catch (err) { this.toast(err.message, 'error'); return; }
+        }
         if (!r) return;
+        this._logOpen = r;
         let ctx = r.context || '';
         try { ctx = JSON.stringify(JSON.parse(ctx), null, 2); } catch (e) {}
         this.modal('Запись лога', `
+            <div class="flex flex--wrap" style="gap:8px;margin-bottom:10px">
+                <button class="btn btn--primary btn--sm" onclick="App.copyLog(${r.id}, this)">⧉ Скопировать всё</button>
+                <button class="btn btn--outline btn--sm" onclick="App.logToSupport(${r.id})">📎 В поддержку с журналом</button>
+            </div>
             <p><strong>${this.esc(r.level)}</strong> · ${this.esc(r.channel)} · ${this.fmtDate(r.created_at)}
                ${Number(r.repeat_count) > 1 ? `· повторилось ${r.repeat_count} раз, последний ${this.fmtDate(r.last_at)}` : ''}</p>
             <p>${this.esc(r.message)}</p>
@@ -12589,13 +12989,72 @@ Object.assign(App, {
 
     // Chrome fires this instead of installing on its own; keep it for the button
     watchInstallPrompt() {
+        // Открыто как приложение — значит, в этом браузере оно стоит
+        if (this.isStandalone()) this.setAppInstalled(true);
         window.addEventListener('beforeinstallprompt', e => {
             e.preventDefault();
             this.deferredInstall = e;
+            // Браузер снова предлагает установку — приложения в нём больше нет
+            this.setAppInstalled(false);
             const card = document.getElementById('installCard');
             if (card) this.renderInstallCard();
+            this.refreshInstallGlow();
         });
-        window.addEventListener('appinstalled', () => { this.deferredInstall = null; });
+        window.addEventListener('appinstalled', () => {
+            this.deferredInstall = null;
+            this.setAppInstalled(true);
+            this.refreshInstallGlow();
+        });
+    },
+
+    appInstalled() {
+        try { return localStorage.getItem('pwaInstalled') === '1'; } catch { return false; }
+    },
+
+    setAppInstalled(on) {
+        try { on ? localStorage.setItem('pwaInstalled', '1') : localStorage.removeItem('pwaInstalled'); } catch { /* */ }
+    },
+
+    isChromium() {
+        return /Chrome|Chromium|YaBrowser|Edg\//.test(navigator.userAgent) && !/OPR\/|SamsungBrowser/.test(navigator.userAgent);
+    },
+
+    /**
+     * «Установить приложение» светится над письмами, пока в ЭТОМ браузере
+     * приложение не поставлено (issue #101): иначе push приходит, только пока
+     * открыта вкладка. В самом приложении и там, где установки нет, — пусто.
+     */
+    installGlowHtml() {
+        if (this.isStandalone() || this.appInstalled() || !window.isSecureContext) return '';
+        if (!this.deferredInstall && !this.isIos() && !this.isChromium()) return '';
+        return `<button class="btn btn--sm btn--glow" onclick="App.installFromBoard()"
+                    title="Своё окно и ярлык на панели — уведомления о новых письмах приходят, даже когда вкладка закрыта">📲 Установить приложение</button>`;
+    },
+
+    refreshInstallGlow() {
+        const el = document.getElementById('installGlow');
+        if (el) el.innerHTML = this.installGlowHtml();
+    },
+
+    async installFromBoard() {
+        if (this.deferredInstall) return this.triggerInstall();
+        const how = this.isIos()
+            ? '<p>Safari: «Поделиться» <b>⎋</b> → «На экран „Домой“». Затем откройте приложение с экрана и включите уведомления.</p>'
+            : /YaBrowser/.test(navigator.userAgent)
+                ? '<p>Яндекс Браузер: меню <b>≡</b> → «Установить приложение „Атлант КП“» (или значок ⊕ справа в адресной строке).</p>'
+                : '<p>Chrome: значок <b>⊕</b> «Установить» справа в адресной строке или меню <b>⋮</b> → «Трансляция, сохранение и отправка» → «Установить страницу как приложение».</p>';
+        this.modal('Установить приложение', `
+            ${how}
+            <p class="muted">У приложения своё окно и ярлык на панели задач. Уведомления о новых письмах приходят, даже когда браузер свёрнут.</p>
+            <div class="flex" style="gap:8px;margin-top:12px">
+                <button class="btn btn--sm" onclick="App.markInstalledByHand()">Уже установлено</button>
+            </div>`);
+    },
+
+    markInstalledByHand() {
+        this.setAppInstalled(true);
+        this.refreshInstallGlow();
+        this.closeModal();
     },
 
     pushSupported() {
@@ -12789,9 +13248,16 @@ Object.assign(App, {
     async triggerInstall() {
         if (!this.deferredInstall) return;
         this.deferredInstall.prompt();
-        try { await this.deferredInstall.userChoice; } catch { /* */ }
+        let choice = null;
+        try { choice = await this.deferredInstall.userChoice; } catch { /* */ }
         this.deferredInstall = null;
         this.renderInstallCard();
+        if (choice && choice.outcome === 'accepted') {
+            this.setAppInstalled(true);
+            this.refreshInstallGlow();
+            // Приложение ставят ради уведомлений — сразу предлагаем их включить
+            if (this.pushSupported() && Notification.permission !== 'granted') this.enablePush();
+        }
     },
 });
 
@@ -12809,8 +13275,9 @@ Object.assign(App, {
      * сам запоминает адрес страницы. Уходит она не в GitHub, а администратору
      * на ревью — публичный трекер не место для «у меня всё пропало».
      */
-    supportModal(kind = 'bug') {
+    supportModal(kind = 'bug', opts = {}) {
         this.supportFiles = [];
+        const admin = !!(this.manager && this.manager.is_admin);
         this.modal('Написать в поддержку', `
             <div class="form-group">
                 <label>О чём</label>
@@ -12821,7 +13288,7 @@ Object.assign(App, {
             </div>
             <div class="form-group">
                 <label>Коротко</label>
-                <input type="text" id="supTitle" placeholder="Например: не отправляется КП из карточки">
+                <input type="text" id="supTitle" placeholder="Например: не отправляется КП из карточки" value="${this.esc(opts.title || '')}">
                 <!-- Поля поддержки тоже диктуются (issue #95) -->
                 <button type="button" class="btn btn--outline btn--sm mic" data-mic style="margin-top:6px"
                         title="Надиктовать: нажмите, говорите, нажмите ещё раз"
@@ -12831,7 +13298,7 @@ Object.assign(App, {
             <div class="form-group">
                 <label>Что случилось</label>
                 <textarea id="supBody" rows="6"
-                          placeholder="Что делали, что ожидали увидеть и что увидели. Скриншот — Ctrl+V в любом месте окна"></textarea>
+                          placeholder="Что делали, что ожидали увидеть и что увидели. Скриншот — Ctrl+V в любом месте окна">${this.esc(opts.body || '')}</textarea>
                 <button type="button" class="btn btn--outline btn--sm mic" data-mic style="margin-top:6px"
                         title="Надиктовать: нажмите, говорите, нажмите ещё раз"
                         onmousedown="event.preventDefault()"
@@ -12846,6 +13313,9 @@ Object.assign(App, {
                 </label>
                 <div class="flex flex--wrap" id="supFileList" style="gap:6px;margin-top:6px"></div>
                 <div class="muted">Картинки, документы, видео — всё, что можно приложить к issue.</div>
+                ${admin ? `<label class="flex" style="gap:8px;align-items:center;margin-top:8px">
+                    <input type="checkbox" id="supLog" ${opts.attachLog ? 'checked' : ''}>
+                    Приложить журнал ошибок и предупреждений файлом</label>` : ''}
             </div>
             <p class="muted">Экран: <code>${this.esc(location.hash || '#mail')}</code> — уйдёт вместе с обращением.
                ${(this.manager && this.manager.is_admin) ? 'Вы администратор — issue заведётся сразу, без ревью.'
@@ -12919,6 +13389,7 @@ Object.assign(App, {
                 title, body,
                 page:  location.hash || '#mail',
                 files: (this.supportFiles || []).map(f => f.name),
+                attach_log: document.getElementById('supLog')?.checked ? 1 : 0,
             }});
             this.closeModal();
             if (r.issue_url) this.toast('Issue #' + r.issue_number + ' заведён в GitHub', 'success');

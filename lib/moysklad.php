@@ -1291,6 +1291,24 @@ class MoySklad {
         return array_map(fn($i) => self::mapInvoice($i), $data['rows']);
     }
 
+    /**
+     * Отгрузки заказа (issue #112) — с доп. полями: трек-номер склад вписывает
+     * и в заказ, и в саму отгрузку.
+     *
+     * @return list<array{id:string,name:string,moment:string,attributes:array<string,string>}>
+     */
+    public static function getDemandsByOrder(string $orderId): array {
+        $filter = urlencode('customerOrder=' . self::$base . "/entity/customerorder/$orderId");
+        $data = self::get("/entity/demand?filter=$filter&limit=50");
+        if (!$data || empty($data['rows'])) return [];
+        return array_map(fn($d) => [
+            'id'         => self::extractId($d['id'] ?? $d['meta']['href'] ?? ''),
+            'name'       => (string)($d['name'] ?? ''),
+            'moment'     => (string)($d['moment'] ?? ''),
+            'attributes' => self::attributeValues($d['attributes'] ?? []),
+        ], $data['rows']);
+    }
+
     // Invoices of a company, regardless of order (edge case: invoice without order)
     public static function getInvoicesByCounterparty(string $counterpartyId, int $days = 180): array {
         $since = date('Y-m-d', strtotime("-{$days} days"));
@@ -1298,6 +1316,31 @@ class MoySklad {
         $data = self::get("/entity/invoiceout?filter=$filter&expand=state&limit=100");
         if (!$data || empty($data['rows'])) return [];
         return array_map(fn($i) => self::mapInvoice($i), $data['rows']);
+    }
+
+    /**
+     * Документ по номеру, как его видит человек: «00123», «123», «ЗК-00123»
+     * (issue #111). Сначала точное имя, затем номер с ведущими нулями, затем
+     * контекстный поиск — и из найденного берётся только совпавший по номеру.
+     *
+     * @param string $entity customerorder | invoiceout | demand
+     */
+    public static function findByName(string $entity, string $number): ?string {
+        $number = trim($number);
+        if ($number === '') return null;
+        $tries = [$number];
+        if (ctype_digit($number) && strlen($number) < 5) $tries[] = str_pad($number, 5, '0', STR_PAD_LEFT);
+        foreach ($tries as $name) {
+            $data = self::get("/entity/$entity?filter=" . urlencode('name=' . $name) . '&limit=5');
+            if (!empty($data['rows'][0])) return self::extractId($data['rows'][0]['id'] ?? $data['rows'][0]['meta']['href'] ?? '');
+        }
+        $data = self::get("/entity/$entity?search=" . urlencode($number) . '&limit=20');
+        $digits = ltrim((string)preg_replace('/\D+/', '', $number), '0');
+        foreach ((array)($data['rows'] ?? []) as $row) {
+            $n = ltrim((string)preg_replace('/\D+/', '', (string)($row['name'] ?? '')), '0');
+            if ($digits !== '' && $n === $digits) return self::extractId($row['id'] ?? $row['meta']['href'] ?? '');
+        }
+        return null;
     }
 
     public static function getInvoice(string $id): ?array {

@@ -127,3 +127,15 @@ not have.
   for the user to say which screen still hides them.
 - Open a КП with a price range in real Word and check the breakdown lines
   under the price (the .docx is built from the same HTML).
+
+## Module 061 — check on a live system
+- МойСклад: `/entity/demand?filter=customerOrder=…` and the track attribute on a
+  real отгрузка (only the order attribute was ever seen live); `findByName()` on
+  a real order / invoice number («123» vs «00123»).
+- IMAP `\Seen` sync (`MAIL_SYNC_SEEN`): read a letter in Yandex webmail, press
+  «Забрать почту» — the counter must drop.
+- Desktop install in Chrome and Yandex Browser: the glowing button, the
+  install prompt, then push from the installed window.
+- A support ticket with a screenshot → issue: the picture must render
+  (`blob/…?raw=true`) for a signed-in reader of the private repository.
+- Android Chrome with «тёмная тема для сайтов» on: the page must stay light.

@@ -125,6 +125,23 @@ class EmailReader {
     }
 
     /**
+     * Which of these UIDs the server already has \Seen (issue #97): a letter
+     * read on the phone must stop counting as unread here. FT_UID overview
+     * reads flags only — no body, no \Seen set by us.
+     * @return int[]
+     */
+    public function seenUids(array $uids): array {
+        $uids = array_values(array_filter(array_map('intval', $uids), fn($u) => $u > 0));
+        $seen = [];
+        foreach (array_chunk($uids, 100) as $chunk) {
+            foreach (@imap_fetch_overview($this->imap, implode(',', $chunk), FT_UID) ?: [] as $ov) {
+                if (!empty($ov->seen)) $seen[] = (int)$ov->uid;
+            }
+        }
+        return $seen;
+    }
+
+    /**
      * Everything newer than $sinceUid, oldest first — the archive syncs by UID and
      * never touches the \Seen flag, so the manager's own mail client is unaffected.
      */

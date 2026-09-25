@@ -64,6 +64,18 @@ final class Branding {
         };
     }
 
+    /**
+     * Знак в шапке панели (issue #107): загруженная картинка, а не рисованный
+     * SVG. Квадратные знаки (приложение, вкладка) — рядом с надписью; логотип
+     * КП — широкий, надпись в нём уже есть. '' — ничего не загружено.
+     */
+    public static function headerKind(): string {
+        foreach (['app', 'favicon', 'kp'] as $kind) {
+            if (self::uploaded($kind)) return $kind;
+        }
+        return '';
+    }
+
     /** Что реально будет показано: загруженное, иначе встроенное. */
     public static function resolve(string $kind): string {
         $uploaded = self::uploaded($kind);

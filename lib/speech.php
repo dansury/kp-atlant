@@ -79,13 +79,21 @@ final class Speech {
         return is_array($j) ? trim((string)($j['result'] ?? '')) : '';
     }
 
+    /** Параметры распознавания: модель и язык — из «Настройки → Нейросети» (issue #98). */
+    public static function query(string $format): array {
+        $q = [
+            'folderId' => trim((string)Settings::get('YANDEX_FOLDER_ID', '')),
+            'lang'     => trim((string)Settings::get('SPEECH_LANG', 'ru-RU')) ?: 'ru-RU',
+            'topic'    => trim((string)Settings::get('SPEECH_MODEL', 'general')) ?: 'general',
+            'format'   => $format,
+        ];
+        if ((int)Settings::get('SPEECH_PROFANITY', 0) === 1) $q['profanityFilter'] = 'true';
+        return $q;
+    }
+
     /** @return array{code:int,body:string} */
     private static function post(string $bytes, string $format): array {
-        $url = self::STT_URL . '?' . http_build_query([
-            'folderId' => trim((string)Settings::get('YANDEX_FOLDER_ID', '')),
-            'lang'     => 'ru-RU',
-            'format'   => $format,
-        ]);
+        $url = self::STT_URL . '?' . http_build_query(self::query($format));
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
@@ -104,7 +112,6 @@ final class Speech {
         $body = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err  = curl_error($ch);
-        curl_close($ch);
         return ['code' => $code, 'body' => $body === false ? $err : (string)$body];
     }
 }

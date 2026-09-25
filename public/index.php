@@ -14,7 +14,7 @@ $assetVer = max(
 if (!defined('ROOT')) define('ROOT', dirname(__DIR__));
 require_once ROOT . '/lib/branding.php';
 $brandVer  = Branding::stamp();
-$appLogo   = Branding::uploaded('app');
+$logoKind  = Branding::headerKind();
 
 /**
  * Виджет чата — из настроек, а не зашитый в страницу (issue #60).
@@ -40,6 +40,9 @@ try {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Тема светлая по замыслу: «авто-тёмный режим» Chrome на Android
+         перекрашивал поля в серые полосы и ломал контраст (issue #105) -->
+    <meta name="color-scheme" content="only light">
     <title>Atlant Armour — КП</title>
     <!-- Installable on a phone: manifest + icons + standalone chrome (module 007) -->
     <meta name="theme-color" content="#ffffff">
@@ -76,14 +79,14 @@ try {
     <noscript><div><img src="https://mc.yandex.ru/watch/112558579" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
     <header class="header">
         <div class="header__logo">
-            <?php if ($appLogo): ?>
-            <img class="header__brand" src="/api/branding.php?kind=app&amp;v=<?= $brandVer ?>" alt="Atlant Armour">
+            <?php if ($logoKind === 'kp'): ?>
+            <img class="header__brand header__brand--wide" src="/api/branding.php?kind=kp&amp;v=<?= $brandVer ?>" alt="Atlant Armour">
+            <span class="header__sub">КП</span>
             <?php else: ?>
-            <svg class="header__mark" viewBox="0 0 40 26" aria-hidden="true" focusable="false">
-                <path d="M0 0C6 0 11 1 20 6C29 1 34 0 40 0C34 5 27 13 20 26C13 13 6 5 0 0Z"/>
-            </svg>
-            <?php endif; ?>
+            <img class="header__brand" alt="" aria-hidden="true"
+                 src="<?= $logoKind !== '' ? '/api/branding.php?kind=' . $logoKind . '&amp;v=' . $brandVer : '/assets/icons/icon-192.png' ?>">
             Atlant Armour <span class="header__sub">КП</span>
+            <?php endif; ?>
         </div>
         <nav class="header__nav" id="nav"></nav>
         <div class="header__user" id="userBlock"></div>
