@@ -187,7 +187,7 @@ echo "\n6. Интерфейс\n";
 
 ok('доски КП больше нет', !str_contains($js, 'drawKpBoard') && !str_contains($js, 'Ещё одно КП')
    && !str_contains($api, "case 'move_item'") && !str_contains($api, "case 'board'"));
-ok('кнопки под подбором', (bool)preg_match('/🔄 Пересобрать.*?\'Закрыть\' : \'Открыть\'.*?⬇ Word.*?⬇ PDF.*?🧾 Счёт.*?data-kp-delete/s', $js));
+ok('кнопки под подбором', (bool)preg_match('/🔄 Пересобрать.*?\'Закрыть\' : \'Открыть\'.*?⬇ Word.*?⬇ PDF.*?this\.invoiceButton\(requestId, kp\).*?data-kp-delete/s', $js));   // счёт — кнопкой модуля 062
 ok('«Убрать» — только когда можно', str_contains($js, 'del.innerHTML = s.can_delete'));
 ok('вкладка «Подпись» открыта всем', str_contains($js, "['signature',  'Подпись',         false]"));
 ok('подпись организации — админу', str_contains($js, "if (admin) this.loadCompanySignature();"));

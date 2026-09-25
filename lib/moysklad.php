@@ -1367,10 +1367,24 @@ class MoySklad {
      * Returns raw PDF bytes or null when unavailable.
      */
     public static function exportInvoicePdf(string $invoiceId): ?string {
+        return self::exportPdf('invoiceout', $invoiceId, (string)Settings::get('MS_INVOICE_TEMPLATE', ''));
+    }
+
+    /**
+     * Печатная форма любого документа (issue #119): заказ (`customerorder`),
+     * отгрузка (`demand`), счёт (`invoiceout`). Шаблон — по имени, иначе первый.
+     */
+    public static function exportPdf(string $entity, string $id, string $wantedTemplate = ''): ?string {
         self::$exportError = '';
-        $template = self::firstInvoiceTemplate();
+        // Недоступный МойСклад — «печатной формы нет», а не упавшая синхронизация
+        try {
+            $template = self::firstTemplate($entity, $wantedTemplate);
+        } catch (Throwable $e) {
+            self::$exportError = $e->getMessage();
+            return null;
+        }
         if (!$template) {
-            self::$exportError = 'у счёта покупателя нет ни одного шаблона печати';
+            self::$exportError = 'у документа нет ни одного шаблона печати';
             return null;
         }
 
@@ -1382,7 +1396,7 @@ class MoySklad {
         // Ответ — сам файл (200) или ссылка на него (303/202 + Location).
         // Ссылку опрашиваем, а не просим печать заново (модуль 054).
         for ($attempt = 0; $attempt < 3; $attempt++) {
-            [$code, $raw, $headers] = self::requestRaw('POST', "/entity/invoiceout/$invoiceId/export", $body);
+            [$code, $raw, $headers] = self::requestRaw('POST', "/entity/$entity/$id/export", $body);
 
             if ($code === 200 && str_starts_with($raw, '%PDF')) return $raw;
 
@@ -1448,15 +1462,23 @@ class MoySklad {
      * then a name containing it; nothing matched — the first template, as
      * before.
      */
-    private static function firstInvoiceTemplate(): ?array {
+    private static function firstTemplate(string $entity, string $wanted): ?array {
         $rows = [];
         foreach (['customtemplate', 'embeddedtemplate'] as $kind) {
-            $data = self::get("/entity/invoiceout/metadata/$kind");
+            $data = self::get("/entity/$entity/metadata/$kind");
             foreach ((array)($data['rows'] ?? []) as $row) {
                 if (!empty($row['meta'])) $rows[] = $row;
             }
         }
-        return self::pickTemplate($rows, (string)Settings::get('MS_INVOICE_TEMPLATE', ''));
+        return self::pickTemplate($rows, $wanted);
+    }
+
+    public static function demandUrl(string $id): string {
+        return 'https://online.moysklad.ru/app/#demand/edit?id=' . $id;
+    }
+
+    public static function paymentUrl(string $id): string {
+        return 'https://online.moysklad.ru/app/#paymentin/edit?id=' . $id;
     }
 
     /** @param list<array> $rows templates as MoySklad lists them */

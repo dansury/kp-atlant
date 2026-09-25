@@ -13,6 +13,7 @@ require_once ROOT . '/lib/attachments.php';
 require_once ROOT . '/lib/outbox.php';
 require_once ROOT . '/lib/drafts.php';
 require_once ROOT . '/lib/forwards.php';
+require_once ROOT . '/lib/boards.php';
 require_once ROOT . '/lib/mail_signature.php';
 
 $manager = requireAuth();
@@ -271,6 +272,8 @@ try {
             } catch (InvalidArgumentException $e) {
                 jsonError($e->getMessage(), 404);
             }
+            // «Подобрать товар» — подбор начат, карточка «В работе» (issue #119)
+            if (!empty($res['request_id'])) Boards::workStarted((int)$res['request_id']);
             jsonOk($res);
         }
 
@@ -474,6 +477,16 @@ try {
                     $name = PdfGenerator::fileName($id, 'pdf');
                 }
                 if (!$path || !is_file($path)) jsonError('Файл КП не собрался', 500);
+            } elseif ($kind === 'order' || $kind === 'demand') {
+                // Заказ и отгрузка — печатной формой МойСклад (issue #119)
+                require_once ROOT . '/lib/sync.php';
+                $doc = MsSync::docPdf($kind, $id);
+                if (!$doc['path'] || !is_file($doc['path'])) {
+                    jsonError('Печатная форма недоступна в МойСклад' . ($doc['error'] !== '' ? ': ' . $doc['error'] : ''), 502);
+                }
+                $path = $doc['path'];
+                $name = safeAttachmentName((string)($input['filename'] ?? '')) ?: $doc['name'];
+                jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'])]);
             } else {
                 jsonError('Неизвестный документ');
             }

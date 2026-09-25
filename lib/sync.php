@@ -124,6 +124,9 @@ class MsSync {
     }
 
     // Upsert one invoice; fetches the printable PDF on first sight (C-013)
+    /** Документ моложе стольких дней двигает карточку по стадиям (issue #119). */
+    public const FRESH_DAYS = 14;
+
     public static function upsertInvoice(array $inv, ?int $localOrderId, ?int $cpId): int {
         $existing = Db::one("SELECT * FROM invoices WHERE moysklad_id=?", [$inv['id']]);
         $now = date('Y-m-d H:i:s');
@@ -173,11 +176,56 @@ class MsSync {
                 'subject'    => 'Счёт ' . $inv['name'],
                 'meta'       => ['invoice_id' => $id, 'moysklad_id' => $inv['id'], 'url' => MoySklad::invoiceUrl($inv['id'])],
             ]);
+            // Счёт выставлен — карточка ждёт оплату (issue #119). Старые счета,
+            // которые первая синхронизация поднимает из истории, её не двигают
+            $moment = strtotime((string)($inv['moment'] ?? '')) ?: time();
+            if ($cpId && $moment >= time() - self::FRESH_DAYS * 86400) {
+                require_once __DIR__ . '/boards.php';
+                Boards::advance($cpId, null, 'payment');
+            }
         }
 
         self::ensureInvoicePdf($id);
         return $id;
     }
+
+    /** Документы, у которых есть печатная форма: вид → [сущность МойСклад, таблица, как назвать]. */
+    public const PRINTABLE = [
+        'invoice' => ['invoiceout',    'invoices',      'Счёт'],
+        'order'   => ['customerorder', 'orders',        'Заказ'],
+        'demand'  => ['demand',        'order_demands', 'Отгрузка'],
+    ];
+
+    /**
+     * Печатная форма документа сделки (issue #119): 👁 в ленте и «В письмо».
+     * Счёт — как раньше; заказ и отгрузка печатаются первым шаблоном МойСклад
+     * и кладутся в `storage/docs/`, чтобы второй показ не ждал МойСклад.
+     *
+     * @return array{path:?string, name:string, error:string}
+     */
+    public static function docPdf(string $doc, int $id): array {
+        if (!isset(self::PRINTABLE[$doc])) return ['path' => null, 'name' => '', 'error' => 'У этого документа нет печатной формы'];
+        [$entity, $table, $label] = self::PRINTABLE[$doc];
+        $row = Db::one("SELECT * FROM $table WHERE id=?", [$id]);
+        if (!$row) return ['path' => null, 'name' => '', 'error' => 'Документ не найден'];
+        $name = trim($label . ' ' . (string)($row['name'] ?? '')) . '.pdf';
+        if ($doc === 'invoice') {
+            $path = self::ensureInvoicePdf($id);
+            return ['path' => $path, 'name' => $name, 'error' => $path ? '' : MoySklad::lastExportError()];
+        }
+        $rel = 'storage/docs/' . $doc . '-' . preg_replace('/[^\w-]/', '', (string)$row['moysklad_id']) . '.pdf';
+        if (is_file(ROOT . '/' . $rel) && filesize(ROOT . '/' . $rel) > 0) return ['path' => ROOT . '/' . $rel, 'name' => $name, 'error' => ''];
+        self::init();
+        $pdf = self::$fetchPdf ? (self::$fetchPdf)((string)$row['moysklad_id'])
+                               : MoySklad::exportPdf($entity, (string)$row['moysklad_id']);
+        if ($pdf === null) return ['path' => null, 'name' => $name, 'error' => MoySklad::lastExportError()];
+        if (!is_dir(ROOT . '/storage/docs')) mkdir(ROOT . '/storage/docs', 0755, true);
+        file_put_contents(ROOT . '/' . $rel, $pdf);
+        return ['path' => ROOT . '/' . $rel, 'name' => $name, 'error' => ''];
+    }
+
+    /** Подмена печати счёта в тестах: fn(string $msInvoiceId): ?string */
+    public static $fetchPdf = null;
 
     // Download and cache the invoice printform. Returns absolute path or null.
     public static function ensureInvoicePdf(int $invoiceId): ?string {
@@ -188,7 +236,8 @@ class MsSync {
         $abs = $inv['pdf_path'] ? ROOT . '/' . $inv['pdf_path'] : null;
         if ($abs && is_file($abs) && filesize($abs) > 0) return $abs;
 
-        $pdf = MoySklad::exportInvoicePdf($inv['moysklad_id']);
+        $pdf = self::$fetchPdf ? (self::$fetchPdf)((string)$inv['moysklad_id'])
+                               : MoySklad::exportInvoicePdf($inv['moysklad_id']);
         if ($pdf === null) {
             Logger::warning('moysklad', 'Печатная форма счёта не получена: ' . MoySklad::lastExportError(),
                             ['invoice_id' => $invoiceId]);

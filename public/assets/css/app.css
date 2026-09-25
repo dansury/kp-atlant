@@ -292,7 +292,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
          justify-content: center; z-index: 300; padding: 20px; backdrop-filter: blur(2px); }
 /* min-width: 0 — ребёнок flex-контейнера иначе растёт до min-content самого
    широкого поля, и окно на телефоне вылезало за правый край (issue #105) */
-.modal__box { width: 100%; max-width: min(460px, 100%); min-width: 0; margin: 0; max-height: 85vh; overflow-y: auto;
+.modal__box { width: 100%; max-width: min(460px, 100%); min-width: 0; margin: 0; max-height: 85%; overflow-y: auto;
               overflow-x: hidden; }
 .modal__box input, .modal__box select, .modal__box textarea { max-width: 100%; min-width: 0; }
 .modal__box code, .modal__box pre { overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -1224,31 +1224,33 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .kp-zoom { display: inline-flex; gap: 2px; margin-left: auto; align-items: center; }
 .kp-zoom [data-kp-zoom-label] { min-width: 58px; }
 
-/* ==== Вкладки справа: «Информация» и «Заметки» (модуль 049) ====
-   На десктопе обе карточки свёрнуты в вертикальные вкладки у правого края
-   окна и открываются шторкой поверх страницы. Телефон — как в модуле 046. */
-@media (min-width: 641px) {
-    .letter:has(#companySide) { padding-right: 44px; }
-    /* Колонка справа нужна, только пока в ней стоит подбор */
-    .letter:has(#companySide):not(:has(> .letter__side > [data-thread-items])) { grid-template-columns: minmax(0, 1fr); }
-    #companySide { position: fixed; right: 0; top: 76px; z-index: 90;
-                   display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
-    #companySide > [data-block] { margin: 0; box-shadow: var(--shadow-lg, 0 8px 24px rgba(16,24,40,.18)); }
-    #companySide > [data-block]:not(.is-folded) {
-        width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 96px); overflow-y: auto;
-        border-radius: var(--radius) 0 0 var(--radius);
-    }
-    #companySide > [data-block].is-folded {
-        width: 40px; padding: 10px 0; cursor: pointer; border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-    }
-    #companySide > [data-block].is-folded > .block-head {
-        writing-mode: vertical-rl; transform: rotate(180deg); background: none; padding: 0;
-        margin: 0 auto; font-size: 13px; white-space: nowrap; gap: 4px;
-    }
-    #companySide > [data-block].is-folded > .block-head > .block-fold,
-    #companySide > [data-block].is-folded > .block-head > .hint { display: none; }
-    #companySide > [data-block].is-folded:hover { background: var(--surface-2); }
-    [data-notes-dot] .notif-dot { vertical-align: middle; margin: 0 2px; }
+/* ==== Карточка компании без вкладок справа (issue #119) ====
+   «Информация» открывается по названию в шапке, документы и заметки стоят в
+   ленте между письмами. Колонка справа нужна, только пока в ней ждёт подбор. */
+.letter--company:not(:has(> .letter__side > [data-thread-items])) { grid-template-columns: minmax(0, 1fr); }
+.letter--company > .letter__side:empty { display: none; }
+.pagehead__info { color: inherit; text-decoration: none; border-bottom: 1px dashed var(--border-strong); }
+.pagehead__info:hover { border-bottom-color: currentColor; }
+.pagehead__i { font-size: .7em; color: var(--text-muted); vertical-align: super; }
+
+/* Строка ленты: документ МойСклад, заметка, веха. Текст — var(--text) на
+   var(--surface-2) и var(--text-muted) на нём же: оба AA (≥ 4.5:1) */
+.tl { display: flex; align-items: flex-start; gap: 10px; margin: 8px 16px; padding: 8px 12px;
+      border: 1px dashed var(--border-strong); border-radius: var(--radius-sm, 4px);
+      background: var(--surface-2); color: var(--text); min-width: 0; }
+.thread > .tl { margin: 8px 0; }
+.tl__icon { flex: 0 0 auto; font-size: 18px; line-height: 1.3; }
+.tl__main { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.tl__line { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.tl__meta { font-size: 12px; margin-top: 2px; }
+.tl__body { white-space: pre-wrap; margin-top: 4px; }
+.tl__tools { flex: 0 0 auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.tl--note { border-style: solid; border-left: 3px solid var(--warning); }
+.tl--event { border-style: none; background: none; padding: 2px 12px; }
+.tl.msg--offtopic { opacity: .6; }
+@media (max-width: 640px) {
+    .tl { flex-wrap: wrap; margin: 8px 10px; }
+    .tl__tools { width: 100%; justify-content: flex-start; }
 }
 
 /* ==== Модуль 050: список как в Gmail, цвета статусов, одна шапка экрана ==== */

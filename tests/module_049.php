@@ -118,10 +118,12 @@ ok('в «Тексте по полям» нет письма', !str_contains($api
 ok('строка доставки без «усл. 1»', !preg_match('/<span class="muted">усл\.<\/span>/u', $js));
 ok('режим доставки выбирается в строке', str_contains($js, 'data-delivery-mode'));
 ok('КП встаёт над письмом', str_contains($js, "composer.insertAdjacentElement('beforebegin'"));
-ok('пояснение ленты — под значком подсказки', str_contains($js, "this.hint('events')")
+// Модуль 062 (issue #119) убрал вкладки справа: лента — между письмами, «Информация» — по названию
+ok('пояснение ленты — в подсказках', str_contains($js, "'events':       ['Документы и заметки в ленте'")
    && !str_contains($js, '<div class="note" style="margin-bottom:8px">Заметки для коллег'));
-ok('точка заметок вставляется, а не прячется', str_contains($js, 'data-notes-dot') && !preg_match('/data-notes-dot[^>]*hidden/', $js));
-ok('вкладки справа на десктопе', str_contains($css, '#companySide { position: fixed; right: 0;'));
+ok('заметки — строками ленты, без вкладки с точкой', str_contains($js, "tl--note") && !str_contains($js, 'data-notes-dot'));
+ok('без вкладок справа карточка в одну колонку', str_contains($css, '.letter--company:not(:has(> .letter__side > [data-thread-items]))')
+   && !str_contains($css, '#companySide { position: fixed;'));
 
 echo $fail ? "\n$fail FAILED\n" : "\nAll passed\n";
 exit($fail ? 1 : 0);

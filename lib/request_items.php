@@ -139,6 +139,10 @@ final class RequestItems {
 
         $eligible = $onlyIds === null ? null : array_map('intval', $onlyIds);
 
+        // Товар с модификациями «в наличии», если есть его размеры (issue #118):
+        // собственный остаток такого товара в МойСклад всегда ноль
+        $family = Variants::stockFor(array_column($rows, 'moysklad_product_id'));
+
         $needy = [];
         foreach ($rows as $row) {
             if ($eligible === null) {
@@ -154,7 +158,14 @@ final class RequestItems {
             // a row with no product at all is just as much «нечего отгрузить»
             $hasProduct = trim((string)($row['product_name'] ?? '')) !== '';
             $free = $row['stock'] === null ? 0 : (int)$row['stock'];
+            $own = $family[(string)($row['moysklad_product_id'] ?? '')] ?? null;
+            if ($own) $free = $own['free'];
             if ($hasProduct && $free > 0) continue;
+            // Клиент назвал размер, и строка стоит на этой модификации — это
+            // тот самый товар; нет его — «под заказ», а не другой товар
+            // или другой размер вместо него (issue #118)
+            if ($hasProduct && trim((string)($row['variant_label'] ?? '')) !== ''
+                && (string)($row['match_source'] ?? '') === 'модификация') continue;
             $needy[(int)$row['id']] = $row;
         }
         if (!$needy) return 0;
@@ -235,8 +246,13 @@ final class RequestItems {
     private static function requirementText(string $letter, string $name): string {
         $name = trim($name);
         if ($name === '' || $letter === '') return $name;
-        foreach (preg_split('/\R|(?<=[.;])\s+/u', $letter) ?: [] as $line) {
+        $lines = preg_split('/\R|(?<=[.;])\s+/u', $letter) ?: [];
+        foreach ($lines as $line) {
             if (mb_stripos($line, mb_substr($name, 0, 12)) !== false) return trim($line);
+        }
+        // «5 плит для бронежилета» — та же строка, хотя буквы с начала разные
+        foreach ($lines as $line) {
+            if (Variants::mentions($line, $name)) return trim($line);
         }
         return $name;
     }
@@ -414,11 +430,22 @@ final class RequestItems {
         }
 
         $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
+        // Размер из письма у строки, заведённой без метки (issue #118): перебор
+        // находит его в строке письма и ставит строку на модификацию
+        $letter = (string)(Db::val("SELECT raw_text FROM requests WHERE id=?", [$requestId]) ?: '');
+        foreach ($open as $i => $r) {
+            if (trim((string)($r['variant_label'] ?? '')) !== '') continue;
+            $name = $r['raw_name'] !== '' ? (string)$r['raw_name'] : (string)$r['product_name'];
+            $label = Variants::sizeLabel($name) ?? Variants::sizeLabel(self::requirementText($letter, $name));
+            if ($label === null) continue;
+            $open[$i]['variant_label'] = $existing[$i]['variant_label'] = $label;
+            Db::update('request_items', ['variant_label' => $label], 'id=?', [(int)$r['id']]);
+        }
         $queries = array_map(function ($r) {
             $name = $r['raw_name'] !== '' ? $r['raw_name'] : (string)$r['product_name'];
             // У строки с модификацией каталог ищется по товару-родителю:
             // «(размер S)» в названии не помогает найти сам шлем (модуль 022)
-            if (trim((string)($r['variant_label'] ?? '')) !== '') $name = Variants::baseName($name);
+            if (trim((string)($r['variant_label'] ?? '')) !== '') $name = Variants::stripSize(Variants::baseName($name));
             return ['name' => $name, 'qty' => $r['quantity']];
         }, $open);
         // matchItems answers positionally, so the query list is re-keyed and the
@@ -452,7 +479,7 @@ final class RequestItems {
                 'price'               => (float)($variant['price'] ?? ($best['price'] ?? 0)),
                 'stock'               => array_key_exists('stock', $variant)
                                             ? $variant['stock']
-                                            : ($best === null ? null : Alternatives::freeStock($best)),
+                                            : ($best === null ? null : Variants::freeStock($best)),
                 'match_confidence'    => $best['score'] ?? null,
                 'match_variants'      => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
                 'needs_choice'        => !empty($m['needs_choice']) ? 1 : 0,

@@ -7,6 +7,7 @@ require_once __DIR__ . '/boards.php';
 require_once __DIR__ . '/crm.php';
 require_once __DIR__ . '/notifier.php';
 require_once __DIR__ . '/moysklad.php';
+require_once __DIR__ . '/sync.php';
 
 final class Fulfillment {
 
@@ -42,8 +43,8 @@ final class Fulfillment {
     private static function toAssembly(int $cpId, string $doc, float $sum, ?int $managerId, array $meta): void {
         $cpId = Crm::rootId($cpId);
         $company = (string)(Db::val("SELECT name FROM counterparties WHERE id=?", [$cpId]) ?: 'Компания');
-        $col = Boards::assemblyColumn((int)Boards::singleton()['id']);
-        Boards::addCard((int)$col['id'], ['counterparty_id' => $cpId]);
+        // Только вперёд: отгруженная карточка от поздней оплаты назад не едет (issue #119)
+        Boards::advance($cpId, null, 'assembly');
 
         $money = number_format($sum, 2, ',', ' ') . ' ₽';
         Crm::logEvent($cpId, 'note', "$doc оплачен ($money) — карточка в «Сборке»", [
@@ -168,6 +169,11 @@ final class Fulfillment {
             ]);
             $row = Db::one("SELECT * FROM order_demands WHERE id=?", [$id]);
             $out['new'] = 1;
+            // Отгрузка есть — карточка «Отправлено» (issue #119); старая из истории — нет
+            $moment = strtotime((string)($d['moment'] ?? '')) ?: time();
+            if (!empty($o['counterparty_id']) && $moment >= time() - MsSync::FRESH_DAYS * 86400) {
+                Boards::advance((int)$o['counterparty_id'], null, 'shipped');
+            }
         } elseif ($track !== '' && (string)$row['ship_track'] !== $track) {
             Db::update('order_demands', ['ship_track' => $track, 'ship_service' => $service ?: null], 'id=?', [(int)$row['id']]);
         }

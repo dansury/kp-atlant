@@ -269,6 +269,12 @@ is capped below a name match by construction, so a description hit is offered an
 The row then says `source = description`: a line nobody can connect to the query needs to
 explain itself.
 
+A name that IS the query (every word both ways, the size and the bracketed modification set
+aside) outranks a name that merely CONTAINS it — «Боковая плита для бронежилета Бр3» is another
+product (module 062). A size named once («размер XL») is a modification label like a list is
+(`Variants::sizeLabel()`), and a product with modifications is in stock when its modifications
+are: judging it by its own zero is how a plate in stock got replaced by an «analogue».
+
 ## Money on a position
 The price a КП prints is computed in ONE place — `Terms::price()` — and nowhere else. A
 position has a manual discount and, when it is not in stock, a waiting term, a waiting discount
@@ -369,9 +375,12 @@ used to clear the unread count of letters nobody had looked at. Any new place th
 thread must decide which it is: an explicit open (`read=1`, or `mail.php?action=thread_read`
 afterwards) or a preview that leaves the count alone.
 
-The company feed («Заметки и события») carries NOTES and MILESTONES, not letters (module 020).
-`Crm::chat()` drops rows that are plain correspondence; a letter is read and answered in
-«Переписка», where it has its thread, its attachments and the one reply box. `Crm::logEvent()`
+The company feed carries NOTES, MILESTONES and МойСклад DOCUMENTS, not letters (module 020), and
+it has no tab of its own (module 062): `App.placeFeed()` puts each row between the letters by
+date — inside the conversation of its request, otherwise between conversations. A document
+links to МойСклад (edited only there) and has 👁 and «📎 В письмо»; «Информация» opens from the
+company name. `Crm::chat()` drops rows that are plain correspondence; a letter is read and
+answered in its conversation, where it has its thread, its attachments and the one reply box. `Crm::logEvent()`
 still records every letter — `last_inbound_at`/`last_outbound_at` and the unanswered highlight
 depend on it — so narrow what is SHOWN, never what is written. Inside a conversation the
 folding is a mail client's: our own answers and letters already read collapse to one line with
@@ -524,7 +533,11 @@ itself there: `Boards::sync()` runs on every open of the board, so nothing waits
 to press «в доску». Do not add a screen that lists letters, requests or companies as a sibling
 of the board, and do not make a card carry one letter again. A card with an unanswered letter
 is bold and rises inside its column; an answered one dims and keeps the order it was dragged
-into — the column itself is the manager's decision and code never changes it.
+into. The COLUMN follows the deal by itself and only forward (module 062, `Boards::advance()`):
+a draft or a started match → «В работе», a sent КП → «КП отправлено», an invoice → «Ждём
+оплату», a payment → «Сборка», a МойСклад shipment → «Отправлено». Documents older than
+`MsSync::FRESH_DAYS` move nothing — a first sync must not march a card through its history.
+A manual move always works; `work` never pulls a card out of a column the manager chose.
 
 Checked cards move as a GROUP and in their own order (module 036, `Boards::moveCards()` — the
 order is computed once for the whole group, otherwise it arrives reversed). The board screen

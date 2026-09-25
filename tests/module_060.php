@@ -123,7 +123,7 @@ ok('письмо осталось — карточка на месте', empty($
 $res = MailSync::deleteMessage($b, $mgr);
 ok('последнее удалено — карточки нет', !empty($res['card_removed'])
    && (int)Db::val("SELECT COUNT(*) FROM board_cards WHERE id=?", [$card]) === 0, json_encode($res));
-ok('экран уходит на доску', str_contains($js, 'if (r.card_removed) {'));
+ok('экран уходит на доску', str_contains($js, "this.goAfterDelete('mail/board');"));
 
 // ===================================================================== 4
 echo "4. #95 голос в поддержке\n";
