@@ -200,13 +200,58 @@ final class Boards {
         foreach ($columns as &$col) {
             $col['id'] = (int)$col['id'];
             $sorted = self::sortCards($byColumn[$col['id']] ?? []);
-            // Лимит карточек на колонку — чтобы не грузить интерфейс лишним (issue #60)
+            // Лимит карточек на колонку — чтобы не грузить интерфейс лишним (issue #60).
+            // Остальные догружаются стрелкой «ещё» пачками того же размера (issue #110)
+            $col['total'] = count($sorted);
             if (!empty($col['card_limit'])) $sorted = array_slice($sorted, 0, (int)$col['card_limit']);
             $col['cards'] = $sorted;
         }
         unset($col);
 
         return $board + ['columns' => $columns];
+    }
+
+    /**
+     * Следующая пачка карточек колонки с лимитом (issue #110): тот же порядок,
+     * что у `get()`, с `$offset`. Пачка — `card_limit` колонки, если не сказано иное.
+     *
+     * @return array{cards: list<array>, total: int, offset: int}
+     */
+    public static function columnCards(int $columnId, int $offset, int $limit = 0): array {
+        $col = Db::one("SELECT * FROM board_columns WHERE id=?", [$columnId]);
+        if (!$col) return ['cards' => [], 'total' => 0, 'offset' => 0];
+        $limit = $limit > 0 ? $limit : max(1, (int)($col['card_limit'] ?: 50));
+        $cards = Db::all(
+            "SELECT d.*, g.name AS manager_name FROM board_cards d
+             LEFT JOIN managers g ON g.id = d.manager_id
+             WHERE d.column_id=? AND d.dismissed_at IS NULL ORDER BY d.position, d.id", [$columnId]);
+        self::decorateAll($cards, ($col['kind'] ?? null) === 'closed' ? [$columnId] : []);
+        $sorted = self::sortCards($cards);
+        $offset = max(0, $offset);
+        return ['cards' => array_slice($sorted, $offset, $limit), 'total' => count($sorted), 'offset' => $offset];
+    }
+
+    /**
+     * Карточки, которые нашёл поиск, — целиком, как на доске (issue #110):
+     * старое письмо из «Закрыто», срезанное лимитом колонки, поиск всё равно
+     * ставит в его колонку.
+     *
+     * @return list<array>
+     */
+    public static function searchCards(string $q, int $limit = 50): array {
+        $ids = array_map('intval', array_column(self::search($q, $limit), 'card_id'));
+        if (!$ids) return [];
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $cards = Db::all(
+            "SELECT d.*, g.name AS manager_name FROM board_cards d
+             LEFT JOIN managers g ON g.id = d.manager_id
+             WHERE d.id IN ($in) AND d.dismissed_at IS NULL", $ids);
+        $closed = array_map('intval', array_column(
+            Db::all("SELECT id FROM board_columns WHERE kind='closed'"), 'id'));
+        self::decorateAll($cards, $closed);
+        foreach ($cards as &$c) $c['column_id'] = (int)$c['column_id'];
+        unset($c);
+        return array_values($cards);
     }
 
     /**
@@ -251,6 +296,9 @@ final class Boards {
 
         $stats = $cpIds ? self::companyStats($cpIds, $lightCpIds) : [];
         $drafts = self::draftsOf($cards);
+        // Уведомления, которыми помечена карточка (issue #103) — того, кто смотрит
+        require_once __DIR__ . '/notifier.php';
+        $notices = Notifier::cardNotices((int)($_SESSION['manager_id'] ?? 0));
 
         foreach ($cards as &$card) {
             $card['id'] = (int)$card['id'];
@@ -307,8 +355,11 @@ final class Boards {
             if ($card['seen_at'] && $card['last_at'] && (string)$card['seen_at'] >= (string)$card['last_at']) {
                 $card['unanswered'] = false;
             }
+            $card['notices'] = $card['counterparty_id']
+                ? ($notices['cp'][$card['counterparty_id']] ?? [])
+                : ($notices['thread'][(string)($card['thread_key'] ?? '')] ?? []);
             // Bright and on top: a letter nobody has read, or one nobody has answered
-            $card['hot'] = $card['unread'] > 0 || $card['unanswered'] || $card['attention'];
+            $card['hot'] = $card['unread'] > 0 || $card['unanswered'] || $card['attention'] || (bool)$card['notices'];
         }
         unset($card);
     }

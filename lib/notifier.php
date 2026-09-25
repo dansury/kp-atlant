@@ -127,6 +127,55 @@ class Notifier {
     }
 
     // Mark notification as read
+    /**
+     * Уведомления, которые ПОМЕЧАЮТ карточку (issue #103): «Сообщить складу»,
+     * «заказ отправлен», недоставленное письмо, резерв, напоминание. Карточка
+     * с таким уведомлением выделена и стоит наверху колонки, пока менеджер не
+     * поставит галочку у него в самой карточке. Новое письмо сюда не входит —
+     * его и так видно по жирному шрифту непрочитанного.
+     */
+    public const CARD_TYPES = ['order_paid', 'order_shipped', 'mail_bounced', 'reserve_hold',
+                               'followup', 'invoice', 'new_order'];
+
+    /**
+     * Непрочитанные уведомления менеджера о карточках — по компании (корню
+     * слияния) и по цепочке, для карточек без компании.
+     *
+     * @return array{cp: array<int, list<array>>, thread: array<string, list<array>>}
+     */
+    public static function cardNotices(int $managerId, ?int $counterpartyId = null): array {
+        $out = ['cp' => [], 'thread' => []];
+        if ($managerId <= 0 || !Db::hasTable('notifications')) return $out;
+        require_once __DIR__ . '/crm.php';
+        $in = implode(',', array_fill(0, count(self::CARD_TYPES), '?'));
+        $rows = Db::all(
+            "SELECT n.id, n.type, n.title, n.body, n.created_at, n.url,
+                    CASE n.ref_type
+                        WHEN 'counterparty' THEN n.ref_id
+                        WHEN 'mail'     THEN (SELECT counterparty_id FROM mail_messages WHERE id = n.ref_id)
+                        WHEN 'request'  THEN (SELECT counterparty_id FROM requests WHERE id = n.ref_id)
+                        WHEN 'proposal' THEN (SELECT counterparty_id FROM proposals WHERE id = n.ref_id)
+                    END AS cp_id,
+                    CASE n.ref_type WHEN 'mail' THEN (SELECT thread_key FROM mail_messages WHERE id = n.ref_id) END AS thread_key
+             FROM notifications n
+             WHERE n.manager_id = ? AND n.is_read = 0 AND n.type IN ($in)
+             ORDER BY n.id DESC LIMIT 500", [$managerId, ...self::CARD_TYPES]);
+        $roots = [];
+        foreach ($rows as $r) {
+            $item = ['id' => (int)$r['id'], 'type' => (string)$r['type'], 'title' => (string)$r['title'],
+                     'body' => (string)($r['body'] ?? ''), 'created_at' => (string)$r['created_at']];
+            if (!empty($r['cp_id'])) {
+                $cp = (int)$r['cp_id'];
+                $root = $roots[$cp] ??= Crm::rootId($cp);
+                if ($counterpartyId !== null && $root !== Crm::rootId($counterpartyId)) continue;
+                $out['cp'][$root][] = $item;
+            } elseif (!empty($r['thread_key'])) {
+                $out['thread'][(string)$r['thread_key']][] = $item;
+            }
+        }
+        return $out;
+    }
+
     public static function markRead(int $id, int $managerId): void {
         Db::q("UPDATE notifications SET is_read=1 WHERE id=? AND manager_id=?", [$id, $managerId]);
     }

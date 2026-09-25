@@ -174,7 +174,7 @@ class SearchIndex {
     }
 
     /** Bring the index up to date before a search; returns keys still waiting. */
-    public static function ready(float $budgetSec = 20.0): int {
+    public static function ready(float $budgetSec = 5.0): int {
         try {
             return self::refresh($budgetSec);
         } catch (Throwable $e) {
@@ -183,36 +183,63 @@ class SearchIndex {
         }
     }
 
-    /** Reindex dirty keys until none left or the budget is spent. */
+    /**
+     * Reindex dirty keys until none left or the budget is spent. One process
+     * indexes at a time: a search typed letter by letter fires several requests,
+     * and they used to fight for the write lock until one got «database is
+     * locked». The others search what is already indexed.
+     */
     public static function refresh(float $budgetSec = 20.0): int {
         if (!Db::hasTable('search_dirty')) return 0;
+        $lock = self::lock();
+        if ($lock === false) return self::pending();
         $deadline = microtime(true) + $budgetSec;
         $pdo = Db::pdo();
-        do {
-            $batch = Db::all("SELECT kind, ref_id FROM search_dirty LIMIT " . self::BATCH);
-            if (!$batch) return 0;
-            // Уже внутри чужой транзакции — пишем в неё же
-            $own = !$pdo->inTransaction();
-            if ($own) $pdo->beginTransaction();
-            try {
-                foreach ($batch as $row) {
-                    $kind = (int)$row['kind'];
-                    $id = (int)$row['ref_id'];
-                    $rowid = $id * 4 + $kind;
-                    Db::q("DELETE FROM search_docs WHERE rowid=?", [$rowid]);
-                    $doc = self::document($kind, $id);
-                    if ($doc !== null && $doc !== '') {
-                        Db::q("INSERT INTO search_docs (rowid, body) VALUES (?, ?)", [$rowid, $doc]);
+        try {
+            do {
+                $batch = Db::all("SELECT kind, ref_id FROM search_dirty LIMIT " . self::BATCH);
+                if (!$batch) return 0;
+                // Уже внутри чужой транзакции — пишем в неё же
+                $own = !$pdo->inTransaction();
+                $began = false;
+                try {
+                    if ($own) { $pdo->exec('BEGIN IMMEDIATE'); $began = true; }
+                    foreach ($batch as $row) {
+                        $kind = (int)$row['kind'];
+                        $id = (int)$row['ref_id'];
+                        $rowid = $id * 4 + $kind;
+                        Db::q("DELETE FROM search_docs WHERE rowid=?", [$rowid]);
+                        $doc = self::document($kind, $id);
+                        if ($doc !== null && $doc !== '') {
+                            Db::q("INSERT INTO search_docs (rowid, body) VALUES (?, ?)", [$rowid, $doc]);
+                        }
+                        Db::q("DELETE FROM search_dirty WHERE kind=? AND ref_id=?", [$kind, $id]);
                     }
-                    Db::q("DELETE FROM search_dirty WHERE kind=? AND ref_id=?", [$kind, $id]);
+                    if ($began) { $pdo->exec('COMMIT'); $began = false; }
+                } catch (Throwable $e) {
+                    if ($began) $pdo->exec('ROLLBACK');
+                    // Писатель чужой (почта, крон) — доиндексируем в следующий раз
+                    if ($own && Db::isLocked($e)) return self::pending();
+                    throw $e;
                 }
-                if ($own) $pdo->commit();
-            } catch (Throwable $e) {
-                if ($own) $pdo->rollBack();
-                throw $e;
-            }
-        } while (microtime(true) < $deadline);
+            } while (microtime(true) < $deadline);
+        } finally {
+            if (is_resource($lock)) { @flock($lock, LOCK_UN); @fclose($lock); }
+        }
+        return self::pending();
+    }
+
+    private static function pending(): int {
         return (int)Db::val("SELECT COUNT(*) FROM search_dirty");
+    }
+
+    /** @return resource|false|null  null — no lock file possible, index anyway */
+    private static function lock() {
+        $dir = Db::path() !== '' ? dirname(Db::path()) : sys_get_temp_dir();
+        $fh = @fopen($dir . '/.search.lock', 'c');
+        if ($fh === false) return null;
+        if (!@flock($fh, LOCK_EX | LOCK_NB)) { fclose($fh); return false; }
+        return $fh;
     }
 
     /** Normalized document of one entity; null — the row is gone. */

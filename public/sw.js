@@ -4,7 +4,7 @@
    API responses are always fetched fresh and never cached. Scope = the
    directory this file is served from, so a subdirectory mount works too. */
 
-const VERSION = 'atlant-kp-shell-v2';
+const VERSION = 'atlant-kp-shell-v3';
 const BASE = new URL('.', self.location).pathname.replace(/\/+$/, '');
 const SHELL = [
   BASE + '/',
@@ -70,6 +70,11 @@ self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const target = (e.notification.data && e.notification.data.url) || (BASE + '/');
   e.waitUntil((async () => {
+    // An address outside the panel (a GitHub issue) opens in its own window
+    if (new URL(target, self.location.origin).origin !== self.location.origin) {
+      if (clients.openWindow) return clients.openWindow(target);
+      return;
+    }
     const all = await clients.matchAll({ type: 'window', includeUncontrolled: true });
     const open = all.filter((c) => new URL(c.url).origin === self.location.origin);
     if (open.length) {

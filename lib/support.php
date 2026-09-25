@@ -96,6 +96,15 @@ final class Support {
             catch (Throwable $e) { Logger::exception('support', $e, ['ticket' => $ticketId]); }
         }
 
+        // Журнал ошибок файлом (issue #113): кнопку даёт только администратор
+        if (!empty($in['attach_log'])) {
+            try {
+                self::attachText($ticketId, 'atlant-log-' . date('Ymd-His') . '.txt',
+                                 Logger::export(['level' => (string)($in['log_level'] ?? 'warning')]));
+                $kept++;
+            } catch (Throwable $e) { Logger::exception('support', $e, ['ticket' => $ticketId, 'file' => 'log']); }
+        }
+
         // Администратор узнаёт о жалобе так же, как об ошибке сервиса.
         // Кроме «палец вверх» проверки: хвалебная оценка — не повод для звонка.
         require_once ROOT . '/lib/notifier.php';
@@ -112,6 +121,18 @@ final class Support {
     }
 
     /** Копия файла рядом с обращением — в `storage/`, чтобы пережить деплой. */
+    /** Текст, собранный сервером (журнал), — файлом обращения. */
+    public static function attachText(int $ticketId, string $name, string $text): void {
+        $tmp = tempnam(sys_get_temp_dir(), 'suplog');
+        if ($tmp === false) throw new RuntimeException('Не создаётся временный файл');
+        try {
+            file_put_contents($tmp, $text);
+            self::keepFile($ticketId, $tmp, $name);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
     private static function keepFile(int $ticketId, string $path, string $filename = ''): void {
         $name = Outbox::safeName($filename !== '' ? $filename : Outbox::displayName($path));
         $ext  = mb_strtolower(pathinfo($name, PATHINFO_EXTENSION));
@@ -242,9 +263,12 @@ final class Support {
             }
         }
 
+        // Ссылки на файлы появились только что — тело собирается из свежей
+        // записи, иначе issue уходил вовсе без картинок (issue #105)
+        $fresh = self::get($id) ?: $row;
         $issue = self::api($repo, 'issues', 'POST', [
             'title'  => mb_substr($title, 0, 250),
-            'body'   => self::issueBody($row + ['body' => $body]),
+            'body'   => self::issueBody(['body' => $body] + $fresh),
             'labels' => self::labels((string)$row['kind']),
         ]);
         $number = (int)($issue['number'] ?? 0);
@@ -298,7 +322,7 @@ final class Support {
         $files = $row['files'] ?? [];
         $shown = [];
         foreach ($files as $file) {
-            $url = (string)($file['remote_url'] ?? '');
+            $url = self::displayUrl((string)($file['remote_url'] ?? ''));
             if ($url === '') continue;
             $name = (string)$file['filename'];
             $shown[] = self::isImage((string)($file['mime'] ?? ''), $name)
@@ -344,8 +368,29 @@ final class Support {
         if ($branch !== '') $put['branch'] = $branch;
 
         $resp = self::api($repo, $endpoint, 'PUT', $put);
-        $url = (string)($resp['content']['download_url'] ?? $resp['content']['html_url'] ?? '');
+        $url = self::stableUrl($resp['content'] ?? []);
         if ($url !== '') Db::update('support_files', ['remote_url' => $url], 'id=?', [$fileId]);
+        return $url;
+    }
+
+    /**
+     * Постоянная ссылка на файл репозитория. `download_url` приватного
+     * репозитория несёт временный `?token=` и через несколько минут отдаёт 404 —
+     * картинка в issue ломалась. `blob/…?raw=true` открывается всем, у кого есть
+     * доступ к репозиторию, и GitHub рисует её в issue картинкой.
+     */
+    public static function stableUrl(array $content): string {
+        $html = (string)($content['html_url'] ?? '');
+        if ($html !== '') return $html . (str_contains($html, '?') ? '&' : '?') . 'raw=true';
+        $dl = (string)($content['download_url'] ?? '');
+        return (string)preg_replace('/\?token=[^&]*$/', '', $dl);
+    }
+
+    /** Ссылка, сохранённая раньше как raw…?token=, — в постоянный вид `blob/…?raw=true`. */
+    public static function displayUrl(string $url): string {
+        if (preg_match('#^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^?]+)#', $url, $m)) {
+            return 'https://github.com/' . $m[1] . '/' . $m[2] . '/blob/' . $m[3] . '?raw=true';
+        }
         return $url;
     }
 

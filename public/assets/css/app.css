@@ -28,6 +28,10 @@
     --shadow-lg: 0 12px 28px rgba(16,24,40,.14);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Светлая тема без принудительного затемнения браузером и без «раздувания»
+   шрифта на телефоне, которое делало строки шире экрана (issue #105) */
+:root { color-scheme: only light; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* `hidden` — это скрыто, чем бы элемент ни был. Без этого правила любой
    `display` в классе побеждает атрибут: поле «в КП над нашим названием»
    висело открытым без галочки «аналог», потому что `.analog` — flex. */
@@ -48,10 +52,10 @@ h2 { font-size: 20px; }
    takes the muted ink instead of a dimmed brand red. */
 .header__logo { display: flex; align-items: center; gap: 8px; font-size: 19px; font-weight: 800;
                 letter-spacing: .01em; color: var(--primary); white-space: nowrap; }
-.header__mark { width: 26px; height: 17px; flex: none; fill: currentColor; }
-/* Загруженный знак компании вместо встроенного: высоту держим по строке шапки,
-   ширину не ограничиваем — узкий герб и широкий логотип с надписью равно уместны */
-.header__brand { height: 24px; width: auto; max-width: 180px; flex: none; object-fit: contain; }
+/* Знак — картинка из «Настройки → Логотипы» (issue #107): квадратный знак
+   ровно по строке шапки, широкий логотип КП — выше, надпись в нём своя */
+.header__brand { display: block; height: 30px; width: 30px; flex: none; object-fit: contain; border-radius: 6px; }
+.header__brand--wide { width: auto; max-width: 160px; height: 34px; border-radius: 0; }
 .header__sub { color: var(--text-muted); font-weight: 500; font-size: 15px; }
 .header__nav { display: flex; gap: 2px; flex: 1; }
 /* Nav reads as the shop's tab strip: quiet until active, then red with a red edge */
@@ -286,9 +290,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* Modal */
 .modal { position: fixed; inset: 0; background: rgba(16,24,40,.45); display: flex; align-items: center;
          justify-content: center; z-index: 300; padding: 20px; backdrop-filter: blur(2px); }
-.modal__box { width: 100%; max-width: 460px; margin: 0; max-height: 85vh; overflow-y: auto; }
+/* min-width: 0 — ребёнок flex-контейнера иначе растёт до min-content самого
+   широкого поля, и окно на телефоне вылезало за правый край (issue #105) */
+.modal__box { width: 100%; max-width: min(460px, 100%); min-width: 0; margin: 0; max-height: 85vh; overflow-y: auto;
+              overflow-x: hidden; }
+.modal__box input, .modal__box select, .modal__box textarea { max-width: 100%; min-width: 0; }
+.modal__box code, .modal__box pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 /* Attachment/КП preview (item 5) needs more room than the usual form dialog */
-.modal__box--wide { max-width: 900px; }
+.modal__box--wide { max-width: min(900px, 100%); }
 
 /* Item 4/5: an email body or a converted DOCX/XLSX rendered inside a sandboxed
    iframe — width fills the card, height is set by App.sizeFrame() once the
@@ -326,9 +335,24 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* «Где взять токен» — ссылка под пояснением поля (issue #60) */
 .setting__link { margin-top: 3px; font-size: 0.85rem; }
 /* Отложенная отправка: подсказки и очередь под полем письма (issue #60) */
-.composer__schedule { margin-top: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.composer__schedule { margin-top: 10px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius);
+                      background: var(--surface); box-shadow: var(--shadow-md); }
+/* «Отправить позже» (issue #108): плитки подсказок и день/час отдельными полями */
+.sched__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.sched__presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.sched__preset { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0;
+                 padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius);
+                 background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.sched__preset:hover { border-color: var(--primary); background: var(--primary-bg); }
+.sched__preset span { font-weight: 600; }
+.sched__preset small { color: var(--text-muted); font-size: 12px; }
+.sched__custom { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 12px;
+                 padding-top: 12px; border-top: 1px solid var(--border); }
+.sched__custom label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.sched__custom input { min-width: 150px; padding: 8px 10px; font-size: 14px; }
+.sched__queue { margin-top: 10px; font-size: 13px; }
 .sched-item { display: inline-block; margin-right: 10px; }
-.sched-item a { cursor: pointer; color: #c00; margin-left: 4px; }
+.sched-item a { cursor: pointer; color: var(--accent-ink); margin-left: 4px; }
 .setting__link a { color: var(--accent, #c00); text-decoration: none; }
 .setting__link a:hover { text-decoration: underline; }
 
@@ -1369,7 +1393,9 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
 }
 @media (max-width: 900px) {
     .mailbox { grid-template-columns: minmax(0, 1fr); }
-    .mailbox__side { position: static; flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; }
+    /* relative — иначе .sr-only внутри прокручиваемой ленты статусов вылезал за
+       её край, и страница на телефоне становилась шириной 1132 px (issue #105) */
+    .mailbox__side { position: relative; flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; }
     .mside__head, .mside__sep { display: none; }
     .mside__item { flex: none; border-radius: 999px; border: 1px solid var(--border); padding: 5px 12px; }
     .mside__name { overflow: visible; }
@@ -1503,3 +1529,93 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
 .mic--rec { background: #b91c1c; border-color: #b91c1c; color: #fff; animation: micPulse 1.2s ease-in-out infinite; }
 @keyframes micPulse { 50% { box-shadow: 0 0 0 4px rgba(185, 28, 28, .25); } }
 @media (prefers-reduced-motion: reduce) { .mic--rec { animation: none; } }
+
+/* «Установить приложение» светится, пока в этом браузере его нет (issue #101).
+   #fff на --primary = 4.8:1, AA */
+.btn--glow { background: var(--primary); border-color: var(--primary); color: #fff;
+             animation: installGlow 1.8s ease-in-out infinite; }
+.btn--glow:hover { background: var(--primary-dark); }
+@keyframes installGlow { 50% { box-shadow: 0 0 0 5px rgba(225, 29, 34, .28); } }
+@media (prefers-reduced-motion: reduce) { .btn--glow { animation: none; box-shadow: 0 0 0 3px rgba(225, 29, 34, .28); } }
+
+/* Ручной запрос над статусами списка (issue #99) — как над «Входящими» доски */
+.mside__new { display: block; margin: 0 0 8px; padding: 7px 10px; border-radius: var(--radius);
+              border: 1px dashed var(--border-strong); color: var(--text-muted); font-size: 12px;
+              text-align: center; text-decoration: none; }
+.mside__new:hover { background: var(--surface-3); color: var(--accent-ink); border-color: var(--primary); }
+@media (max-width: 900px) {
+    .mside__new { flex: none; margin: 0; padding: 5px 12px; border-radius: 999px; white-space: nowrap; }
+}
+
+/* Копировать запись лога одним нажатием (issue #113); на телефоне — палец, не мышь */
+.log__copy { float: right; margin: 0 0 4px 8px; width: 30px; height: 30px; border: 1px solid var(--border);
+             border-radius: var(--radius-sm); background: var(--surface); color: var(--text-muted);
+             font-size: 15px; line-height: 1; cursor: pointer; }
+.log__copy:hover { color: var(--accent-ink); border-color: var(--primary); }
+
+/* Карточка, помеченная уведомлением (issue #103): янтарная кромка и строка 🔔,
+   пока менеджер не поставит «✓ Сделано» в самой карточке.
+   #7a4a00 на #fff7e6 = 7.4:1, AA */
+.bcard--notice { box-shadow: inset 3px 0 0 #d98e04, var(--shadow); background: #fffbf2; }
+.bcard__notice { margin: 4px 0; padding: 3px 6px; border-radius: 4px; background: #fff7e6; color: #7a4a00;
+                 font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.grow--notice { box-shadow: inset 3px 0 0 #d98e04; background: #fffbf2; }
+.grow__notice { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px; background: #fff7e6;
+                color: #7a4a00; font-size: 12px; font-weight: 600; }
+.card--notice { border-color: #f1c46b; background: #fffbf2; color: var(--text); }
+.cnotice { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.cnotice + .cnotice { border-top: 1px solid var(--border); }
+.cnotice__text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cnotice__text small { display: block; }
+.cnotice .btn { flex: none; }
+
+/* Стрелка «ещё» под колонкой с лимитом (issue #110) — маленькая, по центру */
+.bcol__more { display: block; width: 100%; margin: 4px 0; padding: 4px; border: 1px dashed var(--border-strong);
+              border-radius: var(--radius); background: none; color: var(--text-muted); font: inherit;
+              font-size: 12px; cursor: pointer; }
+.bcol__more:hover { color: var(--accent-ink); border-color: var(--primary); background: var(--surface-2); }
+.glist__more { list-style: none; padding: 8px 12px; }
+
+/* Последнее письмо, на котором карточка открылась (issue #109) — короткая вспышка кромки */
+.lmsg--focus { box-shadow: 0 0 0 2px var(--primary); transition: box-shadow .6s ease-out; }
+.lmsg:focus { outline: none; }
+.lmsg { scroll-margin-top: 72px; }
+
+/* Черновик нейросети — над полем письма, отправка — под ним (issue #105) */
+.composer__gen { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+@media (max-width: 640px) {
+    /* Строка отправки прилипает к низу экрана над нижним меню, пока письмо видно */
+    .composer__actions { position: sticky; bottom: calc(49px + env(safe-area-inset-bottom, 0px)); z-index: 5;
+                         margin: 8px -4px 0; padding: 8px 4px; background: var(--surface);
+                         border-top: 1px solid var(--border); box-shadow: 0 -6px 12px rgba(16, 24, 40, .06); }
+    .composer__actions { flex-wrap: nowrap; }
+    .composer__actions > .btn { min-height: 40px; white-space: nowrap; }
+    .composer__actions > .btn--primary { flex: 1 1 auto; justify-content: center; }
+    .composer__actions .cmp-lbl { display: none; }
+    .composer__actions:has(> [data-cmp-note]:not(:empty), > [data-cmp-saved]:not(:empty)) { flex-wrap: wrap; }
+    .composer__actions > [data-cmp-note], .composer__actions > [data-cmp-saved] { flex: 1 1 100%; font-size: 12px; }
+    .composer__actions > [data-cmp-note]:empty, .composer__actions > [data-cmp-saved]:empty { display: none; }
+    .composer__gen .hint-pin { flex: 1 1 100%; display: flex; gap: 6px; align-items: center; }
+    .composer__gen .hint-pin select { flex: 1 1 auto; }
+    .composer__gen [data-cmp-draft] { flex: 1 1 100%; justify-content: center; }
+    .compose-page .composer__editor { min-height: 35vh; }
+    /* Тема переписки — строкой, начало письма — под ней в две строки */
+    .conv__line { flex-direction: column; white-space: normal; gap: 2px; }
+    .conv__subject { white-space: normal; }
+    .conv__preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .sched__custom label { flex: 1 1 140px; }
+    .sched__custom input { min-width: 0; width: 100%; }
+    .sched__custom .btn { flex: 1 1 100%; justify-content: center; }
+}
+
+/* Журнал на телефоне — карточками, а не четырьмя колонками по букве (issue #105) */
+@media (max-width: 640px) {
+    .table--logs, .table--logs tbody, .table--logs tr, .table--logs td { display: block; width: 100%; }
+    .table--logs thead, .table--logs colgroup { display: none; }
+    .table--logs tr { padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .table--logs td { border: 0; padding: 2px 0; }
+    .table--logs .log__when { white-space: normal; font-size: 12px; }
+    .table--logs .log__when div, .table--logs td > .badge { display: inline-block; margin-right: 6px; }
+    .table--logs .log__source div { display: inline; margin-left: 6px; }
+    .table--logs .log__msg { overflow-wrap: anywhere; word-break: normal; }
+}

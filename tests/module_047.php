@@ -195,6 +195,7 @@ ok('письмо называет заказ и трек', str_contains($t['html
 ok('СДЭК — ссылка на отслеживание', str_contains($t['html'], 'https://www.cdek.ru/ru/tracking/?order_id=10267205698'));
 ok('другая служба — без ссылки СДЭК', !str_contains(Fulfillment::shipmentText('1', 'Деловые линии', '55')['html'], 'cdek'));
 
+Fulfillment::$fetchDemands = fn($id) => [];
 Fulfillment::$fetchOrder = fn($id) => ['attributes' => ['Служба доставки' => 'СДЭК', 'ТРЕК-НОМЕР' => '']];
 $r = Fulfillment::checkShipments();
 ok('без трека — ждём дальше', $r['checked'] === 1 && $r['shipped'] === 0);
@@ -211,7 +212,8 @@ $card = null;
 foreach (Boards::get((int)$board['id'])['columns'] as $c) foreach ($c['cards'] as $cc) if ($cc['id'] === $cardId) $card = $cc + ['col' => $c['kind']];
 ok('карточка в «Сборке» подсвечена', $card && $card['attention'] && $card['hot'] && $card['col'] === 'assembly');
 $r = Fulfillment::checkShipments();
-ok('второй раз письмо не готовится', $r['checked'] === 0 && (int)Db::val("SELECT COUNT(*) FROM mail_drafts WHERE kind='shipment'") === 1);
+// Отправленный заказ ещё смотрится на новые отгрузки (issue #112), но письма второй раз нет
+ok('второй раз письмо не готовится', $r['shipped'] === 0 && (int)Db::val("SELECT COUNT(*) FROM mail_drafts WHERE kind='shipment'") === 1);
 
 // ===================================================================== 9
 echo "\n9. Интерфейс (по исходнику)\n";

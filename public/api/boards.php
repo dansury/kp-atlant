@@ -147,6 +147,20 @@ try {
 
         // Search across every board at once — card title/note, the mail thread
         // behind it and the request it came from
+        // Стрелка «ещё» под колонкой с лимитом (issue #110)
+        case 'column_cards': {
+            $colId = (int)($_GET['id'] ?? 0);
+            if (!$colId) jsonError('Не указана колонка');
+            jsonData(Boards::columnCards($colId, (int)($_GET['offset'] ?? 0), (int)($_GET['limit'] ?? 0)));
+        }
+
+        // Найденные поиском карточки целиком — и те, что срезал лимит колонки
+        case 'search_cards': {
+            $q = trim((string)($_GET['q'] ?? ''));
+            if (mb_strlen($q) < 2) jsonData(['items' => []]);
+            jsonData(['items' => Boards::searchCards($q)]);
+        }
+
         case 'search': {
             $q = trim((string)($_GET['q'] ?? ''));
             if (mb_strlen($q) < 2) jsonError('Слишком короткий запрос');

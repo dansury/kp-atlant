@@ -90,6 +90,26 @@ switch ($action) {
         jsonData(['items' => $items]);
     }
 
+    // Заказ и счёт МойСклад — к карточке по номеру, руками (issue #111)
+    case 'link': {
+        $manager = requireAuth();
+        $input = getInput();
+        $cpId = (int)($input['counterparty_id'] ?? 0);
+        if (!$cpId || !Db::val("SELECT id FROM counterparties WHERE id=?", [$cpId])) jsonError('Не указана компания');
+        $order = trim((string)($input['order'] ?? ''));
+        $invoice = trim((string)($input['invoice'] ?? ''));
+        if ($order === '' && $invoice === '') jsonError('Впишите номер заказа или счёта');
+        try {
+            $res = MsSync::linkDocuments($cpId, $order, $invoice,
+                                         ((int)($input['request_id'] ?? 0)) ?: null, (int)$manager['id']);
+        } catch (Throwable $e) {
+            Logger::exception('moysklad', $e, ['counterparty_id' => $cpId, 'order' => $order, 'invoice' => $invoice]);
+            jsonError('МойСклад недоступен: ' . $e->getMessage(), 502);
+        }
+        if (!$res['order'] && !$res['invoice']) jsonError(implode('; ', $res['errors']) ?: 'Ничего не найдено', 404);
+        jsonOk($res);
+    }
+
     // Pull fresh orders and invoices for a company (FR-030)
     case 'sync': {
         requireAuth();
@@ -103,6 +123,15 @@ switch ($action) {
             $res['requisites'] = false;
             if (!empty($_GET['full']) && $res['linked']) {
                 $res['requisites'] = (bool)Requisites::syncCounterparty($cpId);
+            }
+            // Новые отгрузки заказов этой компании (issue #112): карточка
+            // помечается, трек встаёт в черновик ответа. Только по кнопке —
+            // фоновое обновление на каждом фокусе вкладки их не трогает
+            if (!empty($_GET['full'])) {
+                require_once ROOT . '/lib/fulfillment.php';
+                $ship = Fulfillment::checkShipments(30, $cpId);
+                $res['shipped'] = $ship['shipped'];
+                $res['demands'] = $ship['demands'];
             }
         } catch (Throwable $e) {
             jsonError('МойСклад недоступен: ' . $e->getMessage(), 502);

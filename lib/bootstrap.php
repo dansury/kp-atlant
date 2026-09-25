@@ -2027,6 +2027,24 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '51')");
         $current = 51;
     }
+
+    // v52 — issue #112: every МойСклад shipment (отгрузка) of an order, seen once
+    if ($current < 52) {
+        Db::q("CREATE TABLE IF NOT EXISTS order_demands (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+                   moysklad_id TEXT NOT NULL UNIQUE,
+                   name TEXT,
+                   moment TEXT,
+                   ship_service TEXT,
+                   ship_track TEXT,
+                   seen_at TEXT NOT NULL,
+                   notified_at TEXT)");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_order_demands_order ON order_demands(order_id)");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '52')");
+        $current = 52;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

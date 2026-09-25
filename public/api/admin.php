@@ -805,6 +805,25 @@ try {
                 'offset'  => $_GET['offset'] ?? 0,
             ]));
 
+        // Одна запись — та, на которую ведёт уведомление (issue #113)
+        case 'log_get':
+            $row = Logger::get((int)($_GET['id'] ?? 0));
+            if (!$row) jsonError('Запись не найдена — журнал могли очистить', 404);
+            jsonOk(['item' => $row, 'text' => Logger::entryText($row)]);
+
+        // Весь журнал файлом, с тем же фильтром, что на экране
+        case 'logs_export':
+            $text = Logger::export([
+                'level'   => $_GET['level'] ?? '',
+                'channel' => $_GET['channel'] ?? '',
+                'q'       => $_GET['q'] ?? '',
+            ]);
+            header('Content-Type: text/plain; charset=utf-8');
+            header('Content-Disposition: attachment; filename="atlant-log-' . date('Ymd-His') . '.txt"');
+            header('Cache-Control: no-store');
+            echo $text;
+            exit;
+
         case 'logs_counts':
             jsonData(Logger::counts());
 

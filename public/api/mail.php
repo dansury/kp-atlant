@@ -36,6 +36,7 @@ try {
                 'limit'           => $_GET['limit'] ?? 50,
                 'offset'          => $_GET['offset'] ?? 0,
             ]);
+            $data['unread'] = MailThreads::unreadCount($manager);
             $data['mailboxes'] = array_map(
                 fn($b) => ['id' => $b['id'], 'name' => $b['name'], 'email' => $b['email'], 'last_error' => $b['last_error']],
                 Mailboxes::forManager($manager)
@@ -58,6 +59,7 @@ try {
                 'limit'           => $_GET['limit'] ?? 50,
                 'offset'          => $_GET['offset'] ?? 0,
             ]);
+            $data['unread'] = MailThreads::unreadCount($manager);
             $data['mailboxes'] = array_map(
                 fn($b) => ['id' => $b['id'], 'name' => $b['name'], 'email' => $b['email'], 'last_error' => $b['last_error']],
                 Mailboxes::forManager($manager)
@@ -123,11 +125,15 @@ try {
          * раскрывает переписку сама, а отметку ставит человек — когда
          * действительно её открыл.
          */
+        // Счётчик у кнопки «Письма» — без выборки писем (issue #97)
+        case 'unread':
+            jsonOk(['unread' => MailThreads::unreadCount($manager)]);
+
         case 'thread_read':
             $key = trim((string)($input['key'] ?? $_GET['key'] ?? ''));
             if ($key === '') jsonError('Не указана цепочка');
             MailThreads::markRead($key);
-            jsonOk(['unread' => MailThreads::unreadCount()]);
+            jsonOk(['unread' => MailThreads::unreadCount($manager)]);
 
         case 'get':
             $msg = MailArchive::get((int)($_GET['id'] ?? 0));

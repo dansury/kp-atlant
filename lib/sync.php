@@ -204,6 +204,65 @@ class MsSync {
     }
 
     /**
+     * Привязать к карточке заказ и/или счёт МойСклад по номеру (issue #111).
+     *
+     * Документ заведён в МойСклад на другого контрагента, на дубль или без
+     * письма — сервис сам его к компании не отнесёт. Привязка ручная и потому
+     * сильнее автоматической: компания документа меняется на эту.
+     *
+     * @return array{order:?array, invoice:?array, errors:list<string>}
+     */
+    public static function linkDocuments(int $cpId, string $orderNo, string $invoiceNo, ?int $requestId = null, ?int $managerId = null): array {
+        self::init();
+        $cpId = Crm::rootId($cpId);
+        $res = ['order' => null, 'invoice' => null, 'errors' => []];
+        $links = ['counterparty_id' => $cpId, 'request_id' => $requestId, 'manager_id' => $managerId];
+
+        if (trim($orderNo) !== '') {
+            $msId = MoySklad::findByName('customerorder', $orderNo);
+            if (!$msId) {
+                $res['errors'][] = "Заказ «{$orderNo}» в МойСклад не найден";
+            } elseif ($localId = self::upsertOrder($msId, $links)) {
+                $upd = ['counterparty_id' => $cpId];
+                if ($requestId && !Db::val("SELECT request_id FROM orders WHERE id=?", [$localId])) $upd['request_id'] = $requestId;
+                Db::update('orders', $upd, 'id=?', [$localId]);
+                self::syncInvoicesForOrder($localId);
+                Db::q("UPDATE invoices SET counterparty_id=? WHERE order_id=?", [$cpId, $localId]);
+                $o = Db::one("SELECT id, name, sum FROM orders WHERE id=?", [$localId]);
+                $res['order'] = $o;
+                Crm::logEvent($cpId, 'note', "Заказ {$o['name']} привязан к карточке вручную", [
+                    'event_type' => 'order_linked', 'subject' => 'Заказ ' . $o['name'], 'manager_id' => $managerId,
+                    'meta' => ['order_id' => $localId, 'moysklad_id' => $msId, 'url' => MoySklad::orderUrl($msId)],
+                ]);
+            }
+        }
+
+        if (trim($invoiceNo) !== '') {
+            $msId = MoySklad::findByName('invoiceout', $invoiceNo);
+            $inv = $msId ? MoySklad::getInvoice($msId) : null;
+            if (!$inv) {
+                $res['errors'][] = "Счёт «{$invoiceNo}» в МойСклад не найден";
+            } else {
+                $localOrder = null;
+                if (!empty($inv['order_id'])) {
+                    $localOrder = self::upsertOrder((string)$inv['order_id'], $links);
+                    if ($localOrder) Db::update('orders', ['counterparty_id' => $cpId], 'id=?', [$localOrder]);
+                }
+                $id = self::upsertInvoice($inv, $localOrder, $cpId);
+                Db::update('invoices', ['counterparty_id' => $cpId], 'id=?', [$id]);
+                if ($localOrder) Db::q("UPDATE invoices SET order_id=? WHERE id=? AND order_id IS NULL", [$localOrder, $id]);
+                $row = Db::one("SELECT id, name, sum FROM invoices WHERE id=?", [$id]);
+                $res['invoice'] = $row;
+                Crm::logEvent($cpId, 'note', "Счёт {$row['name']} привязан к карточке вручную", [
+                    'event_type' => 'invoice_linked', 'subject' => 'Счёт ' . $row['name'], 'manager_id' => $managerId,
+                    'meta' => ['invoice_id' => $id, 'moysklad_id' => $msId, 'url' => MoySklad::invoiceUrl($msId)],
+                ]);
+            }
+        }
+        return $res;
+    }
+
+    /**
      * Refresh everything MoySklad knows about one company (FR-030).
      * Called when the card is opened and when the tab regains focus.
      */

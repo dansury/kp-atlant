@@ -56,7 +56,7 @@ final class WebPush {
 
         $peer = openssl_pkey_get_public(self::rawPointToPem($uaPublic));
         if ($peer === false) return 0;
-        $ecdh = openssl_pkey_derive($peer, $server, 32);
+        $ecdh = openssl_pkey_derive($peer, $server);
         if ($ecdh === false) return 0;
 
         // RFC 8291 §3.4 key derivation
