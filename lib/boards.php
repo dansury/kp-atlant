@@ -107,10 +107,22 @@ final class Boards {
     private const STAGES = [
         'kp_sent' => ['КП отправлено', '#4f9e57', '/^кп\s+(отправлен|выслан)/iu'],
         'payment' => ['Ждём оплату',   '#b45cc0', '/^жд[её]м\s+оплат/iu'],
+        // Отгрузка в МойСклад — карточка «Отправлено» (issue #119)
+        'shipped' => ['Отправлено',    '#3d7bd9', '/^(отправлен|отгружен)/iu'],
     ];
 
-    /** Ранг колонки: сама карточка идёт только вперёд. Остальные — 0. */
-    private const RANK = ['kp_sent' => 1, 'payment' => 2, 'assembly' => 3];
+    /**
+     * Ранг колонки: сама карточка идёт только вперёд (issue #119: письмо или
+     * подбор → «В работе», КП → «КП отправлено», счёт → «Ждём оплату», оплата
+     * → «Сборка», отгрузка → «Отправлено»). Остальные — 0.
+     */
+    private const RANK = ['work' => 1, 'kp_sent' => 2, 'payment' => 3, 'assembly' => 4, 'shipped' => 5];
+
+    /** Что сказать в журнале о переходе. */
+    private const STAGE_WHY = [
+        'work' => 'начато письмо или подбор', 'kp_sent' => 'КП отправлено', 'payment' => 'выставлен счёт',
+        'assembly' => 'оплата получена', 'shipped' => 'есть отгрузка',
+    ];
 
     /** Колонка стадии: по kind, затем по названию, иначе заводится на своём месте. */
     public static function stageColumn(int $boardId, string $kind): array {
@@ -128,13 +140,15 @@ final class Boards {
             }
         }
 
-        // Новая: «КП отправлено» — после «В работе», «Ждём оплату» — после «КП отправлено»
-        $after = $kind === 'kp_sent' ? 'work' : 'kp_sent';
+        // Новая: «КП отправлено» — после «В работе», «Ждём оплату» — после
+        // «КП отправлено», «Отправлено» — после «Сборки»
+        $after = ['kp_sent' => 'work', 'payment' => 'kp_sent', 'shipped' => 'assembly'][$kind];
+        $before = $kind === 'shipped' ? ['closed'] : ['payment', 'assembly', 'shipped', 'closed'];
         $at = count($cols);
         foreach ($cols as $i => $c) if (($c['kind'] ?? null) === $after) { $at = $i + 1; break; }
         if ($at === count($cols)) {
             foreach ($cols as $i => $c) {
-                if (in_array($c['kind'] ?? null, ['payment', 'assembly', 'closed'], true)) { $at = $i; break; }
+                if (in_array($c['kind'] ?? null, $before, true)) { $at = $i; break; }
             }
         }
         foreach ($cols as $i => $c) {
@@ -146,30 +160,65 @@ final class Boards {
     }
 
     /**
-     * КП или счёт ушёл клиенту — карточка встаёт в свою стадию (модуль 056).
+     * Карточка встаёт в свою стадию сама (модуль 056, issue #119).
+     *
      * Только вперёд: ожидающая оплаты или собираемая карточка от нового КП
-     * назад не едет. Возвращает название колонки или null, если не двигали.
+     * назад не едет, а ручной перенос назад — решение менеджера, которое
+     * следующее событие выше рангом всё равно продвинет. «В работе» тянет
+     * карточку только из «Входящих»: колонку, куда её перетащили руками, и
+     * «Закрыто» начатое письмо не трогает (модуль 033). Возвращает название
+     * колонки или null, если не двигали.
      */
     public static function advance(?int $cpId, ?string $threadKey, string $kind): ?string {
+        if (!isset(self::RANK[$kind])) throw new InvalidArgumentException("Нет стадии $kind");
         $cpId = $cpId ? Crm::rootId($cpId) : null;
         $threadKey = trim((string)$threadKey);
         if (!$cpId && $threadKey === '') return null;
 
         $boardId = (int)self::singleton()['id'];
-        $col = self::stageColumn($boardId, $kind);
+        $col = match ($kind) {
+            'work'     => self::workColumn($boardId),
+            'assembly' => self::assemblyColumn($boardId),
+            default    => self::stageColumn($boardId, $kind),
+        };
+        if (!$col) return null;
         $card = self::findCard($boardId, 0, $cpId, $cpId ? '' : $threadKey);
         if ($card) {
             $now = (string)Db::val("SELECT kind FROM board_columns WHERE id=?", [(int)$card['column_id']]);
             $dismissed = !empty($card['dismissed_at']);
+            if ($kind === 'work' && !$dismissed && $now !== 'inbox') return null;
             if (!$dismissed && (self::RANK[$now] ?? 0) >= self::RANK[$kind]) return null;
             if ($dismissed) Db::update('board_cards', ['dismissed_at' => null], 'id=?', [(int)$card['id']]);
-            if ((int)$card['column_id'] !== (int)$col['id']) self::moveCard((int)$card['id'], (int)$col['id'], 0);
+            if ((int)$card['column_id'] === (int)$col['id']) return null;
+            self::moveCard((int)$card['id'], (int)$col['id'], 0);
         } else {
             self::addCard((int)$col['id'], ['counterparty_id' => $cpId, 'thread_key' => $cpId ? '' : $threadKey]);
         }
-        Logger::info('boards', "Карточка → «{$col['title']}»" . ($kind === 'payment' ? ' (счёт отправлен)' : ' (КП отправлено)'),
+        Logger::info('boards', "Карточка → «{$col['title']}» (" . self::STAGE_WHY[$kind] . ')',
                      ['counterparty_id' => $cpId, 'thread_key' => $threadKey ?: null]);
         return (string)$col['title'];
+    }
+
+    /**
+     * Подбор по запросу начат (issue #119): карточка его компании — из
+     * «Входящих» в «В работе». Письма у запроса может не быть (завели руками).
+     */
+    public static function workStarted(int $requestId): ?string {
+        $req = Db::one("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]);
+        if (!$req) return null;
+        $key = (string)(Db::val("SELECT thread_key FROM mail_messages WHERE request_id=? AND thread_key IS NOT NULL
+                                 ORDER BY date_at DESC, id DESC LIMIT 1", [$requestId]) ?: '');
+        $cpId = $req['counterparty_id'] ? (int)$req['counterparty_id'] : null;
+        if (!$cpId && $key !== '') {
+            $cpId = (int)(Db::val("SELECT counterparty_id FROM mail_messages WHERE thread_key=? AND counterparty_id IS NOT NULL
+                                   ORDER BY date_at DESC LIMIT 1", [$key]) ?: 0) ?: null;
+        }
+        try {
+            return self::advance($cpId, $key, 'work');
+        } catch (Throwable $e) {
+            Logger::warning('boards', 'Карточка не перешла в «В работе»: ' . $e->getMessage(), ['request_id' => $requestId]);
+            return null;
+        }
     }
 
     /** The board with its columns and cards — one request paints the whole page. */
@@ -738,8 +787,8 @@ final class Boards {
         int $boardId, ?int $columnId, string $title, ?string $color, ?string $kind = null, ?int $cardLimit = null
     ): int {
         // «closed» не обязан быть единственным на доску, в отличие от «inbox»/«work»/«assembly»
-        $exclusive = in_array($kind, ['inbox', 'work', 'assembly', 'kp_sent', 'payment'], true);
-        $known = in_array($kind, ['inbox', 'work', 'closed', 'assembly', 'kp_sent', 'payment'], true);
+        $exclusive = in_array($kind, ['inbox', 'work', 'assembly', 'kp_sent', 'payment', 'shipped'], true);
+        $known = in_array($kind, ['inbox', 'work', 'closed', 'assembly', 'kp_sent', 'payment', 'shipped'], true);
         if ($columnId) {
             $data = array_filter(['title' => trim($title) ?: 'Колонка', 'color' => $color], fn($v) => $v !== null);
             // Exactly one intake column per board, or new mail would double up;

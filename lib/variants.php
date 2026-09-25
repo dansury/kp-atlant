@@ -56,12 +56,27 @@ final class Variants {
             // которого строка получилась: «(р.S-5шт…)» нередко остаётся там
             $source = $name;
             $tail = trim((string)($item['raw_text'] ?? ''));
-            if (self::split($source) === [] && $tail !== '' && mb_stripos($tail, mb_substr($name, 0, 10)) !== false) {
+            if (self::split($source) === [] && $tail !== '' && self::mentions($tail, $name)) {
                 $source = $tail;
             }
 
             $parts = self::split($source);
-            if (count($parts) < 2) { $out[] = $item; continue; }
+            if (count($parts) < 2) {
+                // Один размер со словом «размер» — тоже модификация (issue #118):
+                // «плиты Бр3, размер XL» ищут товар, а встают на его XL
+                $label = self::sizeLabel($name)
+                    ?? (($tail !== '' && self::mentions($tail, $name)) ? self::sizeLabel($tail) : null);
+                if ($label !== null && empty($item['variant_label'])) {
+                    $base = self::stripSize($name);
+                    $item['name']          = $base;
+                    $item['raw_name']      = $base . ' (размер ' . $label . ')';
+                    $item['base_name']     = $base;
+                    $item['variant_label'] = $label;
+                    $item['variant_kind']  = 'size';
+                }
+                $out[] = $item;
+                continue;
+            }
 
             $base = self::baseName($name);
             foreach ($parts as $part) {
@@ -103,6 +118,52 @@ final class Variants {
             }
         }
         return self::scan($scope);
+    }
+
+    /**
+     * Один размер, названный словом «размер» (issue #118): «размер XL», «р. 52-54».
+     *
+     * Только с подсказкой И из закрытого набора (или числом-ростовкой): без
+     * подсказки «Рукав 5ELEM» стал бы размером. Два разных размера без
+     * количеств — вопрос, а не метка: null.
+     */
+    public static function sizeLabel(string $text): ?string {
+        $text = self::tidy($text);
+        if ($text === '') return null;
+        $tokens = implode('|', array_map(fn($t) => preg_quote($t, '/'), self::SIZE_TOKENS));
+        $re = '/(?<!\p{L})' . self::SIZE_PREFIX . '\s*[:№]?\s*(' . $tokens . '|\d{2,3}(?:\s*[-–—\/]\s*\d{2,3})?)(?![\p{L}\p{N}])/iu';
+        $found = [];
+        foreach (self::matchAll($re, $text) as $hit) {
+            $label = self::cleanLabel($hit[1]);
+            if ($label !== '') $found[mb_strtolower($label)] = $label;
+        }
+        return count($found) === 1 ? reset($found) : null;
+    }
+
+    /** Название без «размер XL»: по нему ищется товар-родитель. */
+    public static function stripSize(string $name): string {
+        $tokens = implode('|', array_map(fn($t) => preg_quote($t, '/'), self::SIZE_TOKENS));
+        $base = (string)preg_replace('/[,;]?\s*(?<!\p{L})' . self::SIZE_PREFIX . '\s*[:№]?\s*(?:' . $tokens
+            . '|\d{2,3}(?:\s*[-–—\/]\s*\d{2,3})?)(?![\p{L}\p{N}])/iu', ' ', $name);
+        $base = trim((string)preg_replace('/\s+/u', ' ', $base), " \t,;:-");
+        return $base !== '' ? $base : trim($name);
+    }
+
+    /**
+     * Говорит ли кусок письма о товаре $name: основы его слов (от четырёх букв)
+     * стоят в тексте. «5 плит для бронежилета» говорит о «плита для бронежилета»,
+     * хотя первые десять букв у них разные.
+     */
+    public static function mentions(string $text, string $name): bool {
+        $text = mb_strtolower($text);
+        $words = array_values(array_filter(preg_split('/[^\p{L}\p{N}]+/u', mb_strtolower($name)) ?: [],
+                                           fn($w) => mb_strlen($w) >= 4));
+        if (!$words) return $name !== '' && mb_stripos($text, $name) !== false;
+        $hits = 0;
+        foreach ($words as $w) {
+            if (str_contains($text, mb_substr($w, 0, max(4, mb_strlen($w) - 2)))) $hits++;
+        }
+        return $hits / count($words) >= 0.6;
     }
 
     /** Найти пары «модификация — количество» в одном куске текста. */

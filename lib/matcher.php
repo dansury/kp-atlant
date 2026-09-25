@@ -23,6 +23,13 @@ class ProductMatcher {
     private const NAME_CONTAIN_BASE = 0.7;
     /** Потолок оценки для товара с ЧУЖОЙ меткой («бр2» против «бр3») — ниже порога. */
     private const MARKER_CONFLICT_CAP = 0.45;
+    /**
+     * Название совпало с запросом слово в слово (issue #118): товар — выше
+     * автоподтверждения, его модификация — ниже товара больше чем на «равнозначно»,
+     * размер из письма выбирает уже `Variants::resolveRow()`.
+     */
+    private const EXACT_PRODUCT = 0.97;
+    private const EXACT_VARIANT = 0.9;
 
     /**
      * Match parsed items against products_cache.
@@ -169,6 +176,57 @@ class ProductMatcher {
         ];
     }
 
+    /**
+     * Поиск по каталогу для поля «начните печатать» (issue #118): полнотекстовый,
+     * без учёта регистра и «ё». SQLite `lower()` кириллицу не понижает, и
+     * «плита» не находила «Плита».
+     *
+     * Каждое слово запроса обязано стоять в названии, артикуле, коде,
+     * характеристиках или описании (началом слова: «плит» — «плиты»). Выше —
+     * найденное в названии, а среди них — название, в котором нет слов,
+     * которых не писали: «плита бр3» ставит «Плиту для бронежилета Бр3» выше
+     * «Боковой плиты …». Равные — сначала то, что есть на складе.
+     *
+     * @return list<array> строки products_cache (без описания)
+     */
+    public static function search(string $query, int $limit = 20): array {
+        $fold = fn(string $t) => str_replace('ё', 'е', self::normalize($t));
+        $words = array_slice(array_values(array_unique(array_filter(explode(' ', $fold($query))))), 0, 6);
+        if (!$words) return [];
+
+        $rows = Db::all(
+            "SELECT moysklad_id, name, article, code, price, prices_json, stock, reserved, unit,
+                    characteristics, product_type, category, parent_id, description, specs_text
+             FROM products_cache WHERE is_archived IS NOT 1");
+        $hits = [];
+        foreach ($rows as $p) {
+            $name = $fold((string)$p['name']);
+            $side = $fold((string)$p['article'] . ' ' . (string)$p['code'] . ' ' . (string)$p['characteristics']);
+            $desc = null;   // описание читается, только если слово не нашлось выше
+            $inName = $inSide = $inDesc = 0;
+            foreach ($words as $w) {
+                if (str_contains($name, $w)) { $inName++; continue; }
+                if (str_contains($side, $w)) { $inSide++; continue; }
+                $desc ??= $fold(Markup::toPlainText((string)($p['description'] ?? '')) . ' '
+                              . Markup::toPlainText((string)($p['specs_text'] ?? '')));
+                if (str_contains($desc, $w)) { $inDesc++; continue; }
+                continue 2;
+            }
+            $own = self::keyWords($fold((string)preg_replace('/\([^)]*\)/u', ' ', (string)$p['name'])));
+            $cover = $own ? self::containment($own, implode(' ', $words)) : 0.0;
+            $n = count($words);
+            unset($p['description'], $p['specs_text']);
+            $hits[] = ['row' => $p, 'rank' => [
+                -($inName + $inSide) / $n,            // найдено в названии и артикуле
+                -$cover,                              // в названии нет чужих слов
+                (int)$p['stock'] > 0 ? 0 : 1,         // есть на складе
+                mb_strlen((string)$p['name']),
+            ]];
+        }
+        usort($hits, fn($a, $b) => $a['rank'] <=> $b['rank']);
+        return array_column(array_slice($hits, 0, max(1, $limit)), 'row');
+    }
+
     /** The whole catalog, read once per request — a KP has many positions. */
     private static ?array $catalog = null;
 
@@ -202,6 +260,10 @@ class ProductMatcher {
     private static function rankedCandidates(string $query, int $maxResults, ?array $queryVector, ?int $counterpartyId): array {
         $normQuery = self::normalize($query);
         if ($normQuery === '') return [];
+        // «размер XL» — не слово названия: размер выбирает модификацию, а не товар
+        require_once __DIR__ . '/variants.php';
+        $baseQuery = self::normalize(Variants::stripSize($query));
+        $baseWords = self::keyWords($baseQuery);
 
         $products = self::catalog();
         if (empty($products)) return [];
@@ -284,6 +346,20 @@ class ProductMatcher {
             // score stands in, so a half-indexed catalog still ranks sensibly
             $combined = $vec === null ? $lexical : (1 - $weight) * $lexical + $weight * $vec;
 
+            // Как полнотекстовый поиск (issue #118): слова, которых клиент НЕ
+            // писал, опускают товар. «Боковая плита для бронежилета Бр3» содержит
+            // всё из «плита для бронежилета Бр3», но «боковая» — это другой товар
+            $ownWords = self::keyWords($p['base_text']);
+            $exact = $baseWords && $ownWords
+                && self::containment($baseWords, $p['base_text']) >= 1.0
+                && self::containment($ownWords, $baseQuery) >= 1.0;
+            if ($exact) {
+                $combined = max($combined, ($p['product_type'] ?? '') === 'variant' ? self::EXACT_VARIANT : self::EXACT_PRODUCT);
+            } elseif ($ownWords && $byName >= $byDesc) {
+                // Только находке по названию: описание и так стоит рядом ниже
+                $combined *= 0.9 + 0.1 * self::containment($ownWords, $baseQuery);
+            }
+
             // Класс защиты, номер модели, ГОСТ-индекс: запрос назвал один, у
             // товара стоит другой — это не «почти то же самое», это не тот
             // товар. Смысловая близость такую пару тоже не спасает.
@@ -294,12 +370,12 @@ class ProductMatcher {
             // по названию, даже когда «30x25 см» топят оценку ниже порога
             $byKeywords = !$conflict && $head !== null && $headHit && $inNameKeys >= 0.5;
 
-            $qualifies = $combined >= $minScore || $byKeywords
+            $qualifies = $combined >= $minScore || $byKeywords || $exact
                 || (!$conflict && $vec !== null && $vec >= self::VEC_STRONG);
             if (!$qualifies) continue;
 
             $prices = Catalog::decodePrices($p['prices_json'] ?? null);
-            $source = self::sourceOf($byKeywords ? max($byName, $minScore) : $byName, $byDesc, $vec, $minScore);
+            $source = self::sourceOf($byKeywords || $exact ? max($byName, $minScore) : $byName, $byDesc, $vec, $minScore);
             $scored[] = [
                 'moysklad_id' => $p['moysklad_id'],
                 'name'        => $p['name'],
@@ -379,6 +455,8 @@ class ProductMatcher {
         );
         foreach ($rows as &$row) {
             $row['match_text'] = self::normalize((string)$row['name']);
+            // Имя без скобок: «(Размер: XL)» у модификации — не часть названия товара
+            $row['base_text'] = self::normalize((string)preg_replace('/\([^)]*\)/u', ' ', (string)$row['name']));
             // Описание, характеристики и характеристики модификации — один
             // мешок слов: клиент не знает, в какое из полей мы это положили
             $row['desc_text'] = self::normalize(trim(
@@ -452,6 +530,15 @@ class ProductMatcher {
             if (!array_intersect_key($values, $theirs[$prefix])) return true;
         }
         return false;
+    }
+
+    /** Слова и метки («бр3») текста — то, из чего состоит название. */
+    private static function keyWords(string $normalized): array {
+        $out = array_flip(self::contentWords($normalized));
+        foreach (self::markers($normalized) as $prefix => $values) {
+            foreach (array_keys($values) as $v) $out[$prefix . $v] = true;
+        }
+        return array_keys($out);
     }
 
     /** Слова запроса, по которым вообще имеет смысл искать. */

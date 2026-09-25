@@ -9,6 +9,7 @@ require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
 require_once ROOT . '/lib/attachments.php';
 require_once ROOT . '/lib/kp_set.php';
+require_once ROOT . '/lib/boards.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -118,6 +119,15 @@ switch ($action) {
             "SELECT id, moysklad_id, name, sum, state_name, synced_at FROM orders WHERE request_id=? ORDER BY id DESC",
             [$id]
         );
+        // Кнопка счёта рядом с «Сформировать КП» (issue #119): заведён ли
+        // покупатель в МойСклад — и чем заполнить окно заведения, если нет.
+        // Без сети: карточка и текст письма
+        $cpId = $req['counterparty_id'] ? (int)$req['counterparty_id'] : null;
+        $req['ms'] = Crm::moyskladHint($cpId, (string)$req['raw_text']);
+        if (!$req['ms']['linked'] && $cpId) {
+            $req['ms']['linked'] = (bool)Db::val("SELECT 1 FROM counterparty_orgs WHERE counterparty_id=?
+                                                  AND COALESCE(moysklad_id, '') <> '' LIMIT 1", [Crm::rootId($cpId)]);
+        }
         // «Подходящие позиции» — built once from the parsed letter, edited by hand
         // afterwards. Matching here is local only: opening a card costs no model call.
         $req['items'] = RequestItems::ensure($id);
@@ -186,6 +196,8 @@ switch ($action) {
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         $input = getInput();
         $items = RequestItems::save($id, (array)($input['items'] ?? []));
+        // Подбор начат — карточка «В работе» (issue #119)
+        Boards::workStarted($id);
         // Строку доставки убрали крестиком — она приходит как null, и это
         // решение, а не «поле забыли прислать» (модуль 034)
         $delivery = array_key_exists('delivery', $input)
@@ -251,6 +263,7 @@ switch ($action) {
         } catch (Throwable $e) {
             jsonError($e->getMessage(), 400);
         }
+        Boards::workStarted($id);
         jsonData(['items' => $items]);
 
     // Строка, которой мы не занимаемся: с экрана она не исчезает, но в КП и в
@@ -273,6 +286,7 @@ switch ($action) {
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         // `smart=1` lets the model normalize the wording first — costs a call
         $useLlm = ($_GET['smart'] ?? '0') === '1';
+        Boards::workStarted($id);
         // The counts come back with the rows: «ничего не нашлось» must not look
         // the same on screen as «нашлось всё» (module 018)
         jsonData(RequestItems::rematchReport($id, $useLlm) + ['delivery' => RequestItems::delivery($id)]);

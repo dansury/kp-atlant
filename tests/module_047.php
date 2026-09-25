@@ -66,7 +66,7 @@ Db::insert('products_cache', ['moysklad_id' => 'v-m', 'name' => 'Бронежи�
     'unit' => 'шт.', 'price' => 100, 'stock' => 1, 'product_type' => 'variant', 'parent_id' => 'par',
     'characteristics' => 'Размер: M']);
 
-ok('поиск выбирает parent_id', str_contains($api, 'product_type, category, parent_id'));
+ok('поиск выбирает parent_id', str_contains($api . file_get_contents(ROOT . '/lib/matcher.php'), 'product_type, category, parent_id'));
 $found = Db::all("SELECT moysklad_id, name, article, code, price, prices_json, stock, reserved, unit,
                          characteristics, product_type, category, parent_id FROM products_cache WHERE name LIKE '%штурмовой%'");
 $rows = Variants::expandSuggest($found, 40);
@@ -217,7 +217,7 @@ ok('второй раз письмо не готовится', $r['shipped'] ===
 
 // ===================================================================== 9
 echo "\n9. Интерфейс (по исходнику)\n";
-ok('лента: веха и документ — одна строка', str_contains($js, 'mergeDocEvents(data.items'));
+ok('лента: веха и документ — одна строка', str_contains($js, 'this.mergeDocEvents(items, data.docs || [])'));
 $sign = strpos($js, 'data-cmp-sign checked');
 ok('«подпись» стоит под полем письма', $sign > strpos($js, 'data-cmp-rte contenteditable') && $sign < strpos($js, 'data-cmp-files></div>'));
 ok('описание заполняется при выборе товара', substr_count($js, 'this.fillCatalogComment(row') >= 2);

@@ -214,6 +214,30 @@ switch ($action) {
      * стирать их этой кнопкой нельзя, иначе «убрать лишнюю строку» однажды
      * сотрёт отправленное КП из истории.
      */
+    /**
+     * Печатная форма документа сделки для 👁 в ленте (issue #119): PDF прямо в
+     * окне. Формы нет — страница с причиной и ссылкой в МойСклад, а не JSON в рамке.
+     */
+    case 'doc_pdf': {
+        requireAuth();
+        require_once ROOT . '/lib/sync.php';
+        $doc = (string)($_GET['doc'] ?? '');
+        $r = MsSync::docPdf($doc, (int)($_GET['id'] ?? 0));
+        if ($r['path'] && is_file($r['path'])) {
+            header('Content-Type: application/pdf');
+            header("Content-Disposition: inline; filename*=UTF-8''" . rawurlencode($r['name']));
+            header('Content-Length: ' . filesize($r['path']));
+            readfile($r['path']);
+            exit;
+        }
+        http_response_code(502);
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!doctype html><meta charset="utf-8"><body style="font:14px sans-serif;padding:16px">'
+           . '<p>Печатная форма недоступна в МойСклад' . ($r['error'] !== '' ? ': ' . htmlspecialchars($r['error']) : '')
+           . '</p><p>Документ можно открыть в МойСклад по ссылке в ленте.</p></body>';
+        exit;
+    }
+
     case 'note_delete': {
         requireAuth();
         $id = Crm::rootId((int)($_GET['id'] ?? 0));

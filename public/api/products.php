@@ -18,24 +18,10 @@ switch ($action) {
         $limit = min(50, max(1, (int)($_GET['limit'] ?? 20)));
 
         // Every word of the query has to appear somewhere in the row: typing
-        // «шлем l» must narrow the list, not widen it
-        $words = array_slice(array_filter(preg_split('/\s+/u', mb_strtolower($q)) ?: []), 0, 6);
-        $where = ["is_archived IS NOT 1"];
-        $params = [];
-        foreach ($words as $w) {
-            $where[] = "(name_normalized LIKE ? OR lower(name) LIKE ? OR lower(article) LIKE ?"
-                     . " OR lower(code) LIKE ? OR lower(characteristics) LIKE ?)";
-            array_push($params, "%$w%", "%$w%", "%$w%", "%$w%", "%$w%");
-        }
-        $items = Db::all(
-            "SELECT moysklad_id, name, article, code, price, prices_json, stock, reserved, unit,
-                    characteristics, product_type, category, parent_id
-             FROM products_cache
-             WHERE " . implode(' AND ', $where) . "
-             ORDER BY (stock > 0) DESC, length(name), name
-             LIMIT ?",
-            [...$params, $limit]
-        );
+        // «шлем l» must narrow the list, not widen it. Полнотекстово, без
+        // учёта регистра кириллицы и с описанием (issue #118)
+        require_once ROOT . '/lib/matcher.php';
+        $items = ProductMatcher::search($q, $limit);
         $counterpartyId = (int)($_GET['counterparty_id'] ?? 0) ?: null;
         require_once ROOT . '/lib/catalog.php';
         require_once ROOT . '/lib/variants.php';

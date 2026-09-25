@@ -139,3 +139,13 @@ not have.
 - A support ticket with a screenshot → issue: the picture must render
   (`blob/…?raw=true`) for a signed-in reader of the private repository.
 - Android Chrome with «тёмная тема для сайтов» on: the page must stay light.
+
+## Module 062 (issues #116–#119) — needs a live system
+- «🧾 Выставить счёт» from the match block with no КП yet: the КП is built
+  silently, then the invoice. Check one real invoice end to end (МойСклад
+  unreachable in the build container).
+- 👁 / «📎 В письмо» for an order and a shipment use the FIRST print template of
+  `customerorder` / `demand` in МойСклад — check the form is the one the
+  managers want (if not, a setting like `MS_INVOICE_TEMPLATE` is needed).
+- #117 was reproduced with a zoomed page in emulation; check the support
+  window on the real Android phone from the issue.

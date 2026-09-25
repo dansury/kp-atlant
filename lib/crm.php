@@ -594,6 +594,7 @@ class Crm {
      */
     public static function documents(int $counterpartyId): array {
         require_once __DIR__ . '/reserves.php';
+        require_once __DIR__ . '/moysklad.php';
         $out = [];
         foreach (Db::all(
             "SELECT id, moysklad_id, name, sum, state_name, moment, created_at, request_id, proposal_id,
@@ -613,6 +614,7 @@ class Crm {
                 // Резерв под неоплаченный счёт (модуль 026) переехал сюда вместе
                 // с заказом: кнопка «Снять резерв» стоит там же, где заказ
                 'reserve'     => Reserves::state($o),
+                'pdf_url'     => '/api/counterparties.php?action=doc_pdf&doc=order&id=' . (int)$o['id'],
                 'created_at'  => (string)($o['moment'] ?: $o['created_at']),
             ];
         }
@@ -636,6 +638,49 @@ class Crm {
                 'proposal_id' => $i['proposal_id'] !== null ? (int)$i['proposal_id'] : null,
                 'created_at'  => (string)($i['moment'] ?: $i['created_at']),
             ];
+        }
+        // Отгрузки и входящие платежи — тоже документы сделки (issue #119)
+        if (Db::hasTable('order_demands')) {
+            foreach (Db::all(
+                "SELECT d.id, d.moysklad_id, d.name, d.moment, d.seen_at, d.ship_service, d.ship_track,
+                        o.request_id, o.name AS order_name
+                 FROM order_demands d JOIN orders o ON o.id = d.order_id
+                 WHERE o.counterparty_id=? ORDER BY d.id DESC LIMIT 50", [$counterpartyId]) as $d) {
+                $out[] = [
+                    'kind'       => 'doc',
+                    'doc'        => 'demand',
+                    'id'         => (int)$d['id'],
+                    'title'      => 'Отгрузка ' . (string)$d['name'],
+                    'sum'        => null,
+                    'state_name' => trim(($d['order_name'] ? 'по заказу ' . $d['order_name'] : '')
+                                  . ($d['ship_track'] ? ' · трек ' . $d['ship_track'] : '')
+                                  . ($d['ship_service'] ? ' · ' . $d['ship_service'] : ''), ' ·'),
+                    'url'        => MoySklad::demandUrl((string)$d['moysklad_id']),
+                    'pdf_url'    => '/api/counterparties.php?action=doc_pdf&doc=demand&id=' . (int)$d['id'],
+                    'request_id' => $d['request_id'] !== null ? (int)$d['request_id'] : null,
+                    'created_at' => (string)($d['moment'] ?: $d['seen_at']),
+                ];
+            }
+        }
+        if (Db::hasTable('bank_payments')) {
+            foreach (Db::all(
+                "SELECT p.id, p.moysklad_payment_id, p.amount, p.operation_date, p.doc_number, p.created_at,
+                        i.name AS invoice_name
+                 FROM bank_payments p LEFT JOIN invoices i ON i.id = p.invoice_id
+                 WHERE p.counterparty_id=? AND COALESCE(p.moysklad_payment_id, '') <> ''
+                 ORDER BY p.id DESC LIMIT 50", [$counterpartyId]) as $p) {
+                $out[] = [
+                    'kind'       => 'doc',
+                    'doc'        => 'payment',
+                    'id'         => (int)$p['id'],
+                    'title'      => 'Входящий платёж' . ($p['doc_number'] ? ' № ' . $p['doc_number'] : ''),
+                    'sum'        => (float)$p['amount'],
+                    'state_name' => $p['invoice_name'] ? 'по счёту ' . $p['invoice_name'] : '',
+                    'url'        => MoySklad::paymentUrl((string)$p['moysklad_payment_id']),
+                    'request_id' => null,
+                    'created_at' => (string)($p['operation_date'] ?: $p['created_at']),
+                ];
+            }
         }
         usort($out, fn($a, $b) => strcmp($a['created_at'], $b['created_at']));
         return $out;
