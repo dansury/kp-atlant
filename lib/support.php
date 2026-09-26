@@ -30,6 +30,18 @@ final class Support {
 
     public const STATUSES = ['new' => 'На ревью', 'approved' => 'В GitHub', 'declined' => 'Отклонена'];
 
+    /** Ветка файлов обращений по умолчанию — своя, без кода (модуль 066). */
+    public const ASSETS_BRANCH = 'support-assets';
+
+    /**
+     * Для тестов: fn(string $method, string $url, ?array $body): array{0:int,1:string}
+     * — код ответа и тело вместо настоящего запроса к GitHub.
+     */
+    public static ?Closure $transport = null;
+
+    /** Ветка, проверенная в этом запросе: у обращения с пятью файлами она одна. */
+    private static array $branches = [];
+
     /** Картинка, документ, видео — всё, что кладут в issue. */
     private const ALLOWED_EXT = [
         'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'heic',
@@ -360,7 +372,10 @@ final class Support {
                 . date('Y/m') . '/' . $fileId . '-' . self::asciiName((string)$file['filename']);
         $endpoint = 'contents/' . implode('/', array_map('rawurlencode', explode('/', $remote)));
 
-        $branch = trim((string)Settings::get('SUPPORT_ASSETS_BRANCH', '')) ?: self::defaultBranch($repo);
+        // Своя ветка (модуль 066): файл в ветке, которую выкладывает деплой, —
+        // новый коммит в ней, полный деплой ради скриншота и скриншот на сайте
+        $wanted = trim((string)Settings::get('SUPPORT_ASSETS_BRANCH', self::ASSETS_BRANCH));
+        $branch = $wanted !== '' ? self::ensureBranch($repo, $wanted) : self::defaultBranch($repo);
         $put = [
             'message' => 'Файл к обращению поддержки #' . (int)$file['ticket_id'],
             'content' => base64_encode($bytes),
@@ -392,6 +407,48 @@ final class Support {
             return 'https://github.com/' . $m[1] . '/' . $m[2] . '/blob/' . $m[3] . '?raw=true';
         }
         return $url;
+    }
+
+    /**
+     * Ветка для файлов обращений: есть — берём, нет — создаём (модуль 066).
+     *
+     * Создаётся СИРОТОЙ — дерево с одним README и коммит без родителей: общей
+     * истории с кодом у неё нет, выложить или слить её по ошибке нельзя.
+     * Создать не вышло (нет прав, GitHub ответил ошибкой) — файл едет в ветку
+     * по умолчанию, как раньше: обращение без картинки хуже лишнего деплоя.
+     */
+    public static function ensureBranch(string $repo, string $branch): string {
+        $key = $repo . '#' . $branch;
+        if (isset(self::$branches[$key])) return self::$branches[$key];
+        try {
+            if (self::api($repo, 'branches/' . rawurlencode($branch), 'GET', null, true) === null) {
+                $tree = self::api($repo, 'git/trees', 'POST', ['tree' => [[
+                    'path' => 'README.md', 'mode' => '100644', 'type' => 'blob',
+                    'content' => "# Файлы обращений поддержки\n\nКартинки и документы, приложенные к обращениям из панели КП.\n"
+                               . "Ветка без кода: деплой её не выкладывает, и слить её с кодом нельзя.\n",
+                ]]]);
+                $commit = self::api($repo, 'git/commits', 'POST', [
+                    'message' => 'Ветка файлов обращений поддержки',
+                    'tree'    => (string)($tree['sha'] ?? ''),
+                    'parents' => [],
+                ]);
+                try {
+                    self::api($repo, 'git/refs', 'POST', [
+                        'ref' => 'refs/heads/' . $branch, 'sha' => (string)($commit['sha'] ?? ''),
+                    ]);
+                } catch (RuntimeException $e) {
+                    // Соседнее одобрение успело создать её первым
+                    if (!str_contains($e->getMessage(), 'already exists')) throw $e;
+                }
+                Logger::info('support', "Создана ветка «{$branch}» для файлов обращений", ['repo' => $repo]);
+            }
+            $use = $branch;
+        } catch (Throwable $e) {
+            Logger::warning('support', "Ветку «{$branch}» для файлов создать не вышло, файл уйдёт в ветку по умолчанию: "
+                . $e->getMessage(), ['repo' => $repo]);
+            $use = self::defaultBranch($repo);
+        }
+        return self::$branches[$key] = $use;
     }
 
     /** Ветка по умолчанию — спрашиваем репозиторий, а не угадываем «main». */
@@ -449,19 +506,24 @@ final class Support {
         if ($token !== '') $headers[] = 'Authorization: Bearer ' . $token;
         if ($body !== null) $headers[] = 'Content-Type: application/json';
 
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CUSTOMREQUEST  => $method,
-            CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_TIMEOUT        => max(30, (int)Settings::get('KNOWLEDGE_TIMEOUT_SEC', 20)),
-            CURLOPT_SSL_VERIFYPEER => true,
-        ]);
-        if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE));
+        if (self::$transport) {
+            [$code, $resp] = (self::$transport)($method, $url, $body);
+            $err = '';
+        } else {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CUSTOMREQUEST  => $method,
+                CURLOPT_HTTPHEADER     => $headers,
+                CURLOPT_TIMEOUT        => max(30, (int)Settings::get('KNOWLEDGE_TIMEOUT_SEC', 20)),
+                CURLOPT_SSL_VERIFYPEER => true,
+            ]);
+            if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE));
 
-        $resp = curl_exec($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $err  = curl_error($ch);
+            $resp = curl_exec($ch);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err  = curl_error($ch);
+        }
 
         if ($resp === false) throw new RuntimeException("GitHub недоступен: $err");
         if ($code === 404 && $soft) return null;

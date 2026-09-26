@@ -17,6 +17,8 @@
     RewriteRule ^graphify-out/ - [F,L]
     RewriteRule ^reference/ - [F,L]
     RewriteRule ^\.git(/|$) - [F,L]
+    # Файлы обращений поддержки — скриншоты с данными клиентов (модуль 066)
+    RewriteRule ^support/ - [F,L]
 
     # Config and deploy secrets
     RewriteRule ^config\.php$ - [F,L]

@@ -10,6 +10,9 @@ $action = $_GET['action'] ?? '';
 switch ($action) {
     case 'poll':
         $manager = requireAuth();
+        // Проверка обновлений — здесь, в фоновом опросе, а не в каждом запросе
+        // к API: сессия уже отпущена, и ждёт GitHub только этот опрос (модуль 066)
+        autoPullCheck();
         $items = Notifier::getUnread($manager['id']);
         jsonData(['items' => $items, 'unread_count' => count($items)]);
 

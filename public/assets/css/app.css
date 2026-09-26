@@ -227,6 +227,9 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 
 /* Loading */
 .loading { text-align: center; padding: 40px; color: var(--text-muted); }
+/* Старт не удался (модуль 066): причина и «Повторить» вместо вечной «Загрузка...» */
+.boot-error { max-width: 520px; margin: 40px auto; }
+.boot-error p { overflow-wrap: anywhere; }
 
 /* Responsive */
 @media (max-width: 768px) {

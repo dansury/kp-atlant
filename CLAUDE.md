@@ -765,5 +765,19 @@ load-bearing: `data/.gitkeep` IS in the repository, so a purge without that list
 deletes the database. Never make a deploy protection depend on a field an operator has to
 fill in. `tests/deploy_preserves_data.php` runs pull.php's own code and must stay green.
 
+The page ALWAYS loads (module 066). A deploy is served while it runs, so `copyTree()` never
+rewrites a file in place — it writes next to it and renames over, and leaves an unchanged file
+alone (its `mtime` is the browser's cache key). Code is never served from a cache nobody
+re-checks: `sw.js` takes `.js`/`.css` from the network, stores only a complete `200` of our own
+origin, and its `VERSION` goes up whenever those rules change. `index.php` carries an inline ES5
+watchdog — `app.js` that does not load, does not define `App` or throws before `App.init()`
+gets ONE cache purge and reload per tab, then a visible reason and «Перезагрузить»; `App.init()`
+sets `window.kpBooted` first thing. Only a `401` from `auth.php?action=me` means «not logged
+in»: a timeout, a dead network or a `5xx` is «Интерфейс не загрузился» with «Повторить», never
+the login form. No request a person waits for runs the auto-deploy check — it lives in
+`notifications.php?action=poll`, after `requireAuth()` has released the session. Support
+ticket files go to their own orphan branch (`SUPPORT_ASSETS_BRANCH`), never to the branch the
+deploy tracks, and `support/` is closed in `.htaccess`.
+
 ## Graphify
 Use graph to understand the project and update it after new implementations.
