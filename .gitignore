@@ -43,3 +43,5 @@ graphify-out/manifest.json
 graphify-out/.graphify_labels.json
 graphify-out/.graphify_root
 graphify-out/cost.json
+graphify-out/graph.html
+graphify-out/.graphify_labels.json.sig

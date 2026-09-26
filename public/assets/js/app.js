@@ -269,6 +269,8 @@ const App = {
      * только после этого её закрывает. Успех и подсказки ведут себя как
      * раньше и гаснут сами, но наведение курсора останавливает и их таймер:
      * сообщение, которое исчезает из-под читающего, — то же самое зло.
+     * У каждого — крестик (issue #132): на телефоне наведения нет, и ошибка
+     * висела поверх экрана навсегда.
      */
     toast(msg, type = 'info') {
         const text = String(msg ?? '');
@@ -281,6 +283,7 @@ const App = {
         let timer = null;
         const close = () => { clearTimeout(timer); el.remove(); };
         const arm = ms => { clearTimeout(timer); timer = setTimeout(close, ms); };
+        this.toastClose(el, close);
 
         // Наведение держит сообщение на экране; убрали курсор — оно уходит
         // (issue #60). У ошибки таймера на появление нет вовсе, пока её не
@@ -290,6 +293,19 @@ const App = {
 
         document.getElementById('toasts').appendChild(el);
         if (!sticky) arm(4000);
+    },
+
+    /** Крестик уведомления (issue #132): закрывает сразу, без наведения. */
+    toastClose(el, close = () => el.remove()) {
+        if (el.querySelector('.toast__close')) return;
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'toast__close';
+        x.setAttribute('aria-label', 'Закрыть');
+        x.title = 'Закрыть';
+        x.textContent = '×';
+        x.addEventListener('click', e => { e.stopPropagation(); close(); });
+        el.appendChild(x);
     },
 
     // Escape untrusted text (email bodies, client names) before injecting into HTML
@@ -1160,7 +1176,8 @@ const App = {
             </div>
         `;
         this.renderMatchedItems(req.id, req.items || [], null,
-                                {delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
+                                {delivery: req.delivery, conditions: req.conditions, price_types: req.price_types,
+                                 autopick: req.autopick});
     },
 
     // ==== «Подходящие позиции»: what the letter's lines mean in our catalog ====
@@ -1191,7 +1208,8 @@ const App = {
         if (opts.price_types) host.dataset.priceTypes = JSON.stringify(opts.price_types);
         // КП запроса — на блоке: кнопки и счета под таблицей читают его отсюда
         if (opts.kp) host.dataset.kp = JSON.stringify(opts.kp);
-        const open = items.filter(i => i.needs_choice).length;
+        const open = items.filter(i => i.needs_choice && !i.is_alternative).length;
+        const ap = opts.autopick || {};
         host.classList.toggle('card--folded', host.dataset.folded === '1');
         host.innerHTML = `
             <div class="card__title"><span class="fold-title" onclick="App.toggleMatchFold(this)">Подходящие позиции</span>
@@ -1203,10 +1221,12 @@ const App = {
                         aria-expanded="${host.dataset.folded === '1' ? 'false' : 'true'}"
                         title="${host.dataset.folded === '1' ? `Развернуть подбор (позиций: ${items.length})` : 'Свернуть подбор'}"
                         >${host.dataset.folded === '1' ? '▸' : '▾'}</button></div>
-            <p class="muted">Подбираются сами при открытии карточки. Начните печатать название —
-               подскажет локальная база товаров.</p>
-            ${open ? `<div class="note note--choice">Равнозначных вариантов: <strong>${open}</strong> —
-                выберите нужный, автоподбор сам не решает.</div>` : ''}
+            <p class="muted">Подбираются сами при открытии карточки: каталог, а что он не решил — нейросеть.
+               Начните печатать название — подскажет локальная база товаров.</p>
+            <!-- Что осталось человеку после каталога и нейросети (модуль 065) -->
+            ${open ? `<div class="note note--choice" data-choice-banner>Осталось выбрать: <strong>${open}</strong> —
+                ${ap.available && ap.pending ? 'нейросеть сейчас попробует сама.'
+                    : `${ap.available ? 'каталог и нейросеть не решили' : 'каталог не решил'} однозначно, выберите вариант в строке.`}</div>` : ''}
             <!-- Кнопки подбора стоят НАД общими условиями (issue #60): сначала
                  собирают позиции, потом назначают на них цены и сроки -->
             <div class="flex flex--wrap" style="margin-bottom:8px">
@@ -1215,13 +1235,14 @@ const App = {
                         title="Свернуть все позиции">⇈</button>
                 <button type="button" class="btn btn--outline btn--sm" onclick="App.foldPickedRows(this)"
                         title="Свернуть подобранные: позиции, где товар уже выбран; нажмите ещё раз — развернуть все">✓⇈</button>
-                <button class="btn btn--outline btn--sm" data-act="match" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
-                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
-                        title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
+                <!-- Одна кнопка (модуль 065): каталог, затем нейросеть — для того, что он не решил -->
+                <button class="btn btn--outline btn--sm" data-act="match" onclick="App.rematchItems(this)"
+                        title="Подобрать открытые строки заново: сначала каталог, а что он не решил — нейросеть, одним запросом. Строки с «ок» не трогаются">↻ Подобрать заново</button>
             </div>
+            <div data-autopick></div>
             <div data-conditions>${this.conditionsPanel(host)}</div>
             <div data-match-rows>${items.map((i, n) => this.matchRow(i, n)).join('')}</div>
-            ${items.length ? '' : '<p class="muted" data-match-empty>Пока пусто — добавьте позицию или подберите по каталогу.</p>'}
+            ${items.length ? '' : '<p class="muted" data-match-empty>Пока пусто — добавьте позицию или нажмите «↻ Подобрать заново».</p>'}
             <!-- Вторая «+ Позиция» — под строками (модуль 052): в длинной таблице до верхней не дотянуться -->
             <div class="match-add-bottom">
                 <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
@@ -1243,6 +1264,58 @@ const App = {
         this.bindMatchAutosave(host);
         this.watchMatchPhotos(host);
         this.loadKpSummary(requestId, host);
+        if (opts.autopick) this.autopick(host, requestId, opts.autopick);
+    },
+
+    /**
+     * ==== Нейросеть — сама, когда каталог не справился (модуль 065, issue #132) ====
+     *
+     * Карточка уже нарисовала ответ каталога; строки, которые он не решил,
+     * уходят модели фоном — один раз на вкладку. Эти строки на время ответа
+     * закрыты от правки (их перепишет модель), остальные правятся как обычно:
+     * автосохранение ждёт ответа, а правки ложатся поверх него.
+     */
+    async autopick(host, requestId, status) {
+        if (!host || !status || !status.available || !(Number(status.pending) > 0)) return;
+        this._autopicked = this._autopicked || {};
+        if (this._autopicked[requestId]) return;
+        this._autopicked[requestId] = true;
+
+        const asked = new Set((status.ids || []).map(Number));
+        const busy = () => host.querySelectorAll('[data-match-row]').forEach(row => {
+            const id = Number((row.querySelector('[data-field="id"]') || {}).value || 0);
+            if (!asked.has(id)) return;
+            row.classList.add('match-row--busy');
+            row.inert = true;
+        });
+        const say = html => { const box = host.querySelector('[data-autopick]'); if (box) box.innerHTML = html; };
+        busy();
+        say(`<div class="loading">🤖 Нейросеть уточняет позиций: ${Number(status.pending)}…</div>`);
+        host._autopicking = true;
+        let res = null;
+        try {
+            res = await this.api(`requests.php?action=items_autopick&id=${requestId}`, {method: 'POST'});
+        } catch (err) {
+            say(`<div class="muted">Нейросеть не ответила — подбор остался каталожным: ${this.esc(err.message)}</div>`);
+        }
+        host._autopicking = false;
+        host.querySelectorAll('.match-row--busy').forEach(row => { row.classList.remove('match-row--busy'); row.inert = false; });
+
+        if (res && host.isConnected && Number(host.dataset.requestId) === Number(requestId)) {
+            let items = res.items || [];
+            // Правки, сделанные, пока модель думала, — поверх её ответа
+            if (host._autosaveAfterPick) {
+                const dom = this.collectMatchedItems(host);
+                const byId = new Map(dom.filter(r => Number(r.id)).map(r => [Number(r.id), r]));
+                items = items.map(it => asked.has(Number(it.id)) || !byId.has(Number(it.id))
+                    ? it : {...it, ...byId.get(Number(it.id))});
+                items.push(...dom.filter(r => !Number(r.id)));
+            }
+            this.renderMatchedItems(requestId, items, host, {...this.matchOpts(host), autopick: {...res.autopick, available: false}});
+            if (res.picked) this.toast(`Нейросеть подобрала позиций: ${res.picked} из ${res.asked}`, 'success');
+            else if (res.asked) say('<div class="muted">Нейросеть смотрела, но лучшего в каталоге не нашла — строки остались как были.</div>');
+        }
+        if (host._autosaveAfterPick) { host._autosaveAfterPick = false; this.autosaveMatch(host); }
     },
 
     /**
@@ -2892,6 +2965,8 @@ const App = {
     matchSourceLabel(source) {
         return {words: 'по словам', meaning: 'по смыслу', both: 'по словам и смыслу',
                 site_url: 'по ссылке на товар',
+                // Модуль 065: размер из письма и выбор нейросети
+                'модификация': 'по размеру из письма', 'нейросеть': 'выбрала нейросеть',
                 // Слова запроса нашлись только в описании — такая строка стоит
                 // ниже всего, что совпало названием, и «ок» ей не ставится
                 description: 'по описанию'}[source] || '';
@@ -3031,6 +3106,7 @@ const App = {
                     </div>
                     <div class="match-row__summary" data-row-summary onclick="App.toggleRowFold(this)" title="Развернуть позицию">${this.rowSummary(i)}</div>
                     ${this.variantNote(i)}
+                    ${this.matchHintNote(i)}
                     ${this.stockNote(i)}
                     ${this.scopeNote(i)}
                     ${this.altNote(i)}
@@ -3257,6 +3333,15 @@ const App = {
     },
 
     /** Размер или цвет, который просила эта строка письма (модуль 022). */
+    /**
+     * Подсказка подбора — менеджеру, не клиенту (модуль 065): как разделили
+     * количество, какой цвет выбрали, почему выбрала нейросеть. В КП не печатается.
+     */
+    matchHintNote(i) {
+        if (!i.match_hint) return '';
+        return `<div class="match-row__hint muted" title="Видно только вам — в КП не печатается">ℹ ${this.esc(i.match_hint)}</div>`;
+    },
+
     variantNote(i) {
         if (!i.variant_label) return '';
         const kind = i.variant_kind === 'color' ? 'цвет' : 'размер';
@@ -3735,6 +3820,12 @@ const App = {
         const requestId = Number(host && host.dataset.requestId);
         if (!requestId) return;
         const note = host.querySelector('[data-match-saved]');
+        // Нейросеть переписывает строки — сохранение ждёт её ответа (модуль 065)
+        if (host._autopicking) {
+            host._autosaveAfterPick = true;
+            if (note) note.textContent = 'сохраним после ответа нейросети...';
+            return;
+        }
         if (note) note.textContent = 'сохраняем...';
         try {
             const res = await this.api(`requests.php?action=items_save&id=${requestId}`, {
@@ -3803,7 +3894,7 @@ const App = {
      * and, on an error, actually left an empty table behind — the manager's own
      * ✓ appeared to be gone when nothing had been touched (module 018).
      */
-    async rematchItems(from, smart) {
+    async rematchItems(from, smart = false) {
         const host = this.matchHost(from);
         if (!host) return;
         const requestId = Number(host.dataset.requestId);
@@ -3814,13 +3905,14 @@ const App = {
         buttons.forEach(b => b.disabled = true);
         const note = document.createElement('div');
         note.className = 'loading';
-        note.textContent = smart ? 'Спрашиваем нейросеть и подбираем...' : 'Подбираем по каталогу...';
+        note.textContent = 'Подбираем по каталогу, что он не решит — нейросетью...';
         host.appendChild(note);
         try {
             await this.api(`requests.php?action=items_save&id=${requestId}`, {method: 'POST',
                 body: {items: pending, delivery: this.collectDelivery(host)}});
-            const res = await this.api(`requests.php?action=items_rematch&id=${requestId}&smart=${smart ? 1 : 0}`, {method: 'POST'});
-            this.renderMatchedItems(requestId, res.items || [], host, {...opts, delivery: res.delivery});
+            const res = await this.api(`requests.php?action=items_rematch&id=${requestId}&smart=${smart ? 1 : 0}&auto=1`, {method: 'POST'});
+            this.renderMatchedItems(requestId, res.items || [], host,
+                {...opts, delivery: res.delivery, autopick: {...(res.autopick || {}), available: false}});
             this.toast(this.rematchSummary(res), res.repicked && !res.found ? 'info' : 'success');
         } catch (err) {
             this.toast(err.message, 'error');
@@ -3838,6 +3930,8 @@ const App = {
         if (res.found) parts.push(`подобрано: ${res.found}`);
         if (res.empty) parts.push(`без совпадений: ${res.empty}`);
         if (res.alternatives) parts.push(`аналогов: ${res.alternatives}`);
+        if (res.llm && res.llm.picked) parts.push(`нейросеть уточнила: ${res.llm.picked}`);
+        if (res.llm && res.llm.error) parts.push('нейросеть не ответила');
         if (kept) parts.push(kept);
         return `Пересмотрено строк: ${res.repicked} — ${parts.join(', ')}`;
     },
@@ -5361,7 +5455,8 @@ const App = {
                     if (own !== null) host.dataset.folded = own ? '1' : '0';
                 }
                 this.renderMatchedItems(requestId, req.items || [], host,
-                    {kp, delivery: req.delivery, conditions: req.conditions, price_types: req.price_types});
+                    {kp, delivery: req.delivery, conditions: req.conditions, price_types: req.price_types,
+                     autopick: req.autopick});
             };
             // Сохранённый ответ рисуется сразу, свежий — когда придёт
             draw(await this.apiCached(`requests.php?action=get&id=${requestId}`, draw));
@@ -6277,6 +6372,9 @@ const App = {
                 }
             };
             el.querySelector('[data-now]').onclick = sendNow;
+            // Крестик прячет отсчёт, письмо уходит по нему же (issue #132)
+            this.toastClose(el);
+            el.querySelector('.toast__close').title = 'Скрыть — письмо уйдёт по отсчёту';
             paint();
             const timer = setInterval(() => { left--; if (left <= 0) sendNow(); else paint(); }, 1000);
             document.getElementById('toasts').appendChild(el);
@@ -6975,7 +7073,8 @@ const App = {
             this._syncBusy = id;
             wait = document.createElement('div');
             wait.className = 'toast toast--info';
-            wait.textContent = 'Обновляем из МойСклад…';
+            wait.innerHTML = '<span class="toast__text">Обновляем из МойСклад…</span>';
+            this.toastClose(wait);
             document.getElementById('toasts').appendChild(wait);
         }
         try {
@@ -7161,11 +7260,11 @@ const App = {
         'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Переписки идут по порядку: старые сверху, свежая — внизу, и она раскрыта. В строке видно, чьё в переписке последнее письмо. Любое одно письмо убирается корзиной в его заголовке — остальная переписка остаётся на месте. Убранные как «не наш профиль» стоят свёрнутым блоком «Архив компании» над списком.'],
         'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика. К ответу сам приписывается текст письма, на которое вы отвечаете, — клиенту не приходится вспоминать, о каком заказе речь. Кнопка «🎤 голосом» — надиктовать текст: нажмите, говорите до 30 секунд, нажмите ещё раз, и распознанное встанет туда, где стоит курсор.'],
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
-        'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки — модель на это не тратится. Равнозначные варианты сервис не выбирает молча: он спрашивает.'],
+        'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки: сначала каталог, а строки, которые он не решил (ничего не нашёл, нашёл несколько равных или нашёл слабо), сама уточняет нейросеть — одним запросом на письмо и только среди найденного в каталоге. Размер из письма ставит строку на свою модификацию, цвет — тот, что назвал клиент, иначе тот, что есть на складе. Что не решили ни каталог, ни нейросеть, сервис не выбирает молча: он спрашивает. «↻ Подобрать заново» делает всё это ещё раз.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
         'kp-conditions':['Цены и условия на всё КП', 'Тип цены, скидка и условия «под заказ» — один выбор на все позиции, а не сорок раз по строкам. «Применить ко всем» проставляет его строкам и ЗАПОМИНАЕТ: следующее КП откроется этим же. Строку, где цену вписали руками, общий выбор не трогает, а условия ожидания получают только позиции, которых нет на складе.'],
         'match-analog': ['Аналог', 'Мы предлагаем не то, что клиент назвал. Галочка открывает поле с его собственной формулировкой — правьте её как нужно. В КП она встанет над названием нашего товара курсивом серым, и закупщик найдёт в предложении свою позицию, не сверяя два документа глазами.'],
-        'match-variant':['Модификации', 'Если в письме один товар просят в нескольких размерах или цветах («р.S-5шт, р.M-13шт»), сервис делает из этого отдельные строки с их количествами и подставляет каждой свою карточку из МойСклад — со своим артикулом, ценой и остатком.'],
+        'match-variant':['Модификации', 'Если в письме один товар просят в нескольких размерах или цветах («р.S-5шт, р.M-13шт», «размер Л, М — по 2 штуки каждого»), сервис делает из этого отдельные строки с их количествами и подставляет каждой свою карточку из МойСклад — со своим артикулом, ценой и остатком. Одно количество на несколько размеров без «по»/«каждого» делится поровну — строка скажет, что делили мы.'],
         'kp-editor':    ['Редактор КП', 'Здесь правится всё, что попадёт в документ: цены, количества, тексты карточек товаров и блоки вокруг таблицы. Реквизиты и НДС правке не подлежат — они приходят из МойСклад и замораживаются на КП в момент создания.'],
         'kp-exclude':   ['Свернуть позицию', 'Позиции, которой нет в наличии, в таблице КП не будет — но в документе она останется: КП назовёт её словами клиента и скажет, что мы по ней уточняем. Молча выкинуть строку нельзя.'],
         // Настройки

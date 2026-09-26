@@ -210,6 +210,15 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
 .toast__text { display: block; white-space: pre-wrap; word-break: break-word; }
 .toast:hover { filter: brightness(1.08); }
 .toast--error { max-width: 460px; max-height: 50vh; overflow: auto; }
+/* Крестик у каждого уведомления (issue #132): на телефоне наведения нет.
+   Белый на зелёном, красном и графитовом фоне тоста — AA (≥ 4.5:1) */
+.toast { display: flex; align-items: flex-start; gap: 8px; }
+.toast__text { flex: 1 1 auto; min-width: 0; }
+.toast__close { flex: 0 0 auto; width: 32px; height: 32px; margin: -7px -10px -7px 0; padding: 0;
+                background: none; border: 0; border-radius: var(--radius); color: inherit;
+                font-size: 22px; line-height: 1; cursor: pointer; opacity: .85; }
+.toast__close:hover, .toast__close:focus-visible { opacity: 1; background: rgba(255,255,255,.16); }
+.toast--error .toast__close { position: sticky; top: 0; }
 @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
 
 /* Login */
@@ -1508,6 +1517,18 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
 .chip--file > .chip__x { margin-left: 6px; cursor: pointer; border: 0; background: none; padding: 0 4px;
                          font: inherit; color: var(--text-muted); border-radius: 4px; line-height: 1.4; }
 .chip--file > .chip__x:hover { color: var(--danger, #c62828); background: var(--surface-2); }
+
+/* ==== Module 065: the model settles the rows the catalog could not ==== */
+/* Строка, которую сейчас переписывает нейросеть: видна, но не правится */
+.match-row--busy { position: relative; }
+.match-row--busy > * { opacity: .5; }
+/* Плашка на рамке строки, а не поверх её текста; тёмный текст на белом — AA */
+.match-row--busy::after { content: '🤖 нейросеть уточняет…'; position: absolute; top: -10px; right: 10px;
+                          padding: 1px 8px; font-size: 12px; line-height: 18px; border-radius: 9px;
+                          background: var(--surface, #fff); color: var(--text); border: 1px solid var(--border);
+                          box-shadow: var(--shadow, none); }
+/* Подсказка подбора — только менеджеру, в КП не печатается */
+.match-row__hint { font-size: 12px; margin: 2px 0; overflow-wrap: anywhere; }
 
 /* ==== Module 057: send delay toast, fold arrows everywhere ==== */
 .toast--undo { display: flex; align-items: center; gap: 10px; max-width: 460px; }

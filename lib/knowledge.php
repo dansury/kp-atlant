@@ -35,6 +35,8 @@ final class Knowledge {
         'kp_requirements'     => ['Текст КП по требованиям клиента', 0.6],
         'followup'            => ['Письмо вдогонку', 0.4],
         'normalize_names'     => ['Нормализация наименований', 0.5],
+        // Module 065: the model settles the lines the catalog could not
+        'match_pick'          => ['Подбор позиции нейросетью', 0.5],
     ];
 
     private const API = 'https://api.github.com';

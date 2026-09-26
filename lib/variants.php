@@ -32,8 +32,14 @@ final class Variants {
         'белый', 'синий', 'бежевый', 'коричневый', 'ранger', 'ranger', 'мох', 'цифра',
     ];
 
-    /** Слова, после которых идёт размер: «р.S», «р-р 52», «размер L». */
-    private const SIZE_PREFIX = '(?:разм(?:ер[аы]?)?|р\s*[-\/\.]\s*р|рост|р\.)';
+    /** Слова, после которых идёт размер: «р.S», «р-р 52», «размер L», «размеры S/M». */
+    private const SIZE_PREFIX = '(?:разм(?:ер(?:ами|ов|а|ы)?)?|р\s*[-\/\.]\s*р|рост|р\.)';
+
+    /**
+     * Буквенный размер кириллицей — тот же размер (issue #132): «размер Л, М».
+     * Буквы-двойники, из которых клиент набирает S, M, L и X.
+     */
+    private const SIZE_HOMOGLYPHS = ['х' => 'x', 'с' => 's', 'м' => 'm', 'л' => 'l'];
 
     // ------------------------------------------------------------- разбор
 
@@ -61,6 +67,17 @@ final class Variants {
             }
 
             $parts = self::split($source);
+            if (count($parts) < 2 && empty($item['variant_label'])) {
+                // Несколько размеров одним «размер», количество одно на всех
+                // (issue #132): «шлем (размер Л, М) — по 2 штуки каждого»
+                $list = self::sizeList($name);
+                if (count($list) < 2 && $tail !== '' && self::mentions($tail, $name)) $list = self::sizeList($tail);
+                $lines = count($list) >= 2 ? self::spreadSizes($item, $name, $tail, $list) : [];
+                if ($lines) {
+                    foreach ($lines as $line) $out[] = $line;
+                    continue;
+                }
+            }
             if (count($parts) < 2) {
                 // Один размер со словом «размер» — тоже модификация (issue #118):
                 // «плиты Бр3, размер XL» ищут товар, а встают на его XL
@@ -125,27 +142,155 @@ final class Variants {
      *
      * Только с подсказкой И из закрытого набора (или числом-ростовкой): без
      * подсказки «Рукав 5ELEM» стал бы размером. Два разных размера без
-     * количеств — вопрос, а не метка: null.
+     * количеств — вопрос, а не метка: null. Кириллица — те же размеры: «размер Л».
      */
     public static function sizeLabel(string $text): ?string {
-        $text = self::tidy($text);
-        if ($text === '') return null;
-        $tokens = implode('|', array_map(fn($t) => preg_quote($t, '/'), self::SIZE_TOKENS));
-        $re = '/(?<!\p{L})' . self::SIZE_PREFIX . '\s*[:№]?\s*(' . $tokens . '|\d{2,3}(?:\s*[-–—\/]\s*\d{2,3})?)(?![\p{L}\p{N}])/iu';
         $found = [];
-        foreach (self::matchAll($re, $text) as $hit) {
-            $label = self::cleanLabel($hit[1]);
-            if ($label !== '') $found[mb_strtolower($label)] = $label;
+        foreach (self::sizeSpans(self::tidy($text)) as $span) {
+            foreach ($span['labels'] as $label) $found[mb_strtolower($label)] = $label;
         }
         return count($found) === 1 ? reset($found) : null;
     }
 
-    /** Название без «размер XL»: по нему ищется товар-родитель. */
+    /**
+     * Размеры, перечисленные после ОДНОЙ подсказки (issue #132): «размер Л, М»,
+     * «размеры S/M/L», «р. 52-54, 56-58», «размер L и XL». Латиницей, в порядке
+     * письма. «размер S или размер M» — это выбор, а не список: пусто.
+     *
+     * @return string[]
+     */
+    public static function sizeList(string $text): array {
+        foreach (self::sizeSpans(self::tidy($text)) as $span) {
+            if (count($span['labels']) >= 2) return $span['labels'];
+        }
+        return [];
+    }
+
+    /**
+     * «л» → «L», «ХЛ» → «XL», «52 / 54» → «52-54»; не размер — null.
+     * Кириллица принимается только здесь, после подсказки: сама по себе
+     * «с» — предлог, а «м» — метр.
+     */
+    public static function canonSize(string $token): ?string {
+        $t = mb_strtolower((string)preg_replace('/\s+/u', '', $token));
+        if ($t === '') return null;
+        if (preg_match('/^(\d{2,3})(?:[-–—\/](\d{2,3}))?$/u', $t, $m)) {
+            return isset($m[2]) ? $m[1] . '-' . $m[2] : $m[1];
+        }
+        $latin = strtr($t, self::SIZE_HOMOGLYPHS);
+        return in_array($latin, self::SIZE_TOKENS, true) ? strtoupper($latin) : null;
+    }
+
+    /**
+     * Где в тексте названы размеры: подсказка и размеры за ней, через запятую,
+     * «/», «+» или «и». Первое не-размерное слово список заканчивает.
+     *
+     * @return array<int,array{start:int,end:int,labels:string[]}> байтовые смещения
+     */
+    private static function sizeSpans(string $text): array {
+        if ($text === '' || !preg_match_all('/(?<![\p{L}\p{N}])' . self::SIZE_PREFIX . '/iu', $text, $m, PREG_OFFSET_CAPTURE)) {
+            return [];
+        }
+        $token = '/\G(\d{2,3}(?:\s*[-–—\/]\s*\d{2,3})?|[A-Za-zА-Яа-яЁё0-9]{1,4})(?![\p{L}\p{N}])/u';
+        $out = [];
+        foreach ($m[0] as [$hint, $at]) {
+            $pos = $at + strlen($hint);
+            $labels = [];
+            $end = $pos;
+            while (true) {
+                // Первый размер — сразу за подсказкой («размер: L»), следующие — через разделитель
+                $sep = $labels ? '/\G\s*(?:[,;+\/]|и(?!\p{L}))\s*/u' : '/\G\s*[:№]?\s*/u';
+                if (!preg_match($sep, $text, $sm, 0, $pos)) break;
+                $at2 = $pos + strlen($sm[0]);
+                if (!preg_match($token, $text, $tm, 0, $at2)) break;
+                $label = self::canonSize($tm[1]);
+                if ($label === null) break;
+                if (!in_array($label, $labels, true)) $labels[] = $label;
+                $pos = $end = $at2 + strlen($tm[0]);
+            }
+            if ($labels) $out[] = ['start' => $at, 'end' => $end, 'labels' => $labels];
+        }
+        return $out;
+    }
+
+    /**
+     * Количество на каждый размер, а не на все: «по 2 штуки», «2 шт. каждого».
+     */
+    public static function perSize(string $text): bool {
+        return (bool)preg_match('/(?<!\p{L})по\s+\d|(?<!\p{L})кажд(?:ого|ой|ый|ому|ая|ую)(?!\p{L})/iu', $text);
+    }
+
+    /**
+     * Строка с перечнем размеров и одним количеством → строка на размер.
+     *
+     * «По N каждого» — N на каждый. Иначе в письме ИТОГ: он делится поровну,
+     * остаток — первым размерам, и строка говорит менеджеру, что делили мы:
+     * сумма строк равна количеству из письма, ошибка в количестве — ошибка в
+     * деньгах. Итог меньше числа размеров — это «L или M», не делим вовсе.
+     *
+     * @return array строки или [] — делить нечего
+     */
+    private static function spreadSizes(array $item, string $name, string $tail, array $sizes): array {
+        $total = (float)str_replace(',', '.', (string)($item['qty'] ?? $item['quantity'] ?? 1));
+        if ($total <= 0) $total = 1;
+        $each = !empty($item['each']) || self::perSize($name . ' ' . $tail);
+        $k = count($sizes);
+        if (!$each && $total < $k) return [];
+
+        // Размеры ушли из имени; скобки с классом защиты («(Бр4)») — остаются
+        $base = self::stripSize($name);
+        $whole = (int)$total == $total;
+        $out = [];
+        foreach ($sizes as $n => $label) {
+            $qty = $each ? ($whole ? (int)$total : $total)
+                         : ($whole ? intdiv((int)$total, $k) + ($n < (int)$total % $k ? 1 : 0) : $total / $k);
+            $line = $item;
+            $line['name']          = $base;
+            $line['raw_name']      = $base . ' (размер ' . $label . ')';
+            $line['base_name']     = $base;
+            $line['quantity']      = $qty;
+            $line['qty']           = $qty;
+            $line['variant_label'] = $label;
+            $line['variant_kind']  = 'size';
+            unset($line['each']);
+            if (!$each) {
+                $line['qty_note'] = 'в письме ' . self::num($total) . ' шт. на размеры ' . implode(', ', $sizes)
+                                  . ' — разделено поровну, проверьте';
+            }
+            $out[] = $line;
+        }
+        return $out;
+    }
+
+    /**
+     * По чему искать товар строки с модификацией: без размера, цвета и
+     * перечня количеств, но со скобкой класса — «Плита (Бр4) (размер L)» это
+     * «Плита (Бр4)», а не любая плита.
+     */
+    public static function searchName(string $rawName): string {
+        $name = self::stripSize($rawName);
+        $name = (string)preg_replace('/\((?:\s*цвет\s*:[^)]*|[^)]*\d\s*(?:шт|штук|компл|пар|ед)[^)]*)\)/iu', ' ', $name);
+        $name = trim((string)preg_replace('/\s+/u', ' ', $name));
+        return $name !== '' ? $name : trim($rawName);
+    }
+
+    private static function num(float $v): string {
+        return rtrim(rtrim(number_format($v, 2, ',', ''), '0'), ',');
+    }
+
+    /** Название без «размер XL» и без «размеры L, M»: по нему ищется товар-родитель. */
     public static function stripSize(string $name): string {
-        $tokens = implode('|', array_map(fn($t) => preg_quote($t, '/'), self::SIZE_TOKENS));
-        $base = (string)preg_replace('/[,;]?\s*(?<!\p{L})' . self::SIZE_PREFIX . '\s*[:№]?\s*(?:' . $tokens
-            . '|\d{2,3}(?:\s*[-–—\/]\s*\d{2,3})?)(?![\p{L}\p{N}])/iu', ' ', $name);
-        $base = trim((string)preg_replace('/\s+/u', ' ', $base), " \t,;:-");
+        $spans = self::sizeSpans($name);
+        if (!$spans) return trim($name);
+        $base = $name;
+        foreach (array_reverse($spans) as $span) {
+            $base = substr($base, 0, $span['start']) . ' ' . substr($base, $span['end']);
+        }
+        // Скобки, от которых остались одни знаки, — не часть названия
+        $base = (string)preg_replace('/\(\s*[,;:\-–—]*\s*\)/u', ' ', $base);
+        $base = (string)preg_replace('/\s+([,;)])/u', '$1', (string)preg_replace('/\s+/u', ' ', $base));
+        // trim() режет по байтам, а тире многобайтные — только регуляркой
+        $base = (string)preg_replace('/^[\s,;:\-–—]+|[\s,;:\-–—]+$/u', '', $base);
         return $base !== '' ? $base : trim($name);
     }
 
@@ -208,7 +353,8 @@ final class Variants {
 
     /** Добавить модификацию, не задваивая одну и ту же. */
     private static function push(array &$out, string $label, string $kind, string $quantity): void {
-        $label = self::cleanLabel($label);
+        // «р.Л-5шт» — тот же L (issue #132)
+        $label = ($kind === 'size' ? self::canonSize($label) : null) ?? self::cleanLabel($label);
         $qty = (float)str_replace(',', '.', $quantity);
         if ($label === '' || $qty <= 0) return;
         foreach ($out as $existing) {
@@ -599,23 +745,91 @@ final class Variants {
      * пишут это в разные поля, а отвечать они обязаны одинаково.
      */
     public static function pick(array $variants, string $label): ?array {
+        return self::pickFor($variants, $label);
+    }
+
+    /** Цвет в письме по-русски, в каталоге — как у производителя. */
+    private const COLOR_SYNONYMS = [
+        'койот' => 'coyote', 'мультикам' => 'multicam', 'олива' => 'olive', 'оливковый' => 'olive',
+        'черный' => 'black', 'чёрный' => 'black', 'хаки' => 'khaki', 'песочный' => 'sand', 'песок' => 'sand',
+        'серый' => 'grey', 'зеленый' => 'green', 'зелёный' => 'green', 'мох' => 'moss', 'рейнджер' => 'ranger',
+        'белый' => 'white', 'синий' => 'blue', 'бежевый' => 'beige', 'коричневый' => 'brown', 'пиксель' => 'pixel',
+    ];
+
+    /**
+     * Модификация этого размера — та, что клиент может получить (issue #132).
+     *
+     * Размер «L» у шлема есть в трёх цветах. Порядок решения: метка (точное
+     * значение, потом целым словом), затем цвет, который назван в письме
+     * ($context), затем свободный остаток — хватает на количество, есть хоть
+     * сколько-то, больше всего, — и имя. Результат несёт `other_choices`:
+     * другие модификации этого размера, которые есть на складе, — строка
+     * скажет менеджеру, что цвет выбрали мы.
+     */
+    public static function pickFor(array $variants, string $label, string $context = '', float $qty = 0): ?array {
+        require_once __DIR__ . '/alternatives.php';
         $needle = mb_strtolower(trim($label));
         if ($needle === '') return null;
 
-        foreach ($variants as $v) {
-            foreach (self::values($v) as $value) {
-                if (mb_strtolower($value) === $needle) return $v;
+        $hits = self::ofLabel($variants, $needle);
+        if (!$hits) return null;
+
+        $ctx = mb_strtolower($context);
+        if ($ctx !== '' && count($hits) > 1) {
+            $named = array_values(array_filter($hits, fn($v) => self::namedIn($v, $needle, $ctx)));
+            if ($named) $hits = $named;
+        }
+        usort($hits, function ($a, $b) use ($qty) {
+            $key = function ($v) use ($qty) {
+                $free = Alternatives::freeStock($v);
+                return [$qty > 0 && $free >= $qty ? 0 : 1, $free > 0 ? 0 : 1, -$free, (string)($v['name'] ?? '')];
+            };
+            return $key($a) <=> $key($b);
+        });
+
+        $pick = $hits[0];
+        $pick['other_choices'] = [];
+        foreach (array_slice($hits, 1) as $v) {
+            if (Alternatives::freeStock($v) > 0) $pick['other_choices'][] = self::label($v);
+        }
+        return $pick;
+    }
+
+    /**
+     * Модификации с этой меткой: точным значением, а нет таких — целым словом
+     * («L» против «L(60-62)»).
+     */
+    public static function ofLabel(array $variants, string $label): array {
+        $needle = mb_strtolower(trim($label));
+        if ($needle === '') return [];
+        $hits = array_values(array_filter($variants, function ($v) use ($needle) {
+            foreach (self::values($v) as $value) if (mb_strtolower($value) === $needle) return true;
+            return false;
+        }));
+        if ($hits) return $hits;
+        $re = '/(?<![\p{L}\p{N}])' . preg_quote($needle, '/') . '(?![\p{L}\p{N}])/u';
+        return array_values(array_filter($variants, function ($v) use ($re) {
+            foreach (self::values($v) as $value) if (preg_match($re, mb_strtolower($value))) return true;
+            return false;
+        }));
+    }
+
+    /** Названо ли в письме что-то, кроме размера, из характеристик модификации (цвет). */
+    private static function namedIn(array $variant, string $sizeNeedle, string $ctx): bool {
+        // Значение размера пропускаем — целым словом: «l» есть и в «multicam»
+        $size = '/(?<![\p{L}\p{N}])' . preg_quote($sizeNeedle, '/') . '(?![\p{L}\p{N}])/u';
+        foreach (self::characteristicPairs($variant) as $value) {
+            $value = mb_strtolower(trim($value));
+            if ($value === '' || preg_match($size, $value)) continue;
+            foreach (preg_split('/[^\p{L}]+/u', $value) ?: [] as $word) {
+                if (mb_strlen($word) < 3) continue;
+                if (str_contains($ctx, $word)) return true;
+                foreach (self::COLOR_SYNONYMS as $ru => $en) {
+                    if ($en === $word && str_contains($ctx, $ru)) return true;
+                }
             }
         }
-        // Точного совпадения нет — пробуем вхождение целым словом: «52-54»
-        // против «Размер: 52-54 (M)»
-        foreach ($variants as $v) {
-            foreach (self::values($v) as $value) {
-                if (preg_match('/(?<![\p{L}\p{N}])' . preg_quote($needle, '/') . '(?![\p{L}\p{N}])/u',
-                               mb_strtolower($value))) return $v;
-            }
-        }
-        return null;
+        return false;
     }
 
     /** Значения характеристик модификации плюс то, что стоит в скобках имени. */
@@ -647,7 +861,7 @@ final class Variants {
      *
      * @return array поля для `request_items`, которые надо переписать (может быть пустым)
      */
-    public static function resolveRow(array $row, ?int $counterpartyId = null): array {
+    public static function resolveRow(array $row, ?int $counterpartyId = null, string $context = ''): array {
         $label = trim((string)($row['variant_label'] ?? ''));
         $matched = trim((string)($row['moysklad_product_id'] ?? ''));
         if ($label === '' || $matched === '') return [];
@@ -660,15 +874,17 @@ final class Variants {
         $variants = self::forProduct($parentId);
         if (!$variants) return [];
 
-        $pick = self::pick($variants, $label);
+        $context = trim($context . ' ' . (string)($row['raw_name'] ?? ''));
+        $pick = self::pickFor($variants, $label, $context, (float)($row['quantity'] ?? 0));
         if (!$pick) {
-            return ['notes' => 'модификации «' . $label . '» нет в каталоге — уточните у менеджера'];
+            // Подсказка менеджеру, не клиенту: в КП печатается `notes`, а это — нет
+            return ['match_hint' => 'модификации «' . $label . '» нет в каталоге — проверьте размер'];
         }
 
         require_once __DIR__ . '/catalog.php';
         require_once __DIR__ . '/alternatives.php';
         require_once __DIR__ . '/terms.php';
-        return [
+        $out = [
             'moysklad_product_id' => $pick['moysklad_id'],
             'product_name'        => $pick['name'],
             'article'             => $pick['article'],
@@ -677,6 +893,12 @@ final class Variants {
             'stock'               => Alternatives::freeStock($pick),
             'match_source'        => 'модификация',
         ];
+        // Цвет в письме не назван, а на складе их несколько — выбрали мы, и строка это говорит
+        if ($pick['other_choices']) {
+            $out['match_hint'] = 'выбрано: ' . self::label($pick) . '; есть также: '
+                               . implode(', ', array_slice($pick['other_choices'], 0, 4));
+        }
+        return $out;
     }
 
     private static function tidy(string $text): string {

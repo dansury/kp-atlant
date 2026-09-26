@@ -2072,6 +2072,15 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '54')");
         $current = 54;
     }
+
+    // v55 — module 065: the model settles what the catalog could not; hints for the manager only
+    if ($current < 55) {
+        Db::ensureColumn('request_items', 'llm_checked_at', 'TEXT');
+        Db::ensureColumn('request_items', 'match_hint', 'TEXT');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '55')");
+        $current = 55;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

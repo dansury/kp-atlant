@@ -171,3 +171,15 @@ not have.
 - The card with our ИНН on the live base: after the deploy migration (v54)
   the dressie.ai conversation is back on its own card — link it to the right
   company from «Информация».
+
+## Module 065 (issues #131–#132) — check on a live system
+- The model pass (`match_pick`) was checked with a stand-in model only: the build
+  container has no key and no route to OpenRouter / Yandex. On the live host open
+  a letter whose lines the catalog cannot settle (equal candidates, a nickname
+  like «броник») and check that «🤖 Нейросеть уточняет…» settles them within
+  `LLM_TIMEOUT_SEC` and that the picks are sensible.
+- Request #87 from the issue: its row was written before the fix as one line
+  «… (размер Л, М) - количество по». Opening the card splits it into L and M on
+  the in-stock colours by itself — check it on the live base.
+- A prompt edited in «Настройки → Промпты» is untouched; `match_pick` is new, so
+  it starts from the default text.

@@ -73,6 +73,9 @@ final class RequestItems {
         // Карточка открывается — остатки в ней сегодняшние, а не те, что были
         // в день подбора (модуль 026)
         if ($rows) {
+            // Строка «(размер Л, М)» одной строкой, записанная до модуля 065, —
+            // на строки по размерам, каждая на свою модификацию (issue #132)
+            if ($split = self::splitSizeRows($requestId)) self::resolveLabels($requestId, $split);
             // Аналог, чья причина ушла, снимается до пересчёта остатков (issue #124)
             self::healAnalogues($requestId);
             self::refreshStock($requestId);
@@ -105,6 +108,8 @@ final class RequestItems {
             $matches[$i]['raw_name']      = (string)$src['raw_name'];
             $matches[$i]['variant_label'] = (string)$src['variant_label'];
             $matches[$i]['variant_kind']  = (string)($src['variant_kind'] ?? 'size');
+            // Количество разделили мы, а не клиент — менеджер должен это видеть (issue #132)
+            if (!empty($src['qty_note'])) $matches[$i]['qty_note'] = (string)$src['qty_note'];
         }
         self::write($requestId, self::fromMatches($matches, $counterpartyId));
         // Every row was written by the matcher a line ago, so every row is up
@@ -147,6 +152,7 @@ final class RequestItems {
         // Товар с модификациями «в наличии», если есть его размеры (issue #118):
         // собственный остаток такого товара в МойСклад всегда ноль
         $family = Variants::stockFor(array_column($rows, 'moysklad_product_id'));
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
 
         $needy = [];
         foreach ($rows as $row) {
@@ -166,6 +172,13 @@ final class RequestItems {
             $own = $family[(string)($row['moysklad_product_id'] ?? '')] ?? null;
             if ($own) $free = $own['free'];
             if ($hasProduct && $free > 0) continue;
+            // Модификация без остатка — сперва своя семья (issue #132): размер
+            // из письма в цвете, что есть, или товар целиком, чей остаток —
+            // его модификации. Другой размер того же шлема — не «аналог»
+            if ($hasProduct && ($fixed = self::familyFix($row, $counterpartyId, $raw))) {
+                $row = $fixed;
+                if ((int)$row['stock'] > 0) continue;
+            }
             // Клиент назвал размер, и строка стоит на этой модификации — это
             // тот самый товар; нет его — «под заказ», а не другой товар
             // или другой размер вместо него (issue #118)
@@ -175,7 +188,6 @@ final class RequestItems {
         }
         if (!$needy) return 0;
 
-        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
         $lines = [];
         $ids = [];
         foreach ($needy as $id => $row) {
@@ -241,6 +253,51 @@ final class RequestItems {
 
         if ($found) Logger::info('catalog', "Подобрано аналогов: $found", ['request_id' => $requestId]);
         return $found;
+    }
+
+    /**
+     * Строка на модификации без остатка — на то, что есть в её же семье (issue #132).
+     *
+     * С размером из письма — на модификацию этого размера, что есть на складе
+     * (`Variants::resolveRow()`); без размера — на сам товар, чей остаток —
+     * сумма модификаций. В семье пусто — null, строка идёт дальше: под заказ
+     * (размер назван) или за аналогом (другой товар).
+     *
+     * @return array|null строка после правки
+     */
+    private static function familyFix(array $row, ?int $counterpartyId, string $letter): ?array {
+        $id = trim((string)($row['moysklad_product_id'] ?? ''));
+        if ($id === '') return null;
+        $parent = trim((string)(Db::val("SELECT parent_id FROM products_cache WHERE moysklad_id=?", [$id]) ?: ''));
+        if ($parent === '') return null;
+
+        $label = trim((string)($row['variant_label'] ?? ''));
+        if ($label !== '') {
+            $v = Variants::resolveRow(['moysklad_product_id' => $parent, 'variant_label' => $label,
+                                       'quantity' => $row['quantity'] ?? 0, 'raw_name' => (string)($row['raw_name'] ?? '')],
+                                      $counterpartyId, self::requirementText($letter, (string)($row['raw_name'] ?? '')));
+            if (!isset($v['moysklad_product_id']) || $v['moysklad_product_id'] === $id || (int)$v['stock'] <= 0) return null;
+            $upd = $v;
+        } else {
+            $p = Db::one("SELECT * FROM products_cache WHERE moysklad_id=?", [$parent]);
+            if (!$p || Variants::freeStock($p) <= 0) return null;
+            $upd = [
+                'moysklad_product_id' => $parent,
+                'product_name'        => $p['name'],
+                'article'             => $p['article'],
+                'unit'                => $p['unit'] ?: 'шт.',
+                'price'               => Catalog::priceFor($p, $counterpartyId),
+                'stock'               => Variants::freeStock($p),
+            ];
+        }
+        $upd['needs_choice'] = 0;
+        $upd['match_hint'] = self::joinHints($row['match_hint'] ?? null, $upd['match_hint'] ?? null);
+        $upd['notes'] = Terms::stockNote($row['notes'] ?? null, (int)$upd['stock'], true);
+        $upd['updated_at'] = date('Y-m-d H:i:s');
+        self::resetImagesOnProductChange((int)$row['id'], (string)$upd['moysklad_product_id']);
+        $upd = self::keepManualPrice($row, $upd);
+        Db::update('request_items', $upd, 'id=?', [(int)$row['id']]);
+        return $upd + $row;
     }
 
     /**
@@ -333,7 +390,7 @@ final class RequestItems {
      * The parser keeps a `raw_text` per item, but a line edited by hand has
      * none, so the letter is searched for the sentence that names it.
      */
-    private static function requirementText(string $letter, string $name): string {
+    public static function requirementText(string $letter, string $name): string {
         $name = trim($name);
         if ($name === '' || $letter === '') return $name;
         $lines = preg_split('/\R|(?<=[.;])\s+/u', $letter) ?: [];
@@ -490,23 +547,38 @@ final class RequestItems {
      * A row the manager confirmed is left exactly as it is — spec 008 §5,
      * «confirmed line is never re-picked by the automatic match». It is not
      * merely skipped when the answers come back: it never goes to the model at
-     * all, so «Подобрать нейросетью» normalizes and prices only the lines that
-     * are still open, and a confirmed line cannot be renamed by a normalization
-     * it was never part of.
+     * all, so the model (the `smart` normalization or `Autopick`) sees only the
+     * lines that are still open, and a confirmed line cannot be renamed by a
+     * normalization it was never part of.
      *
      * The counts are what the card reports back: a run that found nothing for
      * the remaining lines used to look exactly like a run that found everything.
      *
-     * @return array{items:array,repicked:int,found:int,empty:int,kept:int,alternatives:int}
+     * $auto — «одна кнопка» (модуль 065): после каталога строки, которые он
+     * не решил, уходят нейросети сами, одним запросом (`Autopick::run()`).
+     *
+     * @return array{items:array,repicked:int,found:int,empty:int,kept:int,alternatives:int,llm?:array}
      */
-    public static function rematchReport(int $requestId, bool $useLlm = false): array {
+    public static function rematchReport(int $requestId, bool $useLlm = false, bool $auto = false): array {
         $existing = self::all($requestId);
         if (!$existing) {
             $items = self::ensure($requestId, $useLlm);
+            $llm = null;
+            require_once __DIR__ . '/autopick.php';
+            if ($auto && $items && Autopick::available()) {
+                $llm = Autopick::run($requestId);
+                $items = $llm['items'];
+                unset($llm['items']);
+            }
             $found = count(array_filter($items, fn($r) => trim((string)($r['product_name'] ?? '')) !== ''));
             return ['items' => $items, 'repicked' => count($items), 'found' => $found,
-                    'empty' => count($items) - $found, 'kept' => 0, 'alternatives' => 0];
+                    'empty' => count($items) - $found, 'kept' => 0, 'alternatives' => 0]
+                   + ($llm !== null ? ['llm' => $llm] : []);
         }
+
+        // Строка со списком размеров, записанная до модуля 065, делится на
+        // строки по размерам — та же, что при первом открытии (issue #132)
+        if (self::splitSizeRows($requestId)) $existing = self::all($requestId);
 
         // Only the open lines are asked about — a confirmed row is not a query
         $open = [];
@@ -535,7 +607,7 @@ final class RequestItems {
             $name = $r['raw_name'] !== '' ? $r['raw_name'] : (string)$r['product_name'];
             // У строки с модификацией каталог ищется по товару-родителю:
             // «(размер S)» в названии не помогает найти сам шлем (модуль 022)
-            if (trim((string)($r['variant_label'] ?? '')) !== '') $name = Variants::stripSize(Variants::baseName($name));
+            if (trim((string)($r['variant_label'] ?? '')) !== '') $name = Variants::searchName($name);
             return ['name' => $name, 'qty' => $r['quantity']];
         }, $open);
         // matchItems answers positionally, so the query list is re-keyed and the
@@ -557,7 +629,9 @@ final class RequestItems {
             $variant = $best ? Variants::resolveRow([
                 'moysklad_product_id' => $best['moysklad_id'] ?? '',
                 'variant_label'       => (string)($row['variant_label'] ?? ''),
-            ], $counterpartyId) : [];
+                'quantity'            => $row['quantity'] ?? 0,
+                'raw_name'            => (string)($row['raw_name'] ?? ''),
+            ], $counterpartyId, self::requirementText($letter, (string)($row['raw_name'] ?? ''))) : [];
 
             self::resetImagesOnProductChange((int)$row['id'],
                 $variant['moysklad_product_id'] ?? ($best['moysklad_id'] ?? null));
@@ -571,10 +645,21 @@ final class RequestItems {
                                             ? $variant['stock']
                                             : ($best === null ? null : Variants::freeStock($best)),
                 'match_confidence'    => $best['score'] ?? null,
-                'match_variants'      => !empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null,
+                'match_variants'      => isset($variant['moysklad_product_id'])
+                                            ? self::labelCandidates($m['variants'] ?? [], (string)$variant['moysklad_product_id'],
+                                                                    (string)($row['variant_label'] ?? ''))
+                                            : (!empty($m['variants']) ? json_encode($m['variants'], JSON_UNESCAPED_UNICODE) : null),
                 'needs_choice'        => !empty($m['needs_choice']) ? 1 : 0,
                 'match_source'        => $variant['match_source'] ?? ($m['match_source'] ?? null),
-                'notes'               => $variant['notes'] ?? $row['notes'],
+                'match_hint'          => $variant['match_hint']
+                                            ?? (trim((string)($row['variant_label'] ?? '')) === '' ? ($m['hint'] ?? null) : null),
+                // Аналог решается заново ниже — его «аналог: …» из примечания
+                // уходит вместе с флагом, иначе печатается в КП (модуль 065)
+                'notes'               => Terms::stockNote(self::clearAnalogue($row)['notes'],
+                                            (int)(array_key_exists('stock', $variant) ? $variant['stock']
+                                                  : ($best === null ? 0 : Variants::freeStock($best))), $best !== null),
+                // Свежий подбор — нейросеть по строке снова не спрашивали (модуль 065)
+                'llm_checked_at'      => null,
                 'is_confirmed'        => !empty($m['is_confirmed']) ? 1 : 0,
                 // A fresh match starts from what the client asked for again:
                 // the analogue is re-decided below against today's stock
@@ -594,14 +679,118 @@ final class RequestItems {
         // Only the rows rematch() actually re-picked are up for an analogue —
         // it left the manager's confirmed lines alone and so does this
         $alternatives = self::fillAlternatives($requestId, $useLlm, $repicked);
-        return [
-            'items'        => self::all($requestId),
+        $report = [
             'repicked'     => count($repicked),
             'found'        => $found,
             'empty'        => count($repicked) - $found,
             'kept'         => $kept,
             'alternatives' => $alternatives,
         ];
+        // Что каталог не решил — решает нейросеть, без второй кнопки (модуль 065)
+        require_once __DIR__ . '/autopick.php';
+        if ($auto && Autopick::available()) {
+            $llm = Autopick::run($requestId, $repicked);
+            unset($llm['items']);
+            $report['llm'] = $llm;
+        }
+        return ['items' => self::all($requestId)] + $report;
+    }
+
+    /**
+     * Строки «шлем (размер Л, М) — по 2 штуки каждого» одной строкой — на
+     * строки по размерам (issue #132). Только открытые строки без метки: то, что
+     * менеджер подтвердил или уже разложил, не трогается.
+     *
+     * @return int[] строки, которые теперь стоят на размере (исходная и добавленные)
+     */
+    public static function splitSizeRows(int $requestId): array {
+        require_once __DIR__ . '/item_lines.php';
+        $letter = (string)(Db::val("SELECT raw_text FROM requests WHERE id=?", [$requestId]) ?: '');
+        $rows = Db::all("SELECT * FROM request_items WHERE request_id=? ORDER BY position, id", [$requestId]);
+        $added = 0;
+        $order = $touched = [];
+        foreach ($rows as $row) {
+            $order[] = (int)$row['id'];
+            if ((int)$row['is_confirmed'] === 1 || (int)($row['is_out_of_scope'] ?? 0) === 1) continue;
+            if (trim((string)($row['variant_label'] ?? '')) !== '') continue;
+            $raw = trim((string)($row['raw_name'] ?? ''));
+            if ($raw === '') continue;
+            $name = ItemLines::cleanName($raw) ?: $raw;
+            $lines = Variants::expand([['name' => $name, 'qty' => $row['quantity'],
+                                        'raw_text' => self::requirementText($letter, $raw)]]);
+            if (count($lines) < 2) continue;
+
+            foreach ($lines as $n => $line) {
+                $data = [
+                    'raw_name'      => (string)$line['raw_name'],
+                    'quantity'      => self::qty($line['quantity'] ?? 1),
+                    'variant_label' => (string)$line['variant_label'],
+                    'variant_kind'  => (string)($line['variant_kind'] ?? 'size'),
+                    'match_hint'    => (string)($line['qty_note'] ?? '') ?: null,
+                    'llm_checked_at'=> null,
+                    'updated_at'    => date('Y-m-d H:i:s'),
+                ];
+                if ($n === 0) {
+                    Db::update('request_items', $data, 'id=?', [(int)$row['id']]);
+                    $touched[] = (int)$row['id'];
+                    continue;
+                }
+                $copy = $row;
+                unset($copy['id']);
+                $order[] = $touched[] = Db::insert('request_items', $data + $copy);
+                $added++;
+            }
+        }
+        // Новые строки — сразу за своей, остальные по-прежнему
+        if ($added) {
+            foreach (array_values($order) as $i => $id) {
+                Db::update('request_items', ['position' => $i + 1], 'id=?', [$id]);
+            }
+            Logger::info('catalog', "Строки с перечнем размеров разделены: +$added", ['request_id' => $requestId]);
+        }
+        return $touched;
+    }
+
+    /**
+     * Строки с размером — на модификацию этого размера в семье их товара
+     * (модуль 065). Без модели и без поиска по каталогу: товар строка уже
+     * нашла, осталось встать на его размер. Размера в семье нет — подсказка.
+     *
+     * @param int[] $ids
+     */
+    public static function resolveLabels(int $requestId, array $ids): void {
+        if (!$ids) return;
+        $letter = (string)(Db::val("SELECT raw_text FROM requests WHERE id=?", [$requestId]) ?: '');
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        foreach (Db::all("SELECT * FROM request_items WHERE id IN ($ph)", array_map('intval', $ids)) as $row) {
+            $id = trim((string)($row['moysklad_product_id'] ?? ''));
+            $label = trim((string)($row['variant_label'] ?? ''));
+            if ($id === '' || $label === '') continue;
+            $v = Variants::resolveRow(['moysklad_product_id' => $id, 'variant_label' => $label,
+                                       'quantity' => $row['quantity'], 'raw_name' => (string)$row['raw_name']],
+                                      $counterpartyId, self::requirementText($letter, (string)$row['raw_name']));
+            if (!isset($v['moysklad_product_id'])) {
+                if (!empty($v['match_hint'])) {
+                    Db::update('request_items', ['match_hint' => self::joinHints($row['match_hint'] ?? null, $v['match_hint'])],
+                               'id=?', [(int)$row['id']]);
+                }
+                continue;
+            }
+            self::resetImagesOnProductChange((int)$row['id'], (string)$v['moysklad_product_id']);
+            // Строка стоит на размере запрошенного товара — это не замена (issue #124):
+            // «аналог: …» машины уходит из примечания прежде, чем решать про «под заказ»
+            $clean = self::clearAnalogue($row);
+            $upd = $v + [
+                'needs_choice'   => 0,
+                'match_variants' => self::labelCandidates(json_decode((string)($row['match_variants'] ?? ''), true) ?: [],
+                                                          (string)$v['moysklad_product_id'], $label),
+                'updated_at'     => date('Y-m-d H:i:s'),
+            ];
+            $upd['notes'] = Terms::stockNote($clean['notes'], (int)$v['stock'], true);
+            $upd['match_hint'] = self::joinHints($row['match_hint'] ?? null, $v['match_hint'] ?? null);
+            Db::update('request_items', self::keepManualPrice($row, $upd) + $clean, 'id=?', [(int)$row['id']]);
+        }
     }
 
     /**
@@ -721,6 +910,8 @@ final class RequestItems {
             if ($productChanged && trim((string)($wasAnalogue[$id] ?? '')) !== '') {
                 $data = self::clearAnalogue($data) + $data;
             }
+            // Товар поставил человек — подсказка подбора о прежнем больше не о нём
+            if ($productChanged) $data['match_hint'] = null;
 
             if ($id && Db::one("SELECT id FROM request_items WHERE id=? AND request_id=?", [$id, $requestId])) {
                 unset($data['request_id']);
@@ -999,11 +1190,55 @@ final class RequestItems {
             'stock'               => Variants::freeStock($p),
             'is_confirmed'        => 1,
             'needs_choice'        => 0,
+            'match_hint'          => null,
             'updated_at'          => date('Y-m-d H:i:s'),
             // Выбор менеджера — его решение, а не наша замена (issue #124)
         ] + self::clearAnalogue($row), 'id=?', [$itemId]);
 
         return self::all($requestId);
+    }
+
+    /**
+     * Поставить на строку товар, который выбрала не рука, а машина (модуль 065).
+     *
+     * Размер из письма выбирает модификацию (`Variants::resolveRow()`), цена —
+     * из каталога, но вписанная руками остаётся. Строка перестаёт спрашивать.
+     *
+     * @param array $opts source, hint, context, variants (кандидаты для «ещё похожие»), score
+     * @return array поля, которые записаны
+     */
+    public static function place(array $row, string $productId, array $opts = []): array {
+        $p = Db::one("SELECT * FROM products_cache WHERE moysklad_id=?", [$productId]);
+        if (!$p) throw new RuntimeException('Позиция каталога не найдена');
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [(int)$row['request_id']]) ?: 0) ?: null;
+
+        $v = Variants::resolveRow(['moysklad_product_id' => $productId,
+                                   'variant_label' => (string)($row['variant_label'] ?? ''),
+                                   'quantity' => $row['quantity'] ?? 0, 'raw_name' => (string)($row['raw_name'] ?? '')],
+                                  $counterpartyId, (string)($opts['context'] ?? ''));
+        $picked = isset($v['moysklad_product_id']);
+        $stock = $picked ? (int)$v['stock'] : Variants::freeStock($p);
+        $upd = [
+            'moysklad_product_id' => $picked ? $v['moysklad_product_id'] : $productId,
+            'product_name'        => $picked ? $v['product_name'] : $p['name'],
+            'article'             => $picked ? $v['article'] : $p['article'],
+            'unit'                => ($picked ? $v['unit'] : $p['unit']) ?: 'шт.',
+            'price'               => $picked ? $v['price'] : Catalog::priceFor($p, $counterpartyId),
+            'stock'               => $stock,
+            'match_source'        => (string)($opts['source'] ?? 'нейросеть'),
+            'needs_choice'        => 0,
+            'match_hint'          => self::joinHints($opts['hint'] ?? null, $v['match_hint'] ?? null),
+            'notes'               => Terms::stockNote($row['notes'] ?? null, $stock, true),
+            'updated_at'          => date('Y-m-d H:i:s'),
+        ];
+        if (array_key_exists('score', $opts)) $upd['match_confidence'] = $opts['score'];
+        if (array_key_exists('variants', $opts)) {
+            $upd['match_variants'] = $opts['variants'] ? json_encode(array_values($opts['variants']), JSON_UNESCAPED_UNICODE) : null;
+        }
+        self::resetImagesOnProductChange((int)$row['id'], (string)$upd['moysklad_product_id']);
+        $upd = self::keepManualPrice($row, $upd);
+        Db::update('request_items', $upd, 'id=?', [(int)$row['id']]);
+        return $upd;
     }
 
     /**
@@ -1253,19 +1488,25 @@ final class RequestItems {
                 'notes'               => Terms::stockNote(null, $best ? Variants::freeStock($best) : 0, (bool)$best),
                 'variant_label'       => (string)($m['variant_label'] ?? '') ?: null,
                 'variant_kind'        => (string)($m['variant_kind'] ?? '') ?: null,
+                'match_hint'          => self::joinHints($m['qty_note'] ?? null, empty($m['variant_label']) ? ($m['hint'] ?? null) : null),
             ];
 
             // Строка просила конкретный размер или цвет — пусть и карточка
-            // каталога будет его: свой артикул, своя цена, свой остаток
+            // каталога будет его: свой артикул, своя цена, свой остаток.
+            // Цвет берётся из слов клиента, иначе тот, что есть на складе
             $last = array_key_last($out);
-            $resolved = Variants::resolveRow($out[$last], $counterpartyId);
+            $resolved = Variants::resolveRow($out[$last], $counterpartyId, (string)($m['raw_text'] ?? ''));
             foreach ($resolved as $field => $value) {
-                $out[$last][$field] = $value;
+                $out[$last][$field] = $field === 'match_hint' ? self::joinHints($out[$last]['match_hint'], $value) : $value;
             }
             // Остаток теперь принадлежит модификации, значит и «под заказ» —
             // тоже её: у размера L склад свой, а не общий на товар
             if ($resolved && array_key_exists('stock', $resolved)) {
                 $out[$last]['notes'] = Terms::stockNote($out[$last]['notes'], (int)$resolved['stock'], true);
+            }
+            if (isset($resolved['moysklad_product_id'])) {
+                $out[$last]['match_variants'] = self::labelCandidates($m['variants'] ?? [],
+                    (string)$resolved['moysklad_product_id'], (string)$out[$last]['variant_label']);
             }
         }
         return $out;
@@ -1292,10 +1533,54 @@ final class RequestItems {
     }
 
     /**
+     * «Ещё похожие» строки, стоящей на размере из письма (модуль 065): другие
+     * цвета этого размера, затем другие товары. Чужие размеры того же товара
+     * сюда не идут — клиент их не просил.
+     *
+     * @return string|null JSON для `match_variants`
+     */
+    private static function labelCandidates(array $candidates, string $pickedId, string $label): ?string {
+        $parent = (string)(Db::val("SELECT parent_id FROM products_cache WHERE moysklad_id=?", [$pickedId]) ?: '');
+        if ($parent === '' || $label === '') {
+            return $candidates ? json_encode(array_values($candidates), JSON_UNESCAPED_UNICODE) : null;
+        }
+        $family = Variants::forProduct($parent);
+        $familyIds = array_merge([$parent], array_map('strval', array_column($family, 'moysklad_id')));
+        $out = [];
+        foreach (Variants::ofLabel($family, $label) as $v) {
+            if ((string)$v['moysklad_id'] === $pickedId) continue;
+            $out[] = [
+                'moysklad_id' => (string)$v['moysklad_id'],
+                'name'        => (string)$v['name'],
+                'article'     => (string)($v['article'] ?? ''),
+                'unit'        => (string)($v['unit'] ?? '') ?: 'шт.',
+                'price'       => (float)($v['price'] ?? 0),
+                'stock'       => Alternatives::freeStock($v),
+                'source'      => 'модификация',
+            ];
+        }
+        foreach ($candidates as $c) {
+            if (!in_array((string)($c['moysklad_id'] ?? ''), $familyIds, true)) $out[] = $c;
+        }
+        $out = array_slice($out, 0, 5);
+        return $out ? json_encode($out, JSON_UNESCAPED_UNICODE) : null;
+    }
+
+    /** Подсказки подбора для менеджера — через «; », без повторов и пустых. */
+    public static function joinHints(?string ...$hints): ?string {
+        $out = [];
+        foreach ($hints as $h) {
+            $h = trim((string)$h);
+            if ($h !== '' && !in_array($h, $out, true)) $out[] = $h;
+        }
+        return $out ? implode('; ', $out) : null;
+    }
+
+    /**
      * Строка, у которой цену поставили руками, переживает пересчёт: подбор
      * может уточнить название и остаток, но не цену (модуль 023).
      */
-    private static function keepManualPrice(array $was, array $now): array {
+    public static function keepManualPrice(array $was, array $now): array {
         if ((int)($was['price_is_manual'] ?? 0) !== 1) return $now;
         $now['price'] = (float)($was['price'] ?? 0);
         $now['price_is_manual'] = 1;
