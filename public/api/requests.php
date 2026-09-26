@@ -195,11 +195,11 @@ switch ($action) {
     }
 
     case 'items_save':
-        requireAuth();
+        $me = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         $input = getInput();
-        $items = RequestItems::save($id, (array)($input['items'] ?? []));
+        $items = RequestItems::save($id, (array)($input['items'] ?? []), (int)$me['id']);
         // Подбор начат — карточка «В работе» (issue #119)
         Boards::workStarted($id);
         // Строку доставки убрали крестиком — она приходит как null, и это
@@ -258,12 +258,12 @@ switch ($action) {
 
     case 'items_choose':
         // The manager answered «какая из равнозначных» — the line stops asking
-        requireAuth();
+        $me = requireAuth();
         $id = (int)($_GET['id'] ?? 0);
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         $input = getInput();
         try {
-            $items = RequestItems::choose($id, (int)($input['item_id'] ?? 0), (string)($input['moysklad_id'] ?? ''));
+            $items = RequestItems::choose($id, (int)($input['item_id'] ?? 0), (string)($input['moysklad_id'] ?? ''), (int)$me['id']);
         } catch (Throwable $e) {
             jsonError($e->getMessage(), 400);
         }

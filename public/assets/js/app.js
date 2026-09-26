@@ -429,6 +429,7 @@ const App = {
             this.keepLoad();
             this.startPolling();
             this.startMailPolling();
+            this.announceBuild();
             // Первый заход администратора на ненастроенный сервис — в мастер,
             // а не на пустую доску (модуль 038). Открытую закладку не трогаем.
             if (this.manager.setup_pending && !location.hash) location.hash = 'settings/setup';
@@ -436,6 +437,45 @@ const App = {
         } catch (err) {
             this.renderBootError(err);
         }
+    },
+
+    /**
+     * Перезагрузка принесла новую сборку — сказать об этом один раз (issue #146).
+     * Первый заход устройства ничего не показывает: сравнивать не с чем.
+     */
+    announceBuild() {
+        const now = window.kpBuild || '';
+        if (!now) return;
+        let was = null;
+        try { was = localStorage.getItem('kp.build'); localStorage.setItem('kp.build', now); } catch { return; }
+        if (was && was !== now) this.toast('Интерфейс обновлён — вы уже в новой версии', 'success');
+    },
+
+    /**
+     * На сервере новая сборка, а вкладка работает на старой (issue #146):
+     * полоса с «Обновить». Сама не перезагружает — человек может быть на
+     * середине письма; набранное и так сохранено (модуль 063). Закрытая
+     * крестиком — не возвращается до следующей сборки.
+     */
+    updateBar(build) {
+        if (this._updateBarFor === build) return;
+        let dismissed = '';
+        try { dismissed = sessionStorage.getItem('kp.updateDismissed') || ''; } catch { /* */ }
+        if (dismissed === build) return;
+        this._updateBarFor = build;
+        document.querySelector('.update-bar')?.remove();
+        const bar = document.createElement('div');
+        bar.className = 'update-bar';
+        bar.setAttribute('role', 'status');
+        bar.innerHTML = `<span>🔄 Вышло обновление интерфейса</span>
+            <button type="button" class="btn btn--primary btn--sm" data-update-go>Обновить</button>
+            <button type="button" class="update-bar__close" aria-label="Закрыть" title="Закрыть">×</button>`;
+        bar.querySelector('[data-update-go]').onclick = () => location.reload();
+        bar.querySelector('.update-bar__close').onclick = () => {
+            try { sessionStorage.setItem('kp.updateDismissed', build); } catch { /* */ }
+            bar.remove();
+        };
+        document.body.appendChild(bar);
     },
 
     /** «Кто я» при старте: медленный сервер — сказать, мёртвый — не ждать вечно (модуль 066). */
@@ -533,6 +573,7 @@ const App = {
         const poll = async () => {
             try {
                 const data = await this.api('notifications.php?action=poll');
+                if (data.build && window.kpBuild && data.build !== window.kpBuild) this.updateBar(data.build);
                 this.unread = data.unread_count || 0;
                 const badge = document.getElementById('notifBadge');
                 if (badge) badge.innerHTML = this.unread > 0 ? `<span class="notif-dot"></span>` : '';
@@ -1253,14 +1294,15 @@ const App = {
         host.innerHTML = `
             <div class="card__title"><span class="fold-title" onclick="App.toggleMatchFold(this)">Подходящие позиции</span>
                 <span class="muted" data-fold-count>${host.dataset.folded === '1' ? `· ${items.length}` : ''}</span>
-                ${opts.kp ? `<span class="muted">запрос #${requestId}</span>` : ''}
+                ${opts.kp ? `<span class="muted match-req">запрос #${requestId}</span>` : ''}
                 ${this.hint('match')}
                 <!-- Стрелка, а не слово (модуль 057): смысл — в подсказке -->
                 <button type="button" class="block-fold card__fold" onclick="App.toggleMatchFold(this)"
                         aria-expanded="${host.dataset.folded === '1' ? 'false' : 'true'}"
                         title="${host.dataset.folded === '1' ? `Развернуть подбор (позиций: ${items.length})` : 'Свернуть подбор'}"
                         >${host.dataset.folded === '1' ? '▸' : '▾'}</button></div>
-            <p class="muted">Подбираются сами при открытии карточки: каталог, а что он не решил — нейросеть.
+            <!-- На телефоне абзац не показывается — это текст «?» (issue #144) -->
+            <p class="muted match-intro">Подбираются сами при открытии карточки: каталог, а что он не решил — нейросеть.
                Начните печатать название — подскажет локальная база товаров.</p>
             <!-- Что осталось человеку после каталога и нейросети (модуль 065) -->
             ${open ? `<div class="note note--choice" data-choice-banner>Осталось выбрать: <strong>${open}</strong> —
@@ -1268,7 +1310,7 @@ const App = {
                     : `${ap.available ? 'каталог и нейросеть не решили' : 'каталог не решил'} однозначно, выберите вариант в строке.`}</div>` : ''}
             <!-- Кнопки подбора стоят НАД общими условиями (issue #60): сначала
                  собирают позиции, потом назначают на них цены и сроки -->
-            <div class="flex flex--wrap" style="margin-bottom:8px">
+            <div class="flex flex--wrap match-tools" style="margin-bottom:8px">
                 <button class="btn btn--outline btn--sm" onclick="App.addMatchRow(this)">+ Позиция</button>
                 <button type="button" class="btn btn--outline btn--sm" data-fold-all onclick="App.foldAllRows(this)"
                         title="Свернуть все позиции">⇈</button>
@@ -1276,7 +1318,7 @@ const App = {
                         title="Свернуть подобранные: позиции, где товар уже выбран; нажмите ещё раз — развернуть все">✓⇈</button>
                 <!-- Одна кнопка (модуль 065): каталог, затем нейросеть — для того, что он не решил -->
                 <button class="btn btn--outline btn--sm" data-act="match" onclick="App.rematchItems(this)"
-                        title="Подобрать открытые строки заново: сначала каталог, а что он не решил — нейросеть, одним запросом. Строки с «ок» не трогаются">↻ Подобрать заново</button>
+                        title="Подобрать открытые строки заново: сначала каталог, а что он не решил — нейросеть, одним запросом. Строки с «ок» не трогаются">↻ Подобрать<span class="btn__txt"> заново</span></button>
             </div>
             <div data-autopick></div>
             <div data-conditions>${this.conditionsPanel(host)}</div>
@@ -1298,6 +1340,7 @@ const App = {
             <div data-kp-slot class="card__keep"></div>
         `;
         this.updateMatchTotal(host);
+        host.querySelectorAll('[data-match-rows] textarea[data-field="product_name"]').forEach(el => this.growName(el));
         this.syncFoldAll(host);
         this.bindMatchDnd(host);
         this.bindMatchAutosave(host);
@@ -1566,9 +1609,9 @@ const App = {
                             <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
                         </label>
                     </span>
-                    <label title="Сколько фотографий печатать у каждой позиции. Пусто — сколько разрешают настройки КП">фото
-                        <input type="number" min="0" max="12" data-cond="photos" style="width:4.5em"
-                               placeholder="как в настройках" value="${c.photos === null || c.photos === undefined ? '' : Number(c.photos)}">
+                    <!-- «фото» с числом было непонятно (issue #135): выбор говорит сам, что это -->
+                    <label title="Сколько фотографий товара напечатать в КП у каждой позиции">фото в КП
+                        <select data-cond="photos">${this.photoOptions(c.photos)}</select>
                     </label>
                     <button class="btn btn--outline btn--sm" onclick="App.applyConditions(this)"
                             title="Проставить выбранное всем позициям и запомнить для следующих КП">Применить ко всем</button>
@@ -1576,12 +1619,26 @@ const App = {
             </details>`;
     },
 
+    /**
+     * Сколько фото товара печатать у позиции (issue #135): пусто — как в
+     * настройках КП, и число оттуда видно прямо в пункте; 0 — без фото.
+     */
+    photoOptions(value) {
+        const cur = value === null || value === undefined || value === '' ? '' : String(Number(value));
+        const def = Number((this.ui || {}).kp_photos);
+        const opts = [['', `как в настройках${Number.isFinite(def) ? ` (${def})` : ''}`], ['0', 'без фото']];
+        for (let n = 1; n <= 12; n++) opts.push([String(n), `${n} фото`]);
+        return opts.map(([v, label]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`).join('');
+    },
+
     /** Что выбрано в условиях — одной строкой для свёрнутого заголовка. */
     condSummaryText(c) {
         const parts = [c.price_type || 'цена по настройкам'];
         if (Number(c.discount) > 0) parts.push('−' + Number(c.discount) + '%');
         if (Number(c.wait_on) === 1) parts.push('под заказ');
-        if (c.photos !== null && c.photos !== undefined && c.photos !== '') parts.push('фото ' + Number(c.photos));
+        if (c.photos !== null && c.photos !== undefined && c.photos !== '') {
+            parts.push(Number(c.photos) === 0 ? 'без фото' : 'фото в КП: ' + Number(c.photos));
+        }
         return '· ' + parts.join(' · ');
     },
 
@@ -1669,10 +1726,295 @@ const App = {
             <input type="number" step="0.01" min="0" data-delivery-price value="${Number(d.price) || 0}"
                    placeholder="Цена" title="Стоимость доставки на весь заказ" oninput="App.updateMatchTotal(this)">
             <div class="match-row__tools">
+                <!-- Расчёт СДЭК — справа от цены и по желанию (issue #139): цифру по-прежнему можно вписать руками -->
+                <button type="button" class="btn btn--outline btn--sm" data-cdek-btn aria-expanded="false"
+                        title="Рассчитать доставку СДЭК: город, вес из описаний, коробка" aria-label="Рассчитать доставку СДЭК"
+                        onclick="App.cdekToggle(this)">🧮</button>
                 <button class="btn btn--outline btn--sm" title="Убрать доставку из КП"
                         onclick="App.deliveryToggle(this, 0)">×</button>
             </div>
-        </div>`;
+        </div>
+        <div class="cdek" data-cdek hidden></div>`;
+    },
+
+    // ==== СДЭК: доставка считается по кнопке «🧮» (модуль 067, issue #139) ====
+
+    /** Выбор этого устройства в окне расчёта: договор, ставки, коробка, габариты. */
+    cdekPrefs(patch = null) {
+        let prefs = {};
+        try { prefs = JSON.parse(localStorage.getItem('kp.cdek') || '{}') || {}; } catch { prefs = {}; }
+        if (patch) {
+            prefs = {...prefs, ...patch};
+            try { localStorage.setItem('kp.cdek', JSON.stringify(prefs)); } catch { /* не запомним */ }
+        }
+        return prefs;
+    },
+
+    async cdekToggle(btn) {
+        const box = btn.closest('[data-delivery]');
+        const fold = box && box.querySelector('[data-cdek]');
+        if (!fold) return;
+        const open = fold.hidden;
+        fold.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.classList.toggle('btn--active', open);
+        if (!open) return;
+        // Открыли снова — количества берём из таблицы, какие они сейчас
+        if (fold.dataset.ready === '1') { this.cdekSyncQty(fold, this.matchHost(btn)); return; }
+        fold.innerHTML = '<div class="loading">Собираем вес позиций…</div>';
+        const host = this.matchHost(btn);
+        try {
+            const [state, w] = await Promise.all([
+                this.api('cdek.php?action=state'),
+                this.api('cdek.php?action=weights&request_id=' + Number(host && host.dataset.requestId)),
+            ]);
+            fold.dataset.ready = '1';
+            this._cdekState = state;
+            this.cdekRender(fold, host, state, w.items || []);
+        } catch (err) {
+            fold.innerHTML = `<p class="muted">Расчёт не открылся: ${this.esc(err.message)}</p>`;
+        }
+    },
+
+    /** Позиции подбора так, как они стоят на экране сейчас, с весом штуки с сервера. */
+    cdekLines(host, weights) {
+        const byId = new Map((weights || []).map(w => [Number(w.id), w]));
+        return this.collectMatchedItems(host)
+            .filter(r => Number(r.is_out_of_scope) !== 1 && (r.product_name || r.raw_name))
+            .map(r => {
+                const w = byId.get(Number(r.id)) || {};
+                return {id: Number(r.id) || 0, name: r.product_name || r.raw_name, qty: this.intQty(r.quantity),
+                        weight: w.weight ?? null};
+            });
+    },
+
+    cdekRender(fold, host, st, weights) {
+        const prefs = this.cdekPrefs();
+        const lines = this.cdekLines(host, weights);
+        const boxes = st.boxes || [];
+        const contract = prefs.contract || st.contract || 'none';
+        const num = v => (v === null || v === undefined || v === '') ? '' : String(v);
+        fold.innerHTML = `
+            <div class="cdek__head">
+                <strong>Доставка СДЭК</strong>
+                <span class="muted">из ${this.esc(st.from || 'Москвы')} · ${st.enabled
+                    ? `по тарифам СДЭК${st.test ? ' (тестовая среда)' : ''}` : 'по ставке — ключа API СДЭК нет'}</span>
+                ${this.hint('cdek')}
+            </div>
+            <div class="cdek__row">
+                <label class="cdek__city">куда
+                    <input type="text" data-cdek-city autocomplete="off" value="${this.esc(prefs.city || '')}"
+                           placeholder="Город получателя" oninput="App.cdekCity(this)" onblur="App.hideSuggest(this)">
+                    <input type="hidden" data-cdek-code value="${this.esc(prefs.cityCode || '')}">
+                    <div class="suggest" hidden></div>
+                </label>
+            </div>
+            <div class="cdek__items">
+                ${lines.length ? lines.map(l => `
+                    <div class="cdek__item" data-cdek-line data-id="${l.id}">
+                        <span class="cdek__name">${this.esc(l.name)}</span>
+                        <span class="cdek__calc"><span data-cdek-qty>${l.qty}</span> ×
+                            <input type="number" step="0.001" min="0" data-cdek-w value="${num(l.weight)}"
+                                   placeholder="вес" title="Вес одной штуки, кг${l.weight === null ? ' — в описании не нашёлся, впишите' : ' — из карточки или описания'}"
+                                   oninput="App.cdekSum(this)"> кг
+                            = <b data-cdek-line-w></b></span>
+                    </div>`).join('') : '<p class="muted">В подборе нет позиций — впишите общий вес ниже.</p>'}
+                <div class="cdek__total">Вес: <input type="number" step="0.001" min="0" data-cdek-total
+                    title="Общий вес посылки, кг — считается из строк выше, можно вписать своё"
+                    oninput="this.dataset.manual = 1; App.cdekPlaces(this)"> кг</div>
+            </div>
+            <div class="cdek__row">
+                <label>упаковка
+                    <select data-cdek-box onchange="App.cdekBoxChanged(this)">
+                        <option value="">свои габариты</option>
+                        ${boxes.map(b => `<option value="${this.esc(b.code)}" ${prefs.box === b.code ? 'selected' : ''}
+                            data-l="${b.l}" data-w="${b.w}" data-h="${b.h}" data-max="${b.max}">${this.esc(b.name)} · ${b.l}×${b.w}×${b.h} см · до ${b.max} кг</option>`).join('')}
+                    </select>
+                </label>
+                <span class="cdek__dims" data-cdek-dims>
+                    <input type="number" min="0" data-cdek-l value="${num(prefs.l)}" placeholder="Д" title="Длина места, см">×
+                    <input type="number" min="0" data-cdek-wd value="${num(prefs.w)}" placeholder="Ш" title="Ширина места, см">×
+                    <input type="number" min="0" data-cdek-h value="${num(prefs.h)}" placeholder="В" title="Высота места, см"> см
+                </span>
+                <label title="Сколько мест (коробок) в отправке">мест
+                    <input type="number" min="1" step="1" data-cdek-places value="1" oninput="this.dataset.manual = 1"></label>
+            </div>
+            ${st.enabled ? '' : `
+            <div class="cdek__row cdek__rate">
+                <!-- Без ключа API цену знает только договор: спрашиваем то, чего не хватает (issue #139) -->
+                <label>договор со СДЭК
+                    <select data-cdek-contract>
+                        ${[['none', 'нет договора'], ['im', 'интернет-магазин'], ['delivery', 'доставка']].map(([v, t]) =>
+                            `<option value="${v}" ${v === contract ? 'selected' : ''}>${t}</option>`).join('')}
+                    </select></label>
+                <label>₽ за отправление <input type="number" min="0" step="1" data-cdek-base
+                    value="${num(prefs.base ?? (st.rate_base || ''))}"></label>
+                <label>₽ за кг <input type="number" min="0" step="0.01" data-cdek-kg
+                    value="${num(prefs.kg ?? (st.rate_kg || ''))}"></label>
+            </div>`}
+            <div class="cdek__row">
+                <button type="button" class="btn btn--primary btn--sm" onclick="App.cdekCalc(this)">Рассчитать</button>
+                <a class="muted" href="https://www.cdek.ru/ru/calculate" target="_blank" rel="noopener"
+                   title="Открыть калькулятор на сайте СДЭК — сверить цифру">калькулятор СДЭК ↗</a>
+            </div>
+            <div data-cdek-result></div>`;
+        this.cdekBoxChanged(fold.querySelector('[data-cdek-box]'));
+        this.cdekSum(fold);
+    },
+
+    cdekSyncQty(fold, host) {
+        const qty = new Map(this.collectMatchedItems(host).map(r => [Number(r.id) || 0, this.intQty(r.quantity)]));
+        fold.querySelectorAll('[data-cdek-line]').forEach(line => {
+            const id = Number(line.dataset.id) || 0;
+            if (id && qty.has(id)) line.querySelector('[data-cdek-qty]').textContent = qty.get(id);
+        });
+        this.cdekSum(fold);
+    },
+
+    /** Вес строк и общий вес посылки; количество — как сейчас в таблице. */
+    cdekSum(el) {
+        const fold = el.closest ? (el.closest('[data-cdek]') || el) : el;
+        let total = 0;
+        fold.querySelectorAll('[data-cdek-line]').forEach(line => {
+            const qty = Number(line.querySelector('[data-cdek-qty]').textContent) || 0;
+            const w = parseFloat(String(line.querySelector('[data-cdek-w]').value).replace(',', '.')) || 0;
+            const sum = Math.round(qty * w * 1000) / 1000;
+            total += sum;
+            line.querySelector('[data-cdek-line-w]').textContent = w ? `${sum} кг` : '—';
+        });
+        const t = fold.querySelector('[data-cdek-total]');
+        if (t && t.dataset.manual !== '1') t.value = total ? Math.round(total * 1000) / 1000 : '';
+        this.cdekPlaces(fold);
+    },
+
+    /** Мест столько, сколько коробок выбранного размера нужно под вес. */
+    cdekPlaces(el) {
+        const fold = el.closest ? (el.closest('[data-cdek]') || el) : el;
+        const places = fold.querySelector('[data-cdek-places]');
+        const opt = fold.querySelector('[data-cdek-box]')?.selectedOptions?.[0];
+        if (!places || places.dataset.manual === '1') return;
+        const total = parseFloat(fold.querySelector('[data-cdek-total]')?.value) || 0;
+        const max = Number(opt && opt.dataset.max) || 0;
+        places.value = max > 0 && total > 0 ? Math.max(1, Math.ceil(Math.round(total / max * 1e6) / 1e6)) : 1;
+    },
+
+    /** Коробка СДЭК — свои габариты не нужны; «свои» — поля видны. */
+    cdekBoxChanged(sel) {
+        if (!sel) return;
+        const fold = sel.closest('[data-cdek]');
+        const dims = fold.querySelector('[data-cdek-dims]');
+        if (dims) dims.hidden = !!sel.value;
+        const places = fold.querySelector('[data-cdek-places]');
+        if (places) delete places.dataset.manual;
+        this.cdekPlaces(fold);
+    },
+
+    /** Город получателя — подсказкой СДЭК (с ключом); без ключа поле только подпись. */
+    cdekCity(input) {
+        const fold = input.closest('[data-cdek]');
+        const code = fold.querySelector('[data-cdek-code]');
+        if (code) code.value = '';
+        const box = input.parentElement.querySelector('.suggest');
+        const q = input.value.trim();
+        clearTimeout(this._cdekCityTimer);
+        if (!(this._cdekState || {}).enabled || q.length < 2) { box.hidden = true; return; }
+        this._cdekCityTimer = setTimeout(async () => {
+            try {
+                const d = await this.api('cdek.php?action=cities&q=' + encodeURIComponent(q));
+                box.innerHTML = (d.items || []).map(c => `<div class="suggest__item"
+                    onmousedown="App.cdekPickCity(this, ${Number(c.code)}, '${this.jsStr(c.name)}')">${this.esc(c.name)}</div>`).join('');
+                box.hidden = !(d.items || []).length;
+            } catch (err) { box.hidden = true; this.toast(err.message, 'error'); }
+        }, 300);
+    },
+
+    cdekPickCity(el, code, name) {
+        const label = el.closest('.cdek__city');
+        label.querySelector('[data-cdek-city]').value = name;
+        label.querySelector('[data-cdek-code]').value = code;
+        el.closest('.suggest').hidden = true;
+        this.cdekPrefs({city: name, cityCode: code});
+    },
+
+    /** Места посылки из окна: общий вес поровну на места, габариты — коробки или свои. */
+    cdekPackages(fold) {
+        const total = parseFloat(String(fold.querySelector('[data-cdek-total]').value).replace(',', '.')) || 0;
+        const places = Math.max(1, parseInt(fold.querySelector('[data-cdek-places]').value, 10) || 1);
+        const opt = fold.querySelector('[data-cdek-box]').selectedOptions[0];
+        const dims = opt && opt.value
+            ? {l: Number(opt.dataset.l), w: Number(opt.dataset.w), h: Number(opt.dataset.h)}
+            : {l: Number(fold.querySelector('[data-cdek-l]').value) || 0,
+               w: Number(fold.querySelector('[data-cdek-wd]').value) || 0,
+               h: Number(fold.querySelector('[data-cdek-h]').value) || 0};
+        return Array.from({length: places}, () => ({weight: Math.round(total / places * 1000) / 1000, ...dims}));
+    },
+
+    async cdekCalc(btn) {
+        const fold = btn.closest('[data-cdek]');
+        const out = fold.querySelector('[data-cdek-result]');
+        const st = this._cdekState || {};
+        const packages = this.cdekPackages(fold);
+        const boxSel = fold.querySelector('[data-cdek-box]');
+        const body = {packages, box: boxSel.value, to_code: Number(fold.querySelector('[data-cdek-code]').value) || 0};
+        const prefs = {box: boxSel.value, l: fold.querySelector('[data-cdek-l]').value,
+                       w: fold.querySelector('[data-cdek-wd]').value, h: fold.querySelector('[data-cdek-h]').value,
+                       city: fold.querySelector('[data-cdek-city]').value};
+        if (!st.enabled) {
+            body.contract = fold.querySelector('[data-cdek-contract]').value;
+            body.rate_base = fold.querySelector('[data-cdek-base]').value;
+            body.rate_kg = fold.querySelector('[data-cdek-kg]').value;
+            Object.assign(prefs, {contract: body.contract, base: body.rate_base, kg: body.rate_kg});
+        }
+        this.cdekPrefs(prefs);
+        if (!(packages[0].weight > 0)) { out.innerHTML = '<p class="note note--choice">Не хватает веса: впишите вес штуки в строках или общий вес.</p>'; return; }
+        btn.disabled = true;
+        out.innerHTML = '<div class="loading">Считаем…</div>';
+        try {
+            const r = await this.api('cdek.php?action=calc', {method: 'POST', body});
+            const city = fold.querySelector('[data-cdek-city]').value.trim();
+            if (r.mode === 'rate') {
+                const q = r.quote || {};
+                if (r.price === null || r.price === undefined) {
+                    out.innerHTML = `<p class="note note--choice">Без ключа API цену даёт ставка договора — впишите «₽ за кг»
+                        (и «₽ за отправление», если она есть). Вес к оплате: ${q.chargeable} кг.</p>`;
+                    return;
+                }
+                out.innerHTML = `<div class="cdek__quote">
+                    <span>Вес к оплате: <b>${q.chargeable} кг</b> · мест: ${q.places} · итого <b>${this.fmtMoney(r.price)}</b></span>
+                    <button type="button" class="btn btn--outline btn--sm"
+                            onclick="App.cdekApply(this, ${Number(r.price)}, '${this.jsStr(`Доставка СДЭК${city ? ' до г. ' + city : ''}`)}')">Подставить</button></div>`;
+                return;
+            }
+            const list = r.tariffs || [];
+            if (!list.length) { out.innerHTML = '<p class="muted">СДЭК не нашёл тарифов для этой посылки.</p>'; return; }
+            out.innerHTML = `<div class="cdek__tariffs">${list.slice(0, 8).map(t => {
+                const days = t.days_min || t.days_max ? `${t.days_min === t.days_max ? t.days_max : `${t.days_min}–${t.days_max}`} дн.` : '';
+                const label = `Доставка СДЭК: ${t.name}${days ? ', ' + days : ''}${city ? ' до г. ' + city : ''}`;
+                return `<button type="button" class="cdek__tariff" title="Подставить в строку доставки"
+                            onclick="App.cdekApply(this, ${Number(t.price)}, '${this.jsStr(label)}')">
+                        <span>${this.esc(t.name)}${t.mode && !String(t.name).includes(t.mode) ? ` <span class="muted">· ${this.esc(t.mode)}</span>` : ''}</span>
+                        <span class="muted">${this.esc(days)}${t.with_box ? ' · с коробкой' : ''}</span>
+                        <b>${this.fmtMoney(t.price)}</b></button>`;
+            }).join('')}</div>`;
+        } catch (err) {
+            out.innerHTML = `<p class="note note--choice">${this.esc(err.message)}</p>`;
+        } finally {
+            btn.disabled = false;
+        }
+    },
+
+    /** Посчитанная цена — в строку доставки, как если бы её вписали руками. */
+    cdekApply(el, price, label) {
+        const box = el.closest('[data-delivery]');
+        const row = box && box.querySelector('[data-delivery-row]');
+        if (!row) return;
+        const input = row.querySelector('[data-delivery-price]');
+        const name = row.querySelector('[data-delivery-name]');
+        if (input) input.value = Math.round(Number(price) * 100) / 100;
+        if (name && label) name.value = label;
+        // Автосохранение подбора слушает ввод — цена ложится в базу, как набранная руками
+        input && input.dispatchEvent(new Event('input', {bubbles: true}));
+        this.toast('Доставка подставлена: ' + this.fmtMoney(price), 'success');
     },
 
     DELIVERY_MODES: {
@@ -1767,7 +2109,8 @@ const App = {
                         onclick="App.invoiceFromMatch(${requestId}, this)"
                         title="${unlinked ? 'Покупателя нет в МойСклад: сначала заведём его, потом выставим счёт'
                                           : 'Выставить счёт в МойСклад теми же позициями; КП соберётся само, если его ещё нет'}"
-                        >🧾 ${unlinked ? 'Завести контрагента и выставить счёт' : 'Выставить счёт'}</button>`;
+                        aria-label="${unlinked ? 'Завести контрагента и выставить счёт' : 'Выставить счёт'}"
+                        >🧾 <span class="btn__txt">${unlinked ? 'Завести контрагента и выставить счёт' : 'Выставить счёт'}</span><span class="btn__short">Счёт</span></button>`;
     },
 
     /**
@@ -3006,6 +3349,8 @@ const App = {
                 site_url: 'по ссылке на товар',
                 // Модуль 065: размер из письма и выбор нейросети
                 'модификация': 'по размеру из письма', 'нейросеть': 'выбрала нейросеть',
+                // Модуль 067: этими словами клиента уже отвечали в отправленном КП
+                memory: 'как в прошлых КП',
                 // Слова запроса нашлись только в описании — такая строка стоит
                 // ниже всего, что совпало названием, и «ок» ей не ставится
                 description: 'по описанию'}[source] || '';
@@ -3149,17 +3494,23 @@ const App = {
                     ${this.stockNote(i)}
                     ${this.scopeNote(i)}
                     ${this.altNote(i)}
-                    <!-- «×» — справа от поля названия (issue #60) -->
+                    <!-- «×» — справа от поля названия (issue #60). Название — многострочное
+                         поле во всю длину (issue #138): модификацию видно целиком, без прокрутки -->
                     <div class="match-row__nameline">
-                        <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
-                               value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
+                        <textarea data-field="product_name" rows="1" autocomplete="off" spellcheck="false"
+                                  placeholder="Название позиции из каталога"
+                                  oninput="App.growName(this); App.matchSuggest(this)" onkeydown="App.nameKey(event, this)"
+                                  onblur="App.hideSuggest(this)">${this.esc(i.product_name || '')}</textarea>
                         <button class="btn btn--outline btn--sm" title="Убрать строку"
                                 onclick="const h=App.matchHost(this); this.closest('[data-match-row]').remove(); App.updateMatchTotal(h)">×</button>
                         <div class="suggest" hidden></div>
                     </div>
+                    <!-- Сколько свободно у выбранного товара (issue #137) -->
+                    <div class="muted match-row__stock" data-stock-line>${this.stockLine(i)}</div>
                     ${this.analogField(i)}
-                    ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted">ещё похожие:
-                        ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
+                    ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted match-row__more">ещё похожие:
+                        ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>${
+                            this.stockShort(v.stock) ? ` <span class="stock-tag ${Number(v.stock) > 0 ? 'stock-tag--in' : ''}">${this.stockShort(v.stock)}</span>` : ''}`).join(' · ')}</div>` : '')}
                 </div>
                 <span class="qty-cell">
                     <input type="number" step="1" min="0" inputmode="numeric" data-field="quantity"
@@ -3189,13 +3540,14 @@ const App = {
                     </label>
                     ${index === 0 ? this.hint('match-analog') : ''}
                 </span>
-                ${this.matchRowExtra(i)}
-                <!-- Порядок строк — внизу карточки позиции (issue #60) -->
-                <div class="match-row__tools match-row__tools--bottom">
+                <!-- Порядок строк — в строке «ок / аналог», справа (issue #144): отдельной
+                     строкой из двух стрелок каждая позиция была на строку длиннее -->
+                <div class="match-row__tools match-row__tools--order">
                     <span class="match-row__grip" draggable="true" title="Перетащить строку мышью">⠿</span>
-                    <button class="btn btn--outline btn--sm" title="Выше" onclick="App.moveMatchRow(this, -1)">↑</button>
-                    <button class="btn btn--outline btn--sm" title="Ниже" onclick="App.moveMatchRow(this, 1)">↓</button>
+                    <button class="btn btn--outline btn--sm" title="Выше" aria-label="Выше" onclick="App.moveMatchRow(this, -1)">↑</button>
+                    <button class="btn btn--outline btn--sm" title="Ниже" aria-label="Ниже" onclick="App.moveMatchRow(this, 1)">↓</button>
                 </div>
+                ${this.matchRowExtra(i)}
             </div>`;
     },
 
@@ -3355,6 +3707,21 @@ const App = {
         return `остаток ${free} (${parts.map(v => `${this.esc(v.label)} ${v.free}`).join(', ')})`;
     },
 
+    /** Остаток коротко — рядом с названием в списке (issue #137): «5 шт.» или «под заказ». */
+    stockShort(free) {
+        if (free === null || free === undefined || free === '') return '';
+        return Number(free) > 0 ? `${Number(free)} шт.` : 'под заказ';
+    },
+
+    /** Строка остатка под выбранным товаром позиции (issue #137). */
+    stockLine(i) {
+        if (!i || !i.moysklad_product_id) return '';
+        if (i.stock === null || i.stock === undefined || i.stock === '') return '';
+        return Number(i.stock) > 0
+            ? `в наличии: <strong>${Number(i.stock)} шт.</strong>`
+            : 'нет в наличии — под заказ';
+    },
+
     /** Остаток одной карточки — модификации или товара без модификаций. */
     stockPlain(free) {
         if (free === null || free === undefined || free === '') return '';
@@ -3490,6 +3857,7 @@ const App = {
             set('product_name', name);
             set('moysklad_product_id', moyskladId);
             set('needs_choice', 0);
+            this.growName(row.querySelector('[data-field="product_name"]'));
             row.querySelector('[data-field="is_confirmed"]').checked = true;
             // Описание принадлежит товару и должно подставляться сразу — а не
             // только когда его подобрала нейросеть (issue #60)
@@ -3594,6 +3962,8 @@ const App = {
         }
         const sum = row.querySelector('[data-row-summary]');
         if (sum && folded) sum.innerHTML = this.rowSummary(this.rowData(row));
+        // Свёрнутая строка мерила поле нулём — раскрыли, перемеряем
+        if (!folded) this.growName(row.querySelector('[data-field="product_name"]'));
         this.rowFoldRemember((row.querySelector('[data-field="id"]') || {}).value, folded);
         this.syncFoldAll(this.matchHost(row));
     },
@@ -3654,6 +4024,8 @@ const App = {
         // A hand-typed name is no longer the catalog row that was there before
         const row = input.closest('[data-match-row]');
         row.querySelector('[data-field="moysklad_product_id"]').value = '';
+        const stockLine = row.querySelector('[data-stock-line]');
+        if (stockLine) stockLine.innerHTML = '';
         // Позиции больше нет — нет и её описания, пока не выбрана другая
         const auto = row.querySelector('[data-field="comment_text"][data-from-catalog="1"]');
         if (auto) auto.value = '';
@@ -3699,6 +4071,28 @@ const App = {
         }, 250);
     },
 
+    /**
+     * Поле названия растёт под текст (issue #138). Там, где браузер умеет
+     * `field-sizing: content`, это делает CSS; здесь — для остальных. Перевод
+     * строки в названии не живёт: вставленный текст склеивается в одну строку.
+     */
+    growName(el) {
+        if (!el || el.tagName !== 'TEXTAREA') return;
+        if (/\n/.test(el.value)) el.value = el.value.replace(/\s*\n\s*/g, ' ');
+        if (window.CSS && CSS.supports && CSS.supports('field-sizing', 'content')) return;
+        el.style.height = 'auto';
+        if (el.scrollHeight) el.style.height = el.scrollHeight + 'px';
+    },
+
+    /** Enter в названии не рвёт строку: берёт первую подсказку, если она открыта. */
+    nameKey(e, el) {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const box = el.parentElement.querySelector('.suggest');
+        const first = box && !box.hidden && box.querySelector('.suggest__item');
+        if (first) first.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+    },
+
     hideSuggest(input) {
         // mousedown on a suggestion fires before blur, so the pick still lands
         setTimeout(() => {
@@ -3718,6 +4112,9 @@ const App = {
         set('price', p.price);
         set('price_max', p.price_max || 0);
         set('stock', p.stock);
+        this.growName(row.querySelector('[data-field="product_name"]'));
+        const line = row.querySelector('[data-stock-line]');
+        if (line) line.innerHTML = this.stockLine({moysklad_product_id: p.moysklad_id, stock: p.stock});
         // Вилка цен рисуется рядом с ценой и обновляется вместе с выбором
         const range = row.querySelector('.price-cell .price-range');
         if (range) range.remove();
@@ -3845,7 +4242,10 @@ const App = {
         const schedule = e => {
             // Фотографии сохраняются сами и своим запросом; общие условия
             // проставляются кнопкой «Применить ко всем» — им автосейв не нужен
-            if (e.target.closest('[data-match-photos]') || e.target.closest('[data-conditions]')) return;
+            // Сам хост тоже несёт `data-conditions` (общие условия лежат на нём, модуль
+            // 036) — и `closest()` находил его у ЛЮБОГО поля: таблица не сохранялась сама вовсе
+            const cond = e.target.closest('[data-conditions]');
+            if (e.target.closest('[data-match-photos]') || (cond && cond !== host)) return;
             if (!e.target.closest('[data-match-row], [data-delivery-row]')) return;
             clearTimeout(host._autosaveTimer);
             host._autosaveTimer = setTimeout(() => this.autosaveMatch(host), 1200);
@@ -4813,6 +5213,7 @@ const App = {
                 <input type="text" data-field="product_name" value="${this.esc(a.product_name || '')}" placeholder="Название модуля" style="flex:3">
                 <input type="number" step="0.01" data-field="price" value="${a.price || 0}" placeholder="Цена" style="flex:1">
                 <input type="hidden" data-field="moysklad_product_id" value="${this.esc(a.moysklad_product_id || '')}">
+                ${this.stockShort(a.stock) ? `<span class="stock-tag ${Number(a.stock) > 0 ? 'stock-tag--in' : ''}" title="Свободный остаток">${this.stockShort(a.stock)}</span>` : ''}
                 <button class="btn btn--outline" onclick="this.closest('.addon-row').remove()">×</button>
             </div>`;
     },
@@ -4833,7 +5234,7 @@ const App = {
                 if (existing.has(p.moysklad_id)) return;
                 this.addAddonRow({
                     product_name: p.name, unit: p.unit || 'шт.', price: p.price,
-                    moysklad_product_id: p.moysklad_id, is_selected: 1,
+                    moysklad_product_id: p.moysklad_id, is_selected: 1, stock: p.stock,
                 });
                 added++;
             });
@@ -5198,6 +5599,9 @@ const App = {
                     </div>
                     <span class="conv__date muted">${this.fmtDate(t.last_at)}</span>
                     <span class="conv__acts" onclick="event.stopPropagation()">
+                        ${t.unread ? `<button class="conv__act" data-read-btn title="Отметить переписку прочитанной"
+                                              aria-label="Отметить переписку прочитанной"
+                                              onclick="App.markThreadReadNow('${key}', this)">✓</button>` : ''}
                         ${t.archived_at
                             ? `<button class="conv__act" title="Вернуть в работу" onclick="App.unarchiveThread('${key}')">↩</button>`
                             : `<button class="conv__act" title="В архив (не наш профиль): на сервере переписка уйдёт в «Архив»"
@@ -5293,30 +5697,12 @@ const App = {
     },
 
     /**
-     * Куда встаёт экран при открытии карточки (issue #116): в первый раз — на
-     * последнее письмо (его и открыли прочитать), повторно — в поле ответа
-     * (письмо уже прочитано, открыли, чтобы ответить). «Уже открывал» помнит
-     * браузер менеджера — это удобство одного человека, а не общее состояние.
+     * Куда встаёт экран при открытии карточки: на ПОСЛЕДНЕЕ письмо — наше или
+     * клиента, чьё бы оно ни было (issue #145). Правило issue #116 «второй раз —
+     * в поле ответа» снято: карточку открывают посмотреть, на чём остановились.
      */
     focusOnOpen(cpId, key) {
-        let seen = [];
-        try { seen = JSON.parse(localStorage.getItem('cpSeen') || '[]'); } catch { seen = []; }
-        const again = seen.includes(Number(cpId));
-        const target = again ? this.focusReply(key) : null;
-        if (!target) this.focusLastLetter(key);
-        try {
-            localStorage.setItem('cpSeen', JSON.stringify([Number(cpId), ...seen.filter(x => x !== Number(cpId))].slice(0, 300)));
-        } catch { /* приватный режим — всегда «первый раз» */ }
-    },
-
-    /** Поле ответа переписки — в фокус и на середину экрана; null — поля нет. */
-    focusReply(key) {
-        const c = this.composerOf(key);
-        const area = c && (c.querySelector('[data-cmp-rte]') || c.querySelector('[data-cmp-text]:not([hidden])'));
-        if (!area) return null;
-        try { area.focus({preventScroll: true}); } catch { area.focus(); }
-        this.pinScroll(c, 'center');
-        return area;
+        this.focusLastLetter(key);
     },
 
     /**
@@ -5346,8 +5732,9 @@ const App = {
      * Фокус — на последнем письме переписки, раскрытом (issue #109): чаще
      * всего это наш ответ, и с него продолжают.
      */
-    focusLastLetter(key) {
-        const box = document.getElementById('th_' + this.threadDomId(key));
+    focusLastLetter(key, root = null) {
+        // Страница письма (#mail/t/…) рисует ленту без обёртки th_* — там корень передают
+        const box = root || document.getElementById('th_' + this.threadDomId(key));
         const letters = box ? box.querySelectorAll('[data-tmsg]') : [];
         const last = letters[letters.length - 1];
         if (!last) {
@@ -5411,8 +5798,12 @@ const App = {
         const row = box.closest('.conv');
         if (row) {
             row.classList.remove('conv--unread');
-            row.querySelectorAll('.pill--danger').forEach(p => p.remove());
+            row.querySelectorAll('.pill--danger, .conv__acts [data-read-btn]').forEach(p => p.remove());
         }
+        box.querySelectorAll('[data-tmsg].lmsg--unread').forEach(m => {
+            m.classList.remove('lmsg--unread');
+            m.querySelectorAll('[data-read-btn]').forEach(b => b.remove());
+        });
         if (!onServer) {
             try { await this.api('mail.php?action=thread_read', {method: 'POST', body: {key}}); } catch {}
         }
@@ -5561,7 +5952,8 @@ const App = {
                     <button type="button" class="btn btn--outline btn--sm mic" data-mic
                             title="Надиктовать текст: нажмите, говорите, нажмите ещё раз"
                             onmousedown="event.preventDefault()"
-                            onclick="App.dictate(this, this.closest('.composer').querySelector('[data-cmp-rte]'))">🎤 голосом</button>
+                            aria-label="Надиктовать голосом"
+                            onclick="App.dictate(this, this.closest('.composer').querySelector('[data-cmp-rte]'))">🎤<span class="btn__txt"> голосом</span></button>
                 </div>
                 <div class="composer__editor" data-cmp-rte contenteditable="true"
                      data-placeholder="Ответьте клиенту — или попросите черновик у нейросети"
@@ -5581,8 +5973,8 @@ const App = {
                     <button class="btn btn--primary btn--sm" data-cmp-send onclick="App.threadSend('${this.jsStr(key)}', this)">Отправить</button>
                     <!-- Отложенная отправка (issue #60): письмо, написанное ночью,
                          приходит клиенту утром -->
-                    <button class="btn btn--outline btn--sm" title="Отправить позже — в выбранный день и час"
-                            onclick="App.scheduleMenu('${this.jsStr(key)}', this)">⏱ Отправить позже</button>
+                    <button class="btn btn--outline btn--sm" title="Отправить позже — в выбранный день и час" aria-label="Отправить позже"
+                            onclick="App.scheduleMenu('${this.jsStr(key)}', this)">⏱<span class="btn__txt"> Отправить позже</span></button>
                     <label class="btn btn--outline btn--sm" title="Приложить свой файл к письму">
                         📎<span class="cmp-lbl"> Файл</span><input type="file" multiple hidden onchange="App.composerAttach('${this.jsStr(key)}', this)">
                     </label>
@@ -5943,7 +6335,7 @@ const App = {
         const hosts = [...root.querySelectorAll('[data-match-host]')];
         if (root.matches('[data-match-host]')) hosts.push(root);
         hosts.forEach(host => {
-            const names = [...host.querySelectorAll('[data-match-rows] input[data-field="product_name"]')];
+            const names = [...host.querySelectorAll('[data-match-rows] [data-field="product_name"]')];
             // Товар не выбран — фото и пустое описание ему ни к чему, прячем
             names.forEach(el => el.closest('[data-match-row]')?.classList.toggle('match-row--nomatch', !el.value.trim()));
             const unmatched = !names.length || names.some(el => !el.value.trim()
@@ -7301,7 +7693,8 @@ const App = {
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки: сначала каталог, а строки, которые он не решил (ничего не нашёл, нашёл несколько равных или нашёл слабо), сама уточняет нейросеть — одним запросом на письмо и только среди найденного в каталоге. Размер из письма ставит строку на свою модификацию, цвет — тот, что назвал клиент, иначе тот, что есть на складе. Что не решили ни каталог, ни нейросеть, сервис не выбирает молча: он спрашивает. «↻ Подобрать заново» делает всё это ещё раз.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
-        'kp-conditions':['Цены и условия на всё КП', 'Тип цены, скидка и условия «под заказ» — один выбор на все позиции, а не сорок раз по строкам. «Применить ко всем» проставляет его строкам и ЗАПОМИНАЕТ: следующее КП откроется этим же. Строку, где цену вписали руками, общий выбор не трогает, а условия ожидания получают только позиции, которых нет на складе.'],
+        'cdek':         ['Доставка СДЭК', 'Считать необязательно: цену доставки можно просто вписать. Здесь вес каждой позиции подставлен из карточки МойСклад или из описания («вес 2,3 кг») и умножен на количество; «упаковка» — коробка СДЭК или свои габариты. С ключом API СДЭК («Настройки → Все параметры → Доставка (СДЭК)») приходят тарифы самого СДЭК — нажмите на тариф, и его цена встанет в строку доставки. Без ключа считаем по ставке вашего договора: ₽ за отправление + ₽ за кг веса к оплате (больший из настоящего и объёмного, Д×Ш×В/5000).'],
+        'kp-conditions':['Цены и условия на всё КП', 'Тип цены, скидка и условия «под заказ» — один выбор на все позиции, а не сорок раз по строкам. «Применить ко всем» проставляет его строкам и ЗАПОМИНАЕТ: следующее КП откроется этим же. Строку, где цену вписали руками, общий выбор не трогает, а условия ожидания получают только позиции, которых нет на складе. «Фото в КП» — сколько фотографий товара напечатать у каждой позиции: «как в настройках» берёт число из «Оформление КП», «без фото» убирает их совсем; отдельные фото по-прежнему отмечаются галочками в строке позиции.'],
         'match-analog': ['Аналог', 'Мы предлагаем не то, что клиент назвал. Галочка открывает поле с его собственной формулировкой — правьте её как нужно. В КП она встанет над названием нашего товара курсивом серым, и закупщик найдёт в предложении свою позицию, не сверяя два документа глазами.'],
         'match-variant':['Модификации', 'Если в письме один товар просят в нескольких размерах или цветах («р.S-5шт, р.M-13шт», «размер Л, М — по 2 штуки каждого»), сервис делает из этого отдельные строки с их количествами и подставляет каждой свою карточку из МойСклад — со своим артикулом, ценой и остатком. Одно количество на несколько размеров без «по»/«каждого» делится поровну — строка скажет, что делили мы.'],
         'kp-editor':    ['Редактор КП', 'Здесь правится всё, что попадёт в документ: цены, количества, тексты карточек товаров и блоки вокруг таблицы. Реквизиты и НДС правке не подлежат — они приходят из МойСклад и замораживаются на КП в момент создания.'],
@@ -9152,6 +9545,8 @@ const App = {
             <div id="kpWide"></div>
         `;
         this.mountBodies(document.getElementById('app'));
+        // Страница письма встаёт туда же, куда карточка компании: на последнее письмо (issue #145)
+        this.focusLastLetter(key, document.querySelector('#app [data-block="thread"]'));
         this.loadNotes();
         this.loadThreadPlacement(key);
         this.restoreComposerDraft(key);
@@ -9348,8 +9743,10 @@ const App = {
         const addr = m.direction === 'in'
             ? (m.real_from_email || m.from_email || '')
             : (m.from_email || '');
+        const unread = m.direction === 'in' && Number(m.is_read) === 0;
         const cls = ['lmsg', m.direction === 'in' ? 'lmsg--in' : 'lmsg--out'];
         if (open) cls.push('lmsg--open');
+        if (unread) cls.push('lmsg--unread');
         return `
             <article class="${cls.join(' ')}" data-tmsg data-mail="${m.id}" data-date="${this.esc(m.date_at || '')}">
                 <header class="lmsg__head" onclick="App.toggleTmsg(this)">
@@ -9361,6 +9758,10 @@ const App = {
                     ${addr ? `<span class="lmsg__addr muted" title="Почтовый адрес отправителя">&lt;${this.esc(addr)}&gt;</span>` : ''}
                     <span class="lmsg__to muted">${m.direction === 'in' ? '→ нам' : '→ ' + this.esc(m.to_emails)}</span>
                     <span class="lmsg__date muted">${this.fmtDate(m.date_at)}</span>
+                    <!-- Прочитано — решает человек, и сказать это можно прямо здесь (issue #143) -->
+                    ${unread ? `<button type="button" class="lmsg__read" data-read-btn title="Отметить прочитанным"
+                            aria-label="Отметить прочитанным"
+                            onclick="event.stopPropagation(); App.markMailRead(${m.id}, true, this)">✓</button>` : ''}
                     <!-- Удалить одно письмо, не открывая его и не трогая переписку:
                          кнопка проявляется на наведении, чтобы случайное касание
                          не выбросило письмо (модуль 031) -->
@@ -9375,26 +9776,33 @@ const App = {
                     ${m.has_attachment ? '<span title="есть вложения">📎</span>' : ''}
                     ${sentBad ? '<span class="badge badge--warning" title="Копия не попала в «Отправленные» на сервере">нет в «Отправленных»</span>' : ''}
                 </div>
-                <div class="lmsg__text">
-                    ${preview ? `<div class="lmsg__peek muted">${this.esc(preview)}</div>` : ''}
+                <!-- Нажатие на текст свёрнутого письма раскрывает его (issues #134, #141) -->
+                <div class="lmsg__text" onclick="App.openTmsgFromText(this, event)">
+                    ${preview ? `<div class="lmsg__peek muted" title="Нажмите, чтобы прочитать письмо целиком">${this.esc(preview)}</div>` : ''}
                     <div class="lmsg__full">
                         ${m.cc_emails ? `<div class="muted" style="margin-bottom:6px">Копия: ${this.esc(m.cc_emails)}</div>` : ''}
                         ${this.msgBodyHtml(m)}
                         ${(m.attachments || []).length ? `<div class="msg__files">
                             ${m.attachments.map(a => this.attachmentLink(a, 'mail.php')).join('')}
                         </div>` : ''}
+                        <!-- Короткие подписи, длинные — в title (issue #144): на телефоне ряд в одну строку -->
                         <div class="lmsg__actions">
-                            <button class="btn btn--outline btn--sm"
+                            <button class="btn btn--outline btn--sm" title="Ответить на это письмо"
                                     onclick="App.replyToMessage('${this.jsStr(key || '')}', ${m.id}, '${this.jsStr(m.direction === 'in' ? (m.from_email || '') : (m.to_emails || ''))}')">
-                                Ответить на это письмо</button>
-                            ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" title="Не наш профиль: письмо уйдёт в «Архив» на сервере"
-                                onclick="App.archiveMail(${m.id})">🗄 В архив</button>` : ''}
-                            ${m.archived_at ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveMail(${m.id})">↩ Вернуть в работу</button>` : ''}
-                            <button class="btn btn--outline btn--sm"
-                                    title="Отправить это письмо целиком на другой адрес — со вложениями и шапкой «от кого»"
-                                    onclick="App.forwardMail(${m.id})">↪ Перенаправить</button>
+                                ↩ Ответить</button>
+                            ${unread ? `<button class="btn btn--outline btn--sm" data-read-btn title="Отметить прочитанным" aria-label="Отметить прочитанным"
+                                onclick="App.markMailRead(${m.id}, true, this)">✓<span class="btn__txt"> Прочитано</span></button>` : ''}
+                            ${m.direction === 'in' && !m.archived_at ? `<button class="btn btn--outline btn--sm" title="В архив — не наш профиль: письмо уйдёт в «Архив» на сервере"
+                                aria-label="В архив" onclick="App.archiveMail(${m.id})">🗄<span class="btn__txt"> В архив</span></button>` : ''}
+                            ${m.archived_at ? `<button class="btn btn--outline btn--sm" title="Вернуть в работу" onclick="App.unarchiveMail(${m.id})">↩<span class="btn__txt"> Вернуть в работу</span></button>` : ''}
+                            <button class="btn btn--outline btn--sm" aria-label="Перенаправить"
+                                    title="Перенаправить: отправить это письмо целиком на другой адрес — со вложениями и шапкой «от кого»"
+                                    onclick="App.forwardMail(${m.id})">↪<span class="btn__txt"> Перенаправить</span></button>
                             <!-- Спам и удаление — не рядом с «Ответить»: в меню «⋯» (модуль 050) -->
                             ${this.menuHtml([
+                                m.direction === 'in' ? (unread
+                                    ? {label: '✓ Прочитано', onclick: `App.markMailRead(${m.id}, true)`}
+                                    : {label: '✉ Непрочитанным', onclick: `App.markMailRead(${m.id}, false)`}) : null,
                                 m.direction === 'in' ? {label: '🚫 Спам', danger: true, onclick: `App.markSpam(${m.id})`} : null,
                                 {label: '🗑 Удалить письмо', danger: true,
                                  onclick: `App.deleteMail(${m.id})`},
@@ -11080,6 +11488,101 @@ const App = {
     toggleTmsg(head) {
         const box = head.closest('[data-tmsg]');
         if (box) this.setTmsgOpen(box, !box.classList.contains('lmsg--open'));
+    },
+
+    /**
+     * Нажатие на текст СВЁРНУТОГО письма раскрывает его (issues #134, #141).
+     * Раскрытое письмо от нажатия в тексте не сворачивается: там выделяют и
+     * копируют, а ссылки и вложения работают как обычно.
+     */
+    openTmsgFromText(el, e) {
+        const box = el.closest('[data-tmsg]');
+        if (!box || box.classList.contains('lmsg--open')) return;
+        if (e && e.target && e.target.closest('a, button, input, select, textarea')) return;
+        this.setTmsgOpen(box, true);
+    },
+
+    /**
+     * «Прочитано» / «непрочитанным» одним нажатием из карточки (issue #143).
+     * Письмо, строка переписки и счётчик у «Письма» меняются сразу, без
+     * перезагрузки: что показано — то и записано.
+     */
+    async markMailRead(id, read = true, btn = null) {
+        if (btn) btn.disabled = true;
+        try {
+            await this.api('mail.php?action=read', {method: 'POST', body: {id, read: read ? 1 : 0}});
+        } catch (err) {
+            if (btn) btn.disabled = false;
+            this.toast(err.message, 'error');
+            return;
+        }
+        id = Number(id);
+        document.querySelectorAll(`[data-tmsg][data-mail="${id}"]`).forEach(box => {
+            box.classList.toggle('lmsg--unread', !read);
+            if (read) {
+                box.querySelectorAll('[data-read-btn]').forEach(b => b.remove());
+            } else if (!box.querySelector('.lmsg__head [data-read-btn]')) {
+                box.querySelector('.lmsg__head .lmsg__del')?.insertAdjacentHTML('beforebegin',
+                    `<button type="button" class="lmsg__read" data-read-btn title="Отметить прочитанным" aria-label="Отметить прочитанным"
+                             onclick="event.stopPropagation(); App.markMailRead(${id}, true, this)">✓</button>`);
+            }
+            // Пункт меню «⋯» говорит обратное тому, что теперь стоит у письма
+            box.querySelectorAll('.menu__item').forEach(item => {
+                if (!/App\.markMailRead\(/.test(item.getAttribute('onclick') || '')) return;
+                item.textContent = read ? '✉ Непрочитанным' : '✓ Прочитано';
+                item.setAttribute('onclick', `this.closest('details').open=false;App.markMailRead(${id}, ${read ? 'false' : 'true'})`);
+            });
+            const conv = box.closest('.conv');
+            if (conv) this.syncConvUnread(conv);
+        });
+        this.refreshMailBadge();
+        this.toast(read ? 'Письмо отмечено прочитанным' : 'Письмо снова непрочитанное', 'success');
+    },
+
+    /** Вся переписка — прочитана (issue #143): строка карточки гаснет сразу. */
+    async markThreadReadNow(key, btn = null) {
+        if (btn) btn.disabled = true;
+        try {
+            await this.api('mail.php?action=thread_read', {method: 'POST', body: {key}});
+        } catch (err) {
+            if (btn) btn.disabled = false;
+            this.toast(err.message, 'error');
+            return;
+        }
+        const conv = document.querySelector(`.conv[data-thread="${CSS.escape(key)}"]`);
+        const scope = conv || document;
+        scope.querySelectorAll('[data-tmsg].lmsg--unread').forEach(box => {
+            box.classList.remove('lmsg--unread');
+            box.querySelectorAll('[data-read-btn]').forEach(b => b.remove());
+        });
+        if (conv) {
+            const open = conv.querySelector('.conv__open');
+            if (open) open.dataset.read = '1';
+            this.syncConvUnread(conv, 0);
+        }
+        this.refreshMailBadge();
+        this.toast('Переписка отмечена прочитанной', 'success');
+    },
+
+    /**
+     * Счётчик непрочитанных на строке переписки. $count — известное число;
+     * без него — по письмам, которые уже загружены под строкой.
+     */
+    syncConvUnread(conv, count = null) {
+        const n = count ?? conv.querySelectorAll('[data-tmsg].lmsg--unread').length;
+        conv.classList.toggle('conv--unread', n > 0);
+        const meta = conv.querySelector('.conv__meta');
+        let pill = meta && meta.querySelector('.pill--danger');
+        if (n > 0 && meta) {
+            if (!pill) {
+                meta.insertAdjacentHTML('beforeend', '<span class="pill pill--danger" title="непрочитанных"></span>');
+                pill = meta.querySelector('.pill--danger');
+            }
+            pill.textContent = n;
+        } else if (pill) {
+            pill.remove();
+        }
+        if (n === 0) conv.querySelectorAll('.conv__acts [data-read-btn]').forEach(b => b.remove());
     },
 
     setTmsgOpen(box, open) {

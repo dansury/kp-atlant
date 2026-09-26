@@ -48,6 +48,7 @@ class ProductMatcher {
      */
     public static function matchItems(array $parsedItems, bool $useLlm = true, ?int $counterpartyId = null): array {
         if (empty($parsedItems)) return [];
+        require_once __DIR__ . '/match_memory.php';
 
         // Stage 1: LLM normalize names
         $normMap = [];
@@ -111,6 +112,27 @@ class ProductMatcher {
                 $result['variants'] = [];
                 $result['needs_choice'] = false;
                 $result['is_confirmed'] = true;
+                $results[] = $result;
+                continue;
+            }
+
+            // Эти же слова мы уже закрывали товаром, и КП ушло (issue #142):
+            // решение человека важнее догадки каталога. Кандидаты остаются
+            // «ещё похожими» — память ошиблась, выбирают другой, и она учится.
+            $mem = MatchMemory::recall((string)($item['name'] ?? ''));
+            $memRow = $mem ? self::rowById($mem['moysklad_id'], $counterpartyId,
+                ['score' => MatchMemory::SCORE, 'lexical' => null, 'vector' => null, 'source' => 'memory', 'rank' => 0]) : null;
+            if ($memRow) {
+                $root = $memRow['moysklad_id'];
+                $others = array_values(array_filter(self::stripRank($candidates),
+                    fn($c) => $c['moysklad_id'] !== $root && (string)($c['parent_id'] ?? '') !== $root));
+                $result['match'] = self::stripRank([$memRow])[0];
+                $result['match_source'] = 'memory';
+                $result['variants'] = array_slice($others, 0, $maxShown - 1);
+                $result['needs_choice'] = false;
+                $result['is_confirmed'] = true;
+                $result['hint'] = 'как в прошлых КП: на «' . mb_substr((string)$mem['phrase'], 0, 80) . '» отвечали этим товаром'
+                                . ($mem['hits'] > 1 ? ' (' . $mem['hits'] . ' раза)' : '');
                 $results[] = $result;
                 continue;
             }
@@ -246,8 +268,8 @@ class ProductMatcher {
      * @return list<array> строки products_cache (без описания)
      */
     public static function search(string $query, int $limit = 20): array {
-        $fold = fn(string $t) => str_replace('ё', 'е', self::normalize($t));
-        $words = array_slice(array_values(array_unique(array_filter(explode(' ', $fold($query))))), 0, 6);
+        $fold = fn(string $t) => self::fold($t);
+        $words = self::searchWords($query);
         if (!$words) return [];
 
         // Каталог читается один раз на запрос: автоподбор ищет по строке
@@ -263,8 +285,10 @@ class ProductMatcher {
             $desc = null;   // описание читается, только если слово не нашлось выше
             $inName = $inSide = $inDesc = 0;
             foreach ($words as $w) {
-                if (str_contains($name, $w)) { $inName++; continue; }
-                if (str_contains($side, $w)) { $inSide++; continue; }
+                if (self::formIn($w, $name)) { $inName++; continue; }
+                if (self::formIn($w, $side)) { $inSide++; continue; }
+                // «xl», «m», «л» в описании — это буквы чужих слов и размеров, а не запрос
+                if (mb_strlen($w) <= self::SHORT_WORD) continue 2;
                 $desc ??= $fold(Markup::toPlainText((string)($p['description'] ?? '')) . ' '
                               . Markup::toPlainText((string)($p['specs_text'] ?? '')));
                 if (str_contains($desc, $w)) { $inDesc++; continue; }
@@ -283,6 +307,55 @@ class ProductMatcher {
         }
         usort($hits, fn($a, $b) => $a['rank'] <=> $b['rank']);
         return array_column(array_slice($hits, 0, max(1, $limit)), 'row');
+    }
+
+    /**
+     * Слов запроса в поиске (issue #138): полное имя модификации — одиннадцать
+     * слов, и размер стоял за шестым — стирание его букв ничего не сужало.
+     */
+    public const SEARCH_WORDS = 12;
+    /** Слово до двух знаков ищется только началом слова и не в описании. */
+    public const SHORT_WORD = 2;
+
+    /** Текст для поиска: как у подбора, без регистра и «ё». */
+    public static function fold(string $text): string {
+        return str_replace('ё', 'е', self::normalize($text));
+    }
+
+    /**
+     * Предлоги и союзы: короткое слово ищется началом слова, и «с» из «наушники с
+     * шумоподавлением» требовало бы слова на «с» в названии.
+     */
+    private const SEARCH_STOP = ['в', 'во', 'на', 'с', 'со', 'к', 'ко', 'по', 'до', 'от', 'из', 'у', 'о', 'об',
+                                 'и', 'а', 'или', 'для', 'под', 'без', 'над', 'при', 'за'];
+
+    /** Слова запроса поля «начните печатать» — те, что обязаны найтись. */
+    public static function searchWords(string $query): array {
+        $all = array_values(array_unique(array_filter(explode(' ', self::fold($query)), fn($w) => $w !== '')));
+        $words = array_values(array_filter($all, fn($w) => !in_array($w, self::SEARCH_STOP, true)));
+        return array_slice($words ?: $all, 0, self::SEARCH_WORDS);
+    }
+
+    /**
+     * Слово стоит в тексте: длинное — где угодно («плит» в «плиты»), короткое —
+     * только началом слова: «l» — это размер L, а не буква в «Plate»,
+     * «xl» не находится внутри «xxl».
+     */
+    public static function wordIn(string $word, string $text): bool {
+        if (mb_strlen($word) > self::SHORT_WORD) return str_contains($text, $word);
+        return (bool)preg_match('/(?:^|\s)' . preg_quote($word, '/') . '/u', $text);
+    }
+
+    /**
+     * Слово или его размерная форма: «л», «хл» в поле — это L и XL каталога
+     * (так клиенты и пишут размеры, модуль 065).
+     */
+    public static function formIn(string $word, string $text): bool {
+        if (self::wordIn($word, $text)) return true;
+        if (mb_strlen($word) > 3 || !preg_match('/\p{Cyrillic}/u', $word)) return false;
+        require_once __DIR__ . '/variants.php';
+        $size = Variants::canonSize($word);
+        return $size !== null && self::wordIn(mb_strtolower($size), $text);
     }
 
     /** The whole catalog, read once per request — a KP has many positions. */
@@ -376,6 +449,9 @@ class ProductMatcher {
 
         $scored = [];
         foreach ($products as $p) {
+            // «Переходники для наушников» — не наушники (issue #142): принадлежность
+            // к тому, что просит клиент, не отвечает на его запрос ни товаром, ни аналогом
+            if (self::isAccessory($p['base_text'], $queryWords, $head)) continue;
             $byName = self::similarity($normQuery, $p['match_text']);
 
             // Все слова запроса стоят в названии — это тот самый товар, хотя
@@ -388,7 +464,7 @@ class ProductMatcher {
                     + ($nameCap - self::NAME_CONTAIN_BASE) * $byName));
             }
             $lexical = $byName;
-            $headHit = $head === null || self::headInName($head, $p['match_text']);
+            $headHit = $head === null || self::headInName($head, $p['base_text']);
             $inNameKeys = $nameWords ? self::containment($nameWords, $p['match_text']) : 0.0;
 
             // Article typed straight into the letter is an exact answer
@@ -480,23 +556,99 @@ class ProductMatcher {
         return $words ? implode(' ', $words) : $normalized;
     }
 
-    /** Главное слово запроса: первое буквенное от четырёх букв, вид товара. */
+    /**
+     * Главное слово запроса — вид товара: первое буквенное от четырёх букв, не
+     * прилагательное (issue #142). «Тактические наушники» — это наушники, а
+     * «баллистический шлем» — шлем. Одни прилагательные — первое слово.
+     */
     private static function headWord(string $normalized): ?string {
+        $first = null;
         foreach (explode(' ', $normalized) as $w) {
-            if (mb_strlen($w) >= 4 && preg_match('/^\p{L}+$/u', $w)) return $w;
+            if (mb_strlen($w) < 4 || !preg_match('/^\p{L}+$/u', $w)) continue;
+            $first ??= $w;
+            if (!self::isAdjective($w)) return $w;
         }
-        return null;
+        return $first;
+    }
+
+    /** Прилагательное по окончанию: «тактические», «боковая», «стрелковых». */
+    private static function isAdjective(string $w): bool {
+        if (mb_strlen($w) < 5) return false;
+        return (bool)preg_match('/(?:ый|ий|ой|ая|яя|ое|ее|ые|ого|его|ому|ему|ых|их|ую|юю)$/u', $w)
+            || (bool)preg_match('/[кгхчшщ]ие$/u', $w);
+    }
+
+    /** Предлоги, за которыми в названии стоит не сам товар, а то, к чему он. */
+    private const NAME_PREPOSITIONS = ['для', 'к', 'под', 'на', 'с', 'со', 'от', 'без', 'из'];
+    /** Из них — те, что делают товар принадлежностью: «чехол НА шлем», «подсумок ПОД магазин». */
+    private const ACCESSORY_PREPOSITIONS = ['для', 'к', 'под', 'на'];
+
+    /** Слова имени до первого предлога — то, чем товар является. */
+    private static function ownPart(string $baseText): array {
+        $out = [];
+        foreach (explode(' ', $baseText) as $w) {
+            if ($w === '') continue;
+            if (in_array($w, self::NAME_PREPOSITIONS, true)) break;
+            $out[] = $w;
+        }
+        return $out;
     }
 
     /**
-     * Главное слово стоит в первых трёх словах имени: вид товара пишется в
-     * начале, а «(с бронеплитами)» в хвосте бронежилет плитой не делает.
+     * Главное слово стоит в первых пяти словах имени ДО предлога: вид товара
+     * пишется в начале («Earmor M31 MOD3 стрелковые наушники»), а «(с
+     * бронеплитами)» и «для наушников» в хвосте его видом не делают.
      */
-    private static function headInName(string $head, string $nameText): bool {
-        foreach (array_slice(explode(' ', $nameText), 0, 3) as $w) {
+    private static function headInName(string $head, string $baseText): bool {
+        foreach (array_slice(self::ownPart($baseText), 0, 5) as $w) {
             if (self::sameStem($head, $w)) return true;
         }
         return false;
+    }
+
+    /**
+     * Товар — принадлежность к тому, что просят: свой вид («переходники») в
+     * запросе не назван, а вид запроса («наушники») стоит в имени после «для /
+     * к / под / на». «Переходник для наушников» по-прежнему находится запросом
+     * «переходник для наушников».
+     */
+    private static function isAccessory(string $baseText, array $queryWords, ?string $head): bool {
+        if ($head === null) return false;
+        $words = array_values(array_filter(explode(' ', $baseText), fn($w) => $w !== ''));
+        $at = null;
+        foreach ($words as $i => $w) {
+            if (in_array($w, self::NAME_PREPOSITIONS, true)) { $at = $i; break; }
+        }
+        if ($at === null || !in_array($words[$at], self::ACCESSORY_PREPOSITIONS, true)) return false;
+        $kind = null;
+        foreach (array_slice($words, 0, $at) as $w) {
+            if (mb_strlen($w) >= 4 && preg_match('/^\p{L}+$/u', $w) && !self::isAdjective($w)) { $kind = $w; break; }
+        }
+        if ($kind === null) return false;
+        foreach ($queryWords as $q) {
+            if (self::sameStem($kind, $q)) return false;
+        }
+        foreach (array_slice($words, $at + 1, 4) as $w) {
+            if (self::sameStem($head, $w)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Ключ формулировки для памяти подбора (issue #142): размер, шум и порядок
+     * слов не важны, окончания срезаны до шести букв — «наушники» и
+     * «наушников», «тактические» и «тактический» — один ключ.
+     */
+    public static function phraseKey(string $phrase): string {
+        require_once __DIR__ . '/variants.php';
+        $norm = self::denoise(self::normalize(Variants::stripSize($phrase)));
+        $keys = [];
+        foreach (self::keyWords($norm) as $w) {
+            $keys[mb_substr($w, 0, max(4, min(6, mb_strlen($w) - 1)))] = true;
+        }
+        $keys = array_keys($keys);
+        sort($keys, SORT_STRING);
+        return implode(' ', $keys);
     }
 
     /** «бронеплита» = «бронеплиты», но не «бронежилет». */

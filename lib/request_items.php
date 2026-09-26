@@ -809,7 +809,7 @@ final class RequestItems {
     }
 
     /** Replace the table with what the editor sent. */
-    public static function save(int $requestId, array $rows): array {
+    public static function save(int $requestId, array $rows, ?int $managerId = null): array {
         // Комментарий, который менеджер не тронул, — это описание из каталога,
         // подставленное `all()`. На строке оно не хранится: иначе повторный
         // подбор поставил бы другой товар, а описание осталось бы от прежнего.
@@ -921,6 +921,13 @@ final class RequestItems {
             }
             if ($productChanged) $repicked[] = $id;
             $keep[] = $id;
+            // Товар на строку письма поставил человек — на эти слова отвечают им
+            // (issue #142). Аналог и «не наша номенклатура» — не ответ на слова
+            if ($productChanged && $rawName !== '' && $data['is_confirmed'] === 1 && $data['is_alternative'] === 0
+                && $data['is_out_of_scope'] === 0 && $data['moysklad_product_id'] !== null) {
+                require_once __DIR__ . '/match_memory.php';
+                MatchMemory::remember($rawName, (string)$data['moysklad_product_id'], 'manual', $managerId);
+            }
         }
 
         // Строка поехала на другой товар — снять её фотографии и с тех КП,
@@ -1170,7 +1177,7 @@ final class RequestItems {
      * The manager answered the «равнозначные позиции» question: one of the
      * candidates becomes the row and the question is closed.
      */
-    public static function choose(int $requestId, int $itemId, string $productId): array {
+    public static function choose(int $requestId, int $itemId, string $productId, ?int $managerId = null): array {
         $row = Db::one("SELECT * FROM request_items WHERE id=? AND request_id=?", [$itemId, $requestId]);
         if (!$row) throw new RuntimeException('Строка не найдена');
 
@@ -1194,6 +1201,11 @@ final class RequestItems {
             'updated_at'          => date('Y-m-d H:i:s'),
             // Выбор менеджера — его решение, а не наша замена (issue #124)
         ] + self::clearAnalogue($row), 'id=?', [$itemId]);
+        // Между равными выбрал человек — на эти слова отвечают этим (issue #142)
+        if (trim((string)($row['raw_name'] ?? '')) !== '' && (int)($row['is_out_of_scope'] ?? 0) !== 1) {
+            require_once __DIR__ . '/match_memory.php';
+            MatchMemory::remember((string)$row['raw_name'], (string)$p['moysklad_id'], 'manual', $managerId);
+        }
 
         return self::all($requestId);
     }

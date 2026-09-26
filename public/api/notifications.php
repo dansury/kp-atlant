@@ -14,7 +14,9 @@ switch ($action) {
         // к API: сессия уже отпущена, и ждёт GitHub только этот опрос (модуль 066)
         autoPullCheck();
         $items = Notifier::getUnread($manager['id']);
-        jsonData(['items' => $items, 'unread_count' => count($items)]);
+        // Сборка на сервере: вкладка со старой узнаёт, что вышло обновление (issue #146)
+        require_once ROOT . '/lib/app_build.php';
+        jsonData(['items' => $items, 'unread_count' => count($items), 'build' => AppBuild::stamp()]);
 
     // Уведомления одной компании — полоска с галочками в её карточке (issue #103)
     case 'for_company':

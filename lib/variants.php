@@ -524,11 +524,19 @@ final class Variants {
      * модификаций у него нет. Нашёлся сам товар — показываем всю его семью;
      * нашлась одна модификация — её одну: менеджер спросил именно её.
      *
-     * @param array $rows строки products_cache, как их вернул поиск
-     * @param int   $max  предел длины подсказки; семья модификаций не режется
+     * Запрос называет модификацию (issue #138) — «Бр3 xl», «…(Размер шлема: M» —
+     * значит, из семьи показываются ТОЛЬКО модификации, где стоят все его
+     * слова, и без строки «весь товар»: подсказка сужается по мере набора и
+     * стирания, а не показывает все размеры, между которыми уже выбрали.
+     *
+     * @param array  $rows  строки products_cache, как их вернул поиск
+     * @param int    $max   предел длины подсказки; семья модификаций не режется
+     * @param string $query что набрано в поле; пусто — без сужения
      * @return array строки подсказки + variant_label, group_name, group_article
      */
-    public static function expandSuggest(array $rows, int $max = 40): array {
+    public static function expandSuggest(array $rows, int $max = 40, string $query = ''): array {
+        require_once __DIR__ . '/matcher.php';
+        $words = $query !== '' ? ProductMatcher::searchWords($query) : [];
         $groups = [];   // id товара → [все ли его модификации нужны, сам товар, найденные модификации]
         foreach ($rows as $row) {
             $id = (string)($row['moysklad_id'] ?? '');
@@ -554,6 +562,9 @@ final class Variants {
                 // Модификаций нет — в подсказке сам товар, со своим количеством
                 if (!$parent) continue;
                 $out = [self::suggestRow($parent, null)];
+            } elseif ($narrow = self::named($family, $words)) {
+                // Набранное называет модификацию: только она, без «весь товар»
+                $out = array_map(fn($v) => self::suggestRow($v, $parent), $narrow);
             } else {
                 $byId = array_column($family, null, 'moysklad_id');
                 $picked = $g['full']
@@ -581,6 +592,23 @@ final class Variants {
             if (count($suggest) >= $max) break;
         }
         return $suggest;
+    }
+
+    /**
+     * Модификации семьи, в которых стоят ВСЕ слова запроса, — когда их часть,
+     * а не все и не ни одной; иначе пусто (запрос называет товар, а не размер).
+     */
+    private static function named(array $family, array $words): array {
+        if (!$words || count($family) < 2) return [];
+        $hits = array_values(array_filter($family, function ($v) use ($words) {
+            $text = ProductMatcher::fold((string)($v['name'] ?? '') . ' ' . (string)($v['characteristics'] ?? '')
+                                         . ' ' . (string)($v['article'] ?? '') . ' ' . (string)($v['code'] ?? ''));
+            foreach ($words as $w) {
+                if (!ProductMatcher::formIn($w, $text)) return false;
+            }
+            return true;
+        }));
+        return $hits && count($hits) < count($family) ? $hits : [];
     }
 
     /**
@@ -789,8 +817,10 @@ final class Variants {
 
         $pick = $hits[0];
         $pick['other_choices'] = [];
+        // Каждый вариант — с количеством на складе (issue #137): выбирают по нему
         foreach (array_slice($hits, 1) as $v) {
-            if (Alternatives::freeStock($v) > 0) $pick['other_choices'][] = self::label($v);
+            $free = Alternatives::freeStock($v);
+            if ($free > 0) $pick['other_choices'][] = self::label($v) . ' (' . $free . ' шт.)';
         }
         return $pick;
     }
@@ -895,7 +925,7 @@ final class Variants {
         ];
         // Цвет в письме не назван, а на складе их несколько — выбрали мы, и строка это говорит
         if ($pick['other_choices']) {
-            $out['match_hint'] = 'выбрано: ' . self::label($pick) . '; есть также: '
+            $out['match_hint'] = 'выбрано: ' . self::label($pick) . ' (' . Alternatives::freeStock($pick) . ' шт.); есть также: '
                                . implode(', ', array_slice($pick['other_choices'], 0, 4));
         }
         return $out;

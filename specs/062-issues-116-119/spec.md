@@ -140,10 +140,9 @@ match block keeps it in `kp.ms`; `setKpButtons()` preserves it.
 ## 4. #116 — deleting a letter and where the card opens
 
 - `deleteMail(id)` always goes to `#mail/board` after a delete.
-- `App.focusOnOpen(cpId, key)`: the first time this browser opens the company —
-  the last letter (`focusLastLetter`); again — the reply editor of the newest
-  conversation (`focusReply`). Visited ids live in `localStorage.cpSeen`
-  (≤ 300, a per-viewer convenience; private mode = always «first time»).
+- `App.focusOnOpen(cpId, key)`: the card lands on the last letter of the newest
+  conversation (`focusLastLetter`) — every time, ours or the client's (issue
+  #145, module 067, replaced the «second visit → reply editor» rule).
 - `App.pinScroll(el, block)`: blocks drawn above later (stage bar, notices,
   МойСклад sync) used to push the target off screen. A `ResizeObserver` on
   `#app` re-scrolls it for 4 s or until the first wheel/touch/key/mouse.

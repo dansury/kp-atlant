@@ -55,6 +55,8 @@ final class Settings {
         'SUPPORT_TOKEN'        => ['https://github.com/settings/personal-access-tokens/new', 'Создать токен с правом Issues: Read and write'],
         'LLM_PROXY_AUTH'       => ['#settings/llm', 'Логин и пароль выдаёт владелец прокси'],
         'TBANK_TOKEN'          => ['https://www.tbank.ru/business/open-api/', 'T-API: интернет-банк → Интеграции → T-API, доступ к выписке'],
+        'CDEK_CLIENT_ID'       => ['https://lk.cdek.ru/integration', 'Личный кабинет СДЭК → Интеграция → ключи API'],
+        'CDEK_CLIENT_SECRET'   => ['https://lk.cdek.ru/integration', 'Личный кабинет СДЭК → Интеграция → ключи API'],
     ];
 
     /** Keys the admin panel knows about: key => [group, label, type, secret, default, hint] */
@@ -298,6 +300,17 @@ final class Settings {
         'SUPPORT_WIDGET'      => ['support', 'Виджет чата на странице', 'bool', false, 1, 'Плавающая кнопка чата в углу окна. Выключено — на странице не будет ни кнопки, ни запроса к стороннему сервису'],
         'SUPPORT_WIDGET_CODE' => ['support', 'Код виджета чата', 'textarea', false, self::SUPPORT_WIDGET_DEFAULT, 'HTML-код, который выдаёт сервис чата (Re:plain, Jivo, Carrot quest — любой). Вставляется в страницу как есть. Пусто — виджета нет'],
 
+        // --- СДЭК (модуль 067): расчёт доставки по кнопке «🧮» у строки доставки ---
+        'CDEK_CLIENT_ID'     => ['cdek', 'Идентификатор клиента СДЭК (Account)', 'text', false, '', 'ЛК СДЭК → «Интеграция» → ключи API. С ним доставка считается тарифами самого СДЭК; пусто — по ставке ниже'],
+        'CDEK_CLIENT_SECRET' => ['cdek', 'Секретный ключ СДЭК (Secure password)', 'secret', true, '', 'Выдаётся там же, парой к идентификатору'],
+        'CDEK_TEST'          => ['cdek', 'Тестовая среда СДЭК', 'bool', false, 0, 'api.edu.cdek.ru — цены там ненастоящие, только для проверки подключения'],
+        'CDEK_FROM_CITY'     => ['cdek', 'Город отправки', 'text', false, 'Москва', 'Откуда уезжает посылка. Можно вписать код города СДЭК числом'],
+        'CDEK_CONTRACT'      => ['cdek', 'Договор со СДЭК', 'select:none,im,delivery', false, 'none', 'none — договора нет; im — «интернет-магазин» (тарифы «Посылка»); delivery — «доставка». По договору API выбирает набор тарифов'],
+        'CDEK_RATE_BASE'     => ['cdek', 'Ставка без ключа: ₽ за отправление', 'text', false, '0', 'Расчёт без API: фиксированная часть цены за одну отправку'],
+        'CDEK_RATE_KG'       => ['cdek', 'Ставка без ключа: ₽ за кг', 'text', false, '0', 'Расчёт без API: цена килограмма веса к оплате — больший из настоящего и объёмного (Д×Ш×В/5000)'],
+        'CDEK_MARKUP'        => ['cdek', 'Наценка на доставку, %', 'text', false, '0', 'Прибавляется к цене СДЭК, когда она подставляется в строку доставки'],
+        'CDEK_BOXES'         => ['cdek', 'Коробки СДЭК', 'textarea', false, '', 'Пусто — встроенный список. По строке: КОД; Название; ДxШxВ; кг — например CARTON_BOX_M; Коробка M; 33x25x15; 5'],
+
         // --- Auto-deploy (module 014): the active-development checkbox ---
         'AUTOPULL_ENABLED'  => ['deploy', 'Проверять обновления сами', 'bool', false, 0, 'На время активной разработки: открытая вкладка раз в 30 секунд, в фоновом опросе, тихо спрашивает у GitHub head отслеживаемой ссылки, и новый коммит выкладывается через pull.php. Запросы, которых ждёт человек, эту проверку не ждут. Репозиторий, токен и пароль pull.php берутся из pull-config.php в корне сайта'],
         'AUTOPULL_INTERVAL' => ['deploy', 'Проверять не чаще, сек', 'int', false, 0, '0 — при каждом фоновом опросе (раз в 30 секунд на открытую вкладку). Каждая проверка — один запрос к API GitHub (лимит 5000 в час с токеном)'],
@@ -319,6 +332,7 @@ final class Settings {
         'bank'     => 'Банк (Т-Банк)',
         'match'    => 'Подбор позиций',
         'kp'       => 'Коммерческое предложение',
+        'cdek'     => 'Доставка (СДЭК)',
         'bitrix'   => 'Сайт (Битрикс)',
         'knowledge' => 'База знаний (вики)',
         'triage'   => 'Разбор входящей почты',

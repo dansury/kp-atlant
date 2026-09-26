@@ -505,7 +505,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .match-extra__money input[type="number"] { width: 62px; }
 .match-extra__comment { width: 100%; font-size: 13px; }
 .match-row__tools { display: flex; gap: 4px; align-items: center; }
-.match-row__tools--bottom { flex: 1 1 100%; justify-content: flex-start; }
 .match-row__src { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .match-row__src .muted { flex: 0 1 auto; min-width: 0; }
 .match-row__nameline { position: relative; display: flex; gap: 4px; align-items: center; }
@@ -1757,6 +1756,110 @@ details.fold[open] .fold__sum { display: none; }
 .pdf-pages { display: grid; gap: 8px; background: #e9e9e9; padding: 8px; border-radius: var(--radius-sm); }
 .pdf-page { display: block; width: 100%; height: auto; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
 .kp-pages { margin-bottom: 8px; }
+
+/* ==== Module 067: letters, match table, СДЭК, update bar ==== */
+/* Рамка письма сообщает документу НАСТОЯЩЕЕ предпочтение человека (issue #136):
+   `only light`, унаследованный от :root, говорил рамке «человек за светлое», и
+   принудительное затемнение Chrome красило её, несмотря на её собственный
+   `only light`. Рамка сама остаётся `only light` — и белой в обеих темах. */
+iframe { color-scheme: light dark; }
+
+/* Текст свёрнутого письма — та же кнопка «раскрыть», что и шапка (issues #134, #141).
+   Не выделяется долгим нажатием: выделение прокручивало обрезанный блок к середине */
+.lmsg:not(.lmsg--open) .lmsg__text { cursor: pointer; }
+.lmsg__peek { -webkit-user-select: none; user-select: none; }
+/* Непрочитанное — жирным и с кнопкой «✓» в шапке (issue #143) */
+.lmsg--unread .lmsg__who { font-weight: 800; }
+.lmsg--unread { box-shadow: inset 3px 0 0 var(--primary); }
+.lmsg__read { border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer;
+              border-radius: var(--radius-sm); font-size: 12px; line-height: 1; padding: 3px 7px; }
+.lmsg__read:hover { border-color: var(--border-strong); background: var(--surface-2); }
+/* Кнопки на телефоне — значок и короткое слово; полная подпись — в title и
+   aria-label (issue #144): каждая длинная подпись была лишней строкой экрана.
+   `.btn__txt` — часть подписи, которой на телефоне нет; `.btn__short` — слово,
+   которое стоит только там */
+.btn__short { display: none; }
+@media (max-width: 640px) {
+    .btn__txt { display: none; }
+    .btn__short { display: inline; }
+    .lmsg__actions { flex-wrap: nowrap; }
+    .lmsg__actions > .btn, .lmsg__actions > .menu > .menu__btn { padding: 5px 9px; }
+    /* Подбор: заголовок со стрелкой — одна строка, абзац — это текст «?» */
+    .card--items > .card__title { flex-wrap: nowrap; }
+    .card--items > .card__title > .fold-title { white-space: nowrap; }
+    .card--items > .card__title .match-req { display: none; }
+    .match-intro { display: none; }
+    .match-tools > .btn { white-space: nowrap; padding-left: 9px; padding-right: 9px; }
+}
+/* Позиция: стрелка, «из письма…» и 🚫 — одна строка, текст переносится внутри */
+.match-row__src { flex-wrap: nowrap; align-items: flex-start; }
+.match-row__src > .fold-title { flex: 1 1 auto; min-width: 0; }
+.match-row__src > .match-row__fold, .match-row__src > .hint-pin { flex: 0 0 auto; }
+.match-row__tools--order { margin-left: auto; }
+@media (max-width: 640px) {
+    /* Стрелки порядка — в строке «ок / аналог», а не своей строкой (issue #144) */
+    .match-row > .match-row__tools--order { flex: 0 0 auto; }
+    /* «🧮» и «×» — справа от цены доставки, на той же строке (issue #139) */
+    .match-row--delivery > input[data-delivery-price] { flex: 1 1 96px; min-width: 0; }
+    .match-row--delivery > .match-row__tools { flex: 0 0 auto; }
+}
+
+/* Название позиции — целиком, в несколько строк, если нужно (issue #138) */
+.match-row__nameline textarea[data-field="product_name"] {
+    flex: 1 1 auto; min-width: 0; min-height: 0; resize: none; overflow: hidden;
+    line-height: 1.35; field-sizing: content; overflow-wrap: anywhere;
+}
+/* Свободный остаток рядом с каждым товаром (issue #137). --success на белом 5.0:1,
+   на --surface-2 4.7:1; в тёмной теме на --surface 6.9:1 */
+.match-row__stock { font-size: 12px; }
+.match-row__stock:empty { display: none; }
+.match-row__more a { cursor: pointer; }
+.stock-tag { font-size: 11px; white-space: nowrap; color: var(--text-muted); }
+.stock-tag--in { color: var(--success); font-weight: 600; }
+.addon-row .stock-tag { align-self: center; }
+
+/* Расчёт доставки СДЭК под строкой доставки (issue #139): складка, не окно */
+.cdek { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2);
+        color: var(--text); padding: 10px 12px; margin: -4px 0 10px; display: grid; gap: 8px; font-size: 13px; min-width: 0; }
+.cdek[hidden] { display: none; }
+.cdek__head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.cdek__row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
+.cdek__row label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.cdek__row select { width: auto; max-width: 100%; min-width: 0; flex: 1 1 auto; }
+.cdek__city { position: relative; flex: 1 1 240px; }
+.cdek__city input[type="text"] { flex: 1 1 auto; min-width: 0; }
+.cdek input[type="number"] { width: 78px; padding: 5px 8px; }
+.cdek__dims input[type="number"] { width: 58px; }
+.cdek__items { display: grid; gap: 4px; }
+.cdek__item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; }
+.cdek__name { min-width: 0; overflow-wrap: anywhere; }
+.cdek__calc { white-space: nowrap; }
+.cdek__total { justify-self: end; }
+.cdek__tariffs { display: grid; gap: 4px; }
+.cdek__tariff { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; text-align: left;
+                border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: var(--radius-sm);
+                padding: 6px 10px; cursor: pointer; font: inherit; }
+.cdek__tariff:hover { border-color: var(--primary); }
+.cdek__quote { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+@media (max-width: 640px) {
+    .cdek__item { grid-template-columns: minmax(0, 1fr); }
+    .cdek__calc { justify-self: end; }
+    .cdek__tariff { grid-template-columns: minmax(0, 1fr) auto; }
+    .cdek__tariff > .muted { grid-column: 1 / -1; order: 3; }
+}
+
+/* Вышло обновление интерфейса (issue #146): полоса внизу, над нижним меню телефона.
+   --text на --surface 15.9:1 (светлая) и 13.9:1 (тёмная) */
+.update-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 190;
+              display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 24px);
+              background: var(--surface); color: var(--text); border: 1px solid var(--primary);
+              border-radius: var(--radius); box-shadow: var(--shadow-lg); padding: 8px 8px 8px 14px; font-size: 13px; }
+.update-bar__close { border: 0; background: none; color: var(--text-muted); cursor: pointer; font-size: 18px;
+                     line-height: 1; padding: 4px 6px; }
+@media (max-width: 640px) {
+    .update-bar { left: 12px; right: 12px; transform: none; bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+    .update-bar > span { flex: 1 1 auto; min-width: 0; }
+}
 
 /* Тёмная тема: оттенки смысла, записанные в этом файле цветом, а не токеном */
 html[data-theme="dark"] .notif--action { background: #17312f; }

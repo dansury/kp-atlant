@@ -311,7 +311,7 @@ ok('промпт match_pick — в реестре и в задачах базы 
    && isset(Knowledge::TASKS['match_pick']) && str_contains(Prompts::registry()['match_pick'][3], '{{knowledge}}'));
 ok('API: статус и фоновое уточнение', str_contains($api, "case 'items_autopick':")
    && substr_count($api, 'Autopick::status($id)') >= 3);
-ok('одна кнопка «↻ Подобрать заново», второй нет', str_contains($js, '↻ Подобрать заново')
+ok('одна кнопка «↻ Подобрать заново», второй нет', str_contains($js, '↻ Подобрать<span class="btn__txt"> заново</span>')
    && !str_contains($js, '>Подобрать нейросетью<') && !str_contains($js, '>Подобрать по каталогу<'));
 ok('карточка сама зовёт нейросеть фоном', str_contains($js, "items_autopick&id=") && str_contains($js, 'if (opts.autopick) this.autopick('));
 ok('автосохранение ждёт ответа нейросети', str_contains($js, 'host._autosaveAfterPick = true;'));
