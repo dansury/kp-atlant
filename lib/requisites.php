@@ -83,6 +83,10 @@ final class Requisites {
             $id = Db::insert('legal_entities', $data + ['is_active' => 1, 'city' => '']);
         }
         Logger::info('moysklad', 'Реквизиты организации обновлены из МойСклад', ['legal_entity_id' => $id]);
+        // Наш ИНН мог стать известен только сейчас — карточка с ним не клиент (issue #128)
+        require_once __DIR__ . '/crm.php';
+        Crm::forgetOurs();
+        Crm::releaseOwnCards();
         return self::legalEntity($id);
     }
 

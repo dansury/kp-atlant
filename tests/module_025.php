@@ -152,7 +152,7 @@ echo "\n== 6. Сервис узнаёт общий домен сам ==\n";
 $x1 = Crm::resolveCounterparty(['email' => 'zayavka1@gate-x.ru', 'name' => 'ООО «Ромашка»']);
 ok('первая заявка домен ещё не выдала', !MailDomains::isShared('gate-x.ru'));
 
-$x2 = Crm::resolveCounterparty(['email' => 'zayavka2@gate-x.ru', 'name' => 'ИП Сурков К.А.']);
+$x2 = Crm::resolveCounterparty(['email' => 'zayavka2@gate-x.ru', 'name' => 'ИП Петров П.П.']);
 ok('две разные фирмы на домене — домен признан общим', MailDomains::isShared('gate-x.ru'));
 ok('и карточки получились разные', $x1 !== $x2, "$x1 vs $x2");
 ok('домен снят и с первой карточки',

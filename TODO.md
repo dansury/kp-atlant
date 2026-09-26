@@ -157,3 +157,17 @@ not have.
 - `.fold` colouring is on «Цены и условия»; the older folds (letter blocks,
   match rows, board filters) keep their own look — move them to `details.fold`
   when they are next touched.
+
+## Module 064 — check on a live phone
+- Chrome on Android with «Тёмная тема для сайтов» on: the light theme stays
+  light everywhere (fields and letter bodies); the dark theme (🌙 in the
+  header) reads well on the board, a letter and the match table.
+- After «Написать в поддержку» → «Отправить» from a phone the page stays at
+  normal scale (the build container reproduces no zoom-out in headless Chrome;
+  the fix is `minimum-scale=1` + blur before the modal closes).
+- A PDF attachment and a КП in PDF mode open as pages inside the window on
+  Android (pdf.js from jsDelivr — the build container cannot reach the CDN,
+  it was checked with a local copy of the same version).
+- The card with our ИНН on the live base: after the deploy migration (v54)
+  the dressie.ai conversation is back on its own card — link it to the right
+  company from «Информация».

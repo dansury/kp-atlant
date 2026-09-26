@@ -526,7 +526,8 @@ switch ($action) {
 
         if ($inn === null) {
             $byLlm = Crm::requisitesByLlm($text);
-            $inn = $byLlm['inn'];
+            // Наш ИНН из нашей же подписи — не ответ (issue #128)
+            $inn = Crm::isOurInn($byLlm['inn']) ? null : $byLlm['inn'];
             $source = $inn !== null ? ((string)$byLlm['source'] ?: 'нашла нейросеть') : '';
             foreach (['kpp', 'ogrn', 'legal_title', 'legal_address'] as $f) {
                 if (($found[$f] ?? null) === null && $byLlm[$f] !== null) $found[$f] = $byLlm[$f];
