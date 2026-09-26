@@ -425,8 +425,52 @@ const App = {
             <button class="btn btn--outline btn--sm header__support" onclick="App.supportModal()"
                     title="Написать в поддержку: что сломалось или чего не хватает на этом экране"
                     >✉<span class="header__support-text"> Написать в поддержку</span></button>
+            <button class="btn btn--outline btn--sm header__theme" id="themeBtn" type="button"
+                    onclick="App.cycleTheme()"></button>
             ${this.manager.name} <a onclick="App.logout()">Выход</a>
         `;
+        this.setTheme(this.themeMode(), false);
+    },
+
+    // ---- Светлая и тёмная тема (issue #123) ----
+
+    THEMES: {light: ['☀', 'Светлая тема'], dark: ['🌙', 'Тёмная тема'], auto: ['🌓', 'Тема как в системе']},
+
+    /** Выбор этого устройства: light | dark | auto. Приватное окно — светлая. */
+    themeMode() {
+        try { return this.THEMES[localStorage.getItem('theme')] ? localStorage.getItem('theme') : 'light'; }
+        catch { return this._theme || 'light'; }
+    },
+
+    setTheme(mode, remember = true) {
+        if (!this.THEMES[mode]) mode = 'light';
+        this._theme = mode;
+        if (remember) { try { localStorage.setItem('theme', mode); } catch { /* не запомним — но переключим */ } }
+        const mq = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+        const dark = mode === 'dark' || (mode === 'auto' && mq && mq.matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        const scheme = document.getElementById('metaScheme');
+        if (scheme) scheme.content = dark ? 'dark' : 'only light';
+        const color = document.getElementById('metaThemeColor');
+        if (color) color.content = dark ? '#16181d' : '#ffffff';
+        const btn = document.getElementById('themeBtn');
+        if (btn) {
+            const [icon, label] = this.THEMES[mode];
+            btn.textContent = icon;
+            btn.title = label + ' — нажмите, чтобы сменить';
+            btn.setAttribute('aria-label', btn.title);
+        }
+        // «Как в системе» следит за системой и после загрузки
+        if (mq && !this._themeWatch) {
+            this._themeWatch = true;
+            mq.addEventListener?.('change', () => { if (this._theme === 'auto') this.setTheme('auto', false); });
+        }
+    },
+
+    cycleTheme() {
+        const order = ['light', 'dark', 'auto'];
+        this.setTheme(order[(order.indexOf(this.themeMode()) + 1) % order.length]);
+        this.toast(this.THEMES[this._theme][1], 'info');
     },
 
     // Notification polling
@@ -662,7 +706,20 @@ const App = {
      * Шапка внутреннего экрана: ссылка назад над заголовком, справа действия
      * (главное — последним и залитым), редкие и опасные — в меню «⋯».
      */
-    pageHead({back = '#mail', backLabel = '← Письма', title = '', after = '', meta = '', actions = '', menu = []} = {}) {
+    pageHead({back = '#mail', backLabel = '← Письма', title = '', after = '', meta = '', actions = '', menu = [], card = false} = {}) {
+        // Шапка письма и компании (issue #129): кнопки справа от названия, на
+        // одной строке с ним, а не под текстом у левого края
+        if (card) return `
+            <div class="pagehead pagehead--card">
+                ${back ? `<a class="pagehead__back" href="${this.esc(back)}">${this.esc(backLabel)}</a>` : ''}
+                <div class="pagehead__top">
+                    <div class="pagehead__line">
+                        <h2 class="pagehead__title">${title}</h2>${after}
+                    </div>
+                    <div class="pagehead__actions">${actions}${this.menuHtml(menu)}</div>
+                </div>
+                ${meta ? `<div class="pagehead__meta">${meta}</div>` : ''}
+            </div>`;
         return `
             <div class="pagehead">
                 <div class="pagehead__main">
@@ -703,8 +760,32 @@ const App = {
             </details>`;
     },
 
+    /**
+     * Меню не уезжает за край экрана (issue #129): открывается под кнопкой
+     * вправо, если слева места нет, и не шире экрана.
+     */
+    placeMenu(menu) {
+        const list = menu.querySelector('.menu__list');
+        if (!list) return;
+        list.style.left = list.style.right = list.style.maxWidth = '';
+        const vw = document.documentElement.clientWidth;
+        list.style.maxWidth = (vw - 16) + 'px';
+        const btn = menu.getBoundingClientRect();
+        const r = list.getBoundingClientRect();
+        if (r.left < 8) {
+            // Прижать к левому краю кнопки, а если и так не влезает — к экрану
+            list.style.right = 'auto';
+            list.style.left = Math.min(0, vw - 8 - btn.left - r.width) + 'px';
+            if (btn.left + parseFloat(list.style.left) < 8) list.style.left = (8 - btn.left) + 'px';
+        }
+    },
+
     /** Открытое меню закрывается щелчком мимо и Escape. */
     bindMenus() {
+        document.addEventListener('toggle', e => {
+            const m = e.target;
+            if (m instanceof HTMLDetailsElement && m.classList.contains('menu') && m.open) this.placeMenu(m);
+        }, true);
         document.addEventListener('click', e => {
             document.querySelectorAll('details.menu[open]').forEach(m => {
                 if (!m.contains(e.target)) m.open = false;
@@ -2029,9 +2110,11 @@ const App = {
     kpSheetStyle(editable) {
         const font = (f, w, st) => `@font-face{font-family:"DejaVu Sans";font-weight:${w};font-style:${st};
             src:url(/api/proposals.php?action=font&f=${f}) format("truetype")}`;
-        return `<style data-kp-editor>
+        // КП — бумага: белый лист в обеих темах (issue #123)
+        return `<meta name="color-scheme" content="only light"><style data-kp-editor>
             ${font('r', 'normal', 'normal')}${font('b', 'bold', 'normal')}
             ${font('i', 'normal', 'italic')}${font('bi', 'bold', 'italic')}
+            :root{color-scheme:only light}
             html{background:#e9e9e9}
             body{width:210mm;min-height:var(--kp-min,297mm);margin:12px auto!important;padding:10mm 15mm 15mm!important;
                 box-sizing:border-box;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25)}
@@ -2538,6 +2621,19 @@ const App = {
             if (!res.ok) throw new Error(await this.errorTextOf(res));
             // Сервер ответил документом — можно показывать
             if (!slot.isConnected || slot.dataset.open !== String(id)) return;
+            if (!this.canShowPdf()) {
+                // Телефон: страницы pdf.js в окне вместо заглушки «Открыть» (issue #126)
+                let pages = slot.querySelector('[data-kp-pages]');
+                if (!pages) {
+                    pages = document.createElement('div');
+                    pages.dataset.kpPages = '1';
+                    pages.className = 'preview-body kp-pages';
+                    frame.before(pages);
+                }
+                await this.pdfRender(pages, await res.arrayBuffer());
+                state.remove();
+                return;
+            }
             frame.src = card ? this.kpPdfUrl(card, id) : url;
             frame.style.display = '';
             state.remove();
@@ -2844,8 +2940,10 @@ const App = {
             `<li>соответствует: ${this.esc(m.requirement)}${m.ours ? ' — ' + this.esc(m.ours) : ''}</li>`).join('');
         const differs = (alt.differs || []).length
             ? `<div class="muted">отличается: ${this.esc((alt.differs || []).join('; '))}</div>` : '';
+        // Замену поставила машина — у неё есть доказательство (alt_specs_json)
+        const auto = !!(i.alternative && (i.alternative.reason || (i.alternative.matched || []).length));
         return `
-            <div class="note note--swap">
+            <div class="note note--swap" ${auto ? 'data-alt-auto' : ''}>
                 <strong>Аналог.</strong> Нет в наличии: ${this.esc(i.alt_of || i.raw_name || '')}.
                 ${alt.reason ? this.esc(alt.reason) : ''}
                 ${fits ? `<ul class="alt-fits">${fits}</ul>` : ''}
@@ -3507,6 +3605,18 @@ const App = {
         // в поле её описание. Написанное менеджером не трогаем (модуль 032).
         this.fillCatalogComment(row, p.description || '');
         row.querySelector('[data-field="is_confirmed"]').checked = true;
+        // Строку сняли с нашей замены — она больше не аналог (issue #124);
+        // галочку «аналог» менеджер может поставить снова сам
+        const swap = row.querySelector('.note--swap[data-alt-auto]');
+        if (swap) {
+            swap.remove();
+            const flag = row.querySelector('[data-field="is_alternative"]');
+            if (flag) flag.checked = false;
+            const analog = row.querySelector('[data-analog]');
+            if (analog) analog.hidden = true;
+            const notes = row.querySelector('[data-field="notes"]');
+            if (notes && /^аналог(:|\s+из\s+наличия)/.test(notes.value.trim())) notes.value = '';
+        }
         const slot = row.querySelector('.price-opts-slot');
         if (slot) slot.innerHTML = this.priceOptsSelect(p.prices || {});
         const suggest = el.closest ? el.closest('.suggest') : null;
@@ -3906,6 +4016,9 @@ const App = {
 
     closeModal() {
         const el = document.getElementById('modal');
+        // Клавиатура уходит, пока поле ещё есть (issue #125): поле, убранное
+        // из-под открытой клавиатуры, оставляло телефон уменьшенным
+        if (el && el.contains(document.activeElement)) document.activeElement.blur();
         // Запись в закрытом окне не нужна никому (модуль 060)
         const rec = this.dictation && this.dictation.recorder;
         if (el && rec && rec.state === 'recording') rec.stop();
@@ -4176,7 +4289,7 @@ const App = {
                 </div>
                 <div>
                     <div class="card" style="padding:10px">
-                        <iframe class="pdf-frame" id="pdfPreview" src="/api/proposals.php?action=preview&id=${id}"></iframe>
+                        <div id="pdfPreviewBox"></div>
                         <a class="btn btn--sm btn--outline btn--block" style="margin-top:8px"
                            href="/api/proposals.php?action=docx&id=${id}">Скачать в Word (.docx)</a>
                     </div>
@@ -4192,6 +4305,7 @@ const App = {
         `;
         // Thumbnails load per position, so a KP with many photos still opens fast
         items.forEach(it => { if (it.moysklad_product_id) this.loadItemPhotos(it.id); });
+        this.pdfInto(document.getElementById('pdfPreviewBox'), `/api/proposals.php?action=preview&id=${id}`, 'КП #' + id);
     },
 
     /**
@@ -4664,8 +4778,8 @@ const App = {
 
     // Refresh PDF preview
     refreshPreview(id) {
-        const frame = document.getElementById('pdfPreview');
-        if (frame) frame.src = `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`;
+        this.pdfInto(document.getElementById('pdfPreviewBox'),
+                     `/api/proposals.php?action=preview&id=${id}&t=${Date.now()}`, 'КП #' + id);
     },
 
     /**
@@ -4767,9 +4881,8 @@ const App = {
                 after: this.answerBadge(cp.answer_state),
                 actions: cp.moysklad_id ? `<a class="btn btn--outline btn--sm" target="_blank" rel="noopener"
                     href="https://online.moysklad.ru/app/#counterparty/edit?id=${cp.moysklad_id}">МойСклад ↗</a>` : '',
+                card: true,
                 menu: [
-                    {label: '📝 Заметка для коллег', title: 'Заметка встанет в ленту по дате; клиенту не уходит',
-                     onclick: `App.noteForm(${cp.id})`},
                     {label: 'Обновить из МойСклад', title: 'Подтянуть из МойСклад реквизиты компании, её заказы и счета',
                      onclick: `App.syncCompany(${cp.id})`},
                     {label: 'Привязать заказ или счёт МойСклад…',
@@ -4780,6 +4893,7 @@ const App = {
                         onclick: `App.splitSenders(${cp.id}, ${cp.senders_count})`} : null,
                 ],
             })}
+            ${this.notesHtml({cp: cp.id})}
             <div id="cardNotices"></div>
             <div id="cardPlacement"></div>
             <!-- Одна раскладка для письма, откуда его ни открой: переписка
@@ -4805,6 +4919,7 @@ const App = {
             <div id="kpWide"></div>
         `;
         this.loadCompanyThreads(cp.id, {opening: true});
+        this.loadNotes();
         this.loadCardPlacement(cp.id);
         this.loadCardNotices(cp.id);
 
@@ -6535,7 +6650,8 @@ const App = {
             const data = await this.api(`counterparties.php?action=chat&id=${id}&limit=50`);
             // Отправленные письма и так стоят в переписке (модуль 023)
             const MAIL_EVENTS = ['mail_sent', 'kp_sent', 'invoice_sent', 'followup_sent'];
-            const items = (data.items || []).filter(m => !MAIL_EVENTS.includes(m.event_type));
+            // Заметки стоят наверху карточки, открытыми (issue #129) — в ленте их нет
+            const items = (data.items || []).filter(m => !MAIL_EVENTS.includes(m.event_type) && m.kind !== 'note');
             this.companyFeed = this.mergeDocEvents(items, data.docs || [])
                 .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
         } catch (err) {
@@ -6632,7 +6748,7 @@ const App = {
                     ${files ? `<div class="msg__files">${files}</div>` : ''}
                 </div>
                 ${isEvent ? '' : `<span class="tl__tools"><button type="button" class="btn btn--outline btn--sm" title="Удалить заметку"
-                    aria-label="Удалить заметку" onclick="App.deleteNote(${cpId}, ${m.id})">🗑</button></span>`}
+                    aria-label="Удалить заметку" onclick="App.deleteNote(${m.id})">🗑</button></span>`}
             </div>`;
     },
 
@@ -6641,7 +6757,7 @@ const App = {
         const url = doc === 'invoice' ? `/api/invoices.php?action=pdf&id=${id}`
                                       : `/api/counterparties.php?action=doc_pdf&doc=${encodeURIComponent(doc)}&id=${id}`;
         this.modal(title, `
-            <div class="preview-body"><iframe class="pdf-frame preview-frame" src="${url}" title="${this.esc(title)}"></iframe></div>
+            <div class="preview-body" id="docPreview"></div>
             <div class="flex flex--wrap" style="margin-top:10px;gap:8px">
                 <a class="btn btn--outline btn--sm" href="${url}" target="_blank" rel="noopener">Открыть в новой вкладке</a>
                 <button type="button" class="btn btn--outline btn--sm"
@@ -6649,18 +6765,58 @@ const App = {
             </div>`);
         const box = document.querySelector('#modal .modal__box');
         if (box) box.classList.add('modal__box--wide');
+        this.pdfInto(document.getElementById('docPreview'), url, title);
     },
 
-    /** Заметка для коллег — из меню «⋯»; встаёт в ленту по дате (issue #119). */
-    noteForm(id) {
-        this.modal('Заметка для коллег', `
-            <div class="form-group">
-                <textarea id="noteText" rows="4" placeholder="Клиенту не уходит — видна коллегам в ленте карточки"></textarea>
-            </div>
-            <div class="flex flex--end" style="gap:8px">
-                <button class="btn btn--outline" onclick="App.closeModal()">Отмена</button>
-                <button class="btn btn--primary" onclick="App.addNote(${id})">Добавить</button>
-            </div>`);
+    // ---- Заметки наверху карточки (issue #129) ----
+
+    /**
+     * Заметки для коллег или себя — сразу под шапкой, поле ввода всегда на
+     * экране, каждая заметка открыта целиком, пока её не удалят.
+     */
+    notesHtml({cp = 0, thread = ''} = {}) {
+        return `
+            <section class="notes" id="cardNotes" data-cp="${Number(cp) || 0}" data-thread="${this.esc(thread)}"
+                     aria-label="Заметки для коллег">
+                <div class="notes__form">
+                    <textarea id="noteText" rows="1" placeholder="📝 Заметка для коллег или себя" title="Заметка видна коллегам, клиенту не уходит"
+                              oninput="App.noteInput(this)"
+                              onkeydown="if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) App.addNote()"></textarea>
+                    <button type="button" class="btn btn--outline btn--sm" data-note-add hidden
+                            onclick="App.addNote()">Добавить</button>
+                </div>
+                <div class="notes__list" data-notes-list></div>
+            </section>`;
+    },
+
+    /** Поле растёт с текстом; «Добавить» видна, пока есть что добавлять. */
+    noteInput(el) {
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight + 2, 240) + 'px';
+        const btn = el.closest('.notes')?.querySelector('[data-note-add]');
+        if (btn) btn.hidden = el.value.trim() === '';
+    },
+
+    async loadNotes() {
+        const box = document.getElementById('cardNotes');
+        if (!box) return;
+        const list = box.querySelector('[data-notes-list]');
+        try {
+            const d = await this.api(`notes.php?action=list&cp=${box.dataset.cp}&thread_key=${encodeURIComponent(box.dataset.thread || '')}`);
+            if (!box.isConnected) return;
+            list.innerHTML = (d.items || []).map(n => `
+                <div class="note-item" data-note="${n.id}">
+                    <div class="note-item__head">
+                        <span class="note-item__who">${this.esc(n.manager_name || 'заметка')}</span>
+                        <span class="muted">${this.fmtDate(n.created_at)}</span>
+                        <button type="button" class="note-item__del" title="Удалить заметку" aria-label="Удалить заметку"
+                                onclick="App.deleteNote(${n.id})">🗑</button>
+                    </div>
+                    <div class="note-item__body">${this.esc(n.body)}</div>
+                </div>`).join('');
+            const input = box.querySelector('#noteText');
+            if (input && input.value) this.noteInput(input);
+        } catch (err) { list.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
     /**
@@ -6715,26 +6871,32 @@ const App = {
      * Удалить заметку (модуль 031). Заметку — и только её: веха сделки и письмо
      * этой кнопки не имеют, стирать историю отправленного КП нечем.
      */
-    async deleteNote(counterpartyId, noteId) {
+    async deleteNote(noteId) {
         if (!confirm('Удалить заметку?')) return;
         try {
-            await this.api(`counterparties.php?action=note_delete&id=${counterpartyId}&note_id=${noteId}`,
-                           {method: 'POST', body: {note_id: noteId}});
-            this.loadCompanyFeed(counterpartyId);
+            await this.api('notes.php?action=delete', {method: 'POST', body: {id: noteId}});
+            this.loadNotes();
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    // Internal note (FR-036)
-    async addNote(id) {
+    // Заметка для коллег (FR-036) — из поля наверху карточки (issue #129)
+    async addNote() {
+        const box = document.getElementById('cardNotes');
         const el = document.getElementById('noteText');
+        if (!box || !el) return;
         const text = el.value.trim();
         if (!text) return this.toast('Введите текст заметки', 'error');
+        const btn = box.querySelector('[data-note-add]');
+        if (btn) btn.disabled = true;
         try {
-            await this.api(`counterparties.php?action=note&id=${id}`, {method: 'POST', body: {text}});
+            await this.api('notes.php?action=add', {method: 'POST',
+                body: {cp: Number(box.dataset.cp) || 0, thread_key: box.dataset.thread || '', text}});
             this.keepClear(el.dataset.keepKey);
-            this.closeModal();
-            this.loadCompanyFeed(id);
+            el.value = '';
+            this.noteInput(el);
+            await this.loadNotes();
         } catch (err) { this.toast(err.message, 'error'); }
+        if (btn) btn.disabled = false;
     },
 
     /**
@@ -8826,9 +8988,11 @@ const App = {
                 actions: t.archived_at
                     ? `<button class="btn btn--outline btn--sm" onclick="App.unarchiveThread('${this.jsStr(key)}')">↩ Вернуть в работу</button>`
                     : `<button class="btn btn--outline btn--sm" onclick="App.archiveThread('${this.jsStr(key)}', ${t.count})">🗄 В архив</button>`,
+                card: true,
                 menu: [{label: '🗑 Удалить переписку', danger: true,
                         onclick: `App.deleteThread('${this.jsStr(key)}', ${t.count})`}],
             })}
+            ${this.notesHtml({cp: t.counterparty_id || 0, thread: key})}
             <div id="threadPlacement"></div>
             <!-- Одна раскладка для всех писем: переписка слева, подбор справа на
                  десктопе и снизу на телефоне. Раньше «Подходящие позиции» стояли
@@ -8850,6 +9014,7 @@ const App = {
             <div id="kpWide"></div>
         `;
         this.mountBodies(document.getElementById('app'));
+        this.loadNotes();
         this.loadThreadPlacement(key);
         this.restoreComposerDraft(key);
         this.fillSignatureNote(document.getElementById('app'));
@@ -9238,7 +9403,7 @@ const App = {
             <div id="boardBulk"></div>
             <div id="boardSearchOut"></div>
             <div class="board" id="board">
-                ${b.columns.map(c => this.boardColumn(c)).join('')}
+                ${this.boardColumnsHtml(b.columns)}
             </div>
         `;
         this.boardBindDnd();
@@ -10054,6 +10219,23 @@ const App = {
         } catch (err) { out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`; }
     },
 
+    /**
+     * Колонки доски. «В работе» и «Входящие» — парой (issue #127): на телефоне
+     * это один экран, сверху то, что пишем, под ним то, что пришло; на
+     * десктопе пара прозрачна и колонки стоят в ряд, как стояли.
+     */
+    boardColumnsHtml(columns) {
+        const inbox = columns.find(c => c.kind === 'inbox');
+        const work = columns.find(c => c.kind === 'work');
+        return columns.map(c => {
+            if (inbox && work && c === work) return '';
+            if (inbox && work && c === inbox) {
+                return `<div class="bcol-pair">${this.boardColumn(inbox)}${this.boardColumn(work)}</div>`;
+            }
+            return this.boardColumn(c);
+        }).join('');
+    },
+
     boardColumn(c) {
         // Колонка — это статус, и у статуса свой цвет: им окрашена шапка и край
         // каждой карточки колонки (модуль 050)
@@ -10065,7 +10247,7 @@ const App = {
         };
         const kind = kinds[c.kind];
         return `
-            <div class="bcol" data-col="${c.id}" style="--col:${this.esc(c.color || '#8a8f98')}">
+            <div class="bcol${c.kind ? ' bcol--' + this.esc(c.kind) : ''}" data-col="${c.id}" style="--col:${this.esc(c.color || '#8a8f98')}">
                 <div class="bcol__head">
                     <span class="bcol__dot" aria-hidden="true"></span>
                     <span class="bcol__title" title="Переименовать колонку"
@@ -10259,7 +10441,7 @@ const App = {
         if (document.getElementById('mailList')) { this.drawMailList(); return; }
         const box = document.getElementById('board');
         if (!box || !this.board) return;
-        box.innerHTML = (this.board.columns || []).map(c => this.boardColumn(c)).join('');
+        box.innerHTML = this.boardColumnsHtml(this.board.columns || []);
         this.applyBoardFilters();
         if (this.boardQuery) this.boardFilter(this.boardQuery);
     },
@@ -10723,7 +10905,9 @@ const App = {
     // to add precisely because scripts never run, and is only there so this
     // page may read the frame's scrollHeight to size it.
     htmlPreviewFrame(innerHtml, {bg = '#fff', maxHeight = 0} = {}) {
-        const doc = `<!doctype html><html><head><meta charset="utf-8"><style>
+        // Письмо — бумага: белое в обеих темах, и браузер его не затемняет (issue #123)
+        const doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="only light"><style>
+            :root{color-scheme:only light}
             html,body{margin:0;padding:10px;background:${bg};color:#1a1a1a;
                 font:14px/1.55 -apple-system,'Segoe UI',Roboto,sans-serif;
                 word-wrap:break-word;overflow-wrap:break-word;overflow-x:hidden;}
@@ -10865,6 +11049,78 @@ const App = {
         return this._libs[url];
     },
 
+    // ---- PDF внутри окна там, где браузер его не рисует (issue #126) ----
+
+    PDFJS: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
+
+    /**
+     * Нарисует ли браузер PDF в рамке. Chrome на Android показывает вместо
+     * документа серую заглушку «Открыть», iPhone — только первую страницу.
+     */
+    canShowPdf() {
+        const ua = navigator.userAgent || '';
+        const ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        if (ios || /Android/i.test(ua)) return false;
+        return navigator.pdfViewerEnabled !== false;
+    },
+
+    /** PDF в коробку: рамкой, где браузер умеет, и страницами-картинками pdf.js — где нет. */
+    async pdfInto(host, url, title = '') {
+        const frame = `<iframe class="pdf-frame preview-frame" src="${this.esc(url)}" title="${this.esc(title)}"></iframe>`;
+        if (!host) return;
+        if (this.canShowPdf()) { host.innerHTML = frame; return; }
+        host.innerHTML = '<div class="loading">Открываем PDF...</div>';
+        try {
+            const res = await fetch(url, {credentials: 'same-origin'});
+            if (!res.ok) throw new Error(await this.errorTextOf(res));
+            await this.pdfRender(host, await res.arrayBuffer());
+        } catch (err) {
+            // Не PDF (страница с причиной) или pdf.js не загрузился — как было
+            if (host.isConnected) host.innerHTML = frame;
+        }
+    },
+
+    /**
+     * Страницы PDF — холстами во всю ширину коробки, одна под другой. Рисуется
+     * то, до чего дошла прокрутка: у КП с фотографиями десяток страниц.
+     */
+    async pdfRender(host, data) {
+        await this.loadLib(this.PDFJS);
+        const lib = window.pdfjsLib;
+        if (!lib) throw new Error('pdf.js не загрузился');
+        lib.GlobalWorkerOptions.workerSrc = this.PDFJS.replace(/pdf\.min\.js$/, 'pdf.worker.min.js');
+        const doc = await lib.getDocument({data}).promise;
+        const box = document.createElement('div');
+        box.className = 'pdf-pages';
+        host.replaceChildren(box);
+        const width = Math.max(240, box.clientWidth || host.clientWidth || 360);
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const draw = async (canvas) => {
+            if (canvas.dataset.drawn) return;
+            canvas.dataset.drawn = '1';
+            const page = await doc.getPage(Number(canvas.dataset.page));
+            const vp = page.getViewport({scale: width / page.getViewport({scale: 1}).width * dpr});
+            canvas.width = Math.round(vp.width);
+            canvas.height = Math.round(vp.height);
+            await page.render({canvasContext: canvas.getContext('2d'), viewport: vp}).promise;
+        };
+        const io = 'IntersectionObserver' in window
+            ? new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { io.unobserve(e.target); draw(e.target); } }),
+                                       {root: host.closest('.preview-body') || null, rootMargin: '400px'})
+            : null;
+        for (let n = 1; n <= doc.numPages; n++) {
+            const page = await doc.getPage(n);
+            const v = page.getViewport({scale: 1});
+            const canvas = document.createElement('canvas');
+            canvas.className = 'pdf-page';
+            canvas.dataset.page = String(n);
+            canvas.style.aspectRatio = `${v.width} / ${v.height}`;
+            canvas.setAttribute('aria-label', `Страница ${n} из ${doc.numPages}`);
+            box.appendChild(canvas);
+            if (io) io.observe(canvas); else draw(canvas);
+        }
+    },
+
     async previewAttachment(id, filename, endpoint) {
         const url = `/api/${endpoint}?action=attachment&id=${id}&inline=1`;
         const ext = (filename.split('.').pop() || '').toLowerCase();
@@ -10881,7 +11137,7 @@ const App = {
             if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
                 body.innerHTML = `<img src="${url}" alt="${this.esc(filename)}" style="max-width:100%;display:block;margin:0 auto">`;
             } else if (ext === 'pdf') {
-                body.innerHTML = `<iframe class="pdf-frame preview-frame" src="${url}"></iframe>`;
+                await this.pdfInto(body, url, filename);
             } else if (ext === 'docx') {
                 // mammoth.js — pinned version, loaded from CDN (no build step / no npm in this repo)
                 await this.loadLib('https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js');

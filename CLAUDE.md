@@ -123,7 +123,11 @@ in plain PHP inside `Triage::prefilter()`: a form submission must never reach th
 recognised as spam. A lead with a phone and no address is category `callback` — it has no reply
 prompt on purpose, because there is nothing to answer to; it is a call, and the phone goes in
 the notification. Never resolve a counterparty from one of our own addresses — `Crm::isOurAddress()`
-is what keeps a company card for `atlant-armour.ru` from existing.
+is what keeps a company card for `atlant-armour.ru` from existing — nor from our
+own ИНН or name (module 064): a letter where WE send our requisites carries our
+ИНН, and `Crm::isOurInn()` / `isOurName()` keep it out of `requisitesFromText()`,
+`identityHints()` and `findCounterparty()`. A card that already holds our ИНН
+lets its letters go (`Crm::releaseOwnCards()`).
 
 A delivery report is not service mail to file away: `Bounce::applyTo()` marks the outgoing
 letter that failed (`sent_state = bounced`), and the manager hears about it. An answer that
@@ -465,6 +469,18 @@ admin-only: those break the service, not a sentence. Every such edit goes throug
 up somewhere nobody meant. Tone of Voice lives in `storage/`, never in the repository: a deploy
 overwrites repository files and used to erase every edit.
 
+There are TWO themes, chosen per device with the header button (module 064):
+light is the default and stays `color-scheme: only light` — the keyword that
+keeps Chrome's forced darkening off the fields (issue #105) — and dark is
+`html[data-theme="dark"]`, the SAME tokens with another palette. A colour
+written as a hex instead of a token needs its dark counterpart in the dark
+block at the end of `app.css`. A letter and a КП inside a frame are PAPER:
+every iframe the app builds declares `only light` and stays white in both
+themes. The phone never stays zoomed out: the viewport carries
+`minimum-scale=1`. A PDF is shown through `App.pdfInto()` — a frame where the
+browser has a PDF viewer, pdf.js pages where it has not (Android, iPhone):
+never a bare `<iframe src=….pdf>`, which is a grey «Открыть» on a phone.
+
 Nothing is ever wider than the phone. A grid column is `minmax(0, 1fr)` and its items get
 `min-width: 0`: bare `1fr` is `minmax(auto, 1fr)`, and that `auto` is the column's MIN-CONTENT —
 one `white-space: nowrap` line inside made the page 907 px wide on a 412 px screen, and
@@ -504,6 +520,12 @@ dozen drafts in them is a `400` for the whole API. A send clears its draft only 
 SUCCEEDED (`keepClear` / `keepClearIn`); a dead network says the text is saved on the device.
 One button per block is the next step (`App.markNext()`, `.btn--next`) — a new block that has a
 «next» adds itself there instead of lighting a second button by hand.
+
+Notes for colleagues stand at the TOP of the company card and of the letter
+page, every one open until somebody deletes it, with the field to add one
+always on the screen (module 064, `Notes`). They are not in the timeline: a
+note shown twice is two notes to read. A letter with no company keeps its
+notes by `thread_key`, and they move with the thread (`Crm::attachThread()`).
 
 Hints are the SAME texts as `App.HINTS`, and on a first visit to a screen they run as a
 guided tour — one bubble at a time, with the thing being explained highlighted. A wall of
@@ -548,6 +570,8 @@ a draft or a started match → «В работе», a sent КП → «КП от�
 оплату», a payment → «Сборка», a МойСклад shipment → «Отправлено». Documents older than
 `MsSync::FRESH_DAYS` move nothing — a first sync must not march a card through its history.
 A manual move always works; `work` never pulls a card out of a column the manager chose.
+On a phone «В работе» stands directly ABOVE «Входящие» in one slide (`.bcol-pair`,
+module 064): what is being written and what just came in are one screen.
 
 Checked cards move as a GROUP and in their own order (module 036, `Boards::moveCards()` — the
 order is computed once for the whole group, otherwise it arrives reversed). The board screen
@@ -577,6 +601,11 @@ proof. A claim our own description does not support never reaches the document, 
 made it. Every path here must give the same answer with no model key, only flatter: the
 model pass sharpens the choice, it is not what finds it. A line with no analogue in stock
 stays «под заказ» — it never becomes a question to the manager or to the client.
+
+An analogue lives only while its reason does (module 064): a row put back on
+the product the client asked for (or its modification) is not an analogue any
+more — `choose()`, `save()` and `healAnalogues()` on every open clear it — and an
+unconfirmed analogue whose original is in stock again goes back onto it.
 
 An analogue is named IN THE CLIENT'S WORDS (module 036). The «аналог» checkbox on a matching
 row opens a field pre-filled with the line from the letter — the manager edits it, and the КП

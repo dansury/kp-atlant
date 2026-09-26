@@ -82,6 +82,11 @@ class Crm {
             }
         }
 
+        // Карточка нашей же организации клиентом не бывает (issue #128)
+        if ($found && self::isOurInn((string)(Db::val("SELECT inn FROM counterparties WHERE id=?",
+                                                        [self::rootId((int)$found['id'])]) ?: ''))) {
+            $found = null;
+        }
         if ($found) {
             $id = self::rootId((int)$found['id']);
             // Enrich the card with anything new we learned
@@ -107,6 +112,10 @@ class Crm {
         $email  = trim((string)($hints['email'] ?? ''));
         $domain = self::corporateDomain($email);
 
+        // Наш ИНН и наше название клиента не опознают — иначе письмо с нашими
+        // реквизитами приклеивает переписку к нашей же организации (issue #128)
+        if ($inn !== null && self::isOurInn($inn)) $inn = null;
+        if ($name !== '' && self::isOurName($name)) $name = '';
         if ($name === '' || filter_var($name, FILTER_VALIDATE_EMAIL) !== false) {
             $fromText = self::companyFromText((string)($hints['text'] ?? ''));
             if ($fromText !== '') $name = $fromText;
@@ -143,19 +152,92 @@ class Crm {
         }
 
         // Our own организация signs every letter we ever quoted back
-        $ours = [];
-        foreach (Db::all("SELECT full_name, short_name FROM legal_entities") as $le) {
-            foreach ([$le['full_name'] ?? '', $le['short_name'] ?? ''] as $n) {
-                $norm = normalizeCompanyName((string)$n);
-                if ($norm !== '') $ours[$norm] = true;
-            }
-        }
         foreach ($candidates as $candidate) {
-            $norm = normalizeCompanyName($candidate);
-            if ($norm === '' || isset($ours[$norm])) continue;
+            if (normalizeCompanyName($candidate) === '' || self::isOurName($candidate)) continue;
             return mb_substr($candidate, 0, 120);
         }
         return '';
+    }
+
+    /** ИНН наших организаций (`legal_entities`) — один запрос на обращение. */
+    private static ?array $ours = null;
+
+    public static function ourInns(): array {
+        return array_keys(self::ours()['inn']);
+    }
+
+    public static function isOurInn(?string $inn): bool {
+        $inn = self::cleanInn((string)$inn);
+        return $inn !== null && isset(self::ours()['inn'][$inn]);
+    }
+
+    public static function isOurName(string $name): bool {
+        $norm = normalizeCompanyName($name);
+        return $norm !== '' && isset(self::ours()['name'][$norm]);
+    }
+
+    /** Реквизиты поменялись (синхронизация организации) — перечитать. */
+    public static function forgetOurs(): void {
+        self::$ours = null;
+    }
+
+    private static function ours(): array {
+        if (self::$ours !== null) return self::$ours;
+        $out = ['inn' => [], 'name' => []];
+        foreach (Db::all("SELECT inn, full_name, short_name FROM legal_entities") as $le) {
+            $inn = self::cleanInn((string)($le['inn'] ?? ''));
+            if ($inn !== null) $out['inn'][$inn] = true;
+            foreach ([$le['full_name'] ?? '', $le['short_name'] ?? ''] as $n) {
+                $norm = normalizeCompanyName((string)$n);
+                if ($norm !== '') $out['name'][$norm] = true;
+            }
+        }
+        return self::$ours = $out;
+    }
+
+    /**
+     * Карточка с НАШИМ ИНН — это наша организация, а не клиент (issue #128).
+     *
+     * Письмо с нашими реквизитами опознавало по ним компанию, и переписка
+     * клиента уезжала в карточку «ООО "Атлант Армор"». Такая карточка
+     * отпускает письма, запросы и заметки: каждая переписка возвращается к
+     * своему отправителю. Карточка доски становится карточкой переписки.
+     * Саму карточку не удаляем — на неё может ссылаться МойСклад.
+     *
+     * @return int сколько писем отпущено
+     */
+    public static function releaseOwnCards(): int {
+        $inns = self::ourInns();
+        if (!$inns) return 0;
+        $ph = implode(',', array_fill(0, count($inns), '?'));
+        $ids = array_map('intval', array_column(
+            Db::all("SELECT id FROM counterparties WHERE inn IN ($ph)", $inns), 'id'));
+        if (!$ids) return 0;
+        $in = implode(',', $ids);
+
+        foreach ($ids as $id) {
+            // Карточка доски — на самую свежую переписку, что в ней была
+            $key = (string)(Db::val("SELECT thread_key FROM mail_messages WHERE counterparty_id=? AND thread_key IS NOT NULL
+                                     ORDER BY date_at DESC, id DESC LIMIT 1", [$id]) ?: '');
+            $cards = Db::all("SELECT id FROM board_cards WHERE counterparty_id=?", [$id]);
+            foreach ($cards as $c) {
+                $dup = $key !== '' && Db::val("SELECT 1 FROM board_cards WHERE thread_key=? AND id<>?", [$key, (int)$c['id']]);
+                if ($key === '' || $dup) Db::q("DELETE FROM board_cards WHERE id=?", [(int)$c['id']]);
+                else Db::update('board_cards', ['counterparty_id' => null, 'thread_key' => $key], 'id=?', [(int)$c['id']]);
+            }
+        }
+        // Заметки переписки остаются при переписке (модуль 064)
+        Db::q("UPDATE correspondence SET thread_key = (SELECT m.thread_key FROM mail_messages m
+                   WHERE m.request_id = correspondence.request_id AND m.thread_key IS NOT NULL LIMIT 1)
+               WHERE counterparty_id IN ($in) AND direction='note' AND thread_key IS NULL AND request_id IS NOT NULL");
+        $released = Db::update('mail_messages', ['counterparty_id' => null], "counterparty_id IN ($in)", []);
+        // Домен и адрес клиента, записанные на нашу карточку, больше не ведут к ней
+        Db::q("UPDATE counterparties SET email_domain = NULL, contact_email = NULL WHERE id IN ($in)");
+        Db::update('requests', ['counterparty_id' => null], "counterparty_id IN ($in)", []);
+        Db::q("UPDATE correspondence SET counterparty_id = NULL WHERE counterparty_id IN ($in) AND direction='note' AND thread_key IS NOT NULL");
+        if ($released) Logger::warning('crm', "Переписка отвязана от карточки нашей организации: писем $released",
+                                       ['counterparty_ids' => $ids]);
+        return $released;
     }
 
     // Follow the merge chain to the surviving card
@@ -268,7 +350,13 @@ class Crm {
     /** ИНН/КПП/ОГРН/юр. адрес out of a company card. Digits are checked, not trusted. */
     public static function requisitesFromText(string $text): array {
         $out = [];
-        if (preg_match('/\bИНН\D{0,12}(\d{10}|\d{12})\b/iu', $text, $m)) $out['inn'] = $m[1];
+        // Первый ИНН, который НЕ наш: письмо с нашими реквизитами (ответ «вот
+        // наши реквизиты», цитата нашей подписи) — не реквизиты клиента (issue #128)
+        if (preg_match_all('/\bИНН\D{0,12}(\d{10}|\d{12})\b/iu', $text, $all)) {
+            foreach ($all[1] as $inn) {
+                if (!self::isOurInn($inn)) { $out['inn'] = $inn; break; }
+            }
+        }
         if (preg_match('/\bКПП\D{0,12}(\d{9})\b/iu', $text, $m))          $out['kpp'] = $m[1];
         if (preg_match('/\bОГРНИП\D{0,12}(\d{15})\b/iu', $text, $m))      $out['ogrn'] = $m[1];
         elseif (preg_match('/\bОГРН\D{0,12}(\d{13})\b/iu', $text, $m))    $out['ogrn'] = $m[1];
@@ -304,6 +392,7 @@ class Crm {
 
         $found = self::requisitesFromText($text);
         $inn = self::cleanInn((string)($cp['inn'] ?? ''));
+        if (self::isOurInn($inn)) $inn = null;
         $innFromLetter = false;
         if (!$inn) {
             $inn = self::cleanInn((string)($found['inn'] ?? ''));
@@ -392,6 +481,9 @@ class Crm {
 
         $moved = Db::update('mail_messages', ['counterparty_id' => $counterpartyId],
                             'thread_key=? AND counterparty_id IS NULL', [$threadKey]);
+        // Заметки к письму без компании переезжают вместе с перепиской (модуль 064)
+        Db::update('correspondence', ['counterparty_id' => $counterpartyId],
+                   "thread_key=? AND counterparty_id IS NULL AND direction='note'", [$threadKey]);
         Db::q("UPDATE requests SET counterparty_id=? WHERE counterparty_id IS NULL AND id IN
                (SELECT request_id FROM mail_messages WHERE thread_key=? AND request_id IS NOT NULL)",
               [$counterpartyId, $threadKey]);

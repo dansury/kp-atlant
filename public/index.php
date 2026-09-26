@@ -39,13 +39,26 @@ try {
 <html lang="ru">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- Тема светлая по замыслу: «авто-тёмный режим» Chrome на Android
-         перекрашивал поля в серые полосы и ломал контраст (issue #105) -->
-    <meta name="color-scheme" content="only light">
+    <!-- minimum-scale=1: телефон не остаётся уменьшенным после клавиатуры
+         закрытого окна (issue #125); приблизить по-прежнему можно -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, viewport-fit=cover">
+    <!-- Тема выбирается явно (issue #123): светлая — «only light», чтобы
+         «авто-тёмный режим» Chrome не перекрашивал поля (issue #105); тёмная —
+         своя палитра. Ставится ДО стилей — без белой вспышки на тёмном телефоне -->
+    <meta name="color-scheme" content="only light" id="metaScheme">
+    <script>
+        (function () {
+            var mode = 'light';
+            try { mode = localStorage.getItem('theme') || 'light'; } catch (e) { /* приватное окно */ }
+            var dark = mode === 'dark' || (mode === 'auto' && window.matchMedia
+                && matchMedia('(prefers-color-scheme: dark)').matches);
+            document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+            if (dark) document.getElementById('metaScheme').content = 'dark';
+        })();
+    </script>
     <title>Atlant Armour — КП</title>
     <!-- Installable on a phone: manifest + icons + standalone chrome (module 007) -->
-    <meta name="theme-color" content="#ffffff">
+    <meta name="theme-color" content="#ffffff" id="metaThemeColor">
     <meta name="description" content="Разбор входящих запросов, коммерческие предложения и счета Atlant Armour.">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">

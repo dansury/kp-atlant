@@ -72,7 +72,12 @@ final class RequestItems {
         $rows = self::all($requestId);
         // Карточка открывается — остатки в ней сегодняшние, а не те, что были
         // в день подбора (модуль 026)
-        if ($rows) { self::refreshStock($requestId); return self::all($requestId); }
+        if ($rows) {
+            // Аналог, чья причина ушла, снимается до пересчёта остатков (issue #124)
+            self::healAnalogues($requestId);
+            self::refreshStock($requestId);
+            return self::all($requestId);
+        }
 
         $req = Db::one("SELECT parsed_json, raw_text, counterparty_id FROM requests WHERE id=?", [$requestId]);
         $parsed = $req && $req['parsed_json'] ? (json_decode($req['parsed_json'], true) ?: []) : [];
@@ -236,6 +241,91 @@ final class RequestItems {
 
         if ($found) Logger::info('catalog', "Подобрано аналогов: $found", ['request_id' => $requestId]);
         return $found;
+    }
+
+    /**
+     * Поля, которые делают строку нашим аналогом, — пустыми (issue #124).
+     * Примечание машины «аналог: …» уходит вместе с ними, своё — остаётся.
+     */
+    public static function clearAnalogue(array $row): array {
+        $notes = trim((string)preg_replace('/^аналог(?::.*|\s+из\s+наличия)$/su', '', trim((string)($row['notes'] ?? ''))));
+        return [
+            'is_alternative' => 0,
+            'alt_of'         => null,
+            'alt_specs_json' => null,
+            'notes'          => $notes !== '' ? $notes : null,
+        ];
+    }
+
+    /**
+     * Аналог, чья причина ушла (issue #124).
+     *
+     * Аналог ставится вместо товара, которого нет. Строка, вернувшаяся на тот
+     * самый товар (или его модификацию), — уже не аналог; строка, чей товар
+     * снова есть на складе, возвращается на него, пока менеджер её не утвердил.
+     * Чинит и строки, записанные до модуля 062, когда товар с модификациями
+     * считался по своему нулевому остатку.
+     */
+    public static function healAnalogues(int $requestId): int {
+        $rows = Db::all("SELECT * FROM request_items WHERE request_id=? AND is_alternative=1
+                          AND alt_specs_json IS NOT NULL AND alt_specs_json <> ''", [$requestId]);
+        if (!$rows) return 0;
+        $counterpartyId = (int)(Db::val("SELECT counterparty_id FROM requests WHERE id=?", [$requestId]) ?: 0) ?: null;
+
+        $healed = 0;
+        foreach ($rows as $row) {
+            $orig = self::originalOf($row);
+            if ($orig === '') continue;
+            $now = (string)($row['moysklad_product_id'] ?? '');
+            $at = ['updated_at' => date('Y-m-d H:i:s')];
+
+            if ($now !== '' && self::sameFamily($now, $orig)) {
+                Db::update('request_items', self::clearAnalogue($row) + $at, 'id=?', [(int)$row['id']]);
+                $healed++;
+                continue;
+            }
+            if ((int)$row['is_confirmed'] === 1) continue;
+
+            $p = Db::one("SELECT * FROM products_cache WHERE moysklad_id=?", [$orig]);
+            if (!$p || Variants::freeStock($p) <= 0) continue;
+            // Клиент назвал размер — строка встаёт на него, а не на товар целиком
+            $v = Variants::resolveRow(['moysklad_product_id' => $orig,
+                                       'variant_label' => (string)($row['variant_label'] ?? '')], $counterpartyId);
+            $picked = isset($v['moysklad_product_id']);
+            $productId = $picked ? $v['moysklad_product_id'] : $orig;
+            self::resetImagesOnProductChange((int)$row['id'], $productId);
+            Db::update('request_items', self::keepManualPrice($row, [
+                'moysklad_product_id' => $productId,
+                'product_name'        => $picked ? $v['product_name'] : $p['name'],
+                'article'             => $picked ? $v['article'] : $p['article'],
+                'unit'                => ($picked ? $v['unit'] : $p['unit']) ?: 'шт.',
+                'price'               => $picked ? $v['price'] : Catalog::priceFor($p, $counterpartyId),
+                'stock'               => $picked ? $v['stock'] : Variants::freeStock($p),
+                'match_source'        => $picked ? 'модификация' : (string)($row['match_source'] ?? ''),
+                'needs_choice'        => 0,
+            ]) + self::clearAnalogue($row) + $at, 'id=?', [(int)$row['id']]);
+            $healed++;
+        }
+        if ($healed) Logger::info('catalog', "Аналогов снято: $healed — строка стоит на запрошенном товаре",
+                                  ['request_id' => $requestId]);
+        return $healed;
+    }
+
+    /** Товар, вместо которого встал аналог: `fillAlternatives()` кладёт его первым в кандидаты. */
+    private static function originalOf(array $row): string {
+        $variants = json_decode((string)($row['match_variants'] ?? ''), true) ?: [];
+        foreach ($variants as $v) {
+            if (($v['source'] ?? '') === 'было подобрано, нет в наличии') return (string)($v['moysklad_id'] ?? '');
+        }
+        return '';
+    }
+
+    /** Один товар или модификации одного товара. */
+    private static function sameFamily(string $a, string $b): bool {
+        if ($a === $b) return true;
+        $parent = fn(string $id) => (string)(Db::val("SELECT parent_id FROM products_cache WHERE moysklad_id=?", [$id]) ?: '');
+        $pa = $parent($a); $pb = $parent($b);
+        return $pa === $b || $pb === $a || ($pa !== '' && $pa === $pb);
     }
 
     /**
@@ -536,7 +626,8 @@ final class RequestItems {
         // подбор поставил бы другой товар, а описание осталось бы от прежнего.
         // Сравнивается и с описанием товара, который на строке БЫЛ: строку
         // переставили на другую позицию, а поле ещё держит прежний текст.
-        $was = Db::all("SELECT id, moysklad_product_id, selected_images FROM request_items WHERE request_id=?", [$requestId]);
+        $was = Db::all("SELECT id, moysklad_product_id, selected_images, alt_specs_json FROM request_items WHERE request_id=?", [$requestId]);
+        $wasAnalogue = array_column($was, 'alt_specs_json', 'id');
         $wasProduct = array_column($was, 'moysklad_product_id', 'id');
         $wasImages  = array_column($was, 'selected_images', 'id');
         // Строки, у которых поменялся товар: их выбор фотографий больше не
@@ -623,6 +714,12 @@ final class RequestItems {
                     ? self::imageChoice($row) : ($wasImages[$id] ?? null);
             } elseif (!$known) {
                 $data['selected_images'] = self::imageChoice($row);
+            }
+
+            // Строку переставили с нашего аналога на другой товар — это больше
+            // не замена, что бы ни прислал браузер (issue #124)
+            if ($productChanged && trim((string)($wasAnalogue[$id] ?? '')) !== '') {
+                $data = self::clearAnalogue($data) + $data;
             }
 
             if ($id && Db::one("SELECT id FROM request_items WHERE id=? AND request_id=?", [$id, $requestId])) {
@@ -903,7 +1000,8 @@ final class RequestItems {
             'is_confirmed'        => 1,
             'needs_choice'        => 0,
             'updated_at'          => date('Y-m-d H:i:s'),
-        ], 'id=?', [$itemId]);
+            // Выбор менеджера — его решение, а не наша замена (issue #124)
+        ] + self::clearAnalogue($row), 'id=?', [$itemId]);
 
         return self::all($requestId);
     }

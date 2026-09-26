@@ -2059,6 +2059,19 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '53')");
         $current = 53;
     }
+
+    // v54 — module 064: notes of a letter with no company; our own card lets go
+    if ($current < 54) {
+        if (!Db::hasColumn('correspondence', 'thread_key')) {
+            Db::q("ALTER TABLE correspondence ADD COLUMN thread_key TEXT");
+        }
+        Db::q("CREATE INDEX IF NOT EXISTS idx_corr_thread ON correspondence(thread_key)");
+        require_once __DIR__ . '/crm.php';
+        Crm::releaseOwnCards();
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '54')");
+        $current = 54;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
