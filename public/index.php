@@ -108,6 +108,18 @@ try {
     <main class="main" id="app">
         <div class="loading">Загрузка...</div>
     </main>
+    <!-- Сборка интерфейса (issue #146): новая с прошлого раза — так и сказать,
+         пока она грузится; App.init() покажет «Интерфейс обновлён» -->
+    <script>
+        window.kpBuild = '<?= $assetVer ?>';
+        try {
+            var kpWas = localStorage.getItem('kp.build');
+            if (kpWas && kpWas !== window.kpBuild) {
+                var kpLoading = document.querySelector('#app > .loading');
+                if (kpLoading) kpLoading.textContent = 'Загружаем обновление интерфейса…';
+            }
+        } catch (e) { /* приватное окно — просто «Загрузка...» */ }
+    </script>
 
     <div class="toast-container" id="toasts"></div>
 

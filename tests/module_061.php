@@ -196,7 +196,7 @@ ok('UI: стрелка и подтягивание найденного', str_co
 echo "9–16. последнее письмо, «Отправить позже», логотип, «Закрыть», установка, ручной запрос, SpeechKit, счётчик\n";
 ok('#109 последнее письмо раскрыто и в фокусе', str_contains($js, "const open = isLast || (m.direction === 'in'")
    && str_contains($js, 'this.focusLastLetter(latest.thread_key)'));
-ok('#108 «Отправить позже», день и время отдельно', str_contains($js, '⏱ Отправить позже') && !str_contains($js, '⏱ Отложить')
+ok('#108 «Отправить позже», день и время отдельно', str_contains($js, '⏱<span class="btn__txt"> Отправить позже</span>') && !str_contains($js, '⏱ Отложить')
    && str_contains($js, 'data-cmp-date') && str_contains($js, 'data-cmp-time') && !str_contains($js, 'datetime-local'));
 ok('#107 логотип — загруженный', method_exists('Branding', 'headerKind') && str_contains($idx, 'Branding::headerKind()')
    && !str_contains($idx, 'header__mark'));

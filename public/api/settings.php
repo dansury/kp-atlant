@@ -204,6 +204,7 @@ switch ($action) {
 
     case 'ui':
         $me = requireAuth();
+        require_once ROOT . '/lib/kp_content.php';
         // Свой звук менеджера важнее общего (issue #60)
         $mine = Db::one("SELECT notify_sound, notify_volume FROM managers WHERE id=?", [(int)$me['id']]) ?: [];
         jsonData(['ui' => [
@@ -214,6 +215,8 @@ switch ($action) {
             'mail_poll_min'      => max(0, (int)Settings::get('MAIL_AUTO_POLL_MIN', 10)),
             // Подпись строки доставки в подборе (модуль 045)
             'delivery_mode'      => (string)Settings::get('KP_DELIVERY_MODE', 'included'),
+            // «Фото в КП: как в настройках (N)» — N видно в самом выборе (issue #135)
+            'kp_photos'          => KpContent::photoLimit(),
             'mail_sound'         => trim((string)($mine['notify_sound'] ?? '')) !== ''
                                         ? (string)$mine['notify_sound'] : (string)Settings::get('MAIL_SOUND', ''),
             'mail_sound_volume'  => max(0, min(100, $mine['notify_volume'] !== null && $mine['notify_volume'] !== ''

@@ -290,6 +290,17 @@ are that product, not a question; and a sibling modification is never an
 «аналог» — an analogue is ANOTHER product (`Alternatives::candidates()` skips
 the family, `RequestItems::familyFix()` goes back to it first).
 
+The matcher REMEMBERS what we sold on the client's words (module 067,
+`MatchMemory`): a sent КП and a product the manager put on a row by hand are
+recorded as wording → product (the family root; the size is the letter's), and
+the next letter with the same words stands on it first, `source = memory`,
+«как в прошлых КП». Only human decisions go in — the matcher's own guess never
+does, or a mistake would teach itself. An ACCESSORY is not an answer: «Переходники
+для наушников» never answers «наушники», and the kind of product is the first
+word that is not an adjective. The «начните печатать» search narrows as it is
+typed: 1–2 character words are word starts and never searched in descriptions,
+and a query that names some modifications of a product offers only those.
+
 What the catalog could not settle — nothing found, equal candidates, a weak or
 description-only hit — the model settles BY ITSELF (`Autopick`, module 065):
 one call per letter, in the background after the card has drawn the catalog's
@@ -328,6 +339,13 @@ that is a third sum the offer does not contain.
 Under a range the КП names what costs what (module 058, `Catalog::rangeBreakdown()`), by the
 characteristics the price DEPENDS on and only by them: colour that does not move the price is
 not listed. It is printed only while it agrees with the row's two ends.
+
+Delivery may be COUNTED, never has to be (module 067, `Cdek`): «🧮» beside the
+delivery price opens the СДЭК calculator — weight of a piece from МойСклад «Вес»
+or the description × quantity, a СДЭК box or own dimensions, then the tariffs of
+СДЭК itself with a key, or the contract's rate without one. Without a rate no
+number is invented. The price lands in the field as if typed, and the СДЭК keys
+never reach the browser.
 
 The add-on block («Дополнительные модули и доукомплектование») belongs to the product the
 modules fit (`settings.addon_hosts`, `KpContent::addonHostIn()`), not to every КП. An add-on's
@@ -548,6 +566,17 @@ page, every one open until somebody deletes it, with the field to add one
 always on the screen (module 064, `Notes`). They are not in the timeline: a
 note shown twice is two notes to read. A letter with no company keeps its
 notes by `thread_key`, and they move with the thread (`Crm::attachThread()`).
+
+A folded letter opens from its TEXT, not only its header, and «✓ Прочитано» is
+a button on the letter and on the conversation row (module 067). A card and a
+letter page land on the LAST letter — ours or the client's. On a phone a button
+is an icon and a short word: the rest of its label is `.btn__txt` (hidden
+there) and lives in `title`/`aria-label`. Every `iframe` carries `color-scheme:
+light dark`: the frame learns the user's real preference from its owner, and
+with `only light` inherited from `:root` Chrome's forced dark painted every
+letter black despite the frame's own `only light`. A new build on the server is
+announced — «Вышло обновление интерфейса · Обновить» from the poll, «Интерфейс
+обновлён» after the reload that brought it.
 
 Every toast has a «×» (`App.toastClose()`, issue #132): a phone has no hover, and a
 sticky error with no cross stayed over the screen for good.

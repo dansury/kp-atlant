@@ -200,8 +200,9 @@ ok('API: 👁 и «В письмо» для заказа и отгрузки', s
 // ===================================================================== 4
 echo "4. Интерфейс: #116, #117, #119\n";
 ok('#116 после удаления письма — на доску', str_contains($js, "this.goAfterDelete('mail/board');"));
-ok('#116 первый раз — последнее письмо, повторно — поле ответа', str_contains($js, 'focusOnOpen(cpId, key)')
-   && str_contains($js, "const target = again ? this.focusReply(key) : null;"));
+// Правило «повторно — поле ответа» заменено issue #145 (модуль 067): всегда последнее письмо
+ok('#116/#145 открытие карточки — на последнее письмо', str_contains($js, 'focusOnOpen(cpId, key)')
+   && str_contains($js, "this.focusLastLetter(key);\n    },"));
 ok('#116 фокус держится, пока дорисовываются блоки', str_contains($js, 'pinScroll(el, block'));
 ok('#117 окно — по видимой части экрана', str_contains($js, 'fitModal()') && str_contains($js, "transform: `scale(\${1 / k})`"));
 ok('#119 нет вкладок «Информация» и «Заметки, заказы и счета»', !str_contains($js, 'id="companySide"')

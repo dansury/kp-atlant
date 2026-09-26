@@ -183,6 +183,13 @@ final class MailCompose {
             } elseif ($d['kind'] === 'kp') {
                 Db::q("UPDATE proposals SET status='sent', sent_at=COALESCE(sent_at, ?), updated_at=? WHERE id=?",
                       [$now, $now, $d['doc_id']]);
+                // Ушедшее КП — ответ на слова клиента, подбор его запомнит (issue #142)
+                try {
+                    require_once __DIR__ . '/match_memory.php';
+                    MatchMemory::fromProposal((int)$d['doc_id']);
+                } catch (Throwable $e) {
+                    Logger::warning('catalog', 'Память подбора не записалась: ' . $e->getMessage(), ['proposal_id' => $d['doc_id']]);
+                }
             }
         }
         Outbox::forgetDocs($docs);

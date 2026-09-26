@@ -2101,6 +2101,37 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '56')");
         $current = 56;
     }
+
+    // v57 — module 067: the matcher remembers what was sold on these words;
+    // the weight of a product for the СДЭК calculator
+    if ($current < 57) {
+        Db::q("CREATE TABLE IF NOT EXISTS match_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phrase_key TEXT NOT NULL,
+            phrase TEXT,
+            moysklad_id TEXT NOT NULL,
+            product_name TEXT,
+            source TEXT,
+            hits INTEGER NOT NULL DEFAULT 1,
+            manager_id INTEGER,
+            first_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(phrase_key, moysklad_id)
+        )");
+        Db::q("CREATE INDEX IF NOT EXISTS idx_match_memory_key ON match_memory(phrase_key, last_at)");
+        Db::ensureColumn('products_cache', 'weight', 'REAL');
+        // Уже отправленные КП — сразу в память: те же слова в новом письме
+        // встретят товар, которым на них уже отвечали (issue #142)
+        try {
+            require_once __DIR__ . '/match_memory.php';
+            MatchMemory::backfill();
+        } catch (Throwable $e) {
+            Logger::warning('catalog', 'Память подбора не заполнилась из КП: ' . $e->getMessage());
+        }
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '57')");
+        $current = 57;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

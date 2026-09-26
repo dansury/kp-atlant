@@ -65,8 +65,9 @@ not have.
 
 ## Open
 - The «не наша номенклатура» data-loss bug is fixed and the match table
-  autosaves; if it ever recurs, audit every handler that calls
-  `renderMatchedItems()` with server data.
+  autosaves (the autosave guard itself was dead until module 067 — the host's
+  own `data-conditions` stopped every save); if it ever recurs, audit every
+  handler that calls `renderMatchedItems()` with server data.
 
 ## Module 050 — check on a live board
 - The list view (`#mail/list`) sorts by the date of the last letter. Columns
@@ -195,3 +196,20 @@ not have.
   `support-assets` branch (created on first use), `main` gets no commit and no
   deploy starts. The token needs `Contents: Read and write`.
 - `support/uploads/` on the server is closed by `.htaccess`; delete it there.
+
+## Module 067 (issues #134–#146) — check on a live system
+- Chrome on Android with «Тёмная тема для сайтов»: letter bodies stay white in
+  the light theme (#136). Reproduced and fixed in headless Chromium with
+  `--blink-settings=forceDarkModeEnabled=true,preferredColorScheme=0`; the real
+  phone was not available.
+- СДЭК with real keys (ЛК → Интеграция): «🧮 → Рассчитать» — city suggestions,
+  the tariff list and a СДЭК box priced as a service. The build container cannot
+  reach api.cdek.ru (checked against a stub transport). Verify the box service
+  codes and dimensions in `Cdek::BOXES` against the account (they can be fixed
+  in `CDEK_BOXES` without a deploy).
+- After the deploy migration (v57) the match memory is filled from every sent
+  КП: open a new letter with a wording already answered («Тактические наушники
+  с активным шумоподавлением») — the row stands on the remembered product with
+  «как в прошлых КП».
+- «Вес» of products: the next МойСклад sync writes `products_cache.weight`;
+  until then weights come from descriptions only.

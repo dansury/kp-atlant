@@ -196,6 +196,15 @@ switch ($action) {
         }
         unset($it);
         $proposal['addons'] = Db::all("SELECT * FROM proposal_addons WHERE proposal_id=? ORDER BY position", [$id]);
+        // Свободный остаток модуля — рядом с ним в редакторе (issue #137), по модификациям (модуль 058)
+        require_once ROOT . '/lib/variants.php';
+        foreach ($proposal['addons'] as &$ad) {
+            $row = trim((string)($ad['moysklad_product_id'] ?? '')) !== ''
+                ? Db::one("SELECT moysklad_id, stock, reserved, product_type FROM products_cache WHERE moysklad_id=?", [$ad['moysklad_product_id']])
+                : null;
+            $ad['stock'] = $row ? Variants::freeStock($row) : null;
+        }
+        unset($ad);
         // Есть ли в КП товар, к которому подходят модули (модуль 058)
         $proposal['addon_host'] = KpContent::addonHostIn($id);
         // What the editor warns about before the manager reaches «Подтвердить»:
