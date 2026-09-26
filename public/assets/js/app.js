@@ -63,13 +63,21 @@ const App = {
     async api(url, opts = {}) {
         // Запись могла изменить что угодно — сохранённые ответы больше не в счёт
         if (opts.method && opts.method !== 'GET') this.cacheClear();
-        const res = await fetch('/api/' + url, {
-            method: opts.method || 'GET',
-            headers: opts.body ? {'Content-Type': 'application/json'} : {},
-            body: opts.body ? JSON.stringify(opts.body) : undefined,
-            credentials: 'same-origin',
-            cache: 'no-store',   // a cached "me" would show the login screen after a login
-        });
+        let res;
+        try {
+            res = await fetch('/api/' + url, {
+                method: opts.method || 'GET',
+                headers: opts.body ? {'Content-Type': 'application/json'} : {},
+                body: opts.body ? JSON.stringify(opts.body) : undefined,
+                credentials: 'same-origin',
+                cache: 'no-store',   // a cached "me" would show the login screen after a login
+            });
+        } catch (e) {
+            // Сеть упала — набранное уже лежит на устройстве (модуль 063)
+            const err = new Error('Нет связи с сервером — введённое сохранено на этом устройстве, повторите позже');
+            err.offline = true;
+            throw err;
+        }
         if (res.headers.get('content-type')?.includes('application/pdf')) return res;
         // A PHP fatal (or an empty body) is not JSON — without this the page would
         // wait for a promise that never resolves and stay on «Загрузка...»
@@ -96,6 +104,159 @@ const App = {
             throw err;
         }
         return data;
+    },
+
+    // ==== Набранное не теряется (модуль 063) ====
+    //
+    // Любое текстовое поле: копия на устройстве сразу, на сервере через 2 с.
+    // Куки — только если localStorage недоступен: куки едут с каждым запросом,
+    // и все черновики в них упёрлись бы в лимит заголовков.
+
+    keepServer: {},
+    _keepTimers: {},
+
+    keepHash(str) {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+        return (h >>> 0).toString(16);
+    },
+
+    /** Поле, которое сохраняется, и его ключ; null — не сохраняется. */
+    keepKeyOf(el) {
+        if (!el || !el.matches) return null;
+        const dk = el.dataset.keep;
+        if (dk === 'off' || el.readOnly || el.disabled || el.hidden) return null;
+        if (el.tagName === 'TEXTAREA') {
+            if (!dk && !el.id) return null;
+        } else if (el.tagName === 'INPUT') {
+            if (!dk || /^(hidden|password|file|checkbox|radio|number)$/i.test(el.type)) return null;
+        } else return null;
+        if (dk) return dk;
+        return (location.hash.slice(1) || 'mail') + '#' + el.id;
+    },
+
+    keepLocalGet(key) {
+        try {
+            const raw = localStorage.getItem('keep:' + key);
+            if (raw) return JSON.parse(raw);
+        } catch { /* нет хранилища — смотрим куки */ }
+        const m = document.cookie.match(new RegExp('(?:^|; )kpk_' + this.keepHash(key) + '=([^;]*)'));
+        if (m) { try { return JSON.parse(decodeURIComponent(m[1])); } catch { /* битая кука */ } }
+        return null;
+    },
+
+    keepLocalPut(key, rec) {
+        try { localStorage.setItem('keep:' + key, JSON.stringify(rec)); return; }
+        catch { /* приватный режим или полное хранилище — запасной путь */ }
+        const name = 'kpk_' + this.keepHash(key);
+        const val = encodeURIComponent(JSON.stringify(rec));
+        const mine = document.cookie.split('; ').filter(c => c.startsWith('kpk_'));
+        if (val.length > 3000 || (mine.length >= 6 && !mine.some(c => c.startsWith(name + '=')))) return;
+        document.cookie = `${name}=${val}; max-age=${30 * 86400}; path=/; SameSite=Lax`;
+    },
+
+    keepLocalDrop(key) {
+        try { localStorage.removeItem('keep:' + key); } catch { /* */ }
+        document.cookie = `kpk_${this.keepHash(key)}=; max-age=0; path=/; SameSite=Lax`;
+    },
+
+    /** Черновики менеджера с сервера — один раз после входа. */
+    async keepLoad() {
+        try {
+            const d = await this.api('drafts.php?action=list');
+            this.keepServer = d.items || {};
+        } catch { this.keepServer = {}; }
+        this.keepScan(document, true);
+    },
+
+    keepPut(key, value, base) {
+        if (this.keepHash(value) === base) { this.keepDrop(key); return; }
+        const rec = {v: value, base, at: Date.now()};
+        this.keepLocalPut(key, rec);
+        clearTimeout(this._keepTimers[key]);
+        this._keepTimers[key] = setTimeout(() => {
+            fetch('/api/drafts.php?action=save', {
+                method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({key, body: value, base}),
+            }).then(r => { if (r.ok) this.keepServer[key] = rec; }).catch(() => { /* копия на устройстве есть */ });
+        }, 2000);
+    },
+
+    keepDrop(key) {
+        clearTimeout(this._keepTimers[key]);
+        this.keepLocalDrop(key);
+        if (this.keepServer[key]) {
+            delete this.keepServer[key];
+            fetch('/api/drafts.php?action=clear', {
+                method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({key}),
+            }).catch(() => {});
+        }
+    },
+
+    /** Отправлено — черновик больше не нужен. */
+    keepClear(key) { if (key) this.keepDrop(key); },
+
+    keepClearIn(root) {
+        (root || document).querySelectorAll('textarea, input[data-keep]').forEach(el => {
+            const key = el.dataset.keepKey || this.keepKeyOf(el);
+            if (key) this.keepDrop(key);
+            const note = el.nextElementSibling;
+            if (note && note.classList.contains('keep-note')) note.remove();
+        });
+    },
+
+    /** Новые поля на экране: запомнить исходное и вернуть несохранённое. */
+    keepScan(root, force = false) {
+        const els = root.matches && root.matches('textarea, input[data-keep]') ? [root]
+            : [...(root.querySelectorAll ? root.querySelectorAll('textarea, input[data-keep]') : [])];
+        for (const el of els) {
+            let key, base;
+            if (el.dataset.keepKey) {
+                // Второй проход — когда пришли черновики с сервера; тронутое не трогаем
+                if (!force || el.value !== el._keepOrig) continue;
+                key = el.dataset.keepKey; base = el.dataset.keepBase;
+            } else {
+                key = this.keepKeyOf(el);
+                if (!key) continue;
+                el.dataset.keepKey = key;
+                el._keepOrig = el.value;
+                base = el.dataset.keepBase = this.keepHash(el.value);
+            }
+            const a = this.keepLocalGet(key), b = this.keepServer[key];
+            const rec = a && b ? (b.at > a.at ? b : a) : (a || b);
+            if (!rec) continue;
+            // Исходный текст поменялся (коллега сохранил) или совпал — черновик устарел
+            if (rec.base !== base || rec.v === el.value) { this.keepDrop(key); continue; }
+            el.value = rec.v;
+            if (rec !== a) this.keepLocalPut(key, rec);   // пригодится без сети
+            this.keepNote(el);
+        }
+    },
+
+    keepNote(el) {
+        const note = document.createElement('div');
+        note.className = 'keep-note';
+        note.innerHTML = '↺ Восстановлен несохранённый текст · <a href="#" role="button">Стереть</a>';
+        note.querySelector('a').addEventListener('click', e => {
+            e.preventDefault();
+            el.value = el._keepOrig || '';
+            this.keepDrop(el.dataset.keepKey);
+            note.remove();
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+        });
+        el.insertAdjacentElement('afterend', note);
+    },
+
+    bindKeep() {
+        document.addEventListener('input', e => {
+            const el = e.target;
+            if (!el.dataset || !el.dataset.keepKey) return;
+            this.keepPut(el.dataset.keepKey, el.value, el.dataset.keepBase);
+        }, true);
+        new MutationObserver(list => {
+            for (const m of list) m.addedNodes.forEach(n => { if (n.nodeType === 1) this.keepScan(n); });
+        }).observe(document.body, {childList: true, subtree: true});
     },
 
     /**
@@ -214,12 +375,14 @@ const App = {
         this.bindA11y();
         this.bindMenus();
         this.watchInstallPrompt();
+        this.bindKeep();
         try {
             this.manager = await this.api('auth.php?action=me');
             this.renderNav();
             this.initPush();
             this.loadCategories();
             this.loadUiPrefs();
+            this.keepLoad();
             this.startPolling();
             this.startMailPolling();
             // Первый заход администратора на ненастроенный сервис — в мастер,
@@ -475,6 +638,8 @@ const App = {
         Promise.resolve().then(open)
             // Карточка проверочного запроса: полоска с оценкой качества (модуль 038)
             .then(() => this.trialStrip(hash))
+            .then(() => this.landOnAction(hash))
+            .then(() => this.markNext(document.getElementById('app')))
             // Первый заход на экран — гайд по его подсказкам, по очереди
             .then(() => setTimeout(() => this.startTour(hash.split('/').slice(0, 2).join('/')), 600))
             .catch(err => this.pageFail(err));
@@ -781,6 +946,7 @@ const App = {
                 files: files.map(f => f.name),
                 trial,
             }});
+            this.keepClear(document.getElementById('reqText').dataset.keepKey);
             this.toast('Карточка в «В работе» создана', 'success');
             // Проверочный запрос ведёт назад в мастер — за оценкой
             if (trial) this.trialWatch(r.hash);
@@ -968,7 +1134,7 @@ const App = {
                         title="Свернуть все позиции">⇈</button>
                 <button type="button" class="btn btn--outline btn--sm" onclick="App.foldPickedRows(this)"
                         title="Свернуть подобранные: позиции, где товар уже выбран; нажмите ещё раз — развернуть все">✓⇈</button>
-                <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
+                <button class="btn btn--outline btn--sm" data-act="match" onclick="App.rematchItems(this, false)">Подобрать по каталогу</button>
                 <button class="btn btn--outline btn--sm" onclick="App.rematchItems(this, true)"
                         title="Нейросеть сначала приведёт формулировки клиента к нашим названиям — это один запрос к модели">Подобрать нейросетью</button>
             </div>
@@ -1173,9 +1339,15 @@ const App = {
         const c = host && host.dataset.conditions ? JSON.parse(host.dataset.conditions) : null;
         if (!c) return '';
         const types = host.dataset.priceTypes ? JSON.parse(host.dataset.priceTypes) : [];
+        // Решают раз на КП — на телефоне свёрнуты, в заголовке видно выбранное (модуль 063)
+        let open = !this.isPhone();
+        try { const v = localStorage.getItem('kp.condOpen'); if (v !== null) open = v === '1'; } catch { /* */ }
         return `
-            <div class="conditions">
-                <div class="conditions__title">Цены и условия — на все позиции${this.hint('kp-conditions')}</div>
+            <details class="conditions fold" ${open ? 'open' : ''}
+                     ontoggle="App.condToggle(this)" onchange="App.condSummary(this)" oninput="App.condSummary(this)">
+                <summary class="conditions__title">Цены и условия — на все позиции
+                    <span class="fold__sum" data-cond-sum>${this.esc(this.condSummaryText(c))}</span>
+                    <span onclick="event.preventDefault()">${this.hint('kp-conditions')}</span></summary>
                 <div class="conditions__row">
                     <label>тип цены
                         <select data-cond="price_type">
@@ -1208,7 +1380,29 @@ const App = {
                     <button class="btn btn--outline btn--sm" onclick="App.applyConditions(this)"
                             title="Проставить выбранное всем позициям и запомнить для следующих КП">Применить ко всем</button>
                 </div>
-            </div>`;
+            </details>`;
+    },
+
+    /** Что выбрано в условиях — одной строкой для свёрнутого заголовка. */
+    condSummaryText(c) {
+        const parts = [c.price_type || 'цена по настройкам'];
+        if (Number(c.discount) > 0) parts.push('−' + Number(c.discount) + '%');
+        if (Number(c.wait_on) === 1) parts.push('под заказ');
+        if (c.photos !== null && c.photos !== undefined && c.photos !== '') parts.push('фото ' + Number(c.photos));
+        return '· ' + parts.join(' · ');
+    },
+
+    condSummary(details) {
+        const c = {};
+        details.querySelectorAll('[data-cond]').forEach(el => {
+            c[el.dataset.cond] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
+        });
+        const sum = details.querySelector('[data-cond-sum]');
+        if (sum) sum.textContent = this.condSummaryText(c);
+    },
+
+    condToggle(details) {
+        try { localStorage.setItem('kp.condOpen', details.open ? '1' : '0'); } catch { /* не запомним */ }
     },
 
     /** Что выбрано в панели условий. */
@@ -1351,7 +1545,7 @@ const App = {
      */
     matchKpButton(requestId, kp) {
         if (!kp.proposal_id) {
-            return `<button class="btn btn--primary btn--sm" onclick="App.generateKP(${requestId}, this)">Сформировать КП</button>
+            return `<button class="btn btn--primary btn--sm" data-act="kp" onclick="App.generateKP(${requestId}, this)">Сформировать КП</button>
                     ${this.invoiceButton(requestId, kp)}`;
         }
         const id = kp.proposal_id;
@@ -3319,7 +3513,7 @@ const App = {
         if (suggest) suggest.hidden = true;
         // Другой товар — другие фотографии (issue #60)
         this.reloadMatchPhotos(row);
-        this.updateMatchTotal();
+        this.updateMatchTotal(row);
     },
 
     /**
@@ -3361,6 +3555,7 @@ const App = {
 
     updateMatchTotal(from) {
         const host = this.matchHost(from);
+        this.markNext(host);
         const el = host && host.querySelector('[data-match-total]');
         if (!el) return;
         const all = this.collectMatchedItems(host);
@@ -5102,6 +5297,10 @@ const App = {
                 <!-- Текст письма оформляется как текст, а не как разметка (модуль 023):
                      жирный, курсив, списки и ссылки — кнопками, без единого тега на экране -->
                 <div class="composer__tools">
+                    <!-- На телефоне оформление свёрнуто за «Aa», 🎤 — на виду (модуль 063) -->
+                    <button type="button" class="btn btn--outline btn--sm composer__fmt" aria-expanded="false"
+                            title="Показать кнопки оформления"
+                            onclick="App.toggleFormatTools(this)">Aa</button>
                     <button type="button" class="btn btn--outline btn--sm" title="Жирный" onclick="App.rte(this,'bold')"><b>Ж</b></button>
                     <button type="button" class="btn btn--outline btn--sm" title="Курсив" onclick="App.rte(this,'italic')"><i>К</i></button>
                     <button type="button" class="btn btn--outline btn--sm" title="Подчёркнутый" onclick="App.rte(this,'underline')"><u>Ч</u></button>
@@ -5130,7 +5329,7 @@ const App = {
                 <!-- На телефоне эта строка прилипает к низу экрана, пока письмо
                      на экране: «Отправить» всегда под пальцем (issue #105) -->
                 <div class="composer__actions">
-                    <button class="btn btn--primary btn--sm" onclick="App.threadSend('${this.jsStr(key)}', this)">Отправить</button>
+                    <button class="btn btn--primary btn--sm" data-cmp-send onclick="App.threadSend('${this.jsStr(key)}', this)">Отправить</button>
                     <!-- Отложенная отправка (issue #60): письмо, написанное ночью,
                          приходит клиенту утром -->
                     <button class="btn btn--outline btn--sm" title="Отправить позже — в выбранный день и час"
@@ -5416,6 +5615,18 @@ const App = {
      * потому что живёт оно у письма, а не в этом браузере.
      */
     composerChanged(key) {
+        // Копия на устройстве — сразу: сервер может быть недоступен (модуль 063)
+        const c = this.composerOf(key);
+        if (c) {
+            const html = (c.querySelector('[data-cmp-rte]') || {}).innerHTML || '';
+            const k = this.composerKeepKey(c, key);
+            if (this.composerOwnText(c)) {
+                this.keepLocalPut(k, {v: html, base: '', at: Date.now(),
+                    subject: (c.querySelector('[data-cmp-subject]') || {}).value || '',
+                    to: (c.querySelector('[data-cmp-to]') || {}).value || ''});
+            } else this.keepLocalDrop(k);
+            this.markNext(c);
+        }
         clearTimeout(this._draftTimer);
         this._draftTimer = setTimeout(() => this.saveComposerDraft(key), 1500);
     },
@@ -5444,13 +5655,81 @@ const App = {
                 body: html,
             }});
             if (idBox) idBox.value = r.draft_id || '';
+            // Сервер принял — копия на устройстве больше не нужна, если после неё не печатали
+            const lk = this.composerKeepKey(c, key), lr = this.keepLocalGet(lk);
+            if (lr && lr.v === html) this.keepLocalDrop(lk);
             // Компанию мог опознать сервер — по ИНН и подписи в теле письма
             const cpBox = c.querySelector('[data-cmp-cp]');
             if (cpBox && !cpBox.value && r.counterparty_id) cpBox.value = r.counterparty_id;
             if (saved) saved.textContent = r.saved
                 ? 'черновик сохранён' + (r.column ? ` · карточка в «${r.column}»` : '')
                 : 'черновик пуст';
-        } catch { if (saved) saved.textContent = 'черновик не сохранился'; }
+        } catch { if (saved) saved.textContent = 'нет связи — черновик сохранён на этом устройстве'; }
+    },
+
+    /** Текст письма без блока подписи: одна подпись — ещё не письмо. */
+    composerOwnText(c) {
+        const rte = c && c.querySelector('[data-cmp-rte]');
+        if (!rte) return '';
+        const copy = rte.cloneNode(true);
+        copy.querySelectorAll('[data-cmp-signature]').forEach(el => el.remove());
+        return copy.textContent.trim();
+    },
+
+    toggleFormatTools(btn) {
+        const on = btn.closest('.composer__tools').classList.toggle('composer__tools--open');
+        btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+    },
+
+    /**
+     * Следующий шаг светится (модуль 063): в каждом блоке ОДНА кнопка —
+     * та, которую по ходу работы нажимают сейчас.
+     */
+    markNext(root) {
+        if (!root || !root.querySelectorAll) return;
+        const pick = (block, next) => {
+            block.querySelectorAll('.btn--next').forEach(b => { if (b !== next) b.classList.remove('btn--next'); });
+            if (next && !next.disabled) next.classList.add('btn--next');
+        };
+        const hosts = [...root.querySelectorAll('[data-match-host]')];
+        if (root.matches('[data-match-host]')) hosts.push(root);
+        hosts.forEach(host => {
+            const names = [...host.querySelectorAll('[data-match-rows] input[data-field="product_name"]')];
+            // Товар не выбран — фото и пустое описание ему ни к чему, прячем
+            names.forEach(el => el.closest('[data-match-row]')?.classList.toggle('match-row--nomatch', !el.value.trim()));
+            const unmatched = !names.length || names.some(el => !el.value.trim()
+                && !el.closest('.match-row--out'));
+            pick(host, unmatched ? host.querySelector('[data-act="match"]') : host.querySelector('[data-act="kp"]'));
+        });
+        const comps = [...root.querySelectorAll('.composer')];
+        if (root.matches('.composer')) comps.push(root);
+        comps.forEach(c => {
+            const empty = !this.composerOwnText(c);
+            const gen = c.querySelector('[data-cmp-draft]');
+            pick(c, empty && gen && !gen.disabled ? gen : (empty ? null : c.querySelector('[data-cmp-send]')));
+        });
+    },
+
+    /**
+     * После перехода — к ближайшему действию (модуль 063). Карточка компании
+     * решает это сама (`focusOnOpen`); здесь экраны, где действие одно — ввести текст.
+     */
+    landOnAction(hash) {
+        const seg = hash.split('/');
+        let el = null;
+        if (seg[0] === 'mail' && seg[1] === 'new') el = document.getElementById('reqText');
+        if (seg[0] === 'mail' && seg[1] === 'compose') {
+            el = [...document.querySelectorAll('.composer [data-cmp-to], .composer [data-cmp-rte]')]
+                .find(x => x.offsetParent && !(x.value || x.textContent || '').trim());
+        }
+        if (!el || document.activeElement && document.activeElement !== document.body) return;
+        el.focus({preventScroll: true});
+        el.scrollIntoView({block: 'center'});
+    },
+
+    /** Ключ копии черновика письма на устройстве: переписка, иначе компания. */
+    composerKeepKey(c, key) {
+        return 'cmp:' + (key || ('cp' + ((c.querySelector('[data-cmp-cp]') || {}).value || '')));
     },
 
     /** Вернуть в поле то, что осталось с прошлого раза. */
@@ -5480,8 +5759,21 @@ const App = {
                 const note = c.querySelector('[data-cmp-saved]');
                 if (note) note.textContent = 'восстановлен черновик от ' + this.fmtDate(d.draft.updated_at);
             }
-        } catch { /* черновика нет — поле и так пустое */ }
+        } catch { /* черновика нет или сети нет — ниже копия с устройства */ }
+        // Копия с устройства живёт, только пока сервер её не принял — значит, она новее
+        const local = this.keepLocalGet(this.composerKeepKey(c, key));
+        if (local && local.v) {
+            box.innerHTML = local.v;
+            restored = true;
+            const subj = c.querySelector('[data-cmp-subject]');
+            if (subj && !subj.value.trim() && local.subject) subj.value = local.subject;
+            const to = c.querySelector('[data-cmp-to]');
+            if (to && !to.value.trim() && local.to) to.value = local.to;
+            const note = c.querySelector('[data-cmp-saved]');
+            if (note) note.textContent = 'восстановлен черновик с этого устройства';
+        }
         await this.syncSignature(c, restored);
+        this.markNext(c);
     },
 
     /** Свои файлы к письму: менеджер мог переделать документ руками. */
@@ -5687,6 +5979,7 @@ const App = {
                 to:   to.trim(),
                 text: (document.getElementById('fwdNote') || {}).value || '',
             }});
+            this.keepClearIn(document.getElementById('modal'));
             this.closeModal();
             this.toast('Письмо перенаправлено на ' + to.trim(), 'success');
             this.route();
@@ -5942,6 +6235,8 @@ const App = {
             if (!res) return;   // отправку отменили — текст остался в поле
             // Письмо ушло или легло в очередь — в поле ему больше не место
             this.clearComposer(c);
+            this.keepLocalDrop(this.composerKeepKey(c, key));
+            this.markNext(c);
             // Отложенное письмо ещё не ушло — и говорить «отправлено» о нём нельзя
             if (res.scheduled) {
                 this.toast('Письмо уйдёт ' + res.scheduled.send_at, 'success');
@@ -6436,6 +6731,7 @@ const App = {
         if (!text) return this.toast('Введите текст заметки', 'error');
         try {
             await this.api(`counterparties.php?action=note&id=${id}`, {method: 'POST', body: {text}});
+            this.keepClear(el.dataset.keepKey);
             this.closeModal();
             this.loadCompanyFeed(id);
         } catch (err) { this.toast(err.message, 'error'); }
@@ -10677,7 +10973,7 @@ const App = {
             const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body: {
                 id, category: sel ? sel.value : null, model: model ? model.value : '',
             }});
-            if (area) area.value = r.text || '';
+            if (area) { area.value = r.text || ''; area.dispatchEvent(new Event('input', {bubbles: true})); }
             const subj = document.getElementById('cmpSubject');
             if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
             const to = document.getElementById('cmpTo');
@@ -10708,6 +11004,7 @@ const App = {
         try {
             const res = await this.sendMail(body);
             if (!res) return;   // отменили — окно с текстом осталось
+            this.keepClearIn(document.getElementById('modal'));
             this.closeModal();
             this.sentToast(res);
             const key = this.composeThread;
@@ -11131,6 +11428,7 @@ const App = {
                 comment: document.getElementById('kbFixNote').value,
                 context: {task: (this.kbLast || {}).task || ''},
             }});
+            this.keepClearIn(document.getElementById('kbFix'));
             document.getElementById('kbFix').innerHTML =
                 '<p class="ok" style="margin-top:10px">Правка сохранена — она попадёт в обучение и в выгрузку.</p>';
             this.toast('Спасибо, запомнили', 'success');
@@ -13130,7 +13428,8 @@ Object.assign(App, {
         if (this.isStandalone() || this.appInstalled() || !window.isSecureContext) return '';
         if (!this.deferredInstall && !this.isIos() && !this.isChromium()) return '';
         return `<button class="btn btn--sm btn--glow" onclick="App.installFromBoard()"
-                    title="Своё окно и ярлык на панели — уведомления о новых письмах приходят, даже когда вкладка закрыта">📲 Установить приложение</button>`;
+                    aria-label="Установить приложение"
+                    title="Своё окно и ярлык на панели — уведомления о новых письмах приходят, даже когда вкладка закрыта">📲<span class="glow-lbl"> Установить приложение</span></button>`;
     },
 
     refreshInstallGlow() {
@@ -13390,7 +13689,7 @@ Object.assign(App, {
             </div>
             <div class="form-group">
                 <label>Коротко</label>
-                <input type="text" id="supTitle" placeholder="Например: не отправляется КП из карточки" value="${this.esc(opts.title || '')}">
+                <input type="text" id="supTitle" data-keep="support.title" placeholder="Например: не отправляется КП из карточки" value="${this.esc(opts.title || '')}">
                 <!-- Поля поддержки тоже диктуются (issue #95) -->
                 <button type="button" class="btn btn--outline btn--sm mic" data-mic style="margin-top:6px"
                         title="Надиктовать: нажмите, говорите, нажмите ещё раз"
@@ -13399,7 +13698,7 @@ Object.assign(App, {
             </div>
             <div class="form-group">
                 <label>Что случилось</label>
-                <textarea id="supBody" rows="6"
+                <textarea id="supBody" data-keep="support.body" rows="6"
                           placeholder="Что делали, что ожидали увидеть и что увидели. Скриншот — Ctrl+V в любом месте окна">${this.esc(opts.body || '')}</textarea>
                 <button type="button" class="btn btn--outline btn--sm mic" data-mic style="margin-top:6px"
                         title="Надиктовать: нажмите, говорите, нажмите ещё раз"
@@ -13493,6 +13792,7 @@ Object.assign(App, {
                 files: (this.supportFiles || []).map(f => f.name),
                 attach_log: document.getElementById('supLog')?.checked ? 1 : 0,
             }});
+            this.keepClearIn(document.getElementById('modal'));
             this.closeModal();
             if (r.issue_url) this.toast('Issue #' + r.issue_number + ' заведён в GitHub', 'success');
             else if (r.issue_error) this.toast('Обращение сохранено, но issue не завёлся: ' + r.issue_error, 'error');
