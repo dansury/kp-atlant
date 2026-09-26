@@ -1,22 +1,22 @@
 # Graph Report - kp-atlant  (2026-09-26)
 
 ## Corpus Check
-- 1002 files · ~1,527,040 words
+- 1009 files · ~1,639,667 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 110 file(s) not represented in the graph (top: .ttf 65, (none) 21, .otf 6)
 
 ## Summary
-- 7207 nodes · 12174 edges · 735 communities (213 shown, 522 thin omitted)
-- Extraction: 80% EXTRACTED · 20% INFERRED · 0% AMBIGUOUS · INFERRED: 2449 edges (avg confidence: 0.88)
+- 7289 nodes · 12291 edges · 772 communities (212 shown, 560 thin omitted)
+- Extraction: 80% EXTRACTED · 20% INFERRED · 0% AMBIGUOUS · INFERRED: 2490 edges (avg confidence: 0.88)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `e80f7e73`
+- Built from commit: `cfa1db5d`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- KpContent
+- DeliveryShare
 - 002-orders-crm-chat/spec.md
 - Mpdf
 - .pack
@@ -30,8 +30,8 @@
 - MoySklad
 - Otl
 - ProductMatcher
-- MpdfException
-- Element
+- Strict
+- Document
 - OtlDump
 - CatalogImport
 - EmailReader
@@ -61,14 +61,13 @@
 - Notifier
 - PdfType
 - PdfParser
-- .WriteHTML
 - Filter
 - Learning
 - pull.php
 - DirectWrite
 - Lzw
 - SMTP
-- NormalizeProperties.php
+- Crm
 - Mime
 - app.js
 - AudioRemux
@@ -78,14 +77,14 @@
 - Prompts
 - Config
 - ReflectionHelper
-- FontCache
+- Cdek
 - MailText
-- Arrays
+- ColorModeConverter
 - MailArchive
 - .mail
 - Svg
 - .__construct
-- CssParser
+- MailSignature
 - deep-copy/composer.json
 - PHPMailer – A full-featured email creation and transfer class for PHP
 - Html2Docx
@@ -93,7 +92,7 @@
 - TODO
 - CssMerger
 - NormalizeProperties
-- Cache
+- Разбор реального корпуса почты (mbox, сентябрь 2026)
 - Protection
 - KpText
 - tov.md
@@ -102,14 +101,14 @@
 - FpdiTrait
 - Stream
 - Markup
-- mpdf/CHANGELOG.md
+- MpdfException
 - ImageProcessor
 - Matcher
 - Attachments
 - Config
-- TypeFilter
+- DeepCopy.php
 - Project rules — Atlant Armour КП automation
-- Разбор реального корпуса почты (mbox, сентябрь 2026)
+- .delivery
 - Clarifications (resolved 2026-08-25)
 - WatermarkImage
 - Alternatives
@@ -122,7 +121,7 @@
 - 016 — КП уходит клиенту в Word
 - email.php
 - Module 047 — payments from T-Bank, the «Сборка» column, shipment letters, card fixes
-- Document
+- .getPages
 - Feature Specification: Orders, Invoice Sync & Company Chat
 - random_compat/composer.json
 - .unpack
@@ -143,11 +142,11 @@
 - Модуль 023 — единая карточка письма, «под заказ» и сквозной поиск
 - B
 - Autopick
-- AssetFetcher
+- module_062.php
 - .sent
 - ItemLines
 - Требования
-- Mpdf.php
+- Arrays
 - random_compat
 - RequestItems
 - http-message/composer.json
@@ -179,7 +178,7 @@
 - 062 — Issues #116–#119: the exact product and its size, stages by themselves, documents in the conversation, focus and phone windows
 - Tasks — Atlant Armour КП Automation
 - WebPush
-- Triage
+- MetadataWriter
 - triggerInstall
 - Class: `LLM`
 - 005 — Knowledge base: the company wiki inside generations
@@ -206,10 +205,10 @@
 - Myanmar
 - .orders
 - Module 008 — Catalog, matched positions, model picker
-- SiteForm
+- Модуль 030 — НДС в КП печатается всегда, цена — с налогом или плюс налог
 - Что сделано
 - Architecture decisions
-- 007 — Панель как приложение на телефоне: PWA и web push
+- 007 — The panel as a phone app: PWA and web push
 - Module 009 — Positions that pull themselves in, and a choice when they are equal
 - Module 011 — One board: companies, requests and letters as a single card
 - 1. Every typed text survives (field drafts)
@@ -218,7 +217,7 @@
 - InlineTag
 - FormFeed
 - psr-http-message-shim/composer.json
-- render_setup_form
+- Модуль 031 — письма не налезают друг на друга, ответ несёт цитату, заметка удаляется
 - psr-log-aware-trait/composer.json
 - Атлант: выгрузка каталога для КП (`atlant.kpsync`)
 - Модуль 002 — заказы, счета, чат компании
@@ -244,7 +243,7 @@
 - Tasks — 002 Orders, Invoice Sync & Company Chat
 - User Scenarios & Testing
 - Module 012 — The letter is the workplace: positions, the reply, and one thread per sender
-- 017 — Модуль сайта: ссылки и QR-коды на товары
+- admin.php
 - Модуль 033 — письмо, которое пишут, и контрагент, которого нет в МойСклад
 - Module 051 — WYSIWYG КП editor, pages on the sheet, optional signature, slow models
 - module_021.php
@@ -256,33 +255,31 @@
 - How to Report a Security Bug to Paragon Initiative Enterprises
 - DSNConfigurator
 - Bitrix\Main\Loader
-- Xlsx
+- module_067.php
 - Модуль 025 — письма разделяются по отправителю, а не по домену
-- str_ends_with
+- Module 067 — Issues #134–#139: the letter opens by its text, paper stays white, stock everywhere, the whole name, words find the variant, CDEK delivery
 - Gradient
 - knowledge.php
 - Module 058 — price range breakdown, the add-on block only for its host product, the add-on table without «Ед. изм.» and with real stock
 - search.php
-- .auto
-- Bmp
-- NumericString
+- UploadedFileInterface
+- Module 038 — a service that can be installed from scratch, checked, and complained about
 - Meter
 - image_details.php
 - A
 - libsodium.php
 - 1.0.1 - 2016-08-06
 - Spec Index — Atlant Armour КП Automation
-- auth_cookie_set
+- module_038.php
 - Bitrix\Main\Localization\Loc
 - Email Sender
 - Модуль 004 — админ-панель, логи, почта
-- Bounce
 - Settings (`settings.php`)
 - Support (`support.php`) — module 038
 - Модуль 040 — подбор перестал врать, почта перестала терять письма
 - 064 — Issues #123–#129: light and dark theme, the analogue that outlived its reason, our own requisites, the phone screens, notes on top
 - BorderMerger
-- SelectorParser
+- Hyphenator
 - request_items.php
 - Module 055 — Full-text search over every entity
 - api/mail.php
@@ -290,7 +287,6 @@
 - Proposals (`proposals.php`)
 - Setup wizard (`setup.php`) — module 038, admin only
 - Module 056 — the card moves by itself when a КП or an invoice is sent
-- 060 — Issues #92–#95: photos by pick, one way to send a КП, a card leaves with its last letter, voice in support
 - module_028.php
 - module_064.php
 - require-dev
@@ -308,21 +304,20 @@
 - A
 - A
 - ReadonlyObjectProperty
-- sw.js
 - Version 5.0.0 (April 02, 2009)
 - A short history of UTF-8 in email
 - PdfName
-- Export
-- Response
+- Option
+- User Scenarios & Testing
 - get_oauth_token.php
-- 3. Варианты поиска
+- index_vectors.php
 - invoices.php
 - Counterparties (`counterparties.php`)
 - Requests (`requests.php`)
 - Data Model — Atlant Armour КП Automation
 - Module 053 — the Bitrix module ships as a zip from the repo, the site is managed from «Каталог»
 - module_029.php
-- module_056.php
+- attachments.php
 - ComposerAutoloaderInit781d12761880230ec2db7a0fb5592fdf
 - suggest
 - Codabar
@@ -335,8 +330,8 @@
 - Foo
 - A
 - B
-- module_050.php
-- DeepCopy.php
+- DateInterval
+- Bookmark
 - Code11
 - setupTrial
 - supportFileList
@@ -352,20 +347,24 @@
 - TTFontFile.php
 - A
 - Annotation
-- copyTree
+- requireAuth
 - BarCode
 - IndexEntry
 - DotTab
 - Legend
 - Select
 - TBody
-- Kbd
+- Img
 - TFoot
 - THead
-- Mark
-- Table
+- IndexInsert
+- TextArea
+- Tr
 - WatermarkImage
+- Toc
+- TocEntry
 - Corrections (`corrections.php`)
+- WatermarkText
 - TTFontFileAnalysis
 - psr-http-message-shim
 - psr-log-aware-trait
@@ -374,17 +373,46 @@
 - COM
 - Rationale (Design Decisions)
 - NamedColors.php
+- AppBuild
+- Pre
+- Address
 - B
 - Bdi
 - Bdo
 - Big
+- Article
+- Aside
+- BlockQuote
 - Cite
 - Code
+- Caption
 - Del
+- Center
+- Dd
+- Details
 - Em
+- Dl
 - Font
+- Dt
+- Figure
+- Footer
+- Form
+- H1
+- H2
+- H3
+- H4
+- H5
+- H6
+- Header
+- HGroup
+- Ins
+- Li
+- Main
+- Nav
 - Q
 - S
+- Ol
+- P
 - Small
 - Span
 - Strike
@@ -392,6 +420,7 @@
 - Sup
 - Tt
 - U
+- Samp
 - VarTag
 - TypedProperty.php
 - Suit.php
@@ -403,12 +432,15 @@
 - LogLevel.php
 - fpdi/SECURITY.md
 - str_starts_with
+- public/index.php
+- Section
+- Ul
 
 ## God Nodes (most connected - your core abstractions)
-1. `Db` - 512 edges
+1. `Db` - 518 edges
 2. `Mpdf` - 404 edges
-3. `Settings` - 176 edges
-4. `Logger` - 155 edges
+3. `Settings` - 183 edges
+4. `Logger` - 156 edges
 5. `PHPMailer` - 133 edges
 6. `PHPMailer Change Log` - 118 edges
 7. `MoySklad` - 117 edges
@@ -431,11 +463,11 @@
 ## Import Cycles
 - None detected.
 
-## Communities (735 total, 522 thin omitted)
+## Communities (772 total, 560 thin omitted)
 
-### Community 0 - "KpContent"
-Cohesion: 0.03
-Nodes (10): {closure#1}(), DeliveryShare, {closure#1}(), KpConfirm, KpContent, KpFields, KpTerms, RequestShape (+2 more)
+### Community 0 - "DeliveryShare"
+Cohesion: 0.20
+Nodes (3): {closure#1}(), DeliveryShare, 2. Delivery goes into item prices in the invoice too
 
 ### Community 1 - "002-orders-crm-chat/spec.md"
 Cohesion: 0.15
@@ -443,59 +475,55 @@ Nodes (15): Attachment Extractor, Company Chat & Identity, MoySklad Sync, Webhoo
 
 ### Community 4 - "Db"
 Cohesion: 0.02
-Nodes (25): Board, Inbound channels, Boards, normalizeCompanyName(), Crm, Db, Throwable, MailDrafts (+17 more)
+Nodes (28): Boards, Db, Throwable, Fulfillment, SearchIndex, Signatures, PDO, PDOStatement (+20 more)
 
 ### Community 5 - "PHPMailer Change Log"
 Cohesion: 0.02
 Nodes (104): PHPMailer Change Log, Version 0.90 (Tue, April 17 2001), Version 0.92 (Tue, May 15 2001), Version 0.98 (Tue, May 22 2001), Version 1.02 (Wed, May 23 2001), Version 1.03 (Thu, May 24 2001), Version 1.05 (Tue, May 29 2001), Version 1.06 (Fri, Jun 01 2001) (+96 more)
 
 ### Community 6 - "PHPMailer"
-Cohesion: 0.04
+Cohesion: 0.03
 Nodes (4): Version 5.2.12 (Sep 1st 2015), Version 5.2.22 (January 5th 2017), Version 6.9.0 (November 23rd, 2023), PHPMailer
 
 ### Community 7 - ".date"
-Cohesion: 0.04
-Nodes (9): Fulfillment, InvoiceName, PdfGenerator, Requisites, Reserves, 5. Счёт стоит под письмом, которым его отправляют, `lib/fulfillment.php` — `Fulfillment`, 4. Issue #88 — СДЭК track and screenshots in support (+1 more)
+Cohesion: 0.03
+Nodes (8): InvoiceName, {closure#1}(), KpConfirm, KpFields, PdfGenerator, Requisites, Reserves, 5. Счёт стоит под письмом, которым его отправляют
 
 ### Community 8 - "Logger"
-Cohesion: 0.02
+Cohesion: 0.03
 Nodes (12): {closure#1}(), {closure#2}(), Logger, Throwable, Mailboxes, Mailer, MailProviders, MailSync (+4 more)
 
 ### Community 9 - "UtfString"
-Cohesion: 0.07
-Nodes (8): DecToAlpha, DecToCjk, DecToHebrew, DecToOther, Input, Option, TextCircle, UtfString
+Cohesion: 0.06
+Nodes (7): DecToAlpha, DecToCjk, DecToHebrew, DecToOther, Input, TextCircle, UtfString
 
 ### Community 13 - "ProductMatcher"
-Cohesion: 0.09
+Cohesion: 0.08
 Nodes (3): ProductMatcher, 5. «Подходящие позиции» on the request card, Matching bug fixed on the way
 
-### Community 14 - "MpdfException"
-Cohesion: 0.03
-Nodes (25): ArrayAccess, ErrorException, LocalContentLoader, ClientException, ForbiddenRequestException, NetworkException, RequestException, MpdfException (+17 more)
+### Community 14 - "Strict"
+Cohesion: 0.05
+Nodes (14): LocalContentLoader, ServiceFactory, Strict, BackgroundWriter, BaseWriter, BookmarkWriter, ColorWriter, FontWriter (+6 more)
 
-### Community 15 - "Element"
+### Community 15 - "Document"
 Cohesion: 0.06
-Nodes (9): Element, ElementBoolean, ElementDate, ElementHexa, ElementName, ElementNull, ElementNumeric, ElementString (+1 more)
+Nodes (11): Document, Element, ElementBoolean, ElementDate, ElementHexa, ElementName, ElementNull, ElementNumeric (+3 more)
 
 ### Community 17 - "CatalogImport"
 Cohesion: 0.11
 Nodes (5): CatalogImport, CatalogImportException, {closure#3}(), RuntimeException, ZipArchive
 
 ### Community 19 - "CssManager"
-Cohesion: 0.07
-Nodes (8): CssManager, Gif, ImageTypeGuesser, {closure#1}(), DOMNode, LanguageToFontInterface, ScriptToLanguageInterface, SizeConverter
+Cohesion: 0.06
+Nodes (10): CssManager, Gif, ImageTypeGuesser, {closure#1}(), DOMNode, LanguageToFontInterface, ScriptToLanguageInterface, SizeConverter (+2 more)
 
 ### Community 20 - "TTFontFile"
 Cohesion: 0.15
 Nodes (3): FontException, TTFontFile, unicode_hex()
 
 ### Community 21 - "Support"
-Cohesion: 0.04
-Nodes (6): Setup, support and the trial request, SetupWizard, Support, 2. Credentials, {closure#2}(), {closure#3}()
-
-### Community 22 - ".baseName"
 Cohesion: 0.05
-Nodes (3): {closure#1}(), Outbox, Signatures
+Nodes (5): Setup, support and the trial request, SetupWizard, Closure, Support, 2. Credentials
 
 ### Community 23 - "UriInterface"
 Cohesion: 0.06
@@ -523,7 +551,7 @@ Nodes (3): ColorConverter, InlinePropertyConverter, Wmf
 
 ### Community 33 - "Settings"
 Cohesion: 0.02
-Nodes (5): Bitrix, Embeddings, Knowledge, Settings, TBank
+Nodes (6): Bitrix, Embeddings, Knowledge, Scope, Settings, TBank
 
 ### Community 34 - "PDFObject"
 Cohesion: 0.09
@@ -534,20 +562,20 @@ Cohesion: 0.07
 Nodes (3): Response, MessageInterface, ResponseInterface
 
 ### Community 37 - "Деплой на shared-хостинг — единая папка `public_html`"
-Cohesion: 0.11
-Nodes (18): vendor/ теперь коммитится в git, Важное изменение: подпись руководителя, Векторный подбор позиций (модуль 009), Вход не проходит (экран логина перезагружается), Деплой на shared-хостинг — единая папка `public_html`, Доска компаний (модуль 011), Запрос не из почты, Как это устроено (+10 more)
+Cohesion: 0.10
+Nodes (19): `pull.php` на сервере обновляется руками (модуль 066), vendor/ теперь коммитится в git, Важное изменение: подпись руководителя, Векторный подбор позиций (модуль 009), Вход не проходит (экран логина перезагружается), Деплой на shared-хостинг — единая папка `public_html`, Доска компаний (модуль 011), Запрос не из почты (+11 more)
 
 ### Community 38 - ".parent"
 Cohesion: 0.08
-Nodes (11): ArrayObject, FPDF, tFPDF, Pre, ArrayObjectExtended, FpdfTpl, FpdfTplTrait, FpdfTrait (+3 more)
+Nodes (11): ArrayObject, FPDF, tFPDF, Th, ArrayObjectExtended, FpdfTpl, FpdfTplTrait, FpdfTrait (+3 more)
 
 ### Community 39 - "AutoPull"
-Cohesion: 0.05
-Nodes (19): AutoPull, autopullOpts(), autopullState(), setupSummary(), yandexCatalogStats(), 1. What it is for, 3. Settings (`Settings::SPEC`, group `deploy`), 4. Where it runs (+11 more)
+Cohesion: 0.08
+Nodes (6): AutoPull, 1. What it is for, 3. Settings (`Settings::SPEC`, group `deploy`), 5. State, 6. Limits, Module 014 — Auto-deploy: the update check that runs on every page
 
 ### Community 40 - "bootstrap.php"
-Cohesion: 0.19
-Nodes (17): currentManager(), isHttps(), jsonBody(), jsonData(), jsonError(), jsonHeaders(), jsonOk(), renewSessionCookie() (+9 more)
+Cohesion: 0.22
+Nodes (14): currentManager(), isHttps(), jsonBody(), jsonData(), jsonError(), jsonHeaders(), jsonOk(), renewSessionCookie() (+6 more)
 
 ### Community 41 - "Encoding"
 Cohesion: 0.06
@@ -556,10 +584,6 @@ Nodes (10): AbstractEncoding, Encoding, EncodingLocator, ISOLatin1Encoding, ISOL
 ### Community 42 - "PdfParserException"
 Cohesion: 0.06
 Nodes (15): setasign\FpdiPdfParser\PdfParser\Filter\Predictor, FpdiException, Ascii85, Ascii85Exception, AsciiHex, FilterException, FilterInterface, Flate (+7 more)
-
-### Community 43 - "Notifier"
-Cohesion: 0.05
-Nodes (12): Notifier, Push, 022 — Модификации, склады, «не наша номенклатура» и правки, на которых сервис учится, Документ (FR-225), Интерфейс (FR-226), Классификатор, который учится (FR-223), Модификации: один товар, несколько размеров (FR-220), Настройки (+4 more)
 
 ### Community 44 - "PdfType"
 Cohesion: 0.09
@@ -570,20 +594,24 @@ Cohesion: 0.09
 Nodes (3): PdfParser, Tokenizer, PdfIndirectObject
 
 ### Community 48 - "Filter"
-Cohesion: 0.08
-Nodes (19): Doctrine\Common\Collections\ArrayCollection, `ChainableFilter` (filter), `DoctrineCollectionFilter` (filter), `DoctrineEmptyCollectionFilter` (filter), `DoctrineProxyFilter` (filter), Filters, `KeepFilter` (filter), `ReplaceFilter` (type filter) (+11 more)
+Cohesion: 0.09
+Nodes (17): Doctrine\Common\Collections\ArrayCollection, `ChainableFilter` (filter), `DoctrineCollectionFilter` (filter), `DoctrineEmptyCollectionFilter` (filter), `DoctrineProxyFilter` (filter), Filters, `KeepFilter` (filter), `ReplaceFilter` (type filter) (+9 more)
 
 ### Community 49 - "Learning"
-Cohesion: 0.05
-Nodes (6): Learning, MailCompose, MailSignature, 2. Signature settings: the «Подпись» tab, 2. Delivery mode per КП, 5. Signature under the КП
+Cohesion: 0.06
+Nodes (13): Learning, API changes, 022 — Модификации, склады, «не наша номенклатура» и правки, на которых сервис учится, Документ (FR-225), Интерфейс (FR-226), Классификатор, который учится (FR-223), Модификации: один товар, несколько размеров (FR-220), Настройки (+5 more)
 
 ### Community 50 - "pull.php"
-Cohesion: 0.16
-Nodes (8): classify(), download(), drain(), enqueue(), print_finish_banner(), run(), term(), typeLine()
+Cohesion: 0.11
+Nodes (24): auth_cookie_clear(), auth_cookie_path(), auth_cookie_set(), auth_is_https(), auth_token(), auth_token_valid(), classify(), download() (+16 more)
 
 ### Community 52 - "Lzw"
 Cohesion: 0.08
 Nodes (5): ColorTable, FileHeader, Image, ImageHeader, Lzw
+
+### Community 54 - "Crm"
+Cohesion: 0.03
+Nodes (11): Board, Inbound channels, normalizeCompanyName(), runMigrations(), seedMailboxFromConfig(), {closure#3}(), Crm, MailDomains (+3 more)
 
 ### Community 56 - "app.js"
 Cohesion: 0.09
@@ -602,32 +630,32 @@ Cohesion: 0.07
 Nodes (28): authors, autoload, autoload-dev, psr-4, psr-4, conflict, setasign/tfpdf, description (+20 more)
 
 ### Community 61 - "Prompts"
-Cohesion: 0.06
-Nodes (5): ContentLog, KpRequirements, Prompts, Tov, buildProposal()
+Cohesion: 0.08
+Nodes (3): ContentLog, Prompts, Tov
 
 ### Community 64 - "ReflectionHelper"
-Cohesion: 0.17
-Nodes (7): ReflectionClass, ReflectionException, ReflectionObject, PropertyException, ReplaceFilter, PropertyTypeMatcher, ReflectionHelper
+Cohesion: 0.13
+Nodes (10): ReflectionClass, ReflectionException, ReflectionObject, ReflectionProperty, `SetNullFilter` (filter), PropertyException, ReplaceFilter, SetNullFilter (+2 more)
 
-### Community 67 - "Arrays"
-Cohesion: 0.10
-Nodes (3): TableOfContents, Tag, Arrays
+### Community 66 - "MailText"
+Cohesion: 0.03
+Nodes (7): Bounce, DOMNode, MailText, SiteForm, Triage, {closure#2}(), str_ends_with()
 
 ### Community 68 - "MailArchive"
-Cohesion: 0.02
-Nodes (14): runMigrations(), seedMailboxFromConfig(), {closure#3}(), MailDomains, MailArchive, MailThreads, SearchIndex, 1. One conversation, whichever mailbox it lives in (+6 more)
+Cohesion: 0.03
+Nodes (10): Forwards, MailArchive, MailThreads, 1. One conversation, whichever mailbox it lives in, 2. The request belongs to the conversation, not to its last letter, 8. Answered letters are not bold, letter(), letter020() (+2 more)
 
 ### Community 69 - ".mail"
-Cohesion: 0.09
+Cohesion: 0.08
 Nodes (19): D-012: Email Sending — PHPMailer, Version 6.0.2 (November 29th 2017), Version 6.0 (August 28th 2017), Version 6.11.0 (September 29th, 2025), Version 6.11.1 (September 30th, 2025), Version 6.1.5 (March 14th, 2020), Version 6.1.8 (October 9th, 2020), Version 6.3.0 (February 19th, 2021) (+11 more)
 
 ### Community 70 - "Svg"
-Cohesion: 0.08
-Nodes (4): 19/10/2017, ColorModeConverter, ColorSpaceRestrictor, Svg
+Cohesion: 0.05
+Nodes (5): DirectoryIterator, 19/10/2017, Cache, FontCache, Svg
 
 ### Community 71 - ".__construct"
-Cohesion: 0.11
-Nodes (4): CommentParser, InlineStyleParser, MediaQueryProcessor, ShadowParser
+Cohesion: 0.08
+Nodes (5): CommentParser, InlineStyleParser, MediaQueryProcessor, SelectorParser, ShadowParser
 
 ### Community 73 - "deep-copy/composer.json"
 Cohesion: 0.08
@@ -642,12 +670,16 @@ Cohesion: 0.08
 Nodes (23): authors, autoload, autoload-dev, psr-4, psr-0, config, process-timeout, description (+15 more)
 
 ### Community 77 - "TODO"
-Cohesion: 0.09
-Nodes (21): Issue #67 (module 046) — needs a live system, Left for a live check (modules 043–044), Module 047 — needs a live T-Bank and MoySklad, Module 048 — needs a live system, Module 050 — check on a live board, Module 051 — check on a live system, Module 052 — check on a live MoySklad, Module 053 — check on the live site (+13 more)
+Cohesion: 0.08
+Nodes (23): Issue #67 (module 046) — needs a live system, Left for a live check (modules 043–044), Module 047 — needs a live T-Bank and MoySklad, Module 048 — needs a live system, Module 050 — check on a live board, Module 051 — check on a live system, Module 052 — check on a live MoySklad, Module 053 — check on the live site (+15 more)
+
+### Community 80 - "Разбор реального корпуса почты (mbox, сентябрь 2026)"
+Cohesion: 0.15
+Nodes (10): 1.1. 668 из 923 писем с форм — спам-боты, 1. Письма с форм сайта: 923 штуки, и все они «от нас самих» — блокер, 2. Avito — 477 писем, из системы исключён, 3. HTML-письма без text/plain, 5. КП мы отправляем в **Word**, а система умеет только PDF, 6. Вложения: чего парсер не берёт, 7. Клиенты отвечают на автописьма магазина, 8. Служебная почта: префильтр ловит меньше пятой части (+2 more)
 
 ### Community 82 - "KpText"
-Cohesion: 0.10
-Nodes (14): Money on a position, What the document does not say, {closure#1}(), KpText, Вилка цен, 1. Жалоба менеджера доходит до трекера, но не сразу, 2. Мастер настройки: что нужно сервису, чтобы запуститься, 3. Запрос не из почты, карточка в «В работе» и оценка качества (+6 more)
+Cohesion: 0.15
+Nodes (8): Money on a position, What the document does not say, {closure#1}(), KpText, Вилка цен, 3. A request not from mail, a card in «В работе», and a quality rating, 3. «Не наша номенклатура» in the КП table, 1. The range is explained under the price
 
 ### Community 83 - "tov.md"
 Cohesion: 0.12
@@ -658,28 +690,32 @@ Cohesion: 0.10
 Nodes (4): ElementMissing, ElementStruct, Header, self
 
 ### Community 88 - "Markup"
-Cohesion: 0.15
-Nodes (5): The КП document, Markup, DOMElement, DOMNode, Разметка: Markdown внутри, HTML наружу (FR-202)
+Cohesion: 0.08
+Nodes (6): The КП document, utf8Text(), Markup, DOMElement, DOMNode, Разметка: Markdown внутри, HTML наружу (FR-202)
 
-### Community 89 - "mpdf/CHANGELOG.md"
-Cohesion: 0.11
-Nodes (11): 01/09/2013, 02/03/2012, 14/07/2013, 15/03/2019, 15/12/2014, 20/01/2013, 20/12/2014, 24/8/2014 (+3 more)
+### Community 89 - "MpdfException"
+Cohesion: 0.05
+Nodes (19): ArrayAccess, ErrorException, 01/09/2013, 02/03/2012, 14/07/2013, 15/03/2019, 15/12/2014, 20/01/2013 (+11 more)
 
 ### Community 91 - "Matcher"
 Cohesion: 0.10
 Nodes (9): Going further, Matchers, Property name, Specific property, Type, DoctrineProxyMatcher, Matcher, PropertyMatcher (+1 more)
 
-### Community 94 - "TypeFilter"
-Cohesion: 0.12
-Nodes (5): DateIntervalFilter, ReplaceFilter, ArrayObjectFilter, TypeFilter, TypeMatcher
+### Community 93 - "Config"
+Cohesion: 0.11
+Nodes (3): Catalog, Config, Export
+
+### Community 94 - "DeepCopy.php"
+Cohesion: 0.08
+Nodes (13): DatePeriod, DateTimeInterface, DateTimeZone, UnexpectedValueException, FooDateTimeZone, CloneException, DateIntervalFilter, DatePeriodFilter (+5 more)
 
 ### Community 95 - "Project rules — Atlant Armour КП automation"
-Cohesion: 0.08
-Nodes (22): 0 Task intake — never skip a request (highest priority), 1 Spec-driven development, 2 How to work with a TOR (ТЗ), 3 Complexity and TODO.md, A counterparty МойСклад does not know, Catalog, Deploy, Errors (+14 more)
+Cohesion: 0.09
+Nodes (20): 0 Task intake — never skip a request (highest priority), 1 Spec-driven development, 2 How to work with a TOR (ТЗ), 3 Complexity and TODO.md, A counterparty МойСклад does not know, Catalog, Errors, Finding a letter (+12 more)
 
-### Community 96 - "Разбор реального корпуса почты (mbox, сентябрь 2026)"
-Cohesion: 0.11
-Nodes (19): 1.1. 668 из 923 писем с форм — спам-боты, 1. Письма с форм сайта: 923 штуки, и все они «от нас самих» — блокер, 2. Avito — 477 писем, из системы исключён, 3. HTML-письма без text/plain, 4.1. Логистика (`delivery`) — самая массовая тема, отдельной категории нет, 4.2. ЭДО (`edo`) — 176 писем, нет ничего, 4.3. Документы после отгрузки (`closing_docs`) — 171 письмо, 4.4. Договор (`contract`) — 184 письма (+11 more)
+### Community 96 - ".delivery"
+Cohesion: 0.21
+Nodes (10): 4.1. Логистика (`delivery`) — самая массовая тема, отдельной категории нет, 4.2. ЭДО (`edo`) — 176 писем, нет ничего, 4.3. Документы после отгрузки (`closing_docs`) — 171 письмо, 4.4. Договор (`contract`) — 184 письма, 4.5. Тендеры и НМЦК — 101 письмо, 4.6. Гособоронзаказ — 3 письма, но цена ошибки высокая, 4. Жизненный цикл сделки обрывается на счёте, Приоритеты (+2 more)
 
 ### Community 97 - "Clarifications (resolved 2026-08-25)"
 Cohesion: 0.10
@@ -690,32 +726,28 @@ Cohesion: 0.10
 Nodes (3): Watermark, WatermarkImage, WatermarkText
 
 ### Community 100 - "Time"
-Cohesion: 0.05
+Cohesion: 0.04
 Nodes (9): Auth, clearLegacySessionCookies(), initSchema(), seedDefaults(), syncManagersFromConfig(), {closure#1}(), MailSchedule, Managers (+1 more)
+
+### Community 101 - "Qr"
+Cohesion: 0.07
+Nodes (11): The shop and the QR, {closure#2}(), Qr, 017 — Модуль сайта: ссылки и QR-коды на товары, QR-код в КП (FR-172), Выгрузка каталога (FR-171), Модуль сайта (FR-170), Настройки (+3 more)
 
 ### Community 102 - "Architectural Decisions"
 Cohesion: 0.11
 Nodes (18): Architectural Decisions, Complexity Tracking, Constitution Check, D-001: Adapted NeuroPro LLM Wrapper, D-002: SQLite with NeuroPro DB Pattern, D-003: mPDF for KP Generation, D-004: IMAP Polling via Cron, D-005: MoySklad Wrapper with Caching + Retry (+10 more)
 
-### Community 104 - "Request"
-Cohesion: 0.10
-Nodes (3): ClientInterface, Request, RequestInterface
-
 ### Community 106 - "Module 048 — КП terms and signature order, signature settings, one КП per request"
-Cohesion: 0.25
-Nodes (5): generalSettings(), 3. Word and PDF look the same, 4. One КП per request, 5. Addon folder («Папка модулей в МойСклад»), Module 048 — КП terms and signature order, signature settings, one КП per request
+Cohesion: 0.18
+Nodes (8): generalSettings(), 1. Terms block: delivery placeholders and the order of the ending, 3. Word and PDF look the same, 4. One КП per request, 5. Addon folder («Папка модулей в МойСклад»), Module 048 — КП terms and signature order, signature settings, one КП per request, Order of the ending (template and Word), Placeholders
 
 ### Community 107 - "016 — КП уходит клиенту в Word"
-Cohesion: 0.11
-Nodes (15): DocxGenerator, 016 — КП уходит клиенту в Word, Данные, Конвертер (FR-160), Проблема, Решение, Тесты, Файлы (+7 more)
+Cohesion: 0.17
+Nodes (10): DocxGenerator, 016 — КП уходит клиенту в Word, Данные, Конвертер (FR-160), Проблема, Решение, Тесты, Файлы (+2 more)
 
 ### Community 109 - "Module 047 — payments from T-Bank, the «Сборка» column, shipment letters, card fixes"
 Cohesion: 0.11
 Nodes (15): 10. T-Bank: incoming payments → MoySklad «Входящий платёж» → «Сборка», 11. Shipment: track number → a letter draft, 1. Company feed: one row per order / invoice, 2. Product suggest: a modification is listed once, under its product, 3. Photos: the modification's own and the product's, 4. Description arrives with the product, 6. Composer: «подпись» under the text, 7. «Подходящие позиции» folded by default (+7 more)
-
-### Community 110 - "Document"
-Cohesion: 0.12
-Nodes (3): Document, PDFDocEncoding, MissingCatalogException
 
 ### Community 111 - "Feature Specification: Orders, Invoice Sync & Company Chat"
 Cohesion: 0.15
@@ -734,8 +766,8 @@ Cohesion: 0.23
 Nodes (3): EmptyPdfException, MissingPdfHeaderException, RawDataParser
 
 ### Community 118 - "Module 013 — Analogues, the correspondence table, and requisites from МойСклад"
-Cohesion: 0.25
-Nodes (7): 3. After the table: the description, the first photo, the link, 5. The model does the work and stops asking, Module 013 — Analogues, the correspondence table, and requisites from МойСклад, Not done here, Schema v17, The link (1С-Битрикс), «Настройки → Оформление КП» shows what will be printed
+Cohesion: 0.09
+Nodes (15): Xlsx, Модуль 013 — аналоги, таблица соответствия, реквизиты и сайт, Проверка модуля, Что включить после деплоя, 2. A request that arrived as a table is answered as a table, 3. After the table: the description, the first photo, the link, 5. The model does the work and stops asking, Module 013 — Analogues, the correspondence table, and requisites from МойСклад (+7 more)
 
 ### Community 119 - "Class: `MoySklad`"
 Cohesion: 0.12
@@ -754,8 +786,8 @@ Cohesion: 0.20
 Nodes (14): Auth & Accounts, CRM Module, MoySklad Integration, claude.md, spec.md, МойСклад API, II. MoySklad = Truth, V. Credential Security (+6 more)
 
 ### Community 125 - "019 — Архив писем, выключаемые ящики и карточка, которая читается с телефона"
-Cohesion: 0.22
-Nodes (8): 019 — Архив писем, выключаемые ящики и карточка, которая читается с телефона, Архив: письмо уходит с экрана, а не из ящика (FR-190), Карточка компании: ответ открыт, заметка справа (FR-193), Одна настройка цены вместо двух (FR-195), Проблема, Тесты, Удаление ящика (FR-192), Ящик выключают, а не удаляют (FR-191)
+Cohesion: 0.17
+Nodes (11): BASE, keep(), SHELL, 019 — Архив писем, выключаемые ящики и карточка, которая читается с телефона, Архив: письмо уходит с экрана, а не из ящика (FR-190), Карточка компании: ответ открыт, заметка справа (FR-193), Одна настройка цены вместо двух (FR-195), Проблема (+3 more)
 
 ### Community 127 - "MsSync"
 Cohesion: 0.13
@@ -769,13 +801,13 @@ Nodes (15): 10. Битрикс: модуль, который падал на с�
 Cohesion: 0.16
 Nodes (5): BadMethodCallException, Doctrine\Persistence\Proxy, UnclonableItem, A, B
 
-### Community 131 - "AssetFetcher"
-Cohesion: 0.15
-Nodes (4): AssetFetcher, AssetFetcherInterface, LocalContentLoaderInterface, StreamWrapperChecker
+### Community 131 - "module_062.php"
+Cohesion: 0.14
+Nodes (6): {closure#2}(), {closure#3}(), {closure#4}(), {closure#5}(), {closure#6}(), {closure#9}()
 
 ### Community 132 - ".sent"
 Cohesion: 0.14
-Nodes (12): 4. НДС, реквизиты, адреса, банк and the договор — from МойСклад, frozen, 2. Вид цены — настройка, 9. Delivery: included in item prices by default, not a separate line, 8. Delayed send (issue: «отложенная отправка в заданное время и день»), 6. The match panel sits in the left column, above the letter, 1. Terms block: delivery placeholders and the order of the ending, Order of the ending (template and Word), Placeholders (+4 more)
+Nodes (11): 8. Delayed send (issue: «отложенная отправка в заданное время и день»), 6. The match panel sits in the left column, above the letter, 057 — Send delay (undo send), fold controls everywhere, «Обновить из МойСклад» that reports back, 1. Send delay («тайм-аут отправки»), 2. Folding: a visible control on every foldable thing, tooltips instead of words, 3. «Обновить из МойСклад» on the company card, 060 — Issues #92–#95: photos by pick, one way to send a КП, a card leaves with its last letter, voice in support, 1. Issue #92 — every ticked photo goes into the КП (+3 more)
 
 ### Community 133 - "ItemLines"
 Cohesion: 0.13
@@ -785,17 +817,17 @@ Nodes (7): ItemLines, 1. «Подобрать товар» по любой пе�
 Cohesion: 0.13
 Nodes (14): Журнал ошибок в интерфейсе (FR-047), Зачем, Модуль 004 — Админ-панель: логи, настройки, почта, менеджеры, промпты, Настройки и проверка подключений (FR-048), Несколько ящиков и менеджеров (FR-050), Ограничения, Почта как надстройка над почтовым клиентом (FR-049), Почтовый сервис ящика: Яндекс, Mail.ru, Gmail (FR-052) (+6 more)
 
-### Community 135 - "Mpdf.php"
-Cohesion: 0.12
-Nodes (6): Mpdf\Conversion, Mpdf\QrCode, FontVariables, {closure#3}(), Destination, MpdfPsrLogAwareTrait
+### Community 135 - "Arrays"
+Cohesion: 0.05
+Nodes (12): Mpdf\Conversion, Mpdf\QrCode, FontVariables, Border, {closure#3}(), Destination, PageFormat, Hr (+4 more)
 
 ### Community 136 - "random_compat"
 Cohesion: 0.13
 Nodes (14): Contributors, Example, Exception: "Could not gather sufficient random data"**, Exception handling, Generate a random integer between two given integers (inclusive), Generate a string of random bytes, Important, Installing (+6 more)
 
 ### Community 137 - "RequestItems"
-Cohesion: 0.03
-Nodes (10): Analogues, the shape of a request, and the КП document, Catalog, KpSet, RequestItems, Scope, Terms, API changes, «Не наша номенклатура» (FR-222) (+2 more)
+Cohesion: 0.02
+Nodes (14): Analogues, the shape of a request, and the КП document, Catalog, KpContent, KpRequirements, KpSet, KpTerms, RequestItems, RequestShape (+6 more)
 
 ### Community 138 - "http-message/composer.json"
 Cohesion: 0.13
@@ -810,8 +842,8 @@ Cohesion: 0.22
 Nodes (4): Interface, One letter, one screen, FieldDrafts, 1.2 Where it is kept
 
 ### Community 142 - "LoggerInterface"
-Cohesion: 0.10
-Nodes (8): CurlHttpClient, SocketHttpClient, Context, PsrLogAwareTrait, LoggerAwareInterface, LoggerAwareTrait, LoggerInterface, Stringable
+Cohesion: 0.05
+Nodes (15): AssetFetcher, AssetFetcherInterface, LocalContentLoaderInterface, StreamWrapperChecker, ClientInterface, CurlHttpClient, SocketHttpClient, Context (+7 more)
 
 ### Community 143 - "LoggerTrait"
 Cohesion: 0.22
@@ -822,8 +854,8 @@ Cohesion: 0.14
 Nodes (3): Synonyms, 1. A position we cannot ship is answered, not left blank, Which rows are eligible
 
 ### Community 145 - "Module 045 — the rest of issue #60: letter wording, delivery in the invoice, the КП page editor, the editor layout"
-Cohesion: 0.15
-Nodes (10): 10. Lazy loading outside the match table, 1. The letter names availability, not stock numbers; links read «см. на сайте», 2. Delivery goes into item prices in the invoice too, 4. The MoySklad invoice print form, 7. The row controls where the issue put them, 8. Support: button in sight, tickets on the board, 9. Correspondence rows like Gmail, Module 045 — the rest of issue #60: letter wording, delivery in the invoice, the КП page editor, the editor layout (+2 more)
+Cohesion: 0.17
+Nodes (9): 10. Lazy loading outside the match table, 1. The letter names availability, not stock numbers; links read «см. на сайте», 4. The MoySklad invoice print form, 7. The row controls where the issue put them, 8. Support: button in sight, tickets on the board, 9. Correspondence rows like Gmail, Module 045 — the rest of issue #60: letter wording, delivery in the invoice, the КП page editor, the editor layout, Settings (+1 more)
 
 ### Community 146 - "Module 042 — scope fix, price/delivery clarity, board load, document cleanup"
 Cohesion: 0.14
@@ -850,7 +882,7 @@ Cohesion: 0.14
 Nodes (13): 021 — История из mbox, дедупликация, логотипы и ликбез, Дедупликация — со всех ящиков и по умолчанию (FR-212), Импорт mbox (FR-210), История ложится на карточку компании (FR-213), Ликбез (FR-215), Логотипы через интерфейс (FR-214), Настройки, Проблема (+5 more)
 
 ### Community 154 - "Ucdn"
-Cohesion: 0.08
+Cohesion: 0.09
 Nodes (5): ConfigVariables, DefaultCss, LanguageToFont, ScriptToLanguage, Ucdn
 
 ### Community 156 - "Path"
@@ -894,8 +926,8 @@ Cohesion: 0.15
 Nodes (12): 005 — Knowledge base: the company wiki inside generations, Admin panel, Data, Files, Problem, Prompts, Retrieval (FR-053), Scope (+4 more)
 
 ### Community 171 - "006 — Research: как искать факты для ответа на shared-хостинге"
-Cohesion: 0.20
-Nodes (6): 006 — Research: как искать факты для ответа на shared-хостинге, 1. Что показывает почта, 2. Что даёт вики и чат, 4. Итоговое решение, 5. Чего решение сознательно НЕ делает, 6. Замеры
+Cohesion: 0.15
+Nodes (12): 006 — Research: как искать факты для ответа на shared-хостинге, 1. Что показывает почта, 2. Что даёт вики и чат, 3. Варианты поиска, 4. Итоговое решение, 5. Чего решение сознательно НЕ делает, 6. Замеры, A. Как сейчас: полный скан в PHP (`Knowledge::search`) (+4 more)
 
 ### Community 172 - "Модуль 024 — разбор почты партиями, одна раскладка карточки, документ в браузере"
 Cohesion: 0.15
@@ -903,7 +935,7 @@ Nodes (12): 10. Кто написал письмо, 1. Карточка пись
 
 ### Community 173 - "MoySkladException"
 Cohesion: 0.10
-Nodes (10): MoySkladException, MoySkladPermissionException, Phase 6: User Story 5 — MoySklad Order Creation (P2), Куда ведёт нажатие (FR-073), 5. Счёт и заказ говорят то же самое, 1. Yandex: the models that answer only on the OpenAI-compatible route, 3. MoySklad: the rate limit is read, the retries are honoured, the event is not lost, Files (+2 more)
+Nodes (10): MoySkladException, MoySkladPermissionException, Phase 6: User Story 5 — MoySklad Order Creation (P2), Where a tap leads (FR-073), 5. Счёт и заказ говорят то же самое, 1. Yandex: the models that answer only on the OpenAI-compatible route, 3. MoySklad: the rate limit is read, the retries are honoured, the event is not lost, Files (+2 more)
 
 ### Community 175 - "Module 046 — issue #67: the КП document, the letter's blocks on a phone, Bitrix descriptions"
 Cohesion: 0.17
@@ -934,8 +966,8 @@ Cohesion: 0.17
 Nodes (11): PDF в интерфейсе, Видимый ход работы и видимые ошибки, Зачем, Имя и номер, Картинки с обтеканием, Модуль 035 — документ как в образце, видимый ход работы, имя файла, Набор документа, Проверка (+3 more)
 
 ### Community 184 - "1. The client's sizes (#132)"
-Cohesion: 0.15
-Nodes (12): 065 — Issues #131–#132: the autopick in one button, the client's sizes, no false analogue, a closed card reopens, every notice closes, 1.1 The line of the letter (`ItemLines`), 1.3 The size picks the modification — and the colour the client wrote, 1.4 The query is the product, not the sentence (`ProductMatcher`), 1.5 A hint for the manager, not for the client, 1.6 Equal candidates of one product are the product, 1.7 What a sized row searches by, 1. The client's sizes (#132) (+4 more)
+Cohesion: 0.17
+Nodes (11): 065 — Issues #131–#132: the autopick in one button, the client's sizes, no false analogue, a closed card reopens, every notice closes, 1.1 The line of the letter (`ItemLines`), 1.3 The size picks the modification — and the colour the client wrote, 1.4 The query is the product, not the sentence (`ProductMatcher`), 1.6 Equal candidates of one product are the product, 1.7 What a sized row searches by, 1. The client's sizes (#132), 2. An analogue is another product (#132) (+3 more)
 
 ### Community 185 - "module_065.php"
 Cohesion: 0.17
@@ -958,12 +990,16 @@ Cohesion: 0.25
 Nodes (11): Follow-up Engine, Knowledge Base, LLM Wrapper (NeuroPro), Correction, EmailRules, OpenRouter, Yandex FM, III. ToV Compliance (+3 more)
 
 ### Community 193 - ".orders"
-Cohesion: 0.22
-Nodes (12): D-101: MoySklad is the source of truth for documents, Schema (migration v2, `runMigrations()` in `lib/bootstrap.php`), Edge Cases, User Scenarios & Testing, User Story 10 — Чат компании и заметки для коллег (Priority: P1), User Story 11 — Подсветка неотвеченных карточек (Priority: P2), User Story 8 — Письмо-заказ и кнопка «Создать заказ» (Priority: P1), User Story 9 — Возврат счёта и правок из МойСклад в карточку (Priority: P1) (+4 more)
+Cohesion: 0.36
+Nodes (7): D-101: MoySklad is the source of truth for documents, Schema (migration v2, `runMigrations()` in `lib/bootstrap.php`), User Story 9 — Возврат счёта и правок из МойСклад в карточку (Priority: P1), Phase 1: Schema, 2.1 Normalization — `SearchIndex::normalize(string): string`, 2.2 Freshness — triggers + `search_dirty`, 2. The index — `lib/search.php`, class `SearchIndex`
 
 ### Community 194 - "Module 008 — Catalog, matched positions, model picker"
 Cohesion: 0.18
 Nodes (9): 1. One «Настройки» in the menu, 2. Reaching a model API from a filtered network, 3. Model catalog and picking a model per reply, 4. Catalog: МойСклад API **or** an Excel export, 6. Photos in the KP, chosen one by one, 7. Broken subjects in the archive, Module 008 — Catalog, matched positions, model picker, Schema v10 (+1 more)
+
+### Community 195 - "Модуль 030 — НДС в КП печатается всегда, цена — с налогом или плюс налог"
+Cohesion: 0.20
+Nodes (8): 4. НДС, реквизиты, адреса, банк and the договор — from МойСклад, frozen, 1. Налог печатается всегда, 2. Вид цены — настройка, 3. Что заморожено, а что нет, Модуль 030 — НДС в КП печатается всегда, цена — с налогом или плюс налог, Проверка, Схема, 9. Delivery: included in item prices by default, not a separate line
 
 ### Community 196 - "Что сделано"
 Cohesion: 0.18
@@ -973,9 +1009,9 @@ Nodes (9): Аналог словами клиента, Доска: отмети�
 Cohesion: 0.18
 Nodes (10): Architecture decisions, D-102: Three-layer freshness, D-103: Attachment text feeds the same LLM call, D-104: pdfparser vendored outside composer, D-105: Company identity is a resolver, not a constraint, D-106: Answer state is denormalized, D-107: Webhook endpoint acks first, works after, Files (+2 more)
 
-### Community 198 - "007 — Панель как приложение на телефоне: PWA и web push"
+### Community 198 - "007 — The panel as a phone app: PWA and web push"
 Cohesion: 0.18
-Nodes (10): 007 — Панель как приложение на телефоне: PWA и web push, API (FR-072), Данные, Диагностика, Настройки, Область, Проблема, Происхождение (+2 more)
+Nodes (10): 007 — The panel as a phone app: PWA and web push, API (FR-072), Data, Diagnostics, Files, Installation (FR-070), Origin, Problem (+2 more)
 
 ### Community 199 - "Module 009 — Positions that pull themselves in, and a choice when they are equal"
 Cohesion: 0.18
@@ -994,8 +1030,8 @@ Cohesion: 0.18
 Nodes (11): require, ext-gd, ext-mbstring, mpdf/psr-http-message-shim, mpdf/psr-log-aware-trait, myclabs/deep-copy, paragonie/random_compat, php (+3 more)
 
 ### Community 204 - "InlineTag"
-Cohesion: 0.17
-Nodes (5): Acronym, InlineTag, Ins, Samp, Sub
+Cohesion: 0.18
+Nodes (5): Acronym, InlineTag, Kbd, Mark, Sub
 
 ### Community 205 - "FormFeed"
 Cohesion: 0.18
@@ -1005,9 +1041,9 @@ Nodes (4): FormFeed, NewPage, PageBreak, TocPageBreak
 Cohesion: 0.18
 Nodes (10): authors, autoload, psr-4, description, license, name, Mpdf\\PsrHttpMessageShim\\, require (+2 more)
 
-### Community 207 - "render_setup_form"
-Cohesion: 0.28
-Nodes (9): handle_setup_post(), render_login_form(), render_setup_done(), render_setup_form(), setup_check(), setup_field(), start_output(), terminal_css() (+1 more)
+### Community 207 - "Модуль 031 — письма не налезают друг на друга, ответ несёт цитату, заметка удаляется"
+Cohesion: 0.20
+Nodes (8): 1. Вёрстка переписки: один поток и ни одного вложенного слоя, 2. Ответ несёт письмо, на которое отвечает, 3. Заметки: видно там, где ищут, и стирается там, где написано, 4. Одно письмо удаляется из карточки, 5. «Убрать с доски» перестало отменяться следующим заходом, 7. `imagedestroy()`, Модуль 031 — письма не налезают друг на друга, ответ несёт цитату, заметка удаляется, Проверки
 
 ### Community 208 - "psr-log-aware-trait/composer.json"
 Cohesion: 0.18
@@ -1066,8 +1102,8 @@ Cohesion: 0.20
 Nodes (9): authors, config, sort-packages, description, homepage, keywords, license, name (+1 more)
 
 ### Community 227 - "BlockTag"
-Cohesion: 0.03
-Nodes (33): Address, Article, Aside, BlockQuote, BlockTag, Caption, Center, Dd (+25 more)
+Cohesion: 0.20
+Nodes (5): BlockTag, Div, FieldSet, FigCaption, Summary
 
 ### Community 228 - "SetHtmlPageFooter"
 Cohesion: 0.20
@@ -1093,9 +1129,9 @@ Nodes (9): Edge Cases, User Scenarios & Testing, User Story 1 — Менедже
 Cohesion: 0.22
 Nodes (8): 1. One conversation per subject **and sender**, 3. The positions table, inside the letter, 4. The reply, at the foot of the conversation, 5. A white interface, 6. The real logo on the app icon, Module 012 — The letter is the workplace: positions, the reply, and one thread per sender, Routes, Schema v14 (this module)
 
-### Community 235 - "017 — Модуль сайта: ссылки и QR-коды на товары"
+### Community 235 - "admin.php"
 Cohesion: 0.22
-Nodes (8): 017 — Модуль сайта: ссылки и QR-коды на товары, QR-код в КП (FR-172), Выгрузка каталога (FR-171), Модуль сайта (FR-170), Настройки, Проблема, Проверка, Решение
+Nodes (4): autopullOpts(), autopullState(), setupSummary(), yandexCatalogStats()
 
 ### Community 236 - "Модуль 033 — письмо, которое пишут, и контрагент, которого нет в МойСклад"
 Cohesion: 0.22
@@ -1109,29 +1145,33 @@ Nodes (8): 1. «Список»: new and unanswered rows are bold, 2. The КП wi
 Cohesion: 0.22
 Nodes (9): autoload, autoload-dev, files, psr-4, files, psr-4, Issues\\, Mpdf\\ (+1 more)
 
-### Community 244 - "Tag"
-Cohesion: 0.05
-Nodes (9): Bookmark, Br, Img, IndexInsert, Tag, TextArea, Toc, TocEntry (+1 more)
-
 ### Community 245 - "How to Report a Security Bug to Paragon Initiative Enterprises"
 Cohesion: 0.22
 Nodes (8): An Invitation to Security Researchers, How to Report a Security Bug to Paragon Initiative Enterprises, No Proof-of-Concept Required, Quick Answers, There is no compulsion to disclose privately., We Will Reward Security Researchers, What does a "valid" bug mean?, Where to Send Security Vulnerabilities
 
 ### Community 247 - "Bitrix\Main\Loader"
-Cohesion: 0.32
-Nodes (4): Bitrix\Main\Loader, CCatalog, CCatalogSKU, CIBlockElement
+Cohesion: 0.18
+Nodes (5): Bitrix\Main\Loader, Response, CCatalog, CCatalogSKU, CIBlockElement
+
+### Community 248 - "module_067.php"
+Cohesion: 0.20
+Nodes (3): {closure#3}(), {closure#4}(), {closure#5}()
 
 ### Community 249 - "Модуль 025 — письма разделяются по отправителю, а не по домену"
 Cohesion: 0.25
 Nodes (7): publicEmailDomains(), 1. Что склеивало карточки, 2. Домен — признак компании только там, где он ею и является, 3. Сервис узнаёт общий домен сам, 4. То, что уже слиплось, разбирается, Модуль 025 — письма разделяются по отправителю, а не по домену, Проверки
 
+### Community 250 - "Module 067 — Issues #134–#139: the letter opens by its text, paper stays white, stock everywhere, the whole name, words find the variant, CDEK delivery"
+Cohesion: 0.22
+Nodes (8): 1. #134 — a folded letter opens by its text, 2. #135 — what «фото» means, 3. #136 — paper stays white under «Тёмная тема для сайтов», 4. #137 — how many are available, wherever a product is offered, 5. #138 — the whole name, and the words find the variant, 6. #139 — delivery by CDEK tariffs, optional, 7. Tests, Module 067 — Issues #134–#139: the letter opens by its text, paper stays white, stock everywhere, the whole name, words find the variant, CDEK delivery
+
 ### Community 253 - "Module 058 — price range breakdown, the add-on block only for its host product, the add-on table without «Ед. изм.» and with real stock"
 Cohesion: 0.29
 Nodes (4): 2. «Дополнительные модули и доукомплектование» only for its host product, 3. The add-on table prints without «Ед. изм.», 4. Stock of an add-on is today's, and a modification's counts, Module 058 — price range breakdown, the add-on block only for its host product, the add-on table without «Ед. изм.» and with real stock
 
-### Community 255 - ".auto"
+### Community 257 - "Module 038 — a service that can be installed from scratch, checked, and complained about"
 Cohesion: 0.29
-Nodes (6): Модуль 013 — аналоги, таблица соответствия, реквизиты и сайт, Проверка модуля, Что включить после деплоя, Settings added, Телефон: ничего шире экрана (FR-194), 1. #123 — two themes, and a light theme that is light everywhere
+Nodes (6): 1. A manager's complaint reaches the tracker, but not directly, 2. The setup wizard: what the service needs to start, Module 038 — a service that can be installed from scratch, checked, and complained about, Schema (v36), Settings, Tests
 
 ### Community 259 - "image_details.php"
 Cohesion: 0.32
@@ -1144,10 +1184,6 @@ Nodes (7): 1.0.0 - 2016-05-18, 1.0.1 - 2016-08-06, Added, Changelog, Deprecated,
 ### Community 263 - "Spec Index — Atlant Armour КП Automation"
 Cohesion: 0.40
 Nodes (4): Constitution, Research, Spec Index — Atlant Armour КП Automation, Tests
-
-### Community 264 - "auth_cookie_set"
-Cohesion: 0.38
-Nodes (7): auth_cookie_clear(), auth_cookie_path(), auth_cookie_set(), auth_is_https(), auth_token(), auth_token_valid(), require_auth()
 
 ### Community 266 - "Email Sender"
 Cohesion: 0.33
@@ -1193,10 +1229,6 @@ Nodes (6): GET `?action=state`, POST `?action=model` — `{"spec": "yandex:yande
 Cohesion: 0.33
 Nodes (5): 1. Stage columns, 2. Moving forward only, 3. Where it fires, Knowing what was attached, Module 056 — the card moves by itself when a КП or an invoice is sent
 
-### Community 284 - "060 — Issues #92–#95: photos by pick, one way to send a КП, a card leaves with its last letter, voice in support"
-Cohesion: 0.33
-Nodes (5): 060 — Issues #92–#95: photos by pick, one way to send a КП, a card leaves with its last letter, voice in support, 1. Issue #92 — every ticked photo goes into the КП, 2. Issue #94 — a КП is sent only from the letter editor, 3. Issue #93 — deleting a company's last letter removes its card, 4. Issue #95 — the support form takes voice
-
 ### Community 288 - "require-dev"
 Cohesion: 0.33
 Nodes (6): require-dev, mockery/mockery, mpdf/qrcode, squizlabs/php_codesniffer, tracy/tracy, yoast/phpunit-polyfills
@@ -1206,8 +1238,8 @@ Cohesion: 0.33
 Nodes (6): scripts, coverage, cs, cs:fix, post-install-cmd, test
 
 ### Community 291 - "DeepCopy"
-Cohesion: 0.23
-Nodes (5): function_exists, ReflectionProperty, deep_copy(), {closure#1}(), DeepCopy
+Cohesion: 0.21
+Nodes (4): function_exists, deep_copy(), {closure#1}(), DeepCopy
 
 ### Community 304 - "Version 5.0.0 (April 02, 2009)"
 Cohesion: 0.33
@@ -1217,13 +1249,17 @@ Nodes (6): class.phpmailer.php:, class.smtp.php:, New examples, New /test_script
 Cohesion: 0.33
 Nodes (5): A short history of UTF-8 in email, Background, Postfix gotcha, SMTPUTF8, SMTPUTF8 in PHPMailer
 
+### Community 309 - "User Scenarios & Testing"
+Cohesion: 0.40
+Nodes (5): Edge Cases, User Scenarios & Testing, User Story 10 — Чат компании и заметки для коллег (Priority: P1), User Story 11 — Подсветка неотвеченных карточек (Priority: P2), User Story 8 — Письмо-заказ и кнопка «Создать заказ» (Priority: P1)
+
 ### Community 310 - "get_oauth_token.php"
 Cohesion: 0.40
 Nodes (4): Greew\OAuth2\Client\Provider\Azure, Hayageek\OAuth2\Client\Provider\Yahoo, League\OAuth2\Client\Provider\Google, Stevenmaguire\OAuth2\Client\Provider\Microsoft
 
-### Community 311 - "3. Варианты поиска"
-Cohesion: 0.33
-Nodes (6): 3. Варианты поиска, A. Как сейчас: полный скан в PHP (`Knowledge::search`), B. SQLite FTS5 + BM25 ← **выбрано**, C. Векторный поиск (эмбеддинги + косинус), D. Отдать поиск модели (большой контекст / file search), E. Гибрид: FTS5 + структурный поиск по каталогу ← **тоже выбрано, вместе с B**
+### Community 311 - "index_vectors.php"
+Cohesion: 0.50
+Nodes (3): {closure#1}(), {closure#2}(), {closure#3}()
 
 ### Community 315 - "Counterparties (`counterparties.php`)"
 Cohesion: 0.40
@@ -1246,12 +1282,8 @@ Cohesion: 0.40
 Nodes (5): suggest, ext-bcmath, ext-imagick, ext-xml, ext-zlib
 
 ### Community 331 - "Module 049 — delivery mode per КП, no cover letter in КП settings, side rail, КП above the letter"
-Cohesion: 0.40
-Nodes (4): 1. No cover letter among the КП settings, 3. Company card side rail (desktop), 4. КП preview above the letter, Module 049 — delivery mode per КП, no cover letter in КП settings, side rail, КП above the letter
-
-### Community 337 - "DeepCopy.php"
-Cohesion: 0.13
-Nodes (10): DateInterval, DatePeriod, DateTimeInterface, DateTimeZone, UnexpectedValueException, FooDateInterval, FooDateTimeZone, CloneException (+2 more)
+Cohesion: 0.20
+Nodes (7): 2. Signature settings: the «Подпись» tab, 1. No cover letter among the КП settings, 2. Delivery mode per КП, 3. Company card side rail (desktop), 4. КП preview above the letter, Module 049 — delivery mode per КП, no cover letter in КП settings, side rail, КП above the letter, 5. Signature under the КП
 
 ### Community 343 - "setupTrial"
 Cohesion: 0.50
@@ -1269,41 +1301,37 @@ Nodes (4): Auth (`auth.php`), GET `?action=me`, POST `?action=login`, POST `?act
 Cohesion: 0.50
 Nodes (4): support, docs, issues, source
 
-### Community 363 - "copyTree"
-Cohesion: 0.50
-Nodes (4): copyTree(), purgeExtra(), rmTree(), 6. A redeploy no longer eats what the service has learned
-
-### Community 375 - "Table"
-Cohesion: 0.12
-Nodes (5): Border, Table, Td, Th, Tr
+### Community 363 - "requireAuth"
+Cohesion: 0.16
+Nodes (15): Deploy, autoPullCheck(), requireAdmin(), requireAuth(), copyTree(), purgeExtra(), rmTree(), 6. A redeploy no longer eats what the service has learned (+7 more)
 
 ### Community 380 - "Corrections (`corrections.php`)"
 Cohesion: 0.67
 Nodes (3): Corrections (`corrections.php`), GET `?action=export` — returns all corrections as JSON array (NFR-008), GET `?action=list&page=1`
 
 ### Community 577 - "str_starts_with"
-Cohesion: 0.06
-Nodes (13): {closure#1}(), {closure#2}(), {closure#3}(), CurlHandle, CurlHandle, DOMNode, {closure#2}(), {closure#3}() (+5 more)
+Cohesion: 0.12
+Nodes (4): CurlHandle, CurlHandle, DOMNode, str_starts_with()
 
 ## Knowledge Gaps
-- **955 isolated node(s):** `name`, `description`, `type`, `php`, `mpdf/mpdf` (+950 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 3335 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **522 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **960 isolated node(s):** `name`, `description`, `type`, `php`, `mpdf/mpdf` (+955 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 3380 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **560 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Db` connect `Db` to `KpContent`, `Autopick`, `.sent`, `ItemLines`, `.date`, `Logger`, `RequestItems`, `LLM`, `MoySklad`, `FieldDrafts`, `ProductMatcher`, `Synonyms`, `CatalogImport`, `Module 042 — scope fix, price/delivery clarity, board load, document cleanup`, `064 — Issues #123–#129: light and dark theme, the analogue that outlived its reason, our own requisites, the phone screens, notes on top`, `request_items.php`, `.baseName`, `Support`, `Variants`, `Crypt`, `module_064.php`, `Settings`, `.parent`, `Triage`, `bootstrap.php`, `Notifier`, `MoySkladException`, `Module 046 — issue #67: the КП document, the letter's blocks on a phone, Bitrix descriptions`, `Learning`, `module_065.php`, `invoices.php`, `Prompts`, `lib/boards.php`, `module_029.php`, `.orders`, `MailText`, `module_056.php`, `MailArchive`, `str_starts_with`, `module_050.php`, `KpText`, `020 — Прочитанное, свёрнутое и размеченное`, `Markup`, `Attachments`, `module_024.php`, `module_022.php`, `module_025.php`, `Разбор реального корпуса почты (mbox, сентябрь 2026)`, `module_032.php`, `Alternatives`, `Time`, `module_060.php`, `Tasks — 002 Orders, Invoice Sync & Company Chat`, `Module 048 — КП terms and signature order, signature settings, one КП per request`, `module_021.php`, `Spec 003 — Rich КП: product cards, photos and upsell`, `str_ends_with`, `Module 058 — price range breakdown, the add-on block only for its host product, the add-on table without «Ед. изм.» and with real stock`, `search.php`, `MsSync`?**
-  _High betweenness centrality (0.227) - this node is a cross-community bridge._
-- **Why does `Mpdf` connect `Mpdf` to `Bmp`, `NumericString`, `Meter`, `AssetFetcher`, `.date`, `Mpdf.php`, `UtfString`, `MpdfException`, `LoggerInterface`, `OtlDump`, `CssManager`, `SelectorParser`, `.printbuffer`, `Form`, `Ucdn`, `Path`, `ColorConverter`, `MetricsGenerator`, `PageFooter`, `.WriteFlowingBlock`, `.WriteHTML`, `DirectWrite`, `NormalizeProperties.php`, `.AddCJKFont`, `FontCache`, `Arrays`, `Svg`, `.__construct`, `InlineTag`, `NormalizeProperties`, `Protection`, `FpdiTrait`, `mpdf/CHANGELOG.md`, `A`, `Annotation`, `BarCode`, `IndexEntry`, `DotTab`, `Legend`, `Select`, `Tag`, `Table`, `Gradient`?**
-  _High betweenness centrality (0.133) - this node is a cross-community bridge._
-- **Why does `MpdfException` connect `MpdfException` to `Mpdf`, `AssetFetcher`, `UtfString`, `Otl`, `LoggerInterface`, `TTFontFileAnalysis`, `TTFontFile`, `SelectorParser`, `UriInterface`, `BarcodeException`, `Form`, `.printbuffer`, `Path`, `Indic`, `ColorConverter`, `FontFileFinder`, `MetricsGenerator`, `.WriteFlowingBlock`, `.WriteHTML`, `DirectWrite`, `NormalizeProperties.php`, `SimpleContainer`, `.AddCJKFont`, `Svg`, `Cache`, `Protection`, `mpdf/CHANGELOG.md`, `ImageProcessor`, `._applyGSUBsubtable`, `Table`?**
-  _High betweenness centrality (0.058) - this node is a cross-community bridge._
-- **Are the 494 inferred relationships involving `Db` (e.g. with `.candidates()` and `.listForRequest()`) actually correct?**
-  _`Db` has 494 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 160 inferred relationships involving `Settings` (e.g. with `Setup, support and the trial request` and `.enabled()`) actually correct?**
-  _`Settings` has 160 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 133 inferred relationships involving `Logger` (e.g. with `.suggest()` and `.fromPdf()`) actually correct?**
-  _`Logger` has 133 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `Db` connect `Db` to `Autopick`, `module_062.php`, `.sent`, `ItemLines`, `.date`, `Logger`, `RequestItems`, `LLM`, `MoySklad`, `FieldDrafts`, `Synonyms`, `CatalogImport`, `Module 042 — scope fix, price/delivery clarity, board load, document cleanup`, `064 — Issues #123–#129: light and dark theme, the analogue that outlived its reason, our own requisites, the phone screens, notes on top`, `request_items.php`, `.baseName`, `Support`, `Variants`, `Crypt`, `module_064.php`, `Settings`, `.parent`, `bootstrap.php`, `Notifier`, `MoySkladException`, `Module 046 — issue #67: the КП document, the letter's blocks on a phone, Bitrix descriptions`, `Learning`, `Crm`, `module_065.php`, `invoices.php`, `Prompts`, `lib/boards.php`, `module_029.php`, `.orders`, `MailText`, `Cdek`, `MailArchive`, `MailSignature`, `Module 049 — delivery mode per КП, no cover letter in КП settings, side rail, КП above the letter`, `KpText`, `020 — Прочитанное, свёрнутое и размеченное`, `Markup`, `Attachments`, `module_024.php`, `module_022.php`, `module_025.php`, `.delivery`, `module_032.php`, `Alternatives`, `Time`, `module_060.php`, `Tasks — 002 Orders, Invoice Sync & Company Chat`, `Module 048 — КП terms and signature order, signature settings, one КП per request`, `module_021.php`, `Spec 003 — Rich КП: product cards, photos and upsell`, `module_067.php`, `Module 058 — price range breakdown, the add-on block only for its host product, the add-on table without «Ед. изм.» and with real stock`, `search.php`, `MsSync`?**
+  _High betweenness centrality (0.189) - this node is a cross-community bridge._
+- **Why does `Mpdf` connect `Mpdf` to `Meter`, `.date`, `Arrays`, `UtfString`, `LoggerInterface`, `Strict`, `OtlDump`, `CssManager`, `Hyphenator`, `.printbuffer`, `Form`, `Path`, `._fixTableBorders`, `ColorConverter`, `MetadataWriter`, `PageFooter`, `.WriteFlowingBlock`, `.AddPage`, `DirectWrite`, `ColorModeConverter`, `Svg`, `.__construct`, `NormalizeProperties`, `Protection`, `Bookmark`, `FpdiTrait`, `MpdfException`, `A`, `Annotation`, `BarCode`, `IndexEntry`, `DotTab`, `Legend`, `Select`, `Img`, `TocEntry`, `TextArea`, `Gradient`?**
+  _High betweenness centrality (0.114) - this node is a cross-community bridge._
+- **Why does `Settings` connect `Settings` to `DeliveryShare`, `Module 038 — a service that can be installed from scratch, checked, and complained about`, `Autopick`, `Db`, `.date`, `Logger`, `RequestItems`, `MoySklad`, `Synonyms`, `Support`, `.baseName`, `RequestParser`, `Variants`, `Crypt`, `062 — Issues #116–#119: the exact product and its size, stages by themselves, documents in the conversation, focus and phone windows`, `bootstrap.php`, `Notifier`, `Learning`, `Crm`, `AudioRemux`, `Prompts`, `Module 053 — the Bitrix module ships as a zip from the repo, the site is managed from «Каталог»`, `Cdek`, `MailText`, `Module 008 — Catalog, matched positions, model picker`, `MailArchive`, `007 — The panel as a phone app: PWA and web push`, `MailSignature`, `Module 049 — delivery mode per КП, no cover letter in КП settings, side rail, КП above the letter`, `Html2Docx`, `Модуль 002 — заказы, счета, чат компании`, `Markup`, `.delivery`, `Alternatives`, `Time`, `Qr`, `admin.php`, `Module 013 — Analogues, the correspondence table, and requisites from МойСклад`?**
+  _High betweenness centrality (0.084) - this node is a cross-community bridge._
+- **Are the 500 inferred relationships involving `Db` (e.g. with `.candidates()` and `.listForRequest()`) actually correct?**
+  _`Db` has 500 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 167 inferred relationships involving `Settings` (e.g. with `Setup, support and the trial request` and `.enabled()`) actually correct?**
+  _`Settings` has 167 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 134 inferred relationships involving `Logger` (e.g. with `.suggest()` and `.fromPdf()`) actually correct?**
+  _`Logger` has 134 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `name`, `description`, `type` to the rest of the system?**
-  _955 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _960 weakly-connected nodes found - possible documentation gaps or missing edges._

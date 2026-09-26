@@ -524,11 +524,22 @@ final class Variants {
      * модификаций у него нет. Нашёлся сам товар — показываем всю его семью;
      * нашлась одна модификация — её одну: менеджер спросил именно её.
      *
-     * @param array $rows строки products_cache, как их вернул поиск
-     * @param int   $max  предел длины подсказки; семья модификаций не режется
+     * С запросом (issue #138) найденный товар больше не тянет ВСЕ свои
+     * модификации: остаются те, чей собственный текст (имя, артикул, код,
+     * характеристики и имя товара) несёт каждое слово запроса — началом слова,
+     * так что «xl» — это XL, а не XXL. Не несёт ни одна — остаётся строка
+     * товара целиком. Семьи, где слова нашлись у самих строк, стоят выше
+     * найденных только по описанию.
+     *
+     * @param array  $rows  строки products_cache, как их вернул поиск
+     * @param int    $max   предел длины подсказки; семья модификаций не режется
+     * @param string $query что набрано в поле; пусто — вся семья, как раньше
      * @return array строки подсказки + variant_label, group_name, group_article
      */
-    public static function expandSuggest(array $rows, int $max = 40): array {
+    public static function expandSuggest(array $rows, int $max = 40, string $query = ''): array {
+        require_once __DIR__ . '/matcher.php';
+        $words = $query === '' ? []
+            : array_values(array_unique(array_filter(explode(' ', ProductMatcher::fold($query)))));
         $groups = [];   // id товара → [все ли его модификации нужны, сам товар, найденные модификации]
         foreach ($rows as $row) {
             $id = (string)($row['moysklad_id'] ?? '');
@@ -546,7 +557,7 @@ final class Variants {
         // Родителя, которого поиск не нашёл, дочитываем: его именем подписана группа
         $parents = self::rowsByIds(array_values(array_filter($keys, fn($k) => $groups[$k]['own'] === null)));
 
-        $hot = $cold = [];
+        $tiers = [[], [], [], []];   // слова у самих строк × есть на складе
         foreach ($groups as $key => $g) {
             $parent = $g['own'] ?? ($parents[$key] ?? null);
             $family = $families[$key] ?? [];
@@ -554,33 +565,63 @@ final class Variants {
                 // Модификаций нет — в подсказке сам товар, со своим количеством
                 if (!$parent) continue;
                 $out = [self::suggestRow($parent, null)];
+                $exact = !$words || self::holdsWords($parent, null, $words);
             } else {
                 $byId = array_column($family, null, 'moysklad_id');
                 $picked = $g['full']
                     ? $family
                     : array_values(array_filter($family, fn($v) => isset($g['picked'][(string)$v['moysklad_id']])));
+                // Слова, которых нет в самом товаре, должна нести модификация (issue #138):
+                // началом слова, а не серединой — поиск нашёл бы «xl» и внутри «xxl»
+                if ($words) {
+                    $picked = array_values(array_filter($picked, fn($v) => self::holdsWords($v, $parent, $words)));
+                }
                 // Модификация, которой в семье не нашлось, показывается сама по себе
                 foreach ($g['picked'] as $id => $row) {
                     if (!isset($byId[$id])) $picked[] = $row;
                 }
+                $exact = !$words || ($parent && self::holdsWords($parent, null, $words))
+                      || array_filter($picked, fn($v) => self::holdsWords($v, $parent, $words));
                 $out = array_map(fn($v) => self::suggestRow($v, $parent), $picked);
                 // Сам товар — первой строкой семьи и ТОЖЕ выбирается (модуль 040).
                 // «Выбирают размер, а не товар вообще» верно для склада, но не
                 // для КП: предложение на «боковую плиту Бр3» пишут без размера,
-                // с вилкой цен от и до, а размеры уточняют в заказе.
-                if ($parent) array_unshift($out, self::suggestGroupRow($parent, $out));
+                // с вилкой цен от и до, а размеры уточняют в заказе. Вилка и
+                // остаток — по всей семье, какие бы размеры ни показал запрос
+                if ($parent) {
+                    array_unshift($out, self::suggestGroupRow($parent,
+                        array_map(fn($v) => self::suggestRow($v, $parent), $family)));
+                }
             }
             // Пустая полка — ниже: собственный остаток товара с модификациями
             // всегда ноль, и сортировка запроса о его размерах ничего не знает
-            if (array_sum(array_column($out, 'stock')) > 0) $hot[] = $out; else $cold[] = $out;
+            $stocked = array_sum(array_column($out, 'stock')) > 0;
+            $tiers[($exact ? 0 : 2) + ($stocked ? 0 : 1)][] = $out;
         }
 
         $suggest = [];
-        foreach ([...$hot, ...$cold] as $group) {
+        foreach (array_merge(...$tiers) as $group) {
             foreach ($group as $row) $suggest[] = $row;
             if (count($suggest) >= $max) break;
         }
         return $suggest;
+    }
+
+    /**
+     * Несёт ли строка каталога каждое слово запроса — началом слова (issue #138).
+     * У модификации к её тексту добавляется имя товара: «плита бр3 xl» — это
+     * XL той самой плиты, даже если в имени модификации товар назван иначе.
+     */
+    private static function holdsWords(array $row, ?array $parent, array $words): bool {
+        $text = ' ' . ProductMatcher::fold(implode(' ', [
+            (string)($row['name'] ?? ''), (string)($row['article'] ?? ''), (string)($row['code'] ?? ''),
+            (string)($row['characteristics'] ?? ''),
+            (string)($parent['name'] ?? ''), (string)($parent['article'] ?? ''),
+        ])) . ' ';
+        foreach ($words as $w) {
+            if (!str_contains($text, ' ' . $w)) return false;
+        }
+        return true;
     }
 
     /**
@@ -789,8 +830,10 @@ final class Variants {
 
         $pick = $hits[0];
         $pick['other_choices'] = [];
+        // Со своими количествами (issue #137): «есть также» без числа не говорит, хватит ли
         foreach (array_slice($hits, 1) as $v) {
-            if (Alternatives::freeStock($v) > 0) $pick['other_choices'][] = self::label($v);
+            $free = Alternatives::freeStock($v);
+            if ($free > 0) $pick['other_choices'][] = self::label($v) . ' — ' . $free . ' шт.';
         }
         return $pick;
     }
@@ -895,7 +938,7 @@ final class Variants {
         ];
         // Цвет в письме не назван, а на складе их несколько — выбрали мы, и строка это говорит
         if ($pick['other_choices']) {
-            $out['match_hint'] = 'выбрано: ' . self::label($pick) . '; есть также: '
+            $out['match_hint'] = 'выбрано: ' . self::label($pick) . ' (' . $out['stock'] . ' шт.); есть также: '
                                . implode(', ', array_slice($pick['other_choices'], 0, 4));
         }
         return $out;

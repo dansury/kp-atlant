@@ -243,11 +243,15 @@ class ProductMatcher {
      * которых не писали: «плита бр3» ставит «Плиту для бронежилета Бр3» выше
      * «Боковой плиты …». Равные — сначала то, что есть на складе.
      *
+     * $maxWords — сколько слов запроса учитывать. Строке письма хватает шести;
+     * подсказке под полем названия — больше (issue #138): размер в конце длинного
+     * имени модификации — как раз то слово, что отличает её от соседних.
+     *
      * @return list<array> строки products_cache (без описания)
      */
-    public static function search(string $query, int $limit = 20): array {
-        $fold = fn(string $t) => str_replace('ё', 'е', self::normalize($t));
-        $words = array_slice(array_values(array_unique(array_filter(explode(' ', $fold($query))))), 0, 6);
+    public static function search(string $query, int $limit = 20, int $maxWords = 6): array {
+        $fold = fn(string $t) => self::fold($t);
+        $words = array_slice(array_values(array_unique(array_filter(explode(' ', $fold($query))))), 0, max(1, $maxWords));
         if (!$words) return [];
 
         // Каталог читается один раз на запрос: автоподбор ищет по строке
@@ -283,6 +287,11 @@ class ProductMatcher {
         }
         usort($hits, fn($a, $b) => $a['rank'] <=> $b['rank']);
         return array_column(array_slice($hits, 0, max(1, $limit)), 'row');
+    }
+
+    /** Текст так, как его сравнивает поиск: нижний регистр, «ё» = «е», знаки — пробелы. */
+    public static function fold(string $text): string {
+        return str_replace('ё', 'е', self::normalize($text));
     }
 
     /** The whole catalog, read once per request — a KP has many positions. */

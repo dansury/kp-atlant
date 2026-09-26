@@ -24,7 +24,11 @@ of every letter came out black on a white screen.
   `<meta name="color-scheme" content="only light">` and
   `:root{color-scheme:only light}`: a letter and a КП are PAPER — white in both
   themes, never darkened by the browser. In the dark theme the frame keeps its
-  white page, framed by the dark card.
+  white page, framed by the dark card. The `<iframe>` ELEMENT itself carries
+  `color-scheme: dark` (`.html-frame, .kp-page`, module 067): Chrome gives the
+  embedded document the preferred scheme of its frame, and a frame that
+  inherited `only light` handed it a LIGHT preference, which forced darkening
+  darkens despite the document's own `only light`.
 - `<meta name="theme-color">` follows the theme.
 
 ## 2. #124 — an analogue is dropped when the line stands on what the client asked for

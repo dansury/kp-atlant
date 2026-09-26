@@ -2101,6 +2101,14 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '56')");
         $current = 56;
     }
+
+    // v57 — module 067: the weight of a product (МойСклад «Вес», kg) for the CDEK delivery calculator
+    if ($current < 57) {
+        Db::ensureColumn('products_cache', 'weight', 'REAL');
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '57')");
+        $current = 57;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */

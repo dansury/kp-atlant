@@ -134,8 +134,8 @@ class MoySklad {
                 $category = $mapped['category'] ?? '';
                 $isAddon = ($addonCategory !== '' && $category === $addonCategory) ? 1 : 0;
 
-                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, code, price, prices_json, stock, reserved, unit, description, category, is_addon, vat, product_type, source, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'product', 'moysklad', datetime('now'))
+                Db::q("INSERT INTO products_cache (moysklad_id, name, name_normalized, article, code, price, prices_json, stock, reserved, unit, description, category, is_addon, vat, weight, product_type, source, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'product', 'moysklad', datetime('now'))
                     ON CONFLICT(moysklad_id) DO UPDATE SET
                         name=excluded.name, name_normalized=excluded.name_normalized,
                         article=excluded.article, code=excluded.code, price=excluded.price,
@@ -149,13 +149,14 @@ class MoySklad {
                         unit=excluded.unit, description=excluded.description,
                         category=excluded.category, is_addon=excluded.is_addon,
                         vat=COALESCE(excluded.vat, products_cache.vat),
+                        weight=CASE WHEN excluded.weight > 0 THEN excluded.weight ELSE products_cache.weight END,
                         source='moysklad', updated_at=datetime('now')", [
                     $mapped['id'], $mapped['name'], $normalized,
                     $mapped['article'], $mapped['code'], $mapped['price'],
                     $mapped['prices'] ? json_encode($mapped['prices'], JSON_UNESCAPED_UNICODE) : null,
                     $mapped['stock'], $mapped['reserved'],
                     $mapped['unit'], $mapped['description'], $category, $isAddon,
-                    $mapped['vat'],
+                    $mapped['vat'], $mapped['weight'] ?: null,
                 ]);
                 $count++;
             }
@@ -1780,6 +1781,8 @@ class MoySklad {
             // The VAT of a КП line is the product's own, not a house default —
             // `vatEnabled: false` is «без НДС» and is not the same as a 0% rate
             'vat' => self::vatOf($p),
+            // «Вес» карточки, кг — расчёт доставки СДЭК (модуль 067); 0 — не указан
+            'weight' => max(0.0, (float)($p['weight'] ?? 0)),
         ];
     }
 

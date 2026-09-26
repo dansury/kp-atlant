@@ -343,6 +343,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    ростом в 320 пикселей и накладывала их друг на друга (модуль 031). */
 .html-frame { width: 100%; max-width: 100%; border: 1px solid var(--border);
               border-radius: var(--radius); display: block; height: 120px; }
+/* Рамки-бумага (письмо, лист КП) — со схемой `dark` у САМОГО iframe (issue #136).
+   Вложенный документ получает предпочтение по схеме рамки, и при «Тёмной теме
+   для сайтов» светлое предпочтение затемняло его вопреки `only light` внутри
+   (Blink: force_dark && !prefers_dark) — письмо чернело в светлой теме. Бумага
+   остаётся белой: её корень сам объявляет `only light`. */
+.html-frame, .kp-page { color-scheme: dark; }
 .preview-body { max-height: 75vh; overflow-y: auto; }
 .preview-frame { height: 75vh; }
 
@@ -508,8 +514,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .match-row__tools--bottom { flex: 1 1 100%; justify-content: flex-start; }
 .match-row__src { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .match-row__src .muted { flex: 0 1 auto; min-width: 0; }
-.match-row__nameline { position: relative; display: flex; gap: 4px; align-items: center; }
-.match-row__nameline input { flex: 1 1 auto; min-width: 0; }
+.match-row__nameline { position: relative; display: flex; gap: 4px; align-items: flex-start; }
+.match-row__nameline input, .match-row__nameline textarea { flex: 1 1 auto; min-width: 0; }
+/* Название позиции видно целиком (issue #138): поле растёт по тексту, а не
+   прячет модификацию за край. Enter строку не рвёт — App.nameKey() */
+.match-row__nameline textarea[data-field="product_name"] { resize: none; overflow: hidden; field-sizing: content;
+    min-height: 0; line-height: 1.35; width: 100%; }
+/* Остаток у позиции (issue #137). Контраст: --success на --surface-2 4.6:1, на
+   белом 5.0:1; --accent-ink — 5.6:1 и 6.1:1 (AA); в тёмной теме токены свои */
+.stock-badge { font-size: 12px; font-weight: 600; margin: 3px 0 2px; }
+.stock-badge--in { color: var(--success); }
+.stock-badge--out { color: var(--accent-ink); }
+.stock-tail { white-space: nowrap; }
 .match-row--moved { background: var(--surface-3); transition: background .4s; }
 
 /* Строка подбора живёт в колонке шириной 420px — и в ней же на телефоне.
@@ -704,6 +720,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
                      background: linear-gradient(90deg, transparent, var(--surface)); }
 .lmsg--out .lmsg__peek::after { background: linear-gradient(90deg, transparent, var(--surface-2)); }
 .lmsg--open .lmsg__peek { display: none; }
+/* Свёрнутое письмо раскрывается нажатием и по тексту, не только по шапке (issue #134) */
+.lmsg:not(.lmsg--open) .lmsg__text, .lmsg:not(.lmsg--open) .lmsg__tags { cursor: pointer; }
 
 .lmsg__full { display: none; }
 .lmsg--open .lmsg__full { display: block; }
@@ -744,6 +762,32 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .match-row--delivery > input[data-delivery-price] { flex: 0 1 96px; width: auto; }
 .match-row--delivery > .muted, .match-row--delivery [data-delivery-note] { font-size: 12px; }
 .match-row--delivery > select[data-delivery-mode] { flex: 0 1 190px; width: auto; }
+/* Расчёт доставки СДЭК под строкой доставки (issue #139): светлый блок —
+   ink переобъявлен вместе с фоном; --text на --surface 15.9:1, --text-muted 5.9:1 */
+.dcalc { background: var(--surface); color: var(--text); border: 1px solid var(--border);
+         border-radius: var(--radius-sm); padding: 10px; margin: -4px 0 10px; font-size: 13px; }
+.dcalc__head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin-bottom: 8px; }
+.dcalc__head .muted { font-size: 12px; }
+.dcalc__grid { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 6px 0; }
+.dcalc__grid label, .dcalc__dims label { display: flex; flex-direction: column; gap: 2px; font-size: 12px;
+                                         color: var(--text-muted); min-width: 0; flex: 1 1 140px; }
+.dcalc__dims { display: flex; gap: 8px; flex: 1 1 100%; }
+.dcalc__dims[hidden] { display: none; }
+.dcalc__dims label { flex: 1 1 60px; }
+.dcalc__grid select { width: 100%; font-size: 13px; padding: 7px 8px; }
+.dcalc__items { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.dcalc__item { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; padding: 4px 0;
+               border-bottom: 1px dashed var(--border); }
+.dcalc__name { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.dcalc__math { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; }
+.dcalc__math input { width: 76px; padding: 4px 6px; font-size: 13px; }
+.dcalc__tariffs { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.dcalc__tariff { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; padding: 6px 8px;
+                 border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.dcalc__tariff > span:first-child { flex: 1 1 180px; min-width: 0; }
+/* Оценка и вопросы расчёта: --text на --warning-bg ~15:1 (AA), тон — полосой слева */
+.dcalc__note { background: var(--warning-bg); color: var(--text); border-left: 3px solid var(--warning);
+               border-radius: var(--radius-sm); padding: 8px 12px; margin-top: 8px; font-size: 13px; }
 .match-row--out input, .match-row--out .suggest { text-decoration: line-through; }
 .note--out { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
              padding: 6px 10px; font-size: 12px; margin: 4px 0; color: var(--text); }
