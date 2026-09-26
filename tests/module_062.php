@@ -118,7 +118,7 @@ ok('поиск: регистр кириллицы не важен', (ProductMatc
 ok('поиск: слово из описания', array_column(ProductMatcher::search('автомата плита', 5), 'moysklad_id') === ['p2']);
 ok('поиск: все слова обязательны', ProductMatcher::search('плита шлем', 5) === []);
 ok('API поиска идёт через ProductMatcher::search', str_contains(file_get_contents(ROOT . '/public/api/products.php'),
-   '$items = ProductMatcher::search($q, $limit);'));
+   '$items = ProductMatcher::search($q, $limit'));
 
 // ===================================================================== 2
 echo "2. #119 этапы сами: письмо/подбор → работа, КП → отправлено, счёт → оплата, оплата → сборка, отгрузка → отправлено\n";

@@ -16,6 +16,7 @@ const App = {
     ui: {
         wait_months: 3, wait_discount: 10, wait_prepay: 100,
         mail_poll_min: 10, mail_sound: '', mail_sound_volume: 60,
+        kp_photos: 5,
     },
     get waitDefaults() {
         return {months: this.ui.wait_months, discount: this.ui.wait_discount, prepay: this.ui.wait_prepay};
@@ -1299,6 +1300,7 @@ const App = {
         `;
         this.updateMatchTotal(host);
         this.syncFoldAll(host);
+        host.querySelectorAll('textarea[data-field="product_name"]').forEach(el => this.growField(el));
         this.bindMatchDnd(host);
         this.bindMatchAutosave(host);
         this.watchMatchPhotos(host);
@@ -1566,10 +1568,14 @@ const App = {
                             <input type="number" min="0" max="100" data-cond="wait_prepay" value="${Number(c.wait_prepay) || 0}">%
                         </label>
                     </span>
-                    <label title="Сколько фотографий печатать у каждой позиции. Пусто — сколько разрешают настройки КП">фото
+                    <!-- Что за «фото» — словами и значком «?» (issue #135): на телефоне
+                         title не виден, а «как в настройках» обрезалось до «как в н» -->
+                    <label>фото в КП, шт.
                         <input type="number" min="0" max="12" data-cond="photos" style="width:4.5em"
-                               placeholder="как в настройках" value="${c.photos === null || c.photos === undefined ? '' : Number(c.photos)}">
+                               placeholder="${Number(this.ui.kp_photos ?? 5)}" aria-label="Фотографий товара в КП на каждую позицию"
+                               value="${c.photos === null || c.photos === undefined ? '' : Number(c.photos)}">
                     </label>
+                    ${this.hint('kp-photos')}
                     <button class="btn btn--outline btn--sm" onclick="App.applyConditions(this)"
                             title="Проставить выбранное всем позициям и запомнить для следующих КП">Применить ко всем</button>
                 </div>
@@ -1581,7 +1587,7 @@ const App = {
         const parts = [c.price_type || 'цена по настройкам'];
         if (Number(c.discount) > 0) parts.push('−' + Number(c.discount) + '%');
         if (Number(c.wait_on) === 1) parts.push('под заказ');
-        if (c.photos !== null && c.photos !== undefined && c.photos !== '') parts.push('фото ' + Number(c.photos));
+        if (c.photos !== null && c.photos !== undefined && c.photos !== '') parts.push('фото в КП: ' + Number(c.photos));
         return '· ' + parts.join(' · ');
     },
 
@@ -1668,11 +1674,229 @@ const App = {
             ${this.deliveryModeSelect(mode, 'data-delivery-mode onchange="App.deliveryModeChanged(this)"')}
             <input type="number" step="0.01" min="0" data-delivery-price value="${Number(d.price) || 0}"
                    placeholder="Цена" title="Стоимость доставки на весь заказ" oninput="App.updateMatchTotal(this)">
+            <!-- Расчёт по тарифам СДЭК — справа от ручной цены, по желанию (issue #139) -->
+            <button type="button" class="btn btn--outline btn--sm" data-dcalc-btn aria-expanded="false"
+                    title="Рассчитать доставку по тарифам СДЭК: города, вес из карточек товаров, коробка"
+                    onclick="App.deliveryCalcToggle(this)">📦 Рассчитать ▾</button>
             <div class="match-row__tools">
                 <button class="btn btn--outline btn--sm" title="Убрать доставку из КП"
                         onclick="App.deliveryToggle(this, 0)">×</button>
             </div>
+        </div>
+        <div class="dcalc" data-dcalc hidden></div>`;
+    },
+
+    // ==== Доставка по тарифам СДЭК (модуль 067, issue #139) ====
+    //
+    // Необязательная панель под строкой доставки: города, вес позиций (из
+    // МойСклад или из описания × количество), коробка СДЭК, договор. С
+    // ключами API — тарифы СДЭК, без них — оценка по ставке из настроек.
+    // «Взять» кладёт цену в поле доставки — дальше как ручная правка.
+
+    async deliveryCalcToggle(btn) {
+        const host = this.matchHost(btn);
+        const panel = host && host.querySelector('[data-dcalc]');
+        if (!panel) return;
+        const open = panel.hidden;
+        panel.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.textContent = open ? '📦 Рассчитать ▴' : '📦 Рассчитать ▾';
+        if (!open || panel.dataset.ready === '1') return;
+        panel.innerHTML = '<div class="loading">Собираем вес и адрес...</div>';
+        try {
+            // Вес считается по сохранённым строкам — сначала сохранить набранное
+            await this.autosaveMatch(host);
+            const d = await this.api(`delivery.php?action=prefill&request_id=${Number(host.dataset.requestId)}`);
+            panel._calc = d;
+            panel.dataset.ready = '1';
+            panel.innerHTML = this.deliveryCalcHtml(d, host);
+            this.deliveryCalcSync(panel);
+        } catch (err) {
+            panel.innerHTML = `<div class="muted">Не получилось открыть расчёт: ${this.esc(err.message)}</div>`;
+        }
+    },
+
+    deliveryCalcHtml(d, host) {
+        // Количество — то, что сейчас стоит в строках, а не то, что было в базе
+        const qty = new Map(this.collectMatchedItems(host).map(r => [Number(r.id), r.quantity]));
+        const remembered = k => { try { return localStorage.getItem('kp.cdek.' + k) || ''; } catch { return ''; } };
+        const from = d.from || remembered('from');
+        const contract = d.contract || remembered('contract');
+        const listId = 'dcalcCities' + Math.random().toString(36).slice(2, 8);
+        const items = (d.items || []).map(i => {
+            const q = qty.has(i.id) ? qty.get(i.id) : i.qty;
+            return `<div class="dcalc__item" data-dcalc-item>
+                <span class="dcalc__name">${this.esc(i.name || 'позиция')}</span>
+                <span class="dcalc__math">
+                    <input type="number" step="0.001" min="0" data-dcalc-kg value="${i.kg ?? ''}" placeholder="?"
+                           title="Вес одной штуки, кг" oninput="App.deliveryCalcSync(this)"> кг ×
+                    <span data-dcalc-qty>${this.intQty(q)}</span> = <strong data-dcalc-sum></strong>
+                    <span class="muted">${i.kg === null || i.kg === undefined ? 'вес не найден — впишите'
+                        : (i.source === 'МойСклад' ? 'из МойСклад' : 'из описания товара')}</span>
+                </span>
+            </div>`;
+        }).join('');
+        const boxes = (d.boxes || []).map(b =>
+            `<option value="${this.esc(b.name)}" ${b.name === d.box ? 'selected' : ''}>${this.esc(b.name)} — ${b.l}×${b.w}×${b.h} см${b.max ? `, до ${b.max} кг` : ''}</option>`).join('');
+        return `
+            <div class="dcalc__head">
+                <strong>Расчёт доставки СДЭК</strong>
+                <span class="muted">${d.api ? 'тарифы по API СДЭК' : 'ключа API нет — будет оценка по ставке из настроек'}</span>
+            </div>
+            <div class="dcalc__grid">
+                <label>Откуда<input type="text" data-dcalc-from value="${this.esc(from)}" list="${listId}" placeholder="Город отправки"
+                       oninput="App.deliveryCalcCities(this)"></label>
+                <label>Куда<input type="text" data-dcalc-to value="${this.esc(d.to || '')}" list="${listId}" placeholder="Город получателя"
+                       oninput="App.deliveryCalcCities(this)"></label>
+                <datalist id="${listId}"></datalist>
+                <label>Договор со СДЭК
+                    <select data-dcalc-contract>
+                        <option value="" ${contract ? '' : 'selected'}>— выберите —</option>
+                        <option value="delivery" ${contract === 'delivery' ? 'selected' : ''}>доставка</option>
+                        <option value="im" ${contract === 'im' ? 'selected' : ''}>интернет-магазин</option>
+                        <option value="none" ${contract === 'none' ? 'selected' : ''}>нет договора</option>
+                    </select></label>
+            </div>
+            <div class="dcalc__items">${items || '<div class="muted">Позиций с товаром пока нет — впишите вес ниже.</div>'}</div>
+            <div class="dcalc__grid">
+                <label>Вес всего, кг<input type="number" step="0.001" min="0" data-dcalc-total
+                       oninput="this.dataset.manual = '1'; App.deliveryCalcSync(this)"></label>
+                <label>Упаковка
+                    <select data-dcalc-box onchange="this.dataset.manual = '1'; App.deliveryCalcSync(this)">
+                        ${boxes}<option value="">свои размеры</option>
+                    </select></label>
+                <label>Коробок<input type="number" min="1" step="1" data-dcalc-count value="${Number(d.count) || 1}"
+                       oninput="this.dataset.manual = '1'; App.deliveryCalcSync(this)"></label>
+                <span class="dcalc__dims" data-dcalc-dims hidden>
+                    <label>Д, см<input type="number" min="1" data-dcalc-l></label>
+                    <label>Ш, см<input type="number" min="1" data-dcalc-w></label>
+                    <label>В, см<input type="number" min="1" data-dcalc-h></label>
+                </span>
+            </div>
+            <div class="flex flex--wrap" style="gap:6px;margin-top:6px">
+                <button type="button" class="btn btn--primary btn--sm" onclick="App.deliveryCalcQuote(this)">Рассчитать</button>
+                <span class="muted">Пользоваться расчётом не обязательно — цену можно вписать в поле доставки руками.</span>
+            </div>
+            <div data-dcalc-out></div>`;
+    },
+
+    /** Суммы по позициям, общий вес и коробка под него — пока их не правили руками. */
+    deliveryCalcSync(from) {
+        const panel = from.closest ? (from.closest('[data-dcalc]') || from) : from;
+        if (!panel || !panel._calc) return;
+        let total = 0;
+        panel.querySelectorAll('[data-dcalc-item]').forEach(row => {
+            const kg = parseFloat(row.querySelector('[data-dcalc-kg]').value) || 0;
+            const q = Number(row.querySelector('[data-dcalc-qty]').textContent) || 0;
+            const sum = Math.round(kg * q * 1000) / 1000;
+            row.querySelector('[data-dcalc-sum]').textContent = kg ? `${sum} кг` : '—';
+            total += sum;
+        });
+        const totalEl = panel.querySelector('[data-dcalc-total]');
+        if (totalEl && totalEl.dataset.manual !== '1') totalEl.value = total ? Math.round(total * 1000) / 1000 : '';
+        const weight = parseFloat(totalEl && totalEl.value) || 0;
+        const boxSel = panel.querySelector('[data-dcalc-box]');
+        const countEl = panel.querySelector('[data-dcalc-count]');
+        const boxes = panel._calc.boxes || [];
+        // Самая маленькая коробка, что выдержит вес; не выдержит ни одна — несколько самых больших
+        if (boxSel && boxSel.dataset.manual !== '1' && weight > 0) {
+            const sized = boxes.filter(b => b.max > 0);
+            const fit = sized.find(b => weight <= b.max) || sized[sized.length - 1];
+            if (fit) {
+                boxSel.value = fit.name;
+                if (countEl && countEl.dataset.manual !== '1') countEl.value = Math.max(1, Math.ceil(weight / fit.max));
+            }
+        }
+        const dims = panel.querySelector('[data-dcalc-dims]');
+        if (dims) dims.hidden = !!(boxSel && boxSel.value);
+    },
+
+    /** Подсказка городов СДЭК — только с ключом API. */
+    deliveryCalcCities(input) {
+        const panel = input.closest('[data-dcalc]');
+        if (!panel || !panel._calc || !panel._calc.api) return;
+        clearTimeout(this._dcalcCityTimer);
+        const q = input.value.trim();
+        if (q.length < 2) return;
+        this._dcalcCityTimer = setTimeout(async () => {
+            try {
+                const r = await this.api('delivery.php?action=cities&q=' + encodeURIComponent(q));
+                const list = document.getElementById(input.getAttribute('list'));
+                if (list) list.innerHTML = (r.items || []).map(c => `<option value="${this.esc(c.name)}"></option>`).join('');
+            } catch { /* подсказка — удобство */ }
+        }, 300);
+    },
+
+    async deliveryCalcQuote(btn) {
+        const panel = btn.closest('[data-dcalc]');
+        const out = panel.querySelector('[data-dcalc-out]');
+        const v = sel => (panel.querySelector(sel) || {}).value || '';
+        const weight = parseFloat(v('[data-dcalc-total]')) || 0;
+        const count = Math.max(1, parseInt(v('[data-dcalc-count]'), 10) || 1);
+        const box = (panel._calc.boxes || []).find(b => b.name === v('[data-dcalc-box]'));
+        const dims = box ? {l: box.l, w: box.w, h: box.h}
+            : {l: Number(v('[data-dcalc-l]')) || 0, w: Number(v('[data-dcalc-w]')) || 0, h: Number(v('[data-dcalc-h]')) || 0};
+        if (!weight) { out.innerHTML = '<div class="dcalc__note">Впишите вес — без него доставку не посчитать.</div>'; return; }
+        const contract = v('[data-dcalc-contract]');
+        const from = v('[data-dcalc-from]').trim(), to = v('[data-dcalc-to]').trim();
+        try {
+            if (from) localStorage.setItem('kp.cdek.from', from);
+            if (contract) localStorage.setItem('kp.cdek.contract', contract);
+        } catch { /* не запомним */ }
+        if (panel._calc.api && !contract) {
+            out.innerHTML = '<div class="dcalc__note">Выберите договор со СДЭК: «интернет-магазин» и «доставка» считаются по-разному, а без договора API не считает.</div>';
+            return;
+        }
+        const packages = Array.from({length: count}, () => ({kg: Math.round(weight / count * 1000) / 1000, ...dims}));
+        btn.disabled = true;
+        out.innerHTML = '<div class="loading">Считаем...</div>';
+        try {
+            const r = await this.api('delivery.php?action=quote', {method: 'POST', body: {from, to, contract, packages}});
+            out.innerHTML = this.deliveryCalcResult(r, {weight, count, dims, from, to});
+        } catch (err) {
+            out.innerHTML = `<div class="dcalc__note">${this.esc(err.message)}</div>`;
+        } finally { btn.disabled = false; }
+    },
+
+    deliveryCalcResult(r, q) {
+        const take = (sum, label) => `<button type="button" class="btn btn--outline btn--sm"
+            onclick="App.deliveryCalcTake(this, ${Number(sum)}, '${this.jsStr(label)}')">Взять</button>`;
+        if (r.mode === 'api') {
+            return `<div class="dcalc__tariffs">${(r.tariffs || []).map(t => {
+                const days = t.days_min ? (t.days_max && t.days_max !== t.days_min ? `${t.days_min}–${t.days_max} дн.` : `${t.days_min} дн.`) : '';
+                return `<div class="dcalc__tariff">
+                    <span>${this.esc(t.name)}</span><span class="muted">${days}</span>
+                    <strong>${this.fmtMoney(t.sum)}</strong>
+                    ${take(t.sum, `Доставка СДЭК: ${t.name}${days ? ', ' + days : ''}`)}
+                </div>`;
+            }).join('')}</div>`;
+        }
+        const e = r.estimate || {};
+        const dims = q.dims.l && q.dims.w && q.dims.h ? `${q.dims.l}×${q.dims.w}×${q.dims.h} см` : 'размеры не указаны';
+        return `<div class="dcalc__note">
+            ${r.api_error ? `СДЭК не посчитал: ${this.esc(r.api_error)}.<br>` : ''}
+            <strong>Оценка: ${this.fmtMoney(e.sum)}</strong> — ${this.fmtMoney(e.base)} + ${this.fmtMoney(e.per_kg)} × ${e.billable_kg} кг
+            оплачиваемого веса. Это ставка из настроек, а не тариф СДЭК${r.why ? ` (${this.esc(r.why)})` : ''}.
+            Точную цену даст <a href="https://www.cdek.ru/ru/calculate/" target="_blank" rel="noopener">калькулятор СДЭК</a>:
+            ${this.esc(q.from || 'город отправки не указан')} → ${this.esc(q.to || 'город получателя не указан')},
+            ${q.weight} кг, коробок ${q.count}, ${this.esc(dims)}.
+            ${take(e.sum, 'Доставка СДЭК')}
         </div>`;
+    },
+
+    /** Цена и тариф — в строку доставки; дальше как ручная правка: итог и сохранение. */
+    deliveryCalcTake(btn, sum, label) {
+        const host = this.matchHost(btn);
+        const row = host && host.querySelector('[data-delivery-row]');
+        if (!row) return;
+        const price = row.querySelector('[data-delivery-price]');
+        const name = row.querySelector('[data-delivery-name]');
+        if (name && label) name.value = label;
+        if (price) {
+            price.value = Math.round(Number(sum) * 100) / 100;
+            price.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+        this.toast(`Доставка ${this.fmtMoney(sum)} — в КП`, 'success');
     },
 
     DELIVERY_MODES: {
@@ -3151,15 +3375,20 @@ const App = {
                     ${this.altNote(i)}
                     <!-- «×» — справа от поля названия (issue #60) -->
                     <div class="match-row__nameline">
-                        <input type="text" data-field="product_name" autocomplete="off" placeholder="Название позиции из каталога"
-                               value="${this.esc(i.product_name || '')}" oninput="App.matchSuggest(this)" onblur="App.hideSuggest(this)">
+                        <!-- Поле растёт по тексту (issue #138): модификация видна целиком, без прокрутки -->
+                        <textarea data-field="product_name" rows="1" autocomplete="off" spellcheck="false"
+                                  placeholder="Название позиции из каталога" onkeydown="App.nameKey(event)"
+                                  oninput="App.growField(this); App.matchSuggest(this)" onblur="App.hideSuggest(this)"
+                                  >${this.esc(i.product_name || '')}</textarea>
                         <button class="btn btn--outline btn--sm" title="Убрать строку"
                                 onclick="const h=App.matchHost(this); this.closest('[data-match-row]').remove(); App.updateMatchTotal(h)">×</button>
                         <div class="suggest" hidden></div>
                     </div>
+                    ${this.stockBadge(i)}
                     ${this.analogField(i)}
                     ${i.needs_choice ? this.matchChoice(i) : ((i.variants || []).length ? `<div class="muted">ещё похожие:
-                        ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>`).join(' · ')}</div>` : '')}
+                        ${i.variants.map(v => `<a onclick="App.pickVariant(this, '${this.jsStr(JSON.stringify(v))}')">${this.esc(v.name)}</a>${
+                            this.freeOf(v) === null ? '' : ` <span class="stock-tail">(${this.freeOf(v) > 0 ? this.freeOf(v) + ' шт.' : 'нет'})</span>`}`).join(' · ')}</div>` : '')}
                 </div>
                 <span class="qty-cell">
                     <input type="number" step="1" min="0" inputmode="numeric" data-field="quantity"
@@ -3361,6 +3590,39 @@ const App = {
         // Ноль тоже количество, и врать о нём нечем: строка честно говорит,
         // что эта модификация поедет под заказ
         return Number(free) > 0 ? `остаток ${free}` : 'остаток 0 · под заказ';
+    },
+
+    /**
+     * Сколько свободно — у самой позиции (issue #137): число стояло только в
+     * списке подсказки, а в строке его приходилось угадывать по «под заказ».
+     * `stock` строки уже за вычетом резерва; у кандидата резерв бывает отдельно.
+     */
+    freeOf(p) {
+        if (!p || p.stock === null || p.stock === undefined || p.stock === '') return null;
+        return Number(p.stock) - (Number(p.reserved) || 0);
+    },
+
+    stockText(free, unit = 'шт.') {
+        if (free === null || free === undefined || Number.isNaN(Number(free))) return '';
+        return Number(free) > 0 ? `в наличии ${Number(free)} ${unit || 'шт.'}` : 'нет в наличии — под заказ';
+    },
+
+    stockBadge(i = {}) {
+        const free = i.moysklad_product_id ? this.freeOf(i) : null;
+        const cls = free === null ? '' : (free > 0 ? 'stock-badge--in' : 'stock-badge--out');
+        return `<div class="stock-badge ${cls}" data-stock-badge ${free === null ? 'hidden' : ''}>${
+            free === null ? '' : this.esc(this.stockText(free, i.unit))}</div>`;
+    },
+
+    /** Выбрали другой товар или стёрли название — число меняется вместе с ним. */
+    setStockBadge(row, stock, unit) {
+        const badge = row && row.querySelector('[data-stock-badge]');
+        if (!badge) return;
+        const free = stock === null || stock === undefined || stock === '' ? null : Number(stock);
+        badge.hidden = free === null;
+        badge.classList.toggle('stock-badge--in', free !== null && free > 0);
+        badge.classList.toggle('stock-badge--out', free !== null && free <= 0);
+        badge.textContent = free === null ? '' : this.stockText(free, unit);
     },
 
     /** Та же разбивка отдельной строкой — под выбранной позицией. */
@@ -3573,19 +3835,22 @@ const App = {
     rowSummary(i) {
         const qty = this.intQty(i.quantity ?? 1);
         const price = Number(i.price) || 0;
+        const free = i.moysklad_product_id ? this.freeOf(i) : null;
         return `<strong>${this.esc(i.product_name || i.raw_name || 'без названия')}</strong>
-            <span class="muted">${qty} ${this.esc(i.unit || 'шт.')} × ${this.fmtMoney(price)} = ${this.fmtMoney(qty * price)}</span>`;
+            <span class="muted">${qty} ${this.esc(i.unit || 'шт.')} × ${this.fmtMoney(price)} = ${this.fmtMoney(qty * price)}${
+                free === null ? '' : ' · ' + this.esc(this.stockText(free, i.unit))}</span>`;
     },
 
     /** Данные строки из её полей — для сводки свёрнутой строки. */
     rowData(row) {
         const v = f => (row.querySelector(`[data-field="${f}"]`) || {}).value || '';
         return {product_name: v('product_name'), raw_name: v('raw_name'), quantity: v('quantity'),
-                unit: v('unit'), price: v('price')};
+                unit: v('unit'), price: v('price'), stock: v('stock'), moysklad_product_id: v('moysklad_product_id')};
     },
 
     setRowFold(row, folded) {
         row.classList.toggle('match-row--folded', folded);
+        if (!folded) this.growField(row.querySelector('textarea[data-field="product_name"]'));
         const btn = row.querySelector('.match-row__fold');
         if (btn) {
             btn.textContent = folded ? '▸' : '▾';
@@ -3654,6 +3919,7 @@ const App = {
         // A hand-typed name is no longer the catalog row that was there before
         const row = input.closest('[data-match-row]');
         row.querySelector('[data-field="moysklad_product_id"]').value = '';
+        this.setStockBadge(row, null);
         // Позиции больше нет — нет и её описания, пока не выбрана другая
         const auto = row.querySelector('[data-field="comment_text"][data-from-catalog="1"]');
         if (auto) auto.value = '';
@@ -3699,6 +3965,22 @@ const App = {
         }, 250);
     },
 
+    /** Название — одна строка: Enter не рвёт его, а выбирает первую подсказку. */
+    nameKey(e) {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const first = e.target.parentElement.querySelector('.suggest:not([hidden]) .suggest__item');
+        if (first) first.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+    },
+
+    /** Высота поля по тексту — там, где браузер не знает `field-sizing` (issue #138). */
+    growField(el) {
+        if (!el || el.tagName !== 'TEXTAREA' || (window.CSS && CSS.supports && CSS.supports('field-sizing', 'content'))) return;
+        if (!el.offsetParent) return;   // скрытое поле не меряется — дорастёт при раскрытии
+        el.style.height = 'auto';
+        el.style.height = el.scrollHeight + 2 + 'px';
+    },
+
     hideSuggest(input) {
         // mousedown on a suggestion fires before blur, so the pick still lands
         setTimeout(() => {
@@ -3712,12 +3994,14 @@ const App = {
         const row = el.closest('[data-match-row]');
         const set = (f, v) => { const i = row.querySelector(`[data-field="${f}"]`); if (i) i.value = v; };
         set('product_name', p.name);
+        this.growField(row.querySelector('[data-field="product_name"]'));
         set('moysklad_product_id', p.moysklad_id);
         set('article', p.article);
         set('unit', p.unit);
         set('price', p.price);
         set('price_max', p.price_max || 0);
         set('stock', p.stock);
+        this.setStockBadge(row, p.stock, p.unit);
         // Вилка цен рисуется рядом с ценой и обновляется вместе с выбором
         const range = row.querySelector('.price-cell .price-range');
         if (range) range.remove();
@@ -3767,7 +4051,7 @@ const App = {
         const v = JSON.parse(json);
         this.pickSuggest(el, JSON.stringify({
             moysklad_id: v.moysklad_id, name: v.name, article: v.article || '',
-            unit: v.unit || 'шт.', price: v.price || 0, stock: v.stock ?? '', prices: v.prices || {},
+            unit: v.unit || 'шт.', price: v.price || 0, stock: this.freeOf(v) ?? '', prices: v.prices || {},
             description: v.description || '',
         }));
     },
@@ -5943,7 +6227,7 @@ const App = {
         const hosts = [...root.querySelectorAll('[data-match-host]')];
         if (root.matches('[data-match-host]')) hosts.push(root);
         hosts.forEach(host => {
-            const names = [...host.querySelectorAll('[data-match-rows] input[data-field="product_name"]')];
+            const names = [...host.querySelectorAll('[data-match-rows] [data-field="product_name"]')];
             // Товар не выбран — фото и пустое описание ему ни к чему, прячем
             names.forEach(el => el.closest('[data-match-row]')?.classList.toggle('match-row--nomatch', !el.value.trim()));
             const unmatched = !names.length || names.some(el => !el.value.trim()
@@ -7302,6 +7586,7 @@ const App = {
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки: сначала каталог, а строки, которые он не решил (ничего не нашёл, нашёл несколько равных или нашёл слабо), сама уточняет нейросеть — одним запросом на письмо и только среди найденного в каталоге. Размер из письма ставит строку на свою модификацию, цвет — тот, что назвал клиент, иначе тот, что есть на складе. Что не решили ни каталог, ни нейросеть, сервис не выбирает молча: он спрашивает. «↻ Подобрать заново» делает всё это ещё раз.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
         'kp-conditions':['Цены и условия на всё КП', 'Тип цены, скидка и условия «под заказ» — один выбор на все позиции, а не сорок раз по строкам. «Применить ко всем» проставляет его строкам и ЗАПОМИНАЕТ: следующее КП откроется этим же. Строку, где цену вписали руками, общий выбор не трогает, а условия ожидания получают только позиции, которых нет на складе.'],
+        'kp-photos':    ['Фото в КП', 'Сколько фотографий товара КП напечатает у КАЖДОЙ позиции. «Применить ко всем» отмечает у каждой строки её первые фото в этом числе — дальше их можно перещёлкать галочками в самой строке. 0 — КП без фотографий. Пусто — столько, сколько стоит в «Настройки → Оформление КП» (число в поле серым).'],
         'match-analog': ['Аналог', 'Мы предлагаем не то, что клиент назвал. Галочка открывает поле с его собственной формулировкой — правьте её как нужно. В КП она встанет над названием нашего товара курсивом серым, и закупщик найдёт в предложении свою позицию, не сверяя два документа глазами.'],
         'match-variant':['Модификации', 'Если в письме один товар просят в нескольких размерах или цветах («р.S-5шт, р.M-13шт», «размер Л, М — по 2 штуки каждого»), сервис делает из этого отдельные строки с их количествами и подставляет каждой свою карточку из МойСклад — со своим артикулом, ценой и остатком. Одно количество на несколько размеров без «по»/«каждого» делится поровну — строка скажет, что делили мы.'],
         'kp-editor':    ['Редактор КП', 'Здесь правится всё, что попадёт в документ: цены, количества, тексты карточек товаров и блоки вокруг таблицы. Реквизиты и НДС правке не подлежат — они приходят из МойСклад и замораживаются на КП в момент создания.'],
@@ -9342,7 +9627,9 @@ const App = {
         const open = isLast || (m.direction === 'in' && Number(m.is_read) === 0);
         // Свёрнутое письмо показывает начало текста в ТОМ ЖЕ поле, где потом
         // раскроется тело: два поля подряд читались как два письма (модуль 037)
-        const preview = (m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+        // Письмо без текстовой части — начало берём из HTML (issue #134): иначе
+        // у свёрнутого письма нечего показать и не на что нажать
+        const preview = (m.body_text || this.htmlText(m.body_html)).replace(/\s+/g, ' ').trim().slice(0, 240);
         // Почтовый адрес рядом с именем: «Иванов» в переписке бывает не один,
         // и отвечать надо на адрес, а не на имя (модуль 037)
         const addr = m.direction === 'in'
@@ -9351,7 +9638,8 @@ const App = {
         const cls = ['lmsg', m.direction === 'in' ? 'lmsg--in' : 'lmsg--out'];
         if (open) cls.push('lmsg--open');
         return `
-            <article class="${cls.join(' ')}" data-tmsg data-mail="${m.id}" data-date="${this.esc(m.date_at || '')}">
+            <article class="${cls.join(' ')}" data-tmsg data-mail="${m.id}" data-date="${this.esc(m.date_at || '')}"
+                     onclick="App.tmsgClick(event, this)">
                 <header class="lmsg__head" onclick="App.toggleTmsg(this)">
                     <button type="button" class="lmsg__caret" aria-expanded="${open ? 'true' : 'false'}"
                             title="${open ? 'Свернуть письмо' : 'Развернуть письмо'}">${open ? '▾' : '▸'}</button>
@@ -11080,6 +11368,25 @@ const App = {
     toggleTmsg(head) {
         const box = head.closest('[data-tmsg]');
         if (box) this.setTmsgOpen(box, !box.classList.contains('lmsg--open'));
+    },
+
+    /** Текст из HTML письма — через инертный DOMParser: ничего не грузит и не исполняет. */
+    htmlText(html) {
+        if (!html) return '';
+        try { return new DOMParser().parseFromString(String(html), 'text/html').body.textContent || ''; }
+        catch { return ''; }
+    },
+
+    /**
+     * Нажатие по тексту свёрнутого письма раскрывает его (issue #134): начало
+     * текста видно, и тянутся к нему, а не к стрелке. Раскрытое письмо по
+     * нажатию не сворачивается — в нём выделяют текст и жмут ссылки.
+     */
+    tmsgClick(e, box) {
+        if (box.classList.contains('lmsg--open')) return;
+        // У шапки свой обработчик, у кнопок и ссылок — своё дело
+        if (e.target.closest('.lmsg__head, button, a, input, textarea, select, summary, details')) return;
+        this.setTmsgOpen(box, true);
     },
 
     setTmsgOpen(box, open) {

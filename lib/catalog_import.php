@@ -27,6 +27,8 @@ final class CatalogImport {
         'Архивный'                 => 'archived',
         'UUID товара модификации'  => 'parent_id',
         'Код товара модификации'   => 'parent_code',
+        // Вес, кг — расчёт доставки СДЭК (модуль 067)
+        'Вес'                      => 'weight',
     ];
 
     /** Row types of the export, in our own vocabulary. */
@@ -243,6 +245,8 @@ final class CatalogImport {
             'parent_code'     => $get('parent_code'),
             'characteristics' => implode(', ', $chars),
             'images'          => $images,
+            // Тот же разбор русского числа, что у цен: «1 200», «0,5 кг»
+            'weight'          => max(0.0, self::money($get('weight'))),
         ];
     }
 
@@ -284,8 +288,8 @@ final class CatalogImport {
             "INSERT INTO products_cache
                 (moysklad_id, name, name_normalized, article, code, price, prices_json, unit, description,
                  category, product_type, parent_id, characteristics, image_urls, is_archived,
-                 is_addon, source, imported_at, updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'excel', datetime('now'), datetime('now'))
+                 is_addon, weight, source, imported_at, updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'excel', datetime('now'), datetime('now'))
              ON CONFLICT(moysklad_id) DO UPDATE SET
                 name=excluded.name, name_normalized=excluded.name_normalized,
                 article=excluded.article, code=excluded.code, price=excluded.price,
@@ -294,6 +298,7 @@ final class CatalogImport {
                 product_type=excluded.product_type, parent_id=excluded.parent_id,
                 characteristics=excluded.characteristics, image_urls=excluded.image_urls,
                 is_archived=excluded.is_archived, is_addon=excluded.is_addon,
+                weight=CASE WHEN excluded.weight > 0 THEN excluded.weight ELSE products_cache.weight END,
                 source='excel', imported_at=datetime('now'), updated_at=datetime('now')",
             [
                 $row['moysklad_id'], $row['name'], trim((string)$normalized), $row['article'], $row['code'],
@@ -302,7 +307,7 @@ final class CatalogImport {
                 $row['unit'], $row['description'], $row['category'], $row['type'],
                 $row['parent_id'], $row['characteristics'],
                 $row['images'] ? json_encode($row['images'], JSON_UNESCAPED_UNICODE) : null,
-                $row['archived'] ? 1 : 0, $isAddon,
+                $row['archived'] ? 1 : 0, $isAddon, ($row['weight'] ?? 0) > 0 ? $row['weight'] : null,
             ]
         );
     }

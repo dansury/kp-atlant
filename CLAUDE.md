@@ -290,6 +290,16 @@ are that product, not a question; and a sibling modification is never an
 «аналог» — an analogue is ANOTHER product (`Alternatives::candidates()` skips
 the family, `RequestItems::familyFix()` goes back to it first).
 
+How many are free (`stock − reserve`) stands next to EVERY product the screen offers
+(module 067): the matched position («в наличии N» / «нет в наличии — под заказ», and in its
+folded line), «ещё похожие», the equal candidates, the catalog list and the modification
+hint. The catalog list under a position narrows by what is typed: every word must be the
+beginning of a word of the row's OWN text (`Variants::expandSuggest($rows, $max, $query)`) —
+a product found by the query no longer drags in all its modifications, «xl» is XL and not
+XXL, and deleting the end of a long name leaves that size's colours. The list asks
+`ProductMatcher::search()` with up to 16 words; the letter lines keep 6. The name of a
+position is a growing field: the modification it stands on is read, not scrolled.
+
 What the catalog could not settle — nothing found, equal candidates, a weak or
 description-only hit — the model settles BY ITSELF (`Autopick`, module 065):
 one call per letter, in the background after the card has drawn the catalog's
@@ -343,6 +353,15 @@ takes the product's price, and a product with no price takes the low end of its 
 with a hand-typed price is not touched by the common choice, and waiting terms are applied ONLY
 to positions not in stock: «под заказ» on something already on the shelf is a discount for
 nothing.
+
+Delivery can be priced by CDEK tariffs, and only if the manager wants to (module 067): the
+«📦 Рассчитать» panel right of the delivery price. `Cdek` is the one door to CDEK — token,
+cities, `/calculator/tarifflist` — and every path works without it: no keys or no contract
+is an ESTIMATE by `CDEK_RATE_BASE` + `CDEK_RATE_PER_KG` × billable weight (the larger of the
+weight and L×W×H/5000), and the panel says it is not a CDEK tariff. A position's weight is
+МойСклад's «Вес» (`products_cache.weight`, a modification takes its product's), otherwise the
+weight written in its description, × the quantity — and the panel shows where each came from.
+The contract type is asked, never guessed: it changes the tariff.
 
 VAT is ALWAYS printed under the КП total — extracted from the price, added to it, or as the
 non-payer wording (module 030). Before that the tax amount was printed only with the
@@ -497,8 +516,10 @@ keeps Chrome's forced darkening off the fields (issue #105) — and dark is
 `html[data-theme="dark"]`, the SAME tokens with another palette. A colour
 written as a hex instead of a token needs its dark counterpart in the dark
 block at the end of `app.css`. A letter and a КП inside a frame are PAPER:
-every iframe the app builds declares `only light` and stays white in both
-themes. The phone never stays zoomed out: the viewport carries
+every iframe the app builds declares `only light` INSIDE and `color-scheme:
+dark` on the `<iframe>` element itself (module 067) — Chrome hands the embedded
+document the preferred scheme of its frame, and a light preference is exactly
+what «Тёмная тема для сайтов» darkens whatever the document declares. The phone never stays zoomed out: the viewport carries
 `minimum-scale=1`. A PDF is shown through `App.pdfInto()` — a frame where the
 browser has a PDF viewer, pdf.js pages where it has not (Android, iPhone):
 never a bare `<iframe src=….pdf>`, which is a grey «Открыть» on a phone.

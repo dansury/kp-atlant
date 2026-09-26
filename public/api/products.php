@@ -21,14 +21,16 @@ switch ($action) {
         // «шлем l» must narrow the list, not widen it. Полнотекстово, без
         // учёта регистра кириллицы и с описанием (issue #118)
         require_once ROOT . '/lib/matcher.php';
-        $items = ProductMatcher::search($q, $limit);
+        // До 16 слов (issue #138): размер в конце длинного имени отличает модификации
+        $items = ProductMatcher::search($q, $limit, 16);
         $counterpartyId = (int)($_GET['counterparty_id'] ?? 0) ?: null;
         require_once ROOT . '/lib/catalog.php';
         require_once ROOT . '/lib/variants.php';
         // Выбирают не «товар вообще», а размер и цвет: в подсказке стоят САМИ
         // модификации, каждая со своим артикулом, ценой и количеством, а товар
         // — только когда модификаций у него нет (модуль 022).
-        $items = Variants::expandSuggest($items, max(12, $limit * 5));
+        // Модификации найденного товара — только те, что несут набранные слова
+        $items = Variants::expandSuggest($items, max(12, $limit * 5), $q);
         // Описание товара — тем же текстом, каким карточка подбора заполняет
         // комментарий: выбрали другую позицию — описание поехало за ней, и
         // второго запроса за ним не нужно (модуль 032). Спрашивается оно по

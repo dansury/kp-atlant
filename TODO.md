@@ -195,3 +195,18 @@ not have.
   `support-assets` branch (created on first use), `main` gets no commit and no
   deploy starts. The token needs `Contents: Read and write`.
 - `support/uploads/` on the server is closed by `.htaccess`; delete it there.
+
+## Module 067 (issues #134–#139) — check on a live system
+- A real CDEK account: put the Account and the Secure password into «Все параметры →
+  Доставка СДЭК», choose «Договор со СДЭК» and price one КП. The token,
+  `/location/suggest/cities` (a 404 there falls back to `/location/cities`) and
+  `/calculator/tarifflist` were checked against a stub and a local mock only —
+  compare one tariff with the CDEK site.
+- Re-sync the catalog from МойСклад once: the new `products_cache.weight` fills from
+  the card's «Вес». A product with a weight then says «из МойСклад» in the panel.
+- `CDEK_RATE_BASE` / `CDEK_RATE_PER_KG` (400 ₽ + 60 ₽/кг) are placeholders for the
+  estimate without API — set them to the real contract or treat the estimate as rough.
+- `CDEK_BOXES` holds CDEK's standard box list; correct it if the office packs otherwise.
+- Android Chrome with «Тёмная тема для сайтов»: letter bodies white in the light
+  theme. Reproduced and fixed in Chromium (`forceDarkModeEnabled` +
+  `preferredColorScheme=dark`, no emulation); the phone itself was not tried.
