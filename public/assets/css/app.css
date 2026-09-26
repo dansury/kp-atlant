@@ -1534,9 +1534,11 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
 
 /* «Установить приложение» светится, пока в этом браузере его нет (issue #101).
    #fff на --primary = 4.8:1, AA */
-.btn--glow { background: var(--primary); border-color: var(--primary); color: #fff;
+/* Светится контуром, а не заливкой: залитая кнопка на панели одна — «Написать» (модуль 063).
+   --accent-ink на белом — AA */
+.btn--glow { background: var(--surface); border-color: var(--primary); color: var(--accent-ink);
              animation: installGlow 1.8s ease-in-out infinite; }
-.btn--glow:hover { background: var(--primary-dark); }
+.btn--glow:hover { background: var(--surface-3); }
 @keyframes installGlow { 50% { box-shadow: 0 0 0 5px rgba(225, 29, 34, .28); } }
 @media (prefers-reduced-motion: reduce) { .btn--glow { animation: none; box-shadow: 0 0 0 3px rgba(225, 29, 34, .28); } }
 
@@ -1621,3 +1623,44 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible, input[type="ch
     .table--logs .log__source div { display: inline; margin-left: 6px; }
     .table--logs .log__msg { overflow-wrap: anywhere; word-break: normal; }
 }
+
+/* ==== Модуль 063: следующий шаг, свёрнутое и развёрнутое, восстановленный текст ==== */
+
+/* Следующий шаг — кольцо акцентом; одна такая кнопка на блок */
+.btn--next { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(225, 29, 34, .35); animation: nextPulse 2s ease-in-out infinite; }
+@keyframes nextPulse { 50% { box-shadow: 0 0 0 6px rgba(225, 29, 34, .12); } }
+@media (prefers-reduced-motion: reduce) { .btn--next { animation: none; } }
+
+/* Свёрнутое — пунктир и нейтральный фон; раскрытое — полоса акцентом слева и
+   тонированный заголовок. Состояние читается цветом, без повторных нажатий */
+details.fold { border: 1px dashed var(--border-strong); background: var(--surface-2); color: var(--text); }
+details.fold > summary { cursor: pointer; list-style: none; display: flex; flex-wrap: wrap;
+                         align-items: center; gap: 4px; margin: 0; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: '▸'; color: var(--text-muted); width: 1em; flex: none; }
+details.fold[open] { border-style: solid; border-left: 3px solid var(--primary); }
+details.fold[open] > summary { margin-bottom: 8px; }
+details.fold[open] > summary::before { content: '▾'; color: var(--accent-ink); }
+.fold__sum { font-weight: 400; color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
+details.fold[open] .fold__sum { display: none; }
+
+/* Текст, возвращённый из черновика: видно, что он с прошлого раза.
+   --text-muted на белом — AA */
+.keep-note { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.keep-note a { color: var(--accent-ink); }
+
+/* Кнопки оформления на телефоне — за «Aa»; 🎤 на виду */
+.composer__fmt { display: none; }
+@media (max-width: 640px) {
+    .composer__fmt { display: inline-flex; }
+    .composer__tools > .btn:not(.composer__fmt):not([data-mic]) { display: none; }
+    .composer__tools--open > .btn:not(.composer__fmt):not([data-mic]) { display: inline-flex; }
+    .composer__tools--open > .composer__fmt { background: var(--surface-3); }
+}
+
+/* Строка без товара: фото и пустое описание появятся, когда товар выберут */
+.match-row--nomatch .match-extra__photos,
+.match-row--nomatch .match-extra__comment:placeholder-shown { display: none; }
+
+/* Панель доски на телефоне — одной строкой: установка значком (модуль 063) */
+@media (max-width: 640px) { .btn--glow .glow-lbl { display: none; } }

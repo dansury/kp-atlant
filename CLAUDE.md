@@ -495,6 +495,16 @@ A card that costs a catalog match to open is cached for a minute in the tab (`Ap
 shown instantly and re-checked in the background. Any write clears the whole cache: what
 exactly it changed is not visible from there, and a stale price is worse than a wait.
 
+Typed text is never lost (module 063). Every `<textarea id>` and every `[data-keep]` field is
+kept by itself — on the device at once, on the server (`FieldDrafts`, `api/drafts.php`) two
+seconds later — and put back when the field is drawn again, unless the text it was typed over
+has changed since (`base`): a stale draft never overwrites a colleague's newer prompt. A cookie
+is only the fallback for a browser with no `localStorage`: cookies ride on every request and a
+dozen drafts in them is a `400` for the whole API. A send clears its draft only when it
+SUCCEEDED (`keepClear` / `keepClearIn`); a dead network says the text is saved on the device.
+One button per block is the next step (`App.markNext()`, `.btn--next`) — a new block that has a
+«next» adds itself there instead of lighting a second button by hand.
+
 Hints are the SAME texts as `App.HINTS`, and on a first visit to a screen they run as a
 guided tour — one bubble at a time, with the thing being explained highlighted. A wall of
 text is a page nobody reads; a tour is a page everybody finishes.

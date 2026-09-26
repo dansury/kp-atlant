@@ -61,6 +61,7 @@
 | Issues #92–#95: every ticked photo goes into the КП (default = the max setting), a КП is sent only from the letter editor, a card leaves with its last letter, voice in the support form | `specs/060-issues-92-95/spec.md` | Implemented |
 | Issues #97–#114: honest unread counter (+IMAP \Seen), notices mark cards, МойСклад shipments → track in the draft, order/invoice linked by number, column «ещё» + search past the limit, log copy/export/ticket, support images in issues, mobile pass, «Отправить позже», header logo, SpeechKit model, app install | `specs/061-issues-97-114/spec.md` | Implemented |
 | Issues #116–#119: the exact product and its size (no false «нет в наличии»), full-text catalog search, stages by themselves (up to «Отправлено»), МойСклад documents in the conversation with 👁 / «В письмо», invoice button next to «Сформировать КП», no side tabs, focus on open, windows on a zoomed phone | `specs/062-issues-116-119/spec.md` | Implemented |
+| Issue #121: typed text is never lost (device → cookie fallback → server `field_drafts`, the letter composer mirrored locally, an offline send says so), the next step is lit (`markNext`), landing on the action, conditions and formatting folded on a phone, folded/unfolded by colour | `specs/063-mobile-ux-and-field-drafts/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -115,6 +116,7 @@
 | Module 059: WebM→Ogg remux, SpeechKit transcription, «под заказ» by hand + variant stock (#86), СДЭК track on all cards (#88), UI: 🎤, full-page «Написать», screenshot paste, admin tickets, КП strikethrough | `php tests/module_059.php` |
 | Module 061: search lock, log text/export/ticket file, issue image links, card notices, shipments into the draft, column paging and search, unread counter, SpeechKit settings, UI by source | `php tests/module_061.php` |
 | Module 062: plate Бр3 size XL → the modification, stock of a product = its modifications, catalog search, automatic stages, documents in the timeline, UI of #116/#117/#119 | `php tests/module_062.php` |
+| Module 063: field drafts (save, replace, per manager, clear, caps, TTL), UI: device copy, cookie fallback, observer, stale base, offline, next step, folds | `php tests/module_063.php` |
 | Module 060: photo pick not capped + default count, confirm at attach (no-price gate, lessons), no send buttons outside the letter, company card pruned on delete, 🎤 in support | `php tests/module_060.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |

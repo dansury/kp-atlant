@@ -149,3 +149,11 @@ not have.
   managers want (if not, a setting like `MS_INVOICE_TEMPLATE` is needed).
 - #117 was reproduced with a zoomed page in emulation; check the support
   window on the real Android phone from the issue.
+
+## Module 063 (issue #121) — left for a live phone
+- The mobile pass was run in headless Chromium at 412 px on the main screens
+  (board, list, company card, request, new request, compose, notifications,
+  settings); every settings tab one by one and a real iPhone/Android were not.
+- `.fold` colouring is on «Цены и условия»; the older folds (letter blocks,
+  match rows, board filters) keep their own look — move them to `details.fold`
+  when they are next touched.

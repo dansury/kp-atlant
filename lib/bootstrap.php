@@ -2045,6 +2045,20 @@ SQL);
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '52')");
         $current = 52;
     }
+
+    // v53 — module 063: unsent text of any field, per manager
+    if ($current < 53) {
+        Db::q("CREATE TABLE IF NOT EXISTS field_drafts (
+                   manager_id INTEGER NOT NULL REFERENCES managers(id) ON DELETE CASCADE,
+                   key TEXT NOT NULL,
+                   body TEXT NOT NULL DEFAULT '',
+                   base TEXT NOT NULL DEFAULT '',
+                   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                   PRIMARY KEY (manager_id, key))");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '53')");
+        $current = 53;
+    }
 }
 
 /** First run after the upgrade: config.php IMAP/SMTP becomes mailbox #1. */
