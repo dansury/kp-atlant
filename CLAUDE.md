@@ -279,6 +279,28 @@ product (module 062). A size named once («размер XL») is a modification 
 (`Variants::sizeLabel()`), and a product with modifications is in stock when its modifications
 are: judging it by its own zero is how a plate in stock got replaced by an «analogue».
 
+Sizes are read the way clients write them (module 065): «размер Л, М» is L and M
+— Cyrillic letter sizes count, but ONLY after a size hint (a bare «с» is a
+preposition, a bare «м» a metre), and several sizes after one hint are one line
+per size (`Variants::sizeList()`). «По 2 штуки каждого» is 2 per size; a single
+quantity without «по»/«каждого» is a TOTAL, divided evenly, and the row says so.
+The colour is the one the client named, otherwise the one in stock
+(`Variants::pickFor()`). Equal candidates that are modifications of ONE product
+are that product, not a question; and a sibling modification is never an
+«аналог» — an analogue is ANOTHER product (`Alternatives::candidates()` skips
+the family, `RequestItems::familyFix()` goes back to it first).
+
+What the catalog could not settle — nothing found, equal candidates, a weak or
+description-only hit — the model settles BY ITSELF (`Autopick`, module 065):
+one call per letter, in the background after the card has drawn the catalog's
+answer, choosing only among candidates the code found, at temperature 0, never
+twice for one line (`llm_checked_at`). No key, a dead model or a broken answer
+leaves the catalog's rows untouched. «↻ Подобрать заново» is the ONE button for
+all of it — do not bring back a second «нейросетью» button. What the matching
+wants the manager to know (the quantity it divided, the colour it chose, why the
+model picked) goes into `request_items.match_hint`, NEVER into `notes`: `notes`
+prints in the КП.
+
 ## Money on a position
 The price a КП prints is computed in ONE place — `Terms::price()` — and nowhere else. A
 position has a manual discount and, when it is not in stock, a waiting term, a waiting discount
@@ -527,6 +549,9 @@ always on the screen (module 064, `Notes`). They are not in the timeline: a
 note shown twice is two notes to read. A letter with no company keeps its
 notes by `thread_key`, and they move with the thread (`Crm::attachThread()`).
 
+Every toast has a «×» (`App.toastClose()`, issue #132): a phone has no hover, and a
+sticky error with no cross stayed over the screen for good.
+
 Hints are the SAME texts as `App.HINTS`, and on a first visit to a screen they run as a
 guided tour — one bubble at a time, with the thing being explained highlighted. A wall of
 text is a page nobody reads; a tour is a page everybody finishes.
@@ -570,6 +595,9 @@ a draft or a started match → «В работе», a sent КП → «КП от�
 оплату», a payment → «Сборка», a МойСклад shipment → «Отправлено». Documents older than
 `MsSync::FRESH_DAYS` move nothing — a first sync must not march a card through its history.
 A manual move always works; `work` never pulls a card out of a column the manager chose.
+The one move back a card makes by itself (issue #131): a client letter dated after
+the card went into «Закрыто» brings it to the top of «В работе» (`Boards::reopenClosed()`,
+run by `sync()`); spam, our own letters and imported history reopen nothing.
 On a phone «В работе» stands directly ABOVE «Входящие» in one slide (`.bcol-pair`,
 module 064): what is being written and what just came in are one screen.
 

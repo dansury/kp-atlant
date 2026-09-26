@@ -133,7 +133,9 @@ ok('и её остаток, а не общий на товар', (int)($resolved
    (string)($resolved['stock'] ?? ''));
 
 $missing = Variants::resolveRow(['moysklad_product_id' => 'ms-helmet', 'variant_label' => 'XXL']);
-ok('которой нет — строка об этом говорит', str_contains((string)($missing['notes'] ?? ''), 'XXL'),
+// Менеджеру, а не клиенту: `notes` печатается в КП, подсказка подбора — нет (модуль 065)
+ok('которой нет — строка об этом говорит', str_contains((string)($missing['match_hint'] ?? ''), 'XXL')
+   && !isset($missing['notes']),
    (string)($missing['notes'] ?? ''));
 
 // ---------------------------------------------------------------------

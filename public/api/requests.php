@@ -7,6 +7,7 @@ require_once ROOT . '/lib/crm.php';
 require_once ROOT . '/lib/parser.php';
 require_once ROOT . '/lib/matcher.php';
 require_once ROOT . '/lib/request_items.php';
+require_once ROOT . '/lib/autopick.php';
 require_once ROOT . '/lib/attachments.php';
 require_once ROOT . '/lib/kp_set.php';
 require_once ROOT . '/lib/boards.php';
@@ -132,6 +133,8 @@ switch ($action) {
         // afterwards. Matching here is local only: opening a card costs no model call.
         $req['items'] = RequestItems::ensure($id);
         $req['open_choices'] = RequestItems::openChoices($id);
+        // Что каталог не решил — карточка сама отдаст нейросети, фоном (модуль 065)
+        $req['autopick'] = Autopick::status($id);
         // Доставка — такая же строка подбора, как позиция (модуль 034)
         $req['delivery'] = RequestItems::delivery($id);
         // Цены и условия, которыми менеджер закрыл прошлое КП: панель над
@@ -153,6 +156,7 @@ switch ($action) {
         $cpId = $reqRow['counterparty_id'] ? (int)$reqRow['counterparty_id'] : null;
         jsonData([
             'items'      => RequestItems::ensure($id),
+            'autopick'   => Autopick::status($id),
             'delivery'   => RequestItems::delivery($id),
             // Цены и условия, которыми менеджер закрыл прошлое КП: следующее
             // открывается ими же, а не пустым выбором заново (модуль 036).
@@ -286,10 +290,30 @@ switch ($action) {
         if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
         // `smart=1` lets the model normalize the wording first — costs a call
         $useLlm = ($_GET['smart'] ?? '0') === '1';
+        // Одна кнопка (модуль 065): каталог, затем нейросеть для того, что он не решил
+        $auto = ($_GET['auto'] ?? '1') === '1';
         Boards::workStarted($id);
         // The counts come back with the rows: «ничего не нашлось» must not look
         // the same on screen as «нашлось всё» (module 018)
-        jsonData(RequestItems::rematchReport($id, $useLlm) + ['delivery' => RequestItems::delivery($id)]);
+        jsonData(RequestItems::rematchReport($id, $useLlm, $auto)
+                 + ['delivery' => RequestItems::delivery($id), 'autopick' => Autopick::status($id)]);
+
+    /**
+     * Нейросеть — сама, когда каталог не справился (модуль 065, issue #132).
+     * Карточка зовёт это фоном сразу после того, как нарисовала ответ каталога:
+     * открытие не ждёт модели, а строки, которые каталог не решил, решаются без
+     * кнопки. Один запрос к модели на письмо; спрошенная строка не спрашивается.
+     */
+    case 'items_autopick':
+        requireAuth();
+        $id = (int)($_GET['id'] ?? 0);
+        if (!Db::one("SELECT id FROM requests WHERE id=?", [$id])) jsonError('Not found', 404);
+        if (!Autopick::available()) {
+            jsonData(['asked' => 0, 'picked' => 0, 'items' => RequestItems::all($id),
+                      'autopick' => Autopick::status($id), 'off' => true]);
+        }
+        $res = Autopick::run($id);
+        jsonData($res + ['autopick' => Autopick::status($id), 'open_choices' => RequestItems::openChoices($id)]);
 
     /**
      * Запрос, который принесли мимо почты (модуль 038).

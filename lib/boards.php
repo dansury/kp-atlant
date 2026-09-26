@@ -638,6 +638,7 @@ final class Boards {
         }
 
         $revived = self::reviveDismissed($boardId);
+        $revived += self::reopenClosed($boardId);
 
         $pos = (int)Db::val("SELECT COALESCE(MAX(position), -1) + 1 FROM board_cards WHERE column_id=?", [$inbox['id']]);
 
@@ -749,6 +750,49 @@ final class Boards {
             Db::update('board_cards', ['dismissed_at' => null, 'moved_at' => date('Y-m-d H:i:s')],
                        'id=?', [(int)$row['id']]);
             if ($inbox) self::moveCard((int)$row['id'], (int)$inbox['id'], 0);
+            $n++;
+        }
+        return $n;
+    }
+
+    /**
+     * Клиент написал в закрытую карточку (issue #131): она едет в «В работе».
+     *
+     * Единственный переход назад, который карточка делает сама. Решает дата
+     * самого письма, а не его попадания в базу: импорт старой почты из mbox
+     * закрытое не открывает. Спам, служебное и «не наш профиль» — тоже.
+     *
+     * @return int сколько карточек вернулось
+     */
+    public static function reopenClosed(int $boardId): int {
+        $rows = Db::all(
+            "SELECT d.id, d.counterparty_id, d.thread_key, COALESCE(d.moved_at, d.created_at) AS since
+             FROM board_cards d JOIN board_columns c ON c.id = d.column_id
+             WHERE c.board_id=? AND c.kind='closed' AND d.dismissed_at IS NULL", [$boardId]);
+        if (!$rows) return 0;
+        $work = self::workColumn($boardId);
+        if (!$work || ($work['kind'] ?? null) === 'closed') return 0;
+
+        $ignored = "'" . implode("','", self::IGNORED_CATEGORIES) . "'";
+        $n = 0;
+        foreach ($rows as $row) {
+            $since = (string)($row['since'] ?? '');
+            if ($since === '') continue;
+            $cpId = (int)($row['counterparty_id'] ?? 0);
+            $key = trim((string)($row['thread_key'] ?? ''));
+            if (!$cpId && $key === '') continue;
+            $fresh = (int)Db::val(
+                "SELECT COUNT(*) FROM mail_messages
+                 WHERE direction='in' AND archived_at IS NULL AND date_at > ?
+                   AND (category IS NULL OR category NOT IN ($ignored))
+                   AND " . ($cpId
+                       ? "counterparty_id IN (SELECT id FROM counterparties WHERE id=? OR merged_into_id=?)"
+                       : "thread_key=?"),
+                $cpId ? [$since, $cpId, $cpId] : [$since, $key]);
+            if ($fresh <= 0) continue;
+            self::moveCard((int)$row['id'], (int)$work['id'], 0);
+            Logger::info('boards', "Карточка → «{$work['title']}» (клиент написал после закрытия)",
+                         ['card_id' => (int)$row['id'], 'counterparty_id' => $cpId ?: null, 'thread_key' => $key ?: null]);
             $n++;
         }
         return $n;

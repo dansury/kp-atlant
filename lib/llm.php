@@ -568,6 +568,14 @@ class LLM {
         self::saveYandexCache($cache);
     }
 
+    /** Есть ли в цепочке провайдер с ключом — можно ли вообще спрашивать модель. */
+    public static function anyReady(): bool {
+        foreach (self::$providers as $provider) {
+            if (self::ready($provider)) return true;
+        }
+        return false;
+    }
+
     public static function ready(string $provider): bool {
         return match ($provider) {
             'yandex'     => (string)(self::$cfg['YANDEX_API_KEY'] ?? '') !== '' && (string)(self::$cfg['YANDEX_FOLDER_ID'] ?? '') !== '',

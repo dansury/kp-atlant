@@ -32,6 +32,15 @@ class ProductMatcher {
     private const EXACT_VARIANT = 0.9;
 
     /**
+     * Слова строки письма, которых нет ни в одном названии (issue #132):
+     * «шлем Атом (размер Л, М) - количество по» — это товар «шлем Атом», а
+     * «размер» и «количество» топили его ниже его же модификаций.
+     */
+    private const QUERY_NOISE = ['количество', 'количестве', 'кол', 'во', 'по', 'каждого', 'каждый', 'каждой',
+                                 'каждому', 'штуки', 'штук', 'штука', 'размер', 'размера', 'размеры', 'размеров',
+                                 'цвет', 'цвета', 'нужно', 'нужен', 'нужна', 'требуется', 'просим', 'прошу', 'надо'];
+
+    /**
      * Match parsed items against products_cache.
      * $useLlm=false keeps it local: opening a request card must not spend a
      * model call, so the card matches by name (and by vectors, which are already
@@ -117,6 +126,19 @@ class ProductMatcher {
                 $fromDesc = fn($c) => ($c['source'] ?? '') === 'description';
                 $equal = array_values(array_filter($candidates, fn($c) => $best['score'] - $c['score'] <= $delta
                     && $c['rank'] === $best['rank']));
+                // Равные — модификации одного товара (issue #132): это не выбор
+                // между товарами, а сам товар; размер из письма выберет `Variants`
+                $root = self::familyRoot($equal);
+                if (count($equal) > 1 && $root !== null) {
+                    $own = self::rowById($root, $counterpartyId, $best);
+                    if ($own) {
+                        $candidates = array_values(array_filter($candidates, fn($c) => $c['moysklad_id'] !== $root));
+                        array_unshift($candidates, $own);
+                        $equal = [$own];
+                        $result['hint'] = 'подходят несколько модификаций одного товара — стоит товар целиком, '
+                                        . 'размер и цвет можно выбрать в «ещё похожие»';
+                    }
+                }
                 $candidates = self::stripRank($candidates);
                 $best = $candidates[0];
 
@@ -133,6 +155,40 @@ class ProductMatcher {
             $results[] = $result;
         }
         return $results;
+    }
+
+    /** Общий товар-родитель всех кандидатов, или null — они из разных семей. */
+    private static function familyRoot(array $rows): ?string {
+        $roots = [];
+        foreach ($rows as $r) {
+            $roots[(string)(($r['parent_id'] ?? '') ?: $r['moysklad_id'])] = true;
+        }
+        return count($roots) === 1 ? (string)array_key_first($roots) : null;
+    }
+
+    /** Строка каталога в форме кандидата — сам товар вместо его модификаций. */
+    private static function rowById(string $id, ?int $counterpartyId, array $like): ?array {
+        foreach (self::catalog() as $p) {
+            if ((string)$p['moysklad_id'] !== $id) continue;
+            return [
+                'moysklad_id' => $p['moysklad_id'],
+                'name'        => $p['name'],
+                'article'     => $p['article'],
+                'price'       => Catalog::priceFor($p, $counterpartyId),
+                'prices'      => Catalog::decodePrices($p['prices_json'] ?? null),
+                'stock'       => (int)$p['stock'],
+                'reserved'    => (int)$p['reserved'],
+                'unit'        => $p['unit'],
+                'characteristics' => $p['characteristics'] ?? '',
+                'parent_id'   => '',
+                'score'       => $like['score'],
+                'lexical'     => $like['lexical'] ?? null,
+                'vector'      => $like['vector'] ?? null,
+                'source'      => $like['source'] ?? 'words',
+                'rank'        => $like['rank'] ?? 0,
+            ];
+        }
+        return null;
     }
 
     /**
@@ -194,7 +250,9 @@ class ProductMatcher {
         $words = array_slice(array_values(array_unique(array_filter(explode(' ', $fold($query))))), 0, 6);
         if (!$words) return [];
 
-        $rows = Db::all(
+        // Каталог читается один раз на запрос: автоподбор ищет по строке
+        // письма несколько раз подряд (модуль 065)
+        $rows = self::$searchRows ??= Db::all(
             "SELECT moysklad_id, name, article, code, price, prices_json, stock, reserved, unit,
                     characteristics, product_type, category, parent_id, description, specs_text
              FROM products_cache WHERE is_archived IS NOT 1");
@@ -229,9 +287,12 @@ class ProductMatcher {
 
     /** The whole catalog, read once per request — a KP has many positions. */
     private static ?array $catalog = null;
+    /** То же для полнотекстового поиска — с описаниями. */
+    private static ?array $searchRows = null;
 
     public static function forgetCatalog(): void {
         self::$catalog = null;
+        self::$searchRows = null;
         Embeddings::forgetIndex();
     }
 
@@ -258,11 +319,11 @@ class ProductMatcher {
 
     /** Кандидаты с рядом (`rank`) — `matchItems()` сравнивает ряды. */
     private static function rankedCandidates(string $query, int $maxResults, ?array $queryVector, ?int $counterpartyId): array {
-        $normQuery = self::normalize($query);
+        $normQuery = self::denoise(self::normalize($query));
         if ($normQuery === '') return [];
         // «размер XL» — не слово названия: размер выбирает модификацию, а не товар
         require_once __DIR__ . '/variants.php';
-        $baseQuery = self::normalize(Variants::stripSize($query));
+        $baseQuery = self::denoise(self::normalize(Variants::stripSize($query)));
         $baseWords = self::keyWords($baseQuery);
 
         $products = self::catalog();
@@ -386,6 +447,7 @@ class ProductMatcher {
                 'reserved'    => (int)$p['reserved'],
                 'unit'        => $p['unit'],
                 'characteristics' => $p['characteristics'] ?? '',
+                'parent_id'   => (string)($p['parent_id'] ?? ''),
                 'score'       => round($combined, 3),
                 'lexical'     => round($lexical, 3),
                 'vector'      => $vec === null ? null : round($vec, 3),
@@ -409,6 +471,13 @@ class ProductMatcher {
     private static function rankOf(string $source, string $productType, bool $headHit): int {
         if ($source !== 'description') return $headHit ? 0 : 1;
         return $productType === 'bundle' ? 3 : 2;
+    }
+
+    /** Запрос без слов, которые не бывают частью названия (`QUERY_NOISE`). */
+    private static function denoise(string $normalized): string {
+        $words = array_filter(explode(' ', $normalized), fn($w) => $w !== '' && !in_array($w, self::QUERY_NOISE, true));
+        // Одни «шумовые» слова — пусть ищет, как написано
+        return $words ? implode(' ', $words) : $normalized;
     }
 
     /** Главное слово запроса: первое буквенное от четырёх букв, вид товара. */

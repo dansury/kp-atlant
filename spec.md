@@ -63,6 +63,7 @@
 | Issues #116–#119: the exact product and its size (no false «нет в наличии»), full-text catalog search, stages by themselves (up to «Отправлено»), МойСклад documents in the conversation with 👁 / «В письмо», invoice button next to «Сформировать КП», no side tabs, focus on open, windows on a zoomed phone | `specs/062-issues-116-119/spec.md` | Implemented |
 | Issue #121: typed text is never lost (device → cookie fallback → server `field_drafts`, the letter composer mirrored locally, an offline send says so), the next step is lit (`markNext`), landing on the action, conditions and formatting folded on a phone, folded/unfolded by colour | `specs/063-mobile-ux-and-field-drafts/spec.md` | Implemented |
 | Issues #123–#129: light/dark theme (letters and КП stay paper), a stale analogue is dropped when the row stands on the requested product, our own ИНН never identifies a client, the phone never stays zoomed out, PDF drawn by pdf.js where the browser cannot, «В работе» above «Входящие» on a phone, menus stay on screen, notes on top and open | `specs/064-issues-123-129/spec.md` | Implemented |
+| Issues #131–#132 and the autopick in one button: sizes of the letter (Cyrillic «Л, М», one hint for several sizes, «по N каждого»), the colour the client named or the one in stock, equal modifications = the product, an analogue is another product, the model settles what the catalog could not (in the background, one call per letter), «↻ Подобрать заново», hints for the manager only, a closed card back to «В работе» on a client's letter, a close cross on every toast | `specs/065-autopick-one-button/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -119,6 +120,7 @@
 | Module 062: plate Бр3 size XL → the modification, stock of a product = its modifications, catalog search, automatic stages, documents in the timeline, UI of #116/#117/#119 | `php tests/module_062.php` |
 | Module 063: field drafts (save, replace, per manager, clear, caps, TTL), UI: device copy, cookie fallback, observer, stale base, offline, next step, folds | `php tests/module_063.php` |
 | Module 064: analogue healing, our ИНН, notes by thread, UI: theme, viewport, pdf.js, board pair, menus | `php tests/module_064.php` |
+| Module 065: sizes «Л, М» and «по N каждого», colour and stock of the modification, no analogue from the same product, the model settles the rest (with a stand-in model), legacy rows split, closed card reopens, toast cross, one button | `php tests/module_065.php` |
 | Module 060: photo pick not capped + default count, confirm at attach (no-price gate, lessons), no send buttons outside the letter, company card pruned on delete, 🎤 in support | `php tests/module_060.php` |
 | Векторы каталога и вики: хеш раздела, переживший пересборку индекс, маска секрета, НДС каталога | `php tests/module_009_vectors.php` |
 | Редеплой с GitHub не стирает базу, подпись и вложения | `php tests/deploy_preserves_data.php` |

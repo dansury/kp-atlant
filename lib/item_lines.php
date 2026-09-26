@@ -91,9 +91,10 @@ final class ItemLines {
             if (mb_strpos($low, $stop) !== false) return null;
         }
 
-        // Количество: «в количестве 5 шт», «— 10 шт.», «, 3 компл», «5 шт»
-        $re = '/^(?<name>.{3,200}?)\s*[-–—:,]?\s*(?:в\s+количестве\s+|кол-?во[:\s]+|количество[:\s]+)?'
-            . '(?<qty>\d+(?:[.,]\d+)?)\s*(?:' . self::UNITS . ')\b\.?/ui';
+        // Количество: «в количестве 5 шт», «— 10 шт.», «, 3 компл», «5 шт»,
+        // «количество по 2 штуки каждого» (issue #132: «- количество по» не часть имени)
+        $re = '/^(?<name>.{3,200}?)\s*[-–—:,]?\s*(?:(?:в\s+количестве|кол-?во|количество)[:\s]*)?(?<each>по\s+)?'
+            . '(?<qty>\d+(?:[.,]\d+)?)\s*(?:' . self::UNITS . ')\b\.?(?<tail>.*)$/ui';
         if (!preg_match($re, $segment, $m)) return null;
 
         $name = self::cleanName((string)$m['name']);
@@ -102,14 +103,21 @@ final class ItemLines {
         $qty = (float)str_replace(',', '.', (string)$m['qty']);
         if ($qty <= 0) return null;
 
-        return ['name' => $name, 'qty' => $qty, 'raw_text' => $segment];
+        $item = ['name' => $name, 'qty' => $qty, 'raw_text' => $segment];
+        // «по 2 штуки», «2 шт. каждого» — количество на каждый размер, а не на все
+        if ($m['each'] !== '' || preg_match('/^\s*(?:кажд(?:ого|ой|ый|ому|ая|ую)|на\s+каждый)(?!\p{L})/iu', (string)$m['tail'])) {
+            $item['each'] = true;
+        }
+        return $item;
     }
 
     /** Название без нумерации списка, без хвостовых знаков и без «или аналог». */
-    private static function cleanName(string $name): string {
+    public static function cleanName(string $name): string {
         $name = (string)preg_replace(self::LEAD_JUNK, '', trim($name));
         $name = (string)preg_replace('/\s*(?:или\s+аналог\w*|аналог\w*)\s*$/ui', '', $name);
-        $name = trim($name, " \t.,;:-–—");
+        $name = (string)preg_replace('/\s*(?:количество|кол-?во)(?:\s+по)?\s*$/ui', '', $name);
+        // trim() режет по байтам, а тире многобайтные — только регуляркой
+        $name = (string)preg_replace('/^[\s.,;:\-–—]+|[\s.,;:\-–—]+$/u', '', $name);
         // В названии должны быть буквы: «5 x 3» позицией не является
         if (!preg_match('/\p{L}{3}/u', $name)) return '';
         // Слишком коротко, чтобы искать это в каталоге

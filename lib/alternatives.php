@@ -54,8 +54,8 @@ final class Alternatives {
      * Analogues for the lines that need one, all in a single model call.
      *
      * $useLlm = false keeps it free: opening a request card must not spend a
-     * model call (module 008), so the card gets the local answer and the
-     * «Подобрать нейросетью» button asks for the sharper one.
+     * model call (module 008), so the card gets the local answer; a line the
+     * catalog left unsettled goes to the model by itself (`Autopick`, module 065).
      *
      * @param array $lines [['raw_name' => string, 'raw_text' => string, 'exclude_id' => ?string]]
      * @return array<int, ?array> same keys as $lines; null = nothing in stock fits
@@ -110,11 +110,16 @@ final class Alternatives {
         $name = trim($name);
         if ($name === '') return [];
 
+        // Семья товара, вместо которого ищем, — не аналог (issue #132): другой
+        // размер или цвет того же шлема — это тот же шлем, а не замена ему
+        $family = $excludeId === '' ? '' : ((string)(Db::val("SELECT parent_id FROM products_cache WHERE moysklad_id=?",
+                                                             [$excludeId]) ?: '') ?: $excludeId);
         $merged = [];
         foreach (Synonyms::variants($name) as $variant) {
             foreach (ProductMatcher::findCandidates($variant, self::POOL, null, $counterpartyId) as $row) {
                 $id = (string)$row['moysklad_id'];
                 if ($id === $excludeId) continue;
+                if ($family !== '' && ($id === $family || (string)($row['parent_id'] ?? '') === $family)) continue;
                 if (self::freeStock($row) <= 0) continue;
                 // The same row found by two phrasings keeps its better score
                 if (!isset($merged[$id]) || $row['score'] > $merged[$id]['score']) $merged[$id] = $row;
