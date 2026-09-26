@@ -191,7 +191,7 @@ term("copying into {$target} (preserving: " . implode(', ', $keep) . ")");
 $copied = 0;
 copyTree($src, $target, $keep, $copied);
 
-term("copied {$copied} files");
+term("copied {$copied} changed files (unchanged ones are left as they are)");
 
 // Purge runs only after a successful copy, so a failed download never deletes anything.
 $deleted = null;
@@ -359,6 +359,12 @@ function download(string $url, string $dest, array $extraHeaders = []): array {
     return [$size, $size > 0 ? '' : 'empty file'];
 }
 
+// A live site is being served while this runs, so a file is never rewritten in
+// place: copy() truncates first, and a request in between got half of app.js —
+// the panel hung on «Загрузка...» (atlant module 066). Each file is written next
+// to its target and renamed over it (atomic on one filesystem); a file whose
+// bytes already match is left alone, so its mtime — the browser's cache key —
+// survives a deploy that did not change it.
 function copyTree(string $from, string $to, array $keepTopLevel, int &$copied): void {
     if (!is_dir($to) && !mkdir($to, 0755, true) && !is_dir($to)) return;
     foreach (new DirectoryIterator($from) as $f) {
@@ -369,10 +375,23 @@ function copyTree(string $from, string $to, array $keepTopLevel, int &$copied): 
         $d = $to . '/' . $name;
         if ($f->isDir()) {
             copyTree($s, $d, [], $copied);
-        } else {
-            @copy($s, $d);
-            $copied++;
+            continue;
         }
+        if (is_link($d)) {   // a link the operator made: written through, as always
+            if (@copy($s, $d)) $copied++;
+            continue;
+        }
+        if (is_file($d) && filesize($d) === $f->getSize()
+            && hash_file('sha1', $d) === hash_file('sha1', $s)) {
+            continue;
+        }
+        $tmp = $to . '/.' . $name . '.pull-' . getmypid();
+        if (@copy($s, $tmp) && @rename($tmp, $d)) {
+            $copied++;
+            continue;
+        }
+        @unlink($tmp);
+        if (@copy($s, $d)) $copied++;   // a host that refuses rename: the old way
     }
 }
 

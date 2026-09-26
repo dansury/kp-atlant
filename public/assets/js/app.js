@@ -59,11 +59,18 @@ const App = {
         return fresh(this.api(url));
     },
 
-    // API helper
+    // API helper. opts.timeout (мс) — не ждать ответа дольше (модуль 066)
     async api(url, opts = {}) {
         // Запись могла изменить что угодно — сохранённые ответы больше не в счёт
         if (opts.method && opts.method !== 'GET') this.cacheClear();
-        let res;
+        const ctl = opts.timeout && window.AbortController ? new AbortController() : null;
+        const timer = ctl ? setTimeout(() => ctl.abort(), opts.timeout) : null;
+        const timedOut = () => {
+            const err = new Error(`Сервер не ответил за ${Math.round(opts.timeout / 1000)} с`);
+            err.timeout = true;
+            return err;
+        };
+        let res, raw;
         try {
             res = await fetch('/api/' + url, {
                 method: opts.method || 'GET',
@@ -71,17 +78,21 @@ const App = {
                 body: opts.body ? JSON.stringify(opts.body) : undefined,
                 credentials: 'same-origin',
                 cache: 'no-store',   // a cached "me" would show the login screen after a login
+                signal: ctl ? ctl.signal : undefined,
             });
+            if (res.headers.get('content-type')?.includes('application/pdf')) return res;
+            // A PHP fatal (or an empty body) is not JSON — without this the page would
+            // wait for a promise that never resolves and stay on «Загрузка...»
+            raw = await res.text();
         } catch (e) {
+            if (ctl && ctl.signal.aborted) throw timedOut();
             // Сеть упала — набранное уже лежит на устройстве (модуль 063)
             const err = new Error('Нет связи с сервером — введённое сохранено на этом устройстве, повторите позже');
             err.offline = true;
             throw err;
+        } finally {
+            clearTimeout(timer);
         }
-        if (res.headers.get('content-type')?.includes('application/pdf')) return res;
-        // A PHP fatal (or an empty body) is not JSON — without this the page would
-        // wait for a promise that never resolves and stay on «Загрузка...»
-        const raw = await res.text();
         let data;
         try {
             data = raw ? JSON.parse(raw) : {};
@@ -386,14 +397,31 @@ const App = {
 
     // Init app
     async init() {
-        this.registerServiceWorker();
-        this.watchBlocks();
-        this.bindA11y();
-        this.bindMenus();
-        this.watchInstallPrompt();
-        this.bindKeep();
+        // Скрипт жив — сторож загрузки из index.php отступает (модуль 066)
+        window.kpBooted = true;
+        try { sessionStorage.removeItem('kp.bootRetry'); } catch { /* приватное окно */ }
+        // Обвязка страницы: упавшая часть не оставляет экран на «Загрузка...»
+        for (const step of ['registerServiceWorker', 'watchBlocks', 'bindA11y', 'bindMenus', 'watchInstallPrompt', 'bindKeep']) {
+            try { this[step](); } catch (err) { console.error(step, err); }
+        }
+        window.addEventListener('hashchange', () => this.route());
+        // Coming back from the MoySklad tab must show fresh data (FR-030)
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && typeof this.onTabVisible === 'function') {
+                this.onTabVisible();
+            }
+        });
+
         try {
-            this.manager = await this.api('auth.php?action=me');
+            this.manager = await this.bootMe();
+        } catch (err) {
+            // «Не вошёл» — только 401. Сеть, таймаут и 5xx — не повод рисовать форму входа
+            if (err.status !== 401) return this.renderBootError(err);
+            let needsSetup = false;
+            try { needsSetup = (await this.api('auth.php?action=state')).needs_setup; } catch {}
+            return needsSetup ? this.renderSetup() : this.renderLogin();
+        }
+        try {
             this.renderNav();
             this.initPush();
             this.loadCategories();
@@ -405,19 +433,30 @@ const App = {
             // а не на пустую доску (модуль 038). Открытую закладку не трогаем.
             if (this.manager.setup_pending && !location.hash) location.hash = 'settings/setup';
             this.route();
-        } catch {
-            let needsSetup = false;
-            try { needsSetup = (await this.api('auth.php?action=state')).needs_setup; } catch {}
-            needsSetup ? this.renderSetup() : this.renderLogin();
+        } catch (err) {
+            this.renderBootError(err);
         }
-        window.addEventListener('hashchange', () => this.route());
+    },
 
-        // Coming back from the MoySklad tab must show fresh data (FR-030)
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible' && typeof this.onTabVisible === 'function') {
-                this.onTabVisible();
-            }
-        });
+    /** «Кто я» при старте: медленный сервер — сказать, мёртвый — не ждать вечно (модуль 066). */
+    async bootMe() {
+        const slow = setTimeout(() => {
+            const el = document.querySelector('#app > .loading');
+            if (el) el.textContent = 'Сервер отвечает медленно — ждём...';
+        }, 6000);
+        try { return await this.api('auth.php?action=me', {timeout: 45000}); }
+        finally { clearTimeout(slow); }
+    },
+
+    /** Старт не удался не из-за входа: причина и «Повторить» вместо вечной «Загрузка...». */
+    renderBootError(err) {
+        console.error(err);
+        document.getElementById('app').innerHTML = `
+            <div class="card boot-error">
+                <div class="card__title">Интерфейс не загрузился</div>
+                <p class="muted">${this.esc((err && err.message) || 'Неизвестная ошибка')}</p>
+                <button type="button" class="btn btn--primary" onclick="location.reload()">Повторить</button>
+            </div>`;
     },
 
     // Set by pages that need a refresh when the tab regains focus
@@ -7782,8 +7821,8 @@ const App = {
                         Красная цифра рядом с «Настройками» — ошибки за сутки.</li>
                     <li><a href="#settings/all">«Все параметры»</a> — полный список настроек с описанием каждой
                         и указанием, откуда взято текущее значение.</li>
-                    <li>Автообновление кода включается в «Все параметры → Автообновление»: каждое открытие
-                        страницы проверяет GitHub. Это режим активной разработки, на спокойном сервере его выключают.</li>
+                    <li>Автообновление кода включается в «Все параметры → Автообновление»: открытая вкладка
+                        раз в 30 секунд проверяет GitHub в фоне. Это режим активной разработки, на спокойном сервере его выключают.</li>
                 </ul>`)}
         `;
     },

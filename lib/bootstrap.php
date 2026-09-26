@@ -70,16 +70,26 @@ LLM::init($cfg);
 // Keep managers in sync with config.php (panel edits are not overwritten)
 syncManagersFromConfig($cfg);
 
-// Автообновление кода (модуль 014). Пока в настройках стоит галочка, каждое
-// открытие страницы тихо спрашивает у GitHub head отслеживаемой ссылки: тот же
-// коммит — не происходит ничего, новый — pull.php выкладывает его и браузер
-// возвращается на ту же страницу, уже на новом коде. Креды берутся из
-// pull-config.php рядом с pull.php (он же корень проекта), состояние — в data/,
-// которое деплой не трогает.
-AutoPull::run(AutoPull::options($cfg, [
-    'root'      => ROOT,
-    'state_dir' => dirname((string)($cfg['DB_PATH'] ?? ROOT . '/data/kp.db')),
-]));
+/**
+ * Автообновление кода (модуль 014). Пока в настройках стоит галочка, фоновый
+ * опрос открытой вкладки тихо спрашивает у GitHub head отслеживаемой ссылки:
+ * тот же коммит — не происходит ничего, новый — pull.php выкладывает его. Креды
+ * берутся из pull-config.php рядом с pull.php (он же корень проекта),
+ * состояние — в data/, которое деплой не трогает.
+ *
+ * Здесь, в bootstrap, проверка больше не запускается (модуль 066): она стояла в
+ * КАЖДОМ запросе к API при запертой сессии, и `auth.php?action=me` на старте
+ * ждал GitHub и сам деплой — до 20 секунд, а все остальные запросы вкладки
+ * стояли за ним в очереди. Теперь её зовёт только `notifications.php?action=poll`
+ * — уже после `requireAuth()`, который сессию отпускает.
+ */
+function autoPullCheck(): void {
+    $cfg = $GLOBALS['cfg'] ?? [];
+    AutoPull::run(AutoPull::options($cfg, [
+        'root'      => ROOT,
+        'state_dir' => dirname((string)($cfg['DB_PATH'] ?? ROOT . '/data/kp.db')),
+    ]));
+}
 
 function initSchema(): void {
     $sql = <<<'SQL'
@@ -2080,6 +2090,16 @@ SQL);
 
         Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '55')");
         $current = 55;
+    }
+
+    // v56 — module 066: ticket files go to their own branch. «Сохранить» in «Все
+    // параметры» stores every field, so the old empty default sits in the base as
+    // an override and would keep the files on the deployed branch — drop it.
+    if ($current < 56) {
+        Db::q("DELETE FROM settings WHERE key = 'cfg.SUPPORT_ASSETS_BRANCH' AND TRIM(COALESCE(value, '')) = ''");
+
+        Db::q("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '56')");
+        $current = 56;
     }
 }
 

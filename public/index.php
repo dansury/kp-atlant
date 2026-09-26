@@ -2,16 +2,16 @@
 /**
  * SPA entry point.
  */
-// Cache-bust assets so managers never run a stale build after a deploy
-$assetVer = max(
-    @filemtime(__DIR__ . '/assets/js/app.js') ?: 0,
-    @filemtime(__DIR__ . '/assets/css/app.css') ?: 0
-);
+if (!defined('ROOT')) define('ROOT', dirname(__DIR__));
+
+// Ключ кэша сборки: время И размер файлов (модуль 066) — страница, собранная,
+// пока деплой дописывал app.js, не делит адрес с целым файлом
+require_once ROOT . '/lib/app_build.php';
+$assetVer = AppBuild::stamp(__DIR__);
 
 // Логотипы, загруженные через «Настройки → Логотипы» (модуль 021). Берём
 // только `Branding` — без bootstrap: оболочке страницы не нужны ни база, ни
 // проверка обновлений, а знак нужен до первого запроса к API.
-if (!defined('ROOT')) define('ROOT', dirname(__DIR__));
 require_once ROOT . '/lib/branding.php';
 $brandVer  = Branding::stamp();
 $logoKind  = Branding::headerKind();
@@ -111,6 +111,75 @@ try {
 
     <div class="toast-container" id="toasts"></div>
 
-    <script src="/assets/js/app.js?v=<?= $assetVer ?>"></script>
+    <!-- Сторож загрузки (модуль 066): «Загрузка...» не бывает вечной. app.js не
+         загрузился, пришёл обрезанным или упал до старта — один раз на вкладку
+         чистим кэши этого устройства и перезагружаемся; не помогло — причина и
+         кнопка. ES5: он работает там, где сам app.js не разобрался. -->
+    <script>
+        (function () {
+            var KEY = 'kp.bootRetry';
+            var ASSETS = ['/assets/js/app.js?v=<?= $assetVer ?>', '/assets/css/app.css?v=<?= $assetVer ?>'];
+            var done = false;
+
+            // Кэши service worker и оба файла мимо кэша браузера. Воркер не
+            // снимаем: вместе с ним ушла бы подписка на push этого устройства
+            function purge() {
+                var jobs = [];
+                try {
+                    if (window.caches && caches.keys) {
+                        jobs.push(caches.keys().then(function (ks) {
+                            return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+                        }));
+                    }
+                    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+                        jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+                            return Promise.all(rs.map(function (r) { return r.update(); }));
+                        }));
+                    }
+                    if (window.fetch) ASSETS.forEach(function (u) { jobs.push(fetch(u, {cache: 'reload'})); });
+                } catch (e) { /* чистим, что можем */ }
+                if (!window.Promise) return {then: function (f) { f(); }};
+                return Promise.all(jobs.map(function (p) { return p.then(null, function () {}); }));
+            }
+
+            function show(reason) {
+                var app = document.getElementById('app');
+                if (!app) return;
+                app.innerHTML = '<div class="card" style="max-width:520px;margin:40px auto">'
+                    + '<div class="card__title">Интерфейс не загрузился</div>'
+                    + '<p class="muted" data-reason></p>'
+                    + '<p>Нажмите «Перезагрузить» — кэш этого устройства будет очищен.</p>'
+                    + '<button type="button" class="btn btn--primary">Перезагрузить</button></div>';
+                app.querySelector('[data-reason]').textContent = reason;
+                app.querySelector('button').onclick = function () {
+                    try { sessionStorage.removeItem(KEY); } catch (e) { /* */ }
+                    this.disabled = true;
+                    purge().then(function () { location.reload(); });
+                };
+            }
+
+            window.kpBootFail = function (reason) {
+                if (done || window.kpBooted) return;
+                done = true;
+                reason = String(reason || 'неизвестная ошибка');
+                var retried = true;   // без хранилища — без автоповтора, чтобы не зациклиться
+                try { retried = !!sessionStorage.getItem(KEY); } catch (e) { /* */ }
+                if (retried) { show(reason); return; }
+                try { sessionStorage.setItem(KEY, String(Date.now())); } catch (e) { /* */ }
+                var app = document.getElementById('app');
+                if (app) app.innerHTML = '<div class="loading">Обновляем интерфейс...</div>';
+                purge().then(function () { location.reload(); });
+            };
+
+            // Ошибка в самом app.js до старта: обрезанный файл, сбой на верхнем уровне
+            window.addEventListener('error', function (e) {
+                if (!window.kpBooted && /\/assets\/js\/app\.js/.test(e.filename || '')) window.kpBootFail(e.message);
+            });
+        })();
+    </script>
+    <script src="/assets/js/app.js?v=<?= $assetVer ?>"
+            onerror="kpBootFail('файл интерфейса не загрузился')"
+            onload="if (typeof App === 'undefined') kpBootFail('файл интерфейса пришёл повреждённым');
+                    else setTimeout(function () { if (!window.kpBooted) kpBootFail('интерфейс не запустился'); }, 4000)"></script>
 </body>
 </html>

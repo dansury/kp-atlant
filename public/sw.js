@@ -2,9 +2,15 @@
 /* Atlant Armour КП — service worker (installable PWA + web push).
    Caches the app shell so the panel installs on a phone and opens offline;
    API responses are always fetched fresh and never cached. Scope = the
-   directory this file is served from, so a subdirectory mount works too. */
+   directory this file is served from, so a subdirectory mount works too.
 
-const VERSION = 'atlant-kp-shell-v3';
+   Code (scripts, styles) comes from the NETWORK, the cache is only its offline
+   copy (module 066): a cache-first app.js is a cache nobody checks — half a file
+   caught mid-deploy stayed there under the page's own URL, and the panel hung on
+   «Загрузка...» on every reload. Bump VERSION whenever these rules change: the
+   new worker's activation deletes every older cache. */
+
+const VERSION = 'atlant-kp-shell-v4';
 const BASE = new URL('.', self.location).pathname.replace(/\/+$/, '');
 const SHELL = [
   BASE + '/',
@@ -38,15 +44,27 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(fetch(req).catch(() => caches.match(BASE + '/')));
     return;
   }
-  // Static assets: serve from cache, refresh it in the background.
+  // Scripts and styles: network first, the cached copy only when offline.
+  if (/\.(?:js|css)$/i.test(url.pathname)) {
+    e.respondWith(fetch(req).then((res) => keep(req, res))
+      .catch(() => caches.match(req).then((hit) => hit || Response.error())));
+    return;
+  }
+  // Pictures and icons carry no logic: cache first.
   e.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
-      const copy = res.clone();
-      caches.open(VERSION).then((c) => c.put(req, copy)).catch(() => {});
-      return res;
-    }).catch(() => hit)),
+    caches.match(req).then((hit) => hit || fetch(req).then((res) => keep(req, res))),
   );
 });
+
+// Only a complete answer of our own origin is stored: a 404, a 500 or a partial
+// 206 kept here would be served on every visit.
+function keep(req, res) {
+  if (res && res.status === 200 && res.type === 'basic') {
+    const copy = res.clone();
+    caches.open(VERSION).then((c) => c.put(req, copy)).catch(() => {});
+  }
+  return res;
+}
 
 // ---- Web push: show the notification, focus or open the panel on click ----
 self.addEventListener('push', (e) => {

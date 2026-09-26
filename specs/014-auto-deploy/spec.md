@@ -1,8 +1,8 @@
 # Module 014 — Auto-deploy: the update check that runs on every page
 
 **Status:** Implemented
-**Files:** `lib/auto_pull.php`, `lib/bootstrap.php`, `lib/settings.php`,
-`public/api/admin.php`, `public/assets/js/app.js`, `pull.php`, `pull-config.php`
+**Files:** `lib/auto_pull.php`, `lib/bootstrap.php`, `public/api/notifications.php`,
+`lib/settings.php`, `public/api/admin.php`, `public/assets/js/app.js`, `pull.php`, `pull-config.php`
 **Tests:** none of its own — everything worth checking is HTTP (GitHub + `pull.php`);
 `tests/deploy_preserves_data.php` still covers what a deploy must not eat.
 
@@ -14,13 +14,14 @@
 ## 1. What it is for
 
 During active development the panel's checkbox replaces "open pull.php by hand after
-every push". While **Автообновление кода → Проверять обновления при каждом запуске**
-is on, every page of the service quietly asks GitHub for the head of the ref
-`pull.php` tracks:
+every push". While **Автообновление кода → Проверять обновления сами** is on, the
+background poll of every open tab (`notifications.php?action=poll`, every 30 s)
+quietly asks GitHub for the head of the ref `pull.php` tracks:
 
 - same commit — nothing happens, nothing is printed;
-- new commit — `pull.php` deploys it and the browser is sent back (`302`) to the very
-  URL it asked for, now answered by the new code.
+- new commit — `pull.php` deploys it; the tab picks up the new code on its next load.
+  A non-XHR GET that runs the check (the library still supports one) is sent back
+  (`302`) to the very URL it asked for.
 
 Nothing is ever printed to the page: the outcome lives in the state file and in the
 admin card.
@@ -50,10 +51,14 @@ check regardless of the checkbox, admin-only like the rest of `admin.php`.
 
 ## 4. Where it runs
 
-`lib/bootstrap.php`, after the config, DB, logger, session and LLM are up and before
-any output — so a redirect is still possible. Skipped: CLI (`cron/*`), any request that
-is not a GET, a check younger than `AUTOPULL_INTERVAL`, and 120 seconds after a failed
-check. XHR and API calls are checked but never redirected — their answer is data.
+`autoPullCheck()` (`lib/bootstrap.php`) — called ONLY by `notifications.php?action=poll`,
+after `requireAuth()` has released the session (module 066). It used to run inside
+EVERY GET to the API with the session still locked: `auth.php?action=me` at the start
+of the page waited for GitHub and for the deploy itself — up to 20 s — and every other
+request of the tab queued behind the session lock. No request a person waits for pays
+for the check any more. Skipped: CLI (`cron/*`), any request that is not a GET, a check
+younger than `AUTOPULL_INTERVAL`, and 120 seconds after a failed check. XHR and API
+calls are never redirected — their answer is data.
 
 ## 5. State
 
@@ -68,9 +73,13 @@ just render the current code.
 
 ## 6. Limits
 
-- One GitHub API call per page view at `AUTOPULL_INTERVAL = 0` (5000/h with a token).
+- One GitHub API call per poll of an open tab at `AUTOPULL_INTERVAL = 0` (every 30 s;
+  5000/h with a token).
 - The deploy is a second HTTP request to the same host. Where the host serves one PHP
   request at a time it cannot answer while this page is being served: after 20 seconds of
   silence the wait is dropped, the page renders the old code, and `pull.php` finishes the
   deploy on its own (`ignore_user_abort(true)`) — the next page view is on the new code.
 - Not a cron replacement: nobody opens a page, nothing gets deployed.
+- `pull.php` replaces a file by writing it next to the target and renaming it over
+  (module 066) and leaves unchanged files alone; it is in `ALWAYS_KEEP`, so the copy
+  on the server is updated by hand.

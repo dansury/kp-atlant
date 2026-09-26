@@ -183,3 +183,15 @@ not have.
   the in-stock colours by itself — check it on the live base.
 - A prompt edited in «Настройки → Промпты» is untouched; `match_pick` is new, so
   it starts from the default text.
+
+## Module 066 — on the live host
+- Upload `pull.php` from the repository to the server by FTP once: it is in
+  `ALWAYS_KEEP`, so no deploy replaces it, and only the new copy writes files
+  atomically and leaves unchanged ones alone.
+- The phone from the report: open the site after this deploy — it must load by
+  itself (new asset URL + the new worker deletes the old cache). If it still
+  shows «Интерфейс не загрузился», the reason on the card is the next clue.
+- Approve one support ticket with a screenshot: the file must land in the
+  `support-assets` branch (created on first use), `main` gets no commit and no
+  deploy starts. The token needs `Contents: Read and write`.
+- `support/uploads/` on the server is closed by `.htaccess`; delete it there.

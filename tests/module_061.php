@@ -110,7 +110,9 @@ echo "4. #104 ссылка на issue из уведомления\n";
 $m = new ReflectionMethod('Push', 'appUrl'); $m->setAccessible(true);
 ok('абсолютный адрес не склеивается', $m->invoke(null, 'https://github.com/dansury/kp-atlant/issues/103') === 'https://github.com/dansury/kp-atlant/issues/103');
 ok('относительный — с адресом сервиса', str_ends_with($m->invoke(null, '/#mail'), '/#mail') && str_starts_with($m->invoke(null, '/#mail'), 'http'));
-ok('SW открывает чужой адрес окном', str_contains($sw, 'origin !== self.location.origin') && str_contains($sw, "atlant-kp-shell-v3"));
+// Версия кэша растёт с каждой правкой воркера (модуль 066 поднял её до v4)
+ok('SW открывает чужой адрес окном', str_contains($sw, 'origin !== self.location.origin')
+   && preg_match('/atlant-kp-shell-v(\d+)/', $sw, $swVer) && (int)$swVer[1] >= 3);
 
 // ===================================================================== 5
 echo "5. #103 уведомления помечают карточки\n";
