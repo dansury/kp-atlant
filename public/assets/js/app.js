@@ -8358,7 +8358,9 @@ const App = {
                             <div>
                                 <p style="margin:0">${i.uploaded
                                     ? `<span class="badge badge--sent">загружен</span> ${this.esc(i.filename)}`
-                                    : `<span class="badge badge--draft">встроенный</span> ${this.esc(i.filename)}`}
+                                    : i.from
+                                        ? `<span class="badge badge--sent">из «${this.esc(i.from)}»</span> ${this.esc(i.filename)}`
+                                        : `<span class="badge badge--draft">встроенный</span> ${this.esc(i.filename)}`}
                                    <span class="muted">· ${Math.max(1, Math.round(i.size / 1024))} КБ</span></p>
                                 <div class="flex flex--wrap" style="margin-top:8px;gap:8px">
                                     <input type="file" id="brand_${i.kind}" accept=".png,.jpg,.jpeg,.svg,.webp${i.kind === 'favicon' ? ',.ico' : ''}">
@@ -8370,12 +8372,33 @@ const App = {
                     </div>`).join('')}
                 <div class="card">
                     <div class="card__title">Где знак появится</div>
-                    <p class="muted">В коммерческом предложении — сразу, в PDF и в Word. Во вкладке браузера и на
-                       иконке установленного приложения — после перезагрузки страницы; телефон может держать
-                       старую иконку в кэше до переустановки приложения с домашнего экрана.</p>
+                    <p class="muted">В коммерческом предложении — сразу, в PDF и в Word. В шапке панели и во вкладке —
+                       сразу после загрузки. Знак приложения и значок вкладки, пока свои не загружены, берутся из
+                       загруженных: из знака приложения, значка вкладки или логотипа КП. Телефон может держать старую
+                       иконку установленного приложения в кэше до переустановки с домашнего экрана.</p>
                 </div>
             `;
+            this.applyBrandMarks(d);
         } catch (err) { this.adminFail(err); }
+    },
+
+    /** Знаки в шапке и `<head>` — по ответу branding.php, без перезагрузки (та же разметка, что в index.php). */
+    applyBrandMarks(d) {
+        if (!d || !d.stamp) return;
+        const v = encodeURIComponent(d.stamp);
+        const box = document.querySelector('.header__logo');
+        if (box) {
+            box.innerHTML = d.header === 'kp'
+                ? `<img class="header__brand header__brand--wide" src="/api/branding.php?kind=kp&v=${v}" alt="Atlant Armour">
+                   <span class="header__sub">КП</span>`
+                : `<img class="header__brand" alt="" aria-hidden="true"
+                        src="${d.header ? `/api/branding.php?kind=${encodeURIComponent(d.header)}&v=${v}` : '/assets/icons/icon-192.png'}">
+                   Atlant Armour <span class="header__sub">КП</span>`;
+        }
+        const icon = document.querySelector('link[rel="icon"]');
+        if (icon) icon.href = `/api/branding.php?kind=favicon&v=${v}`;
+        const touch = document.querySelector('link[rel="apple-touch-icon"]');
+        if (touch) touch.href = `/api/branding.php?kind=icon&size=192&v=${v}`;
     },
 
     async uploadBranding(kind) {

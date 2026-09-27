@@ -16,6 +16,17 @@ final class Branding {
     public const KINDS = ['kp', 'app', 'favicon'];
     public const EXTENSIONS = ['png', 'jpg', 'jpeg', 'svg', 'webp', 'ico'];
 
+    /**
+     * Чьи ЗАГРУЖЕННЫЕ знаки подходят этому виду — до встроенного. Знак
+     * приложения — это логотип компании: загрузили только логотип КП — он и
+     * на иконке, и во вкладке. КП чужой квадратный знак не берёт.
+     */
+    public const FALLBACK = [
+        'kp'      => ['kp'],
+        'app'     => ['app', 'favicon', 'kp'],
+        'favicon' => ['favicon', 'app', 'kp'],
+    ];
+
     /** Подписи для интерфейса: что это и где видно. */
     public const LABELS = [
         'kp'      => ['Логотип в КП', 'Печатается слева вверху коммерческого предложения — в PDF и в Word. Лучше PNG с прозрачным фоном, шириной от 600 px.'],
@@ -76,10 +87,18 @@ final class Branding {
         return '';
     }
 
-    /** Что реально будет показано: загруженное, иначе встроенное. */
+    /** Какой загруженный вид отдаётся за этот, или '' — загруженного нет. */
+    public static function source(string $kind): string {
+        foreach (self::FALLBACK[$kind] ?? [$kind] as $from) {
+            if (self::uploaded($from)) return $from;
+        }
+        return '';
+    }
+
+    /** Что реально будет показано: загруженное (своё или по FALLBACK), иначе встроенное. */
     public static function resolve(string $kind): string {
-        $uploaded = self::uploaded($kind);
-        if ($uploaded) return $uploaded;
+        $from = self::source($kind);
+        if ($from !== '') return (string)self::uploaded($from);
         foreach (self::bundled($kind) as $path) {
             if (is_file($path)) return $path;
         }
@@ -284,18 +303,26 @@ final class Branding {
              . 'Загрузите PNG без прозрачности или JPG.';
     }
 
+    /** Что панели нужно, чтобы заменить знаки в шапке и `<head>` без перезагрузки. */
+    public static function live(): array {
+        return ['stamp' => self::stamp(), 'header' => self::headerKind()];
+    }
+
     /** Состояние для панели: что загружено, что встроено, каким адресом отдаётся. */
     public static function describe(): array {
         $out = [];
         foreach (self::KINDS as $kind) {
             $uploaded = self::uploaded($kind);
             $resolved = self::resolve($kind);
+            $from = self::source($kind);
             $out[] = [
                 'kind'     => $kind,
                 'title'    => self::LABELS[$kind][0] ?? $kind,
                 'hint'     => self::LABELS[$kind][1] ?? '',
                 'uploaded' => $uploaded !== null,
-                'filename' => $uploaded ? basename($uploaded) : ($resolved !== '' ? basename($resolved) : ''),
+                // Заимствован у другого загруженного вида — не «встроенный»
+                'from'     => ($from !== '' && $from !== $kind) ? (self::LABELS[$from][0] ?? $from) : '',
+                'filename' => basename($resolved),
                 'size'     => $resolved !== '' ? (int)@filesize($resolved) : 0,
                 'url'      => 'api/branding.php?kind=' . $kind . '&v=' . self::version($kind),
             ];
