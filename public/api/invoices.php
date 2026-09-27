@@ -86,6 +86,7 @@ switch ($action) {
                 'url'         => MoySklad::invoiceUrl($r['moysklad_id']),
                 'pdf_url'     => '/api/invoices.php?action=pdf&id=' . (int)$r['id'],
                 'filename'    => InvoiceName::forInvoice((int)$r['id']),
+                'order'       => Reserves::orderBrief($r['order_id'] !== null ? (int)$r['order_id'] : null),
             ];
         }
         jsonData(['items' => $items]);

@@ -2144,6 +2144,25 @@ const App = {
         if (cp) this.loadCompanyFeed(cp);
     },
 
+    /**
+     * Заказ под счётом — строкой под ним: номер со ссылкой в МойСклад, статус
+     * и что с резервом (держится до…, снят, оплачен, срок вышел).
+     */
+    orderLine(o) {
+        if (!o) return '';
+        const r = o.reserve || {};
+        const reserve = r.paid ? '<span class="ok">оплачен</span>'
+            : r.released ? '<span class="muted">резерв снят</span>'
+            : r.due ? `<span class="badge badge--critical">срок резерва вышел ${this.fmtDate(r.until, false)}</span>`
+            : r.held ? `<span class="muted">резерв до ${this.fmtDate(r.until, false)}</span>` : '';
+        return `<div class="flex flex--wrap order-line" style="gap:6px;align-items:center" data-order="${o.id}">
+            <span class="muted">Заказ</span>
+            <a href="${this.esc(o.url)}" target="_blank" rel="noopener" title="Открыть заказ в МойСклад">${this.esc(o.name)} ↗</a>
+            ${o.state ? `<span class="badge badge--kp">${this.esc(o.state)}</span>` : ''}
+            ${reserve}
+        </div>`;
+    },
+
     /** Счета КП и «Убрать» — то, что знает только сервер. */
     async loadKpSummary(requestId, host) {
         host = host || this.kpHost(requestId);
@@ -2168,7 +2187,7 @@ const App = {
                     <a onclick="App.saveAs('${i.pdf_url}', 'Счёт ${this.jsStr(i.name)}.pdf')">⬇ PDF</a>
                     <button class="btn btn--outline btn--sm" onclick="App.attachDoc('invoice', ${i.id}, this)"
                             title="Приложить счёт к письму — он появится под полем письма">📎 В письмо</button>
-                </div>`).join('');
+                </div>${this.orderLine(i.order)}`).join('');
         } catch (err) {
             box.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
         }
@@ -6067,6 +6086,7 @@ const App = {
                             ${i.payed_sum > 0 ? `<span class="ok">оплачено ${this.fmtMoney(i.payed_sum)}</span>` : ''}
                             ${i.sent_at ? `<span class="muted">отправлен ${this.fmtDate(i.sent_at)}</span>` : ''}
                         </div>
+                        ${this.orderLine(i.order)}
                         <label class="invdock__name">
                             <span class="muted">Имя файла</span>
                             <input type="text" data-inv-name value="${this.esc(i.filename)}"
