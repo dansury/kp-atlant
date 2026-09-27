@@ -73,7 +73,9 @@ self.addEventListener('push', (e) => {
   e.waitUntil(self.registration.showNotification(data.title || 'Atlant Armour КП', {
     body: data.body || '',
     tag: data.tag || undefined,
-    icon: BASE + '/assets/icons/icon-192.png',
+    // The uploaded app mark (module 021); the badge stays bundled — Android
+    // paints it as an alpha mask, an opaque logo there is a blank square
+    icon: BASE + '/api/branding.php?kind=icon&size=192',
     badge: BASE + '/assets/icons/badge-96.png',
     data: { url: data.url || (BASE + '/') },
     renotify: !!data.tag,

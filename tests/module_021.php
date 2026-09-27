@@ -292,6 +292,26 @@ ok('юрлицо помнит путь к лого',
    (string)Db::val("SELECT logo_path FROM legal_entities WHERE is_active=1") === Branding::uploaded('kp'));
 ok('версия меняется вместе с файлом', Branding::version('kp') !== '0');
 
+// Знак приложения — из загруженных, а не встроенный, пока свой не загружен
+$ownApp = Branding::uploaded('app') !== null || Branding::uploaded('favicon') !== null;
+if (!$ownApp) {
+    ok('иконка приложения — загруженный логотип КП', Branding::resolve('app') === Branding::uploaded('kp'), Branding::resolve('app'));
+    ok('значок вкладки — тоже он', Branding::resolve('favicon') === Branding::uploaded('kp'), Branding::resolve('favicon'));
+    $byKind = array_column(Branding::describe(), null, 'kind');
+    ok('панель говорит, откуда знак, а не «встроенный»',
+       !$byKind['app']['uploaded'] && $byKind['app']['from'] === 'Логотип в КП', json_encode($byKind['app'], JSON_UNESCAPED_UNICODE));
+    ok('шапка и <head> получают версию и вид', Branding::live()['header'] === 'kp' && Branding::live()['stamp'] !== '');
+}
+$sq = $sandbox . '/app.png';
+$im = imagecreatetruecolor(64, 64);
+imagepng($im, $sq);
+unset($im);
+Branding::store('app', ['tmp_name' => $sq, 'name' => 'app.png'], ['move' => false]);
+ok('свой знак приложения важнее логотипа КП', Branding::resolve('app') === Branding::uploaded('app'));
+ok('и значок вкладки берёт его раньше логотипа КП', Branding::uploaded('favicon') !== null || Branding::resolve('favicon') === Branding::uploaded('app'));
+ok('КП чужой квадратный знак не берёт', Branding::resolve('kp') === Branding::uploaded('kp'));
+if (!$ownApp) Branding::remove('app');
+
 Branding::remove('kp');
 ok('после сброса возвращается встроенный знак', Branding::uploaded('kp') === null);
 ok('и путь в юрлице очищен',

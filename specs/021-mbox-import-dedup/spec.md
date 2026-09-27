@@ -128,27 +128,37 @@ PHP, и «Сервер вернул не JSON» в тосте означало �
 `Crm::logEvent()` для импортированной истории НЕ зовётся: он ставит `last_inbound_at = сейчас`, и
 письмо 2022 года сделало бы компанию «ждущей ответа» сегодня.
 
-## Логотипы через интерфейс (FR-214)
+## Logos uploaded through the interface (FR-214)
 
-`Branding` — три знака, потому что это три разных места:
+`Branding` holds three marks, because they are three different places:
 
-| Вид | Где виден | Запасной вариант |
+| Kind | Where it shows | Fallback chain (first that exists) |
 |---|---|---|
-| `kp` | шапка КП в PDF и Word | `public/assets/img/logo.png` |
-| `app` | иконка приложения и знак в шапке панели | `public/assets/icons/icon-512.png` |
-| `favicon` | вкладка браузера | `public/assets/icons/icon-192.png` |
+| `kp` | the КП header in PDF and Word | uploaded `kp` → `public/assets/img/logo.png` … |
+| `app` | the app icon (manifest, apple-touch-icon, push notification) and the panel header | uploaded `app` → uploaded `favicon` → uploaded `kp` → `public/assets/icons/icon-512.png` |
+| `favicon` | the browser tab | uploaded `favicon` → uploaded `app` → uploaded `kp` → `public/assets/icons/icon-192.png` |
 
-Загруженный файл лежит в `storage/logo/` — **вне репозитория**: `public/assets/` перезаписывается
-деплоем, и знак пропадал бы при каждом обновлении кода. Файл `kp` сохраняется под историческим
-именем `logo.*`: под ним уже лежат логотипы, загруженные до этого модуля.
+The app's own marks come from what was UPLOADED before anything bundled
+(`Branding::FALLBACK`, used by `resolve()`): a company that uploaded only its КП logo gets that
+logo on the home screen, the tab and the notifications — not the stock icon beside its own
+header. `icon()` fits a wide logo into the square whole, never cropped. The КП never borrows a
+square app mark: a document prints its own logo or the bundled one. `describe()` says which
+upload a kind borrows (`from`), so the panel does not call a borrowed mark «встроенный».
 
-`api/branding.php` отдаёт картинку **без авторизации**: значок вкладки и иконки манифеста браузер
-просит до входа, а манифест — вообще без cookies. Загрузка и сброс — только администратору.
-Квадратные иконки манифеста (192/512/maskable) рисуются из знака приложения через GD и кэшируются
-в `storage/logo/cache/`; без GD отдаётся исходный файл.
+Uploaded files live in `storage/logo/` — **outside the repository**: `public/assets/` is
+overwritten by a deploy. The `kp` file keeps the historical name `logo.*`.
 
-`PdfGenerator::bundledLogos()` — единственное место, решающее, что печатает КП, и оно читает тот
-же `Branding`: загруженный знак, затем встроенный. Второго списка путей быть не должно.
+`api/branding.php` serves a picture **without auth**: the browser asks for the favicon and the
+manifest icons before login, the manifest without cookies at all. Upload and reset are
+admin-only, and their answer carries `stamp` and `header` (the kind `headerKind()` picks) so the
+panel swaps the header mark, the favicon and the apple-touch-icon in place — no reload. The
+service worker's push notification uses `api/branding.php?kind=icon&size=192`; the monochrome
+status-bar `badge-96.png` stays bundled, because Android paints a badge as an alpha mask and an
+opaque logo would be a blank square. Square manifest icons (192/512/maskable) are drawn from the
+`app` chain through GD and cached in `storage/logo/cache/`; without GD the source file is served.
+
+`PdfGenerator::bundledLogos()` is the one place that decides what the КП prints and it reads
+the same `Branding`: the uploaded logo, then the bundled one. There must be no second list of paths.
 
 ## Ликбез (FR-215)
 

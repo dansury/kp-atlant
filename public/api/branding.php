@@ -50,7 +50,7 @@ switch ($action) {
         requireAuth();
         // «Загружен» и «печатается» — не одно и то же: mPDF без GD выбрасывает
         // прозрачный PNG молча, и КП уходило клиенту без знака (модуль 022)
-        jsonData(['items' => Branding::describe(), 'kp_warning' => Branding::documentWarning('kp')]);
+        jsonData(['items' => Branding::describe(), 'kp_warning' => Branding::documentWarning('kp')] + Branding::live());
 
     case 'upload':
         $admin = requireAdmin();
@@ -63,7 +63,7 @@ switch ($action) {
         } catch (Throwable $e) {
             jsonError($e->getMessage());
         }
-        jsonOk(['items' => Branding::describe(), 'kind' => $res['kind']]);
+        jsonOk(['items' => Branding::describe(), 'kind' => $res['kind']] + Branding::live());
 
     case 'reset':
         requireAdmin();
@@ -71,7 +71,7 @@ switch ($action) {
         $kind = (string)($input['kind'] ?? '');
         if (!in_array($kind, Branding::KINDS, true)) jsonError('Неизвестный вид логотипа');
         Branding::remove($kind);
-        jsonOk(['items' => Branding::describe()]);
+        jsonOk(['items' => Branding::describe()] + Branding::live());
 
     default:
         jsonError('Unknown action', 400);
