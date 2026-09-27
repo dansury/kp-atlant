@@ -15,6 +15,8 @@
  * Сам по себе сервис ничего не снимает. «Снять резерв» — это решение про
  * деньги клиента, и принимает его человек.
  */
+require_once __DIR__ . '/moysklad.php';
+
 final class Reserves {
 
     /** Сколько дней держим резерв, пока счёт не оплачен. 0 — не напоминать. */
@@ -157,6 +159,24 @@ final class Reserves {
             $out[] = $row + ['reserve' => $state];
         }
         return $out;
+    }
+
+    /**
+     * Заказ под счётом — строкой в интерфейсе: номер, статус, ссылка в
+     * МойСклад и что с резервом. null — заказа нет.
+     */
+    public static function orderBrief(?int $orderId): ?array {
+        if (!$orderId) return null;
+        $o = Db::one("SELECT * FROM orders WHERE id=?", [$orderId]);
+        if (!$o) return null;
+        return [
+            'id'      => (int)$o['id'],
+            'name'    => (string)$o['name'],
+            'state'   => (string)($o['state_name'] ?? ''),
+            'sum'     => (float)$o['sum'],
+            'url'     => MoySklad::orderUrl((string)$o['moysklad_id']),
+            'reserve' => self::state($o),
+        ];
     }
 
     /** Напомнить не повторно: отметка ставится сразу после уведомления. */

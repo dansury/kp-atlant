@@ -76,7 +76,7 @@ $req = Db::insert('requests', ['source' => 'email', 'raw_text' => 'Прошу К
 $prop = Db::insert('proposals', ['request_id' => $req, 'counterparty_id' => $cp]);
 $ord = Db::insert('orders', ['counterparty_id' => $cp, 'proposal_id' => $prop, 'moysklad_id' => 'ms-o', 'name' => '001',
                              'sum' => 1000, 'applicable' => 1, 'reserve_until' => Reserves::until()]);
-$invId = Db::insert('invoices', ['order_id' => $ord, 'counterparty_id' => $cp, 'moysklad_id' => 'ms-i', 'name' => '001',
+$invId = Db::insert('invoices', ['order_id' => $ord, 'proposal_id' => $prop, 'counterparty_id' => $cp, 'moysklad_id' => 'ms-i', 'name' => '001',
                                  'sum' => 1000, 'payed_sum' => 0]);
 ok('у запроса с неоплаченным резервом — абзац', Reserves::noteForRequest($req) === $note);
 ok('у счёта — тоже', Reserves::noteForInvoice($invId) === $note);
@@ -86,6 +86,15 @@ Db::update('invoices', ['payed_sum' => 0], 'id=?', [$invId]);
 Db::update('orders', ['reserve_released_at' => date('Y-m-d H:i:s')], 'id=?', [$ord]);
 ok('резерв снят — тоже молчим', Reserves::noteForInvoice($invId) === '');
 
+$brief = Reserves::orderBrief($ord);
+ok('заказ строкой: номер, статус-ссылка в МойСклад, резерв', $brief['name'] === '001'
+   && $brief['url'] === MoySklad::orderUrl('ms-o') && array_key_exists('reserve', $brief), json_encode($brief, JSON_UNESCAPED_UNICODE));
+ok('нет заказа — нет строки', Reserves::orderBrief(null) === null && Reserves::orderBrief(999999) === null);
+require_once ROOT . '/lib/kp_set.php';
+ok('заказ приходит вместе со счетом КП', (KpSet::invoices($prop)[0]['order']['id'] ?? null) === $ord);
+ok('и в строке счёта под письмом', str_contains($inv, "'order'       => Reserves::orderBrief("));
+ok('интерфейс рисует заказ под счётом в обоих местах', substr_count($js, '${this.orderLine(i.order)}') === 2
+   && str_contains($js, 'title="Открыть заказ в МойСклад"'));
 ok('счёт пишет срок резерва через Reserves::until()', str_contains($inv, "'reserve_until' => \$until")
    && str_contains($inv, "'reserve_note' =>") && !str_contains($inv, "MS_RESERVE_DAYS', 14"));
 ok('ответ и вложение счёта несут абзац', str_contains($mail, 'Reserves::noteForRequest(') && str_contains($mail, "\$out['reserve_note'] = Reserves::noteForInvoice(\$id)"));

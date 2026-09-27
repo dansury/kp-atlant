@@ -198,11 +198,14 @@ final class KpSet {
     /** Счета, выставленные по этому КП. Их может быть несколько. */
     public static function invoices(int $proposalId): array {
         $rows = Db::all(
-            "SELECT i.id, i.name, i.sum, i.payed_sum, i.state_name, i.moment, i.sent_at, i.moysklad_id
+            "SELECT i.id, i.name, i.sum, i.payed_sum, i.state_name, i.moment, i.sent_at, i.moysklad_id, i.order_id
              FROM invoices i WHERE i.proposal_id=? ORDER BY i.id", [$proposalId]
         );
+        require_once __DIR__ . '/reserves.php';
         foreach ($rows as &$r) {
             $r['id']  = (int)$r['id'];
+            // Заказ под счётом — виден рядом с ним, со ссылкой в МойСклад
+            $r['order'] = Reserves::orderBrief($r['order_id'] !== null ? (int)$r['order_id'] : null);
             $r['url'] = MoySklad::invoiceUrl((string)$r['moysklad_id']);
             $r['pdf_url'] = '/api/invoices.php?action=pdf&id=' . (int)$r['id'];
         }

@@ -29,6 +29,13 @@ It lands in the letter by two roads, both idempotent:
 - `mail.php?action=attach_doc` for an invoice returns `reserve_note`, and the composer adds
   the paragraph above the signature unless it is already in the text.
 
+The order is VISIBLE wherever its invoice is: under the КП buttons
+(`proposals.php?action=summary` → `KpSet::invoices()`) and in the invoice dock under the letter
+(`invoices.php?action=for_request`), each invoice carries `order = Reserves::orderBrief()` —
+`{id, name, state, sum, url, reserve}` — and `App.orderLine()` prints «Заказ 00012 ↗ · Резерв ·
+резерв до 30.09» (or «резерв снят», «оплачен», «срок резерва вышел»), the number linking to the
+order in МойСклад (`MoySklad::orderUrl()`).
+
 `invoices.php?action=create_from_proposal` stores `orders.reserve_until = Reserves::until()`
 and returns `reserve_note`. `cron/check_reserves.php` reminds the manager once the term is
 over and the invoice is unpaid (unchanged logic; the text names the business days).
