@@ -460,6 +460,17 @@ calls `Crm::logEvent()`, which would stamp `last_inbound_at = now` and make a 20
 like a client waiting for an answer today. An mbox is parsed by `Mime`, in plain PHP: importing
 one is exactly what an operator does when the host has no `ext/imap` at all. The file itself arrives in PIECES: a Gmail export is hundreds of megabytes, nginx answers `413` with an HTML page before PHP is reached, and Google will not cut the export below a gigabyte — so the browser cuts it (`mbox_upload_init` / `_chunk` / `_finish`, `storage/mbox/.parts/`), halves the piece on every refusal and resumes from the byte the server actually holds. A piece the file already has is never appended twice and a piece out of place is refused: a letter cut in half is worse than a failed upload.
 
+The reply writes ITSELF when the card opens (module 068, `Triage::autoPlan()`), but only
+where it has something to say: a request, an order or a tender with positions waits for
+«Сформировать КП» / «Выставить счёт» — a draft before them is «уточним цену», the letter this
+exists to stop. A composer with text in it is never overwritten, and one letter is one model
+call (`model_draft_text`). What the manager changed in a sent reply goes back into the reply
+prompt as «было → стало» (`Learning::replyLessons()`, prompt `reply_lessons`).
+
+An invoice's order holds the stock `MS_RESERVE_DAYS` BUSINESS days (`Reserves::until()`), and
+the letter carrying the invoice says so (`MS_RESERVE_LETTER`, `Reserves::appendToLetter()`) —
+a reserve the client never heard about is a reserve he cannot ask to extend.
+
 A МойСклад shipment (отгрузка) is news once (`order_demands`, module 061): a new one marks the
 card, and its track goes INTO the reply the manager is already writing, not into a second
 draft beside it. A document МойСклад filed under another counterparty is linked to the card by

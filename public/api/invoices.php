@@ -7,6 +7,7 @@ require_once __DIR__ . '/../../lib/bootstrap.php';
 require_once ROOT . '/lib/sync.php';
 require_once ROOT . '/lib/mail.php';
 require_once ROOT . '/lib/requisites.php';
+require_once ROOT . '/lib/reserves.php';
 
 $action = $_GET['action'] ?? '';
 
@@ -301,12 +302,12 @@ switch ($action) {
                 'manager_id'      => (int)$manager['id'],
                 'org_id'          => $buyerOrgId ?: null,
             ]);
-            // До какого числа держим резерв. Дальше — напоминание его снять
-            // (cron/check_reserves.php), с кнопкой, снимающей проведение.
-            $days = max(0, (int)Settings::get('MS_RESERVE_DAYS', 14));
-            if ($orderLocalId && $days > 0) {
-                Db::update('orders', ['reserve_until' => date('Y-m-d H:i:s', time() + $days * 86400)],
-                           'id=?', [$orderLocalId]);
+            // До какого числа держим резерв (рабочие дни, issue #150). Дальше —
+            // напоминание его снять (cron/check_reserves.php) с кнопкой,
+            // снимающей проведение.
+            $until = Reserves::until();
+            if ($orderLocalId && $until) {
+                Db::update('orders', ['reserve_until' => $until], 'id=?', [$orderLocalId]);
             }
             Db::update('proposals', ['moysklad_order_id' => $order['id'], 'updated_at' => date('Y-m-d H:i:s')],
                        'id=?', [$proposalId]);
@@ -335,6 +336,8 @@ switch ($action) {
             'pdf_error'  => $pdf ? null : 'Печатная форма в МойСклад пока недоступна — счёт создан, файл появится позже',
             'skipped'    => $skipped,
             'proposal_id' => $proposalId,
+            // Абзац о сроке резерва — для письма, которым счёт уйдёт (issue #150)
+            'reserve_note' => $order ? Reserves::noteForInvoice($localId) : '',
             // Заказ, к которому привязан счёт, — и то, чего для него не нашлось
             'order'      => $order ? [
                 'id'   => $orderLocalId,
@@ -369,7 +372,7 @@ switch ($action) {
     /**
      * Снять резерв: заказ перестаёт быть проведённым в МойСклад (модуль 026).
      *
-     * Это кнопка из напоминания «счёт не оплачен две недели». Товар перестаёт
+     * Это кнопка из напоминания «счёт не оплачен в срок резерва». Товар перестаёт
      * числиться за этим клиентом, сам заказ остаётся — его видно и можно
      * провести обратно руками.
      */

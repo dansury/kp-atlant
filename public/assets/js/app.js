@@ -140,7 +140,8 @@ const App = {
         if (el.tagName === 'TEXTAREA') {
             if (!dk && !el.id) return null;
         } else if (el.tagName === 'INPUT') {
-            if (!dk || /^(hidden|password|file|checkbox|radio|number)$/i.test(el.type)) return null;
+            // Скрытое поле хранится, только если попросило этого само (список файлов, issue #149)
+            if (!dk || /^(password|file|checkbox|radio|number)$/i.test(el.type)) return null;
         } else return null;
         if (dk) return dk;
         return (location.hash.slice(1) || 'mail') + '#' + el.id;
@@ -248,7 +249,8 @@ const App = {
     keepNote(el) {
         const note = document.createElement('div');
         note.className = 'keep-note';
-        note.innerHTML = '↺ Восстановлен несохранённый текст · <a href="#" role="button">Стереть</a>';
+        note.innerHTML = (el.type === 'hidden' ? '↺ Восстановлены приложенные файлы' : '↺ Восстановлен несохранённый текст')
+                       + ' · <a href="#" role="button">Стереть</a>';
         note.querySelector('a').addEventListener('click', e => {
             e.preventDefault();
             el.value = el._keepOrig || '';
@@ -2133,7 +2135,7 @@ const App = {
         }
         let id = kp.proposal_id;
         if (!id) {
-            id = await this.generateKP(requestId, btn, {open: false});
+            id = await this.generateKP(requestId, btn, {open: false, reply: false});
             if (!id) return;
             btn = (host && host.querySelector('[data-invoice-btn]')) || btn;
         }
@@ -3197,6 +3199,15 @@ const App = {
                 {method: 'POST', body: {}});
             this.toast(`Счёт ${r.name} выставлен` + (r.order ? `, заказ ${r.order.name} в резерве` : ''),
                        'success');
+            // Счёт есть — пишется ответ с абзацем о сроке резерва (issues #149, #150);
+            // письмо уже пишется — абзац встаёт в него
+            const cmp = this.activeComposer();
+            const cmpArea = cmp && cmp.querySelector('[data-cmp-rte]');
+            if (cmpArea && this.composerHasText(cmpArea)) {
+                if (r.reserve_note) this.addReserveNote(cmp, r.reserve_note);
+            } else {
+                this.autoDraftActive('invoice');
+            }
             if (card) {
                 const out = card.querySelector('[data-kp-invoice]')
                     || card.appendChild(this.dataDiv('kpInvoice'));
@@ -3332,10 +3343,28 @@ const App = {
             if (!r) return;
             const f = r.file;
             this.addFileChip(composer, f);
+            if (r.reserve_note) this.addReserveNote(composer, r.reserve_note);
             this.toast(`Приложено: ${f.filename} — нажмите на него в письме, чтобы скачать и проверить`, 'success');
             composer.scrollIntoView({behavior: 'smooth', block: 'center'});
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
+    },
+
+    /**
+     * Счёт держит товар — клиент узнаёт срок из письма (issue #150). Абзац
+     * встаёт над подписью и один раз: второй счёт его не повторяет.
+     */
+    addReserveNote(composer, note) {
+        const box = composer.querySelector('[data-cmp-rte]');
+        if (!box || !note) return;
+        const norm = t => String(t).toLowerCase().replace(/\s+/g, ' ').trim();
+        if (norm(box.textContent).includes(norm(note).slice(0, 60))) return;
+        const p = document.createElement('p');
+        p.textContent = note;
+        const sign = box.querySelector('[data-cmp-signature]');
+        if (sign) box.insertBefore(p, sign); else box.appendChild(p);
+        const key = composer.dataset.threadKey;
+        if (key !== undefined) this.composerChanged(key);
     },
 
     /** The block one position belongs to — a page may hold several tables. */
@@ -4591,6 +4620,8 @@ const App = {
                 await this.api(`proposals.php?action=generate&request_id=${requestId}`, {method: 'POST', body: {}}));
             say('');
             this.toast('КП сформировано', 'success');
+            // КП есть — теперь пишется и ответ (issue #149); у счёта — свой повод
+            if (opts.reply !== false) this.autoDraftActive('kp');
             if (host) {
                 this.setKpButtons(requestId, host, {proposal_id: id});
                 if (opts.open !== false) this.openKp(id, host);
@@ -5906,7 +5937,7 @@ const App = {
         // Письмо, которое ещё никому не отвечает: ни цепочки, ни письма-исходника
         const fresh = !key && !reply.reply_to_id;
         return `
-            <div class="composer" data-block="composer" data-composer="${this.esc(id)}">
+            <div class="composer" data-block="composer" data-composer="${this.esc(id)}" data-thread-key="${this.esc(key)}">
                 <div class="composer__head">
                     <span class="composer__title">${fresh ? 'Новое письмо' : 'Ответ'}${this.hint('composer')}</span>
                     ${fresh ? '' : `<span class="muted" data-cmp-target>кому: ${this.esc(reply.to || '')}</span>`}
@@ -6415,6 +6446,8 @@ const App = {
         }
         await this.syncSignature(c, restored);
         this.markNext(c);
+        // Нечего восстанавливать — ответ пишется сам (issue #149)
+        if (!restored) this.autoDraft(key);
     },
 
     /** Свои файлы к письму: менеджер мог переделать документ руками. */
@@ -6662,18 +6695,77 @@ const App = {
         if (catSel && catSel.value) body.category = catSel.value;
         try {
             const r = await this.api('mail.php?action=draft_reply', {method: 'POST', body});
-            // Черновик приходит текстом — в редакторе он становится абзацами
-            area.innerHTML = this.draftHtml(r.text || '');
-            await this.syncSignature(c, true);
-            this.composerChanged(key);
-            const subj = c.querySelector('[data-cmp-subject]');
-            if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
-            if (catSel && r.category) catSel.value = r.category;
-            const note = c.querySelector('[data-cmp-note]');
-            if (note) note.textContent = 'черновик' + (r.category_label ? ` · ${r.category_label}` : '')
-                                       + (r.model ? ` · ${r.model}` : '') + ' — проверьте перед отправкой';
+            await this.fillDraft(c, key, r);
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = label; area.placeholder = ''; }
+    },
+
+    /** Черновик от сервера — в поле письма: текст абзацами, подпись, тема, категория. */
+    async fillDraft(c, key, r) {
+        const area = c.querySelector('[data-cmp-rte]') || c.querySelector('[data-cmp-text]');
+        // Черновик приходит текстом — в редакторе он становится абзацами
+        area.innerHTML = this.draftHtml(r.text || '');
+        await this.syncSignature(c, true);
+        this.composerChanged(key);
+        const subj = c.querySelector('[data-cmp-subject]');
+        if (subj && !subj.value.trim() && r.subject) subj.value = r.subject;
+        const catSel = c.querySelector('[data-cmp-cat]');
+        if (catSel && r.category) catSel.value = r.category;
+        const note = c.querySelector('[data-cmp-note]');
+        if (note) note.textContent = 'черновик' + (r.category_label ? ` · ${r.category_label}` : '')
+                                   + (r.model ? ` · ${r.model}` : '') + ' — проверьте перед отправкой';
+    },
+
+    /** В поле письма что-то написано — кроме подписи. */
+    composerHasText(area) {
+        if (area.tagName === 'TEXTAREA') return area.value.trim() !== '';
+        const copy = area.cloneNode(true);
+        copy.querySelectorAll('[data-cmp-signature]').forEach(el => el.remove());
+        return copy.textContent.trim() !== '';
+    },
+
+    /**
+     * Ответ пишется сам (issue #149): при открытии письма — `after` пусто,
+     * после «Сформировать КП» / «Выставить счёт» — 'kp' / 'invoice'.
+     *
+     * Что писать и когда, решает сервер (`Triage::autoPlan`): запрос КП с
+     * позициями ждёт КП, остальное пишется сразу. Поле, в котором уже есть
+     * текст — восстановленный черновик или набранное, — не трогается; одно
+     * письмо спрашивается один раз за вкладку.
+     */
+    async autoDraft(key, after = '') {
+        const c = this.composerOf(key);
+        if (!c) return;
+        const id = Number((c.querySelector('[data-cmp-reply]') || {}).value) || 0;
+        const area = c.querySelector('[data-cmp-rte]') || c.querySelector('[data-cmp-text]');
+        if (!id || !area || this.composerHasText(area)) return;
+        this._autoDrafted = this._autoDrafted || {};
+        const tag = id + ':' + (after || 'open');
+        if (this._autoDrafted[tag]) return;
+        this._autoDrafted[tag] = true;
+        const note = c.querySelector('[data-cmp-note]');
+        if (note) note.textContent = 'нейросеть пишет ответ...';
+        try {
+            const r = await this.api('mail.php?action=draft_reply', {method: 'POST',
+                body: after ? {id, after} : {id, auto: 1}});
+            // Пока писали, менеджер начал сам — его текст главнее
+            if (r.deferred || r.skipped || this.composerHasText(area)) {
+                if (note) note.textContent = r.deferred ? r.reason : '';
+                return;
+            }
+            await this.fillDraft(c, key, r);
+            this.markNext(c);
+        } catch (err) {
+            // Кнопка «Сгенерировать ответ» на месте — молча ей и уступаем
+            if (note) note.textContent = '';
+            delete this._autoDrafted[tag];
+        }
+    },
+
+    /** Ответ по КП или счёту — в письмо, которое сейчас открыто. */
+    autoDraftActive(after) {
+        const c = this.activeComposer();
+        if (c && c.dataset.threadKey !== undefined) this.autoDraft(c.dataset.threadKey, after);
     },
 
 
@@ -7689,7 +7781,7 @@ const App = {
         'events':       ['Документы и заметки в ленте', 'Заказы, счета, отгрузки и платежи из МойСклад стоят между письмами по своей дате: документ по запросу — внутри его переписки, остальные — между переписками. Название ведёт в МойСклад (править документ — только там), 👁 показывает печатную форму здесь же, «📎 В письмо» прикладывает её к ответу. Заметки для коллег добавляются через меню «⋯» и тоже стоят по дате.'],
         'stage':        ['Этап сделки', 'Этап ставится сам: начали письмо или подбор — «В работе», ушло письмо с КП — «КП отправлено», выставлен счёт — «Ждём оплату» (важнее КП), оплата в МойСклад или платёж из Т-Банка — «Сборка», отгрузка в МойСклад — «Отправлено». Карточка идёт только вперёд. Нажатие на этап переносит её руками, куда нужно.'],
         'thread':       ['Переписка', 'Вся цепочка писем с этой компанией, из всех наших ящиков сразу, в одной ленте. Прочитанные и наши собственные письма свёрнуты в строку; чтобы прочитать письмо целиком — нажмите на его заголовок. Переписки идут по порядку: старые сверху, свежая — внизу, и она раскрыта. В строке видно, чьё в переписке последнее письмо. Любое одно письмо убирается корзиной в его заголовке — остальная переписка остаётся на месте. Убранные как «не наш профиль» стоят свёрнутым блоком «Архив компании» над списком.'],
-        'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика. К ответу сам приписывается текст письма, на которое вы отвечаете, — клиенту не приходится вспоминать, о каком заказе речь. Кнопка «🎤 голосом» — надиктовать текст: нажмите, говорите до 30 секунд, нажмите ещё раз, и распознанное встанет туда, где стоит курсор.'],
+        'composer':     ['Ответ клиенту', 'Одно окно ответа на переписку. Ответ пишется сам, когда письмо открыли; на запрос КП с позициями — после «Сформировать КП» или «Выставить счёт», чтобы в нём были подобранные цены. Ваши правки перед отправкой запоминаются, и следующий черновик пишется ближе к ним. Письмо уходит с того ящика, который выбран справа вверху, и его копия ложится в «Отправленные» этого ящика. К ответу сам приписывается текст письма, на которое вы отвечаете, — клиенту не приходится вспоминать, о каком заказе речь. Кнопка «🎤 голосом» — надиктовать текст: нажмите, говорите до 30 секунд, нажмите ещё раз, и распознанное встанет туда, где стоит курсор.'],
         'category':     ['Классификатор', 'Категория решает, каким промптом сервис пишет ответ и откуда берёт факты — из каталога, из заказов или из вики. Если сервис прочитал письмо неправильно, поменяйте категорию ДО генерации: правка запомнится, и в следующем похожем письме он повторит ваше решение.'],
         'match':        ['Подходящие позиции', 'Что строки письма означают в нашем каталоге. Подбираются сами при открытии карточки: сначала каталог, а строки, которые он не решил (ничего не нашёл, нашёл несколько равных или нашёл слабо), сама уточняет нейросеть — одним запросом на письмо и только среди найденного в каталоге. Размер из письма ставит строку на свою модификацию, цвет — тот, что назвал клиент, иначе тот, что есть на складе. Что не решили ни каталог, ни нейросеть, сервис не выбирает молча: он спрашивает. «↻ Подобрать заново» делает всё это ещё раз.'],
         'match-scope':  ['«Не наша номенклатура»', 'Кнопка 🚫 убирает строку из КП и из ответа клиенту целиком: мы ей не занимаемся и ничего по ней не обещаем. Строка остаётся на экране, чтобы вы видели, что из просьбы клиента отброшено. Её слова пополняют список правил — в следующем письме такая же строка отсеется сама.'],
@@ -7703,7 +7795,7 @@ const App = {
         'kp-settings':  ['Оформление КП', 'Тексты и значения по умолчанию для каждого нового КП: условия поставки, сроки, подписи под фотографиями. В самом КП их можно переписать — здесь стоит то, с чего КП начинается, и сюда же приезжает последняя правка условий из любого КП.'],
         'mail-signature': ['Подпись в письмах', 'Дописывается в конец каждого письма, которое вы отправляете из сервиса, и в конец черновика нейросети. Второй раз не приписывается — если подпись в письме уже стоит, она остаётся одна. Пусто — берётся общая подпись компании из настроек почты.'],
         'signature':    ['Подпись под КП', 'Выберите, чем подписывать ваши КП: без подписи (строка несёт только дату), своей подписью — картинка и расшифровка ниже, или подписью организации (её задаёт администратор).'],
-        'knowledge':    ['База знаний', 'Вики компании из репозитория GitHub. В промпт она попадает не целиком, а теми разделами, которые относятся к тексту письма. Это ЗНАНИЯ О ТОВАРЕ — инструкции про кнопки сюда класть нельзя, они мешают модели отвечать.'],
+        'knowledge':    ['База знаний', 'Вики компании из репозитория GitHub. Здесь всё про неё: откуда читаем (репозиторий, ветка, папка, токен), обновление и папка, куда уходят правки. В промпт она попадает не целиком, а теми разделами, которые относятся к тексту письма. Это ЗНАНИЯ О ТОВАРЕ — инструкции про кнопки сюда класть нельзя, они мешают модели отвечать.'],
         'knowledge-check': ['Проверка подбора', 'Вставьте текст письма — увидите, какие разделы вики попадут в промпт и что сервис на это ответит. Ответ можно тут же забраковать кнопкой 👎 и написать, как он должен был звучать: эта правка уйдёт в обучение.'],
         'rethink':      ['Переосмыслить правки', 'Модель читает последние правки менеджеров и отправленные письма и собирает из них короткий свод правил. Свод сам никуда не уходит: его читают, правят и одной кнопкой подмешивают в выбранный промпт — отдельным блоком «ИЗ ПРАВОК МЕНЕДЖЕРОВ». Модель для этой работы выбирается здесь же: читать сотню писем лучше моделью поумнее.'],
         'prompts':      ['Промпты', 'Инструкции, по которым нейросеть пишет каждый ответ и каждое письмо. Правится текстом; у каждого промпта есть история и кнопка «Вернуть встроенный». Ко всем добавляется общий блок дисциплины — его отдельно дублировать не надо.'],
@@ -12124,14 +12216,15 @@ const App = {
             const d = await this.api('admin.php?action=knowledge');
             this.knowledgeState = d;
             const kb = n => (n / 1024).toFixed(1) + ' КБ';
+            const admin = !!(this.manager && this.manager.is_admin);
             document.getElementById('adminBody').innerHTML = `
+                ${admin ? '<div class="card" id="kbSetupCard"><div class="loading">Загрузка настроек...</div></div>' : ''}
                 <div class="card">
-                    <div class="card__title">Состояние копии${this.hint('knowledge')}</div>
+                    <div class="card__title">Обновление базы${this.hint('knowledge')}</div>
                     ${d.enabled ? '' : '<p class="no">База знаний выключена — включите KNOWLEDGE_ENABLED в «Настройках».</p>'}
                     <p>Источник: <code>${this.esc(d.repo)}</code> · ветка <code>${this.esc(d.branch)}</code>
                        · папка <code>${this.esc(d.path)}</code></p>
-                    <p>Токен GitHub: ${d.token_set ? '<span class="ok">задан</span>' : '<span class="muted">не задан — доступен только публичный репозиторий</span>'}
-                       <span class="muted">(«Настройки → База знаний» или config.php)</span></p>
+                    <p>Токен GitHub: ${d.token_set ? '<span class="ok">задан</span>' : '<span class="muted">не задан — доступен только публичный репозиторий</span>'}</p>
                     <p>Версия: коммит <code>${this.esc((d.commit || '—').slice(0, 8))}</code>
                        ${d.commit_at ? '· ' + this.fmtDate(d.commit_at) : ''}</p>
                     <p>Проверено: ${d.checked_at ? this.fmtDate(d.checked_at) : 'ни разу'}
@@ -12184,7 +12277,81 @@ const App = {
                 </div>
             `;
             this.loadKnowledgeVectorStats();
+            if (admin) this.loadKnowledgeSetup();
         } catch (err) { this.adminFail(err); }
+    },
+
+    /**
+     * Всё про вики — на одной вкладке (issue #149): откуда читаем (репозиторий,
+     * ветка, папка, токен), как обновляем и куда пополняем правками. Поля —
+     * те же, что в «Все параметры», и пишутся тем же запросом.
+     */
+    KB_SOURCE_KEYS: ['KNOWLEDGE_ENABLED', 'KNOWLEDGE_REPO', 'KNOWLEDGE_BRANCH', 'KNOWLEDGE_PATH',
+                     'GITHUB_TOKEN', 'KNOWLEDGE_SYNC_TTL_SEC'],
+    KB_EXPORT_KEYS: ['LEARNING_EXPORT_REPO', 'LEARNING_EXPORT_BRANCH', 'LEARNING_EXPORT_PATH'],
+
+    async loadKnowledgeSetup() {
+        const card = document.getElementById('kbSetupCard');
+        if (!card) return;
+        try {
+            const [s, l] = await Promise.all([
+                this.api('admin.php?action=settings'),
+                this.api('admin.php?action=learning&page=1').catch(() => ({})),
+            ]);
+            const pick = keys => keys.map(k => (s.items || []).find(i => i.key === k)).filter(Boolean);
+            this.settingsSpec = pick([...this.KB_SOURCE_KEYS, ...this.KB_EXPORT_KEYS]);
+            const pending = Number(l.pending || 0);
+            card.innerHTML = `
+                <div class="card__title">Подключение к GitHub</div>
+                <h4>Источник вики</h4>
+                ${pick(this.KB_SOURCE_KEYS).map(it => this.settingRow(it)).join('')}
+                <h4 style="margin-top:14px">Пополнение базы правками
+                    ${this.hint('learning-export', 'Архив со всеми новыми правками уходит файлом в выбранную папку репозитория. После удачной выгрузки правки помечаются выгруженными, и следующий архив собирается только из новых.')}</h4>
+                ${pick(this.KB_EXPORT_KEYS).map(it => this.settingRow(it)).join('')}
+                <div class="flex flex--wrap" style="margin-top:10px;gap:8px">
+                    <button class="btn btn--primary" onclick="App.saveKnowledgeSetup(this)">Сохранить</button>
+                    <button class="btn btn--outline" ${pending ? '' : 'disabled'}
+                            title="Собрать новые правки архивом и положить в папку пополнения"
+                            onclick="App.learningExport(this, () => App.adminKnowledge())">Выгрузить правки (${pending})</button>
+                    <a href="#settings/learning" class="btn btn--ghost btn--sm">Список правок</a>
+                </div>
+                <div id="learningExportOut" style="margin-top:10px"></div>`;
+        } catch (err) {
+            card.innerHTML = `<div class="card__title">Подключение к GitHub</div><p class="no">${this.esc(err.message)}</p>`;
+        }
+    },
+
+    async saveKnowledgeSetup(btn) {
+        btn.disabled = true;
+        const values = {};
+        (this.settingsSpec || []).forEach(it => {
+            const el = document.getElementById('set_' + it.key);
+            if (!el || (it.secret && el.value === '')) return;
+            values[it.key] = el.value;
+        });
+        try {
+            await this.api('admin.php?action=settings', {method: 'PUT', body: {values}});
+            this.toast('Настройки базы знаний сохранены', 'success');
+            this.adminKnowledge();
+        } catch (err) { this.toast(err.message, 'error'); btn.disabled = false; }
+    },
+
+    /** Папки репозитория — в подсказки поля (issue #149). Репозиторий и ветка — из соседних полей. */
+    async loadRepoFolders(id, key) {
+        const val = k => ((document.getElementById('set_' + k) || {}).value || '').trim();
+        const exp = key === 'LEARNING_EXPORT_PATH';
+        const repo = (exp && val('LEARNING_EXPORT_REPO')) || val('KNOWLEDGE_REPO');
+        const branch = (exp && val('LEARNING_EXPORT_BRANCH')) || val('KNOWLEDGE_BRANCH');
+        try {
+            const d = await this.api(`admin.php?action=knowledge_folders&repo=${encodeURIComponent(repo)}`
+                                     + `&branch=${encodeURIComponent(branch)}`);
+            const list = document.getElementById(id + '_list');
+            if (list) list.innerHTML = (d.items || []).map(f => `<option value="${this.esc(f)}">`).join('');
+            const input = document.getElementById(id);
+            this.toast((d.items || []).length ? `Папок в репозитории: ${d.items.length} — выберите в поле`
+                                              : 'Папок в этой ветке нет', 'info');
+            if (input) { input.focus(); if (input.showPicker) try { input.showPicker(); } catch { /* не везде */ } }
+        } catch (err) { this.toast(err.message, 'error'); }
     },
 
     // ---- Wiki vectors: the «по смыслу» half of the knowledge base (modules 005, 009) ----
@@ -12344,46 +12511,6 @@ const App = {
                 (m.providers || []).forEach(p => { catalogs[p.provider] = p.models; });
             } catch { /* the plain text field is a fine fallback */ }
             this.settingsSpec = d.items;
-            const badge = it => it.source === 'db'
-                ? '<span class="badge badge--confirmed">из интерфейса</span>'
-                : (it.source === 'config' ? '<span class="badge badge--new">из config.php</span>' : '<span class="badge badge--draft">по умолчанию</span>');
-            const field = it => {
-                const id = 'set_' + it.key;
-                if (it.type === 'bool') return `<select id="${id}">
-                    <option value="1" ${String(it.value) === '1' ? 'selected' : ''}>Да</option>
-                    <option value="0" ${String(it.value) !== '1' ? 'selected' : ''}>Нет</option></select>`;
-                if (it.type.startsWith('select:')) return `<select id="${id}">${this.selectOptions(it.type, it.value)}</select>`;
-                if (it.type.startsWith('model:')) return this.modelSelect(id, catalogs[it.type.slice(6)] || [], String(it.value));
-                if (it.secret) return `<input type="password" id="${id}" placeholder="${it.filled ? 'задан ' + this.esc(it.tail) + ' — оставьте пустым, чтобы не менять' : 'не задан'}">`;
-                if (it.type === 'int') return `<input type="number" id="${id}" value="${this.esc(it.value)}">`;
-                // Звук уведомления выбирается из того, что лежит в sounds/,
-                // и тут же слушается — иначе выбирать приходится по имени файла
-                if (it.type === 'sound') {
-                    this.loadSoundOptions(id, String(it.value));
-                    return `<span class="flex">
-                        <select id="${id}"><option value="${this.esc(it.value)}">${this.esc(it.value) || '(без звука)'}</option></select>
-                        <button type="button" class="btn btn--outline btn--sm" onclick="App.playSoundPreview('${id}')">▶ Послушать</button>
-                    </span>`;
-                }
-                // Организация выбирается из списка МойСклад, а не переписывается
-                // идентификатором из адресной строки (модуль 041)
-                if (it.type === 'organization') {
-                    this.loadOrganizations(id, String(it.value));
-                    return `<select id="${id}">
-                        <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первая организация аккаунта)'}</option>
-                    </select>`;
-                }
-                // Склад заказа под счёт — из списка складов МойСклад (модуль 054)
-                if (it.type === 'store') {
-                    this.loadStoreOptions(id, String(it.value));
-                    return `<select id="${id}">
-                        <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первый из складов для остатков)'}</option>
-                    </select>`;
-                }
-                // Списки синонимов и текст блока дисциплины — многострочные
-                if (it.type === 'textarea') return `<textarea id="${id}" rows="6">${this.esc(it.value)}</textarea>`;
-                return `<input type="text" id="${id}" value="${this.esc(it.value)}">`;
-            };
             // Автообновление кода: состояние последней проверки и кнопка разовой
             // проверки живут прямо в карточке этой группы (модуль 014).
             const ap = d.autopull || {};
@@ -12403,19 +12530,7 @@ const App = {
                 return `<div class="card">
                     <div class="card__title">${this.esc(title)}</div>
                     ${key === 'deploy' ? apCard() : ''}
-                    ${items.map(it => `
-                        <div class="setting">
-                            <div class="setting__label">
-                                <label for="set_${it.key}">${this.esc(it.label)}</label>
-                                <div class="muted"><code>${it.key}</code> ${badge(it)}
-                                    ${it.hint ? '· ' + this.esc(it.hint) : ''}</div>
-                                ${this.settingLink(it)}
-                            </div>
-                            <div class="setting__field">${field(it)}</div>
-                            <div class="setting__actions">
-                                ${it.has_override ? `<button class="btn btn--sm btn--outline" onclick="App.resetSetting('${it.key}')" title="Вернуться к значению из config.php или встроенному">Сбросить</button>` : ''}
-                            </div>
-                        </div>`).join('')}
+                    ${items.map(it => this.settingRow(it, catalogs)).join('')}
                 </div>`;
             }).join('');
 
@@ -12430,6 +12545,75 @@ const App = {
                 <div class="flex flex--end"><button class="btn btn--primary" onclick="App.saveSettings()">Сохранить настройки</button></div>
             `;
         } catch (err) { this.adminFail(err); }
+    },
+
+    /** Строка настройки: подпись, ключ, откуда значение, поле и «Сбросить». */
+    settingRow(it, catalogs = {}) {
+        const badge = it.source === 'db'
+            ? '<span class="badge badge--confirmed">из интерфейса</span>'
+            : (it.source === 'config' ? '<span class="badge badge--new">из config.php</span>' : '<span class="badge badge--draft">по умолчанию</span>');
+        return `
+            <div class="setting">
+                <div class="setting__label">
+                    <label for="set_${it.key}">${this.esc(it.label)}</label>
+                    <div class="muted"><code>${it.key}</code> ${badge}
+                        ${it.hint ? '· ' + this.esc(it.hint) : ''}</div>
+                    ${this.settingLink(it)}
+                </div>
+                <div class="setting__field">${this.settingField(it, catalogs)}</div>
+                <div class="setting__actions">
+                    ${it.has_override ? `<button class="btn btn--sm btn--outline" onclick="App.resetSetting('${it.key}')" title="Вернуться к значению из config.php или встроенному">Сбросить</button>` : ''}
+                </div>
+            </div>`;
+    },
+
+    /** Поле одной настройки — одно на «Все параметры» и на вкладки, где её показывают рядом с делом. */
+    settingField(it, catalogs = {}) {
+        const id = 'set_' + it.key;
+        if (it.type === 'bool') return `<select id="${id}">
+            <option value="1" ${String(it.value) === '1' ? 'selected' : ''}>Да</option>
+            <option value="0" ${String(it.value) !== '1' ? 'selected' : ''}>Нет</option></select>`;
+        if (it.type.startsWith('select:')) return `<select id="${id}">${this.selectOptions(it.type, it.value)}</select>`;
+        if (it.type.startsWith('model:')) return this.modelSelect(id, catalogs[it.type.slice(6)] || [], String(it.value));
+        if (it.secret) return `<input type="password" id="${id}" placeholder="${it.filled ? 'задан ' + this.esc(it.tail) + ' — оставьте пустым, чтобы не менять' : 'не задан'}">`;
+        // Папка репозитория — выбором из того, что в нём есть (issue #149);
+        // поле печатается и руками: новой папки в списке ещё нет
+        if (it.type === 'folder') {
+            return `<span class="flex" style="gap:6px">
+                <input type="text" id="${id}" value="${this.esc(it.value)}" list="${id}_list">
+                <datalist id="${id}_list"></datalist>
+                <button type="button" class="btn btn--outline btn--sm" onclick="App.loadRepoFolders('${id}', '${this.jsStr(it.key)}')"
+                        title="Прочитать папки репозитория с GitHub">📁 Папки</button>
+            </span>`;
+        }
+        if (it.type === 'int') return `<input type="number" id="${id}" value="${this.esc(it.value)}">`;
+        // Звук уведомления выбирается из того, что лежит в sounds/,
+        // и тут же слушается — иначе выбирать приходится по имени файла
+        if (it.type === 'sound') {
+            this.loadSoundOptions(id, String(it.value));
+            return `<span class="flex">
+                <select id="${id}"><option value="${this.esc(it.value)}">${this.esc(it.value) || '(без звука)'}</option></select>
+                <button type="button" class="btn btn--outline btn--sm" onclick="App.playSoundPreview('${id}')">▶ Послушать</button>
+            </span>`;
+        }
+        // Организация выбирается из списка МойСклад, а не переписывается
+        // идентификатором из адресной строки (модуль 041)
+        if (it.type === 'organization') {
+            this.loadOrganizations(id, String(it.value));
+            return `<select id="${id}">
+                <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первая организация аккаунта)'}</option>
+            </select>`;
+        }
+        // Склад заказа под счёт — из списка складов МойСклад (модуль 054)
+        if (it.type === 'store') {
+            this.loadStoreOptions(id, String(it.value));
+            return `<select id="${id}">
+                <option value="${this.esc(it.value)}">${this.esc(it.value) || '(первый из складов для остатков)'}</option>
+            </select>`;
+        }
+        // Списки синонимов и текст блока дисциплины — многострочные
+        if (it.type === 'textarea') return `<textarea id="${id}" rows="6">${this.esc(it.value)}</textarea>`;
+        return `<input type="text" id="${id}" value="${this.esc(it.value)}">`;
     },
 
     /**
@@ -12502,7 +12686,8 @@ const App = {
         try {
             await this.api('admin.php?action=settings', {method: 'PUT', body: {reset: [key]}});
             this.toast('Значение сброшено', 'success');
-            this.adminSettings();
+            // Сбросили на вкладке «База знаний» — там и остаёмся
+            if (document.getElementById('kbSetupCard')) this.adminKnowledge(); else this.adminSettings();
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
@@ -13734,19 +13919,13 @@ const App = {
             const d = await this.api('admin.php?action=learning&' + qs);
             const ex = d.export || {};
             body.innerHTML = `
+                <!-- Выгрузка — там же, где вся вики: «База знаний → Пополнение базы» (issue #149) -->
                 <div class="card">
-                    <div class="card__title">Выгрузка в репозиторий
-                        ${this.hint('learning-export', 'Архив со всеми новыми правками уходит файлом в вики компании. После удачной выгрузки эти правки помечаются выгруженными, и следующий архив собирается только из новых — повторов не будет.')}
-                    </div>
                     <p>Накоплено новых правок: <strong class="${d.pending ? 'ok' : 'muted'}">${d.pending}</strong>
-                       · всего в базе: ${d.total}</p>
-                    <p class="muted">Куда: <code>${this.esc(ex.repo || '')}</code> · ветка <code>${this.esc(ex.branch || '')}</code>
-                       · папка <code>${this.esc(ex.path || '')}</code></p>
-                    ${ex.token_set ? '' : '<p class="no">Нужен токен GitHub с правом Contents: Write — «Настройки → Все параметры → GITHUB_TOKEN».</p>'}
-                    ${ex.last ? `<p class="muted">Последняя выгрузка: ${this.esc(ex.last)}</p>` : ''}
-                    <button class="btn btn--primary" ${d.pending ? '' : 'disabled'} onclick="App.learningExport(this)">
-                        Выгрузить архивом (${d.pending})</button>
-                    <div id="learningExportOut" style="margin-top:10px"></div>
+                       · всего в базе: ${d.total}
+                       · выгружаются в папку <code>${this.esc(ex.path || '')}</code>
+                       ${ex.last ? `· последняя выгрузка: ${this.esc(ex.last)}` : ''}</p>
+                    <a href="#settings/knowledge" class="btn btn--outline btn--sm">Выгрузка и папка — в «База знаний»</a>
                 </div>
 
                 <div class="card">
@@ -13822,7 +14001,7 @@ const App = {
         } catch (err) { this.toast(err.message, 'error'); }
     },
 
-    async learningExport(btn) {
+    async learningExport(btn, after = null) {
         const out = document.getElementById('learningExportOut');
         btn.disabled = true;
         out.innerHTML = '<p class="muted">Собираем архив и кладём его в репозиторий...</p>';
@@ -13832,7 +14011,7 @@ const App = {
                 ${r.url ? `· <a href="${this.esc(r.url)}" target="_blank" rel="noopener">открыть на GitHub</a>` : ''}</p>
                 <p class="muted">Следующий архив соберётся только из новых правок.</p>`;
             this.toast('Архив в репозитории', 'success');
-            setTimeout(() => this.adminLearning(), 1200);
+            setTimeout(() => (after || (() => this.adminLearning()))(), 1200);
         } catch (err) {
             out.innerHTML = `<p class="no">${this.esc(err.message)}</p>`;
             btn.disabled = false;
@@ -14610,6 +14789,9 @@ Object.assign(App, {
                     <input type="file" id="supFiles" multiple hidden onchange="App.supportAttach(this)">
                 </label>
                 <div class="flex flex--wrap" id="supFileList" style="gap:6px;margin-top:6px"></div>
+                <!-- Список файлов хранится как черновик вместе с текстом (issue #149):
+                     закрыли форму — скриншот вернётся с ней -->
+                <input type="hidden" id="supFilesKeep" data-keep="support.files" value="">
                 <div class="muted">Картинки, документы, видео — всё, что можно приложить к issue.</div>
                 ${admin ? `<label class="flex" style="gap:8px;align-items:center;margin-top:8px">
                     <input type="checkbox" id="supLog" ${opts.attachLog ? 'checked' : ''}>
@@ -14623,6 +14805,15 @@ Object.assign(App, {
                 <button class="btn btn--primary" onclick="App.supportSend(this)">Отправить</button>
             </div>`);
         const box = document.querySelector('#modal .modal__box');
+        // Файлы прошлого, неотправленного обращения — назад в список
+        const keep = document.getElementById('supFilesKeep');
+        if (keep) {
+            this.keepScan(keep);
+            this.supportFiles = this.supportFilesFrom(keep.value);
+            this.supportFileList();
+            // «Стереть» у восстановленного — и список пустеет
+            keep.addEventListener('input', () => { this.supportFiles = this.supportFilesFrom(keep.value); this.supportFileList(); });
+        }
         if (box) {
             box.addEventListener('paste', e => this.supportPaste(e));
             const drop = box.querySelector('#supDrop');
@@ -14657,23 +14848,41 @@ Object.assign(App, {
             const res = await fetch('/api/support.php?action=upload', {method: 'POST', body: fd, credentials: 'same-origin'});
             const d = await res.json();
             if (!res.ok || d.error) throw new Error(d.error || 'Файл не загрузился');
-            if (/^image\//.test(file.type)) d.file.preview = URL.createObjectURL(file);
+            if (/^image\//.test(file.type)) d.file.image = true;
             (this.supportFiles = this.supportFiles || []).push(d.file);
             this.supportFileList();
+            this.supportFilesKeep();
         } catch (err) { this.toast(err.message, 'error'); }
+    },
+
+    /** Черновик списка файлов: имена на сервере, не сами файлы — те уже загружены. */
+    supportFilesKeep() {
+        const keep = document.getElementById('supFilesKeep');
+        if (!keep) return;
+        const files = (this.supportFiles || []).map(({name, filename, size, image}) => ({name, filename, size, image: !!image}));
+        keep.value = files.length ? JSON.stringify(files) : '';
+        keep.dispatchEvent(new Event('input', {bubbles: true}));
+    },
+
+    supportFilesFrom(raw) {
+        try {
+            const list = JSON.parse(raw || '[]');
+            return Array.isArray(list) ? list.filter(f => f && f.name) : [];
+        } catch { return []; }
     },
 
     /** Приложенные файлы: картинка — миниатюрой, чтобы было видно, что вставился нужный скриншот. */
     supportFileList() {
         const box = document.getElementById('supFileList');
         if (box) box.innerHTML = (this.supportFiles || []).map((f, i) => `
-            <span class="chip">${f.preview ? `<img src="${f.preview}" alt="" class="sup-thumb">` : '📎'} ${this.esc(f.filename)}
+            <span class="chip">${f.image ? `<img src="/api/mail.php?action=outbox_file&name=${encodeURIComponent(f.name)}" alt="" class="sup-thumb">` : '📎'} ${this.esc(f.filename)}
                 <a onclick="App.supportDrop(${i})" title="Убрать">×</a></span>`).join('');
     },
 
     supportDrop(i) {
         (this.supportFiles || []).splice(i, 1);
         this.supportFileList();
+        this.supportFilesKeep();
     },
 
     async supportSend(btn) {

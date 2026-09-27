@@ -291,6 +291,32 @@ try {
             if (!$msg) jsonError('Письмо не найдено', 404);
             if ($msg['direction'] !== 'in') jsonError('Ответ создаётся только на входящее письмо');
 
+            // Ответ при открытии карточки (issue #149): `auto` — открыли,
+            // `after` — собрали КП или выставили счёт. Решает квалификация.
+            $auto  = !empty($input['auto']);
+            $after = in_array($input['after'] ?? '', ['kp', 'invoice'], true) ? (string)$input['after'] : '';
+            if ($auto || $after) {
+                $plan = Triage::autoPlan($msg);
+                // После КП/счёта ответ нужен, даже если раньше уже писали «готовим КП»
+                $stop = $after ? in_array($plan['why'], ['off', 'no_prompt'], true) : $plan['mode'] !== 'now';
+                if ($stop) {
+                    jsonData(['mail_message_id' => $id, 'deferred' => $plan['mode'] === 'wait',
+                              'skipped' => $plan['mode'] === 'wait' ? null : $plan['why'], 'reason' => $plan['reason']]);
+                }
+                // Одно открытие — не повод для второго вызова модели: черновик уже есть
+                if (!$after && trim((string)($msg['model_draft_text'] ?? '')) !== '') {
+                    jsonData([
+                        'mail_message_id' => $id,
+                        'text'            => (string)$msg['model_draft_text'],
+                        'cached'          => true,
+                        'category'        => (string)($msg['category'] ?? ''),
+                        'category_label'  => Triage::label((string)($msg['category'] ?? 'other')),
+                        'subject'         => preg_replace('/^(Re:\s*)?/iu', 'Re: ', (string)$msg['subject']),
+                        'to'              => (string)$msg['from_email'],
+                    ]);
+                }
+            }
+
             require_once ROOT . '/lib/parser.php';
 
             $attachText = '';
@@ -389,6 +415,12 @@ try {
                 $text = DeliveryShare::appendToLetter($text, [
                     'delivery_on' => $d['on'], 'delivery_price' => $d['price'], 'delivery_mode' => $d['mode'],
                 ]);
+            }
+
+            // Счёт держит товар — клиент узнаёт срок резерва из письма (issue #150)
+            if (!empty($msg['request_id'])) {
+                require_once ROOT . '/lib/reserves.php';
+                $text = Reserves::appendToLetter($text, Reserves::noteForRequest((int)$msg['request_id']));
             }
 
             // Промпты ответа заканчиваются словами «без подписи — её подставит
@@ -492,8 +524,14 @@ try {
             }
 
             // Счёт или КП — помечается: письмо с ним передвинет карточку (модуль 056)
-            jsonOk(['file' => Outbox::adopt($path, $name, (int)$manager['id'],
-                                            $kind === 'invoice' ? 'invoice' : 'kp', $id)]);
+            $out = ['file' => Outbox::adopt($path, $name, (int)$manager['id'],
+                                            $kind === 'invoice' ? 'invoice' : 'kp', $id)];
+            // Счёт держит резерв — абзац о сроке встанет в письмо (issue #150)
+            if ($kind === 'invoice') {
+                require_once ROOT . '/lib/reserves.php';
+                $out['reserve_note'] = Reserves::noteForInvoice($id);
+            }
+            jsonOk($out);
         }
 
         // Приложенный файл — назад, скачать и проверить до отправки (модуль 052)
@@ -503,6 +541,9 @@ try {
             $name = Outbox::displayName($path);
             $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
             $mime = [
+                // Картинки — своим типом: миниатюра скриншота в форме обращения (issue #149)
+                'png'  => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
+                'gif'  => 'image/gif', 'webp' => 'image/webp',
                 'pdf'  => 'application/pdf',
                 'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                 'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

@@ -588,6 +588,16 @@ try {
                 jsonError('База знаний: ' . $e->getMessage());
             }
 
+        // Папки репозитория — выбор, куда смотрит вики и куда уходят правки (issue #149)
+        case 'knowledge_folders':
+            try {
+                jsonOk(['items' => Knowledge::folders(
+                    trim((string)($_GET['repo'] ?? '')) ?: (string)Settings::get('KNOWLEDGE_REPO', ''),
+                    trim((string)($_GET['branch'] ?? '')) ?: (string)Settings::get('KNOWLEDGE_BRANCH', 'main'))]);
+            } catch (Throwable $e) {
+                jsonError('GitHub: ' . $e->getMessage());
+            }
+
         // Rebuild the FTS index by hand — after a schema change or a doubtful search
         case 'knowledge_reindex':
             jsonOk(['indexed' => Knowledge::reindex(), 'fts' => Knowledge::ftsAvailable()]);

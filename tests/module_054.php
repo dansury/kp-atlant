@@ -99,7 +99,7 @@ ok('просмотр счёта без JSON в рамке', str_contains($js, "U
 echo "Подпись в поле письма\n";
 ok('галочка правит поле', str_contains($js, 'this.insertSignature(box, sign)') && str_contains($js, 'this.removeSignature(box, sign)'));
 ok('подпись после черновика, не наперегонки', str_contains($js, 'await this.syncSignature(c, restored);'));
-ok('черновик нейросети отмечает галочку', str_contains($js, "await this.syncSignature(c, true);\n            this.composerChanged(key);"));
+ok('черновик нейросети отмечает галочку', (bool)preg_match('/await this\.syncSignature\(c, true\);\s*this\.composerChanged\(key\);/', $js));
 
 echo $fail ? "\nFAILED: $fail\n" : "\nAll passed\n";
 exit($fail ? 1 : 0);

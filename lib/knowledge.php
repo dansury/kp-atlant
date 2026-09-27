@@ -255,6 +255,25 @@ final class Knowledge {
         return $out;
     }
 
+    /**
+     * Папки ветки — для выбора в настройках (issue #149). Дерево git целиком,
+     * одним запросом; только каталоги, не больше тысячи.
+     *
+     * @return list<string>
+     */
+    public static function folders(string $repo, string $branch): array {
+        $repo = trim($repo);
+        if (!preg_match('~^[\w.-]+/[\w.-]+$~', $repo)) throw new RuntimeException('Репозиторий — в формате owner/repo');
+        $tree = self::api($repo, 'git/trees/' . rawurlencode(trim($branch) ?: 'main') . '?recursive=1');
+        $out = [];
+        foreach ((array)($tree['tree'] ?? []) as $node) {
+            if (($node['type'] ?? '') === 'tree') $out[] = (string)$node['path'];
+            if (count($out) >= 1000) break;
+        }
+        sort($out, SORT_STRING | SORT_FLAG_CASE);
+        return $out;
+    }
+
     /** File content by blob sha — works for private repos, unlike raw.githubusercontent. */
     private static function blob(string $repo, string $sha): string {
         $data = self::api($repo, 'git/blobs/' . $sha);
