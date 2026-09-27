@@ -53,6 +53,46 @@ final class Triage {
         'other'            => ['Не определено',             'kp_request', 'mail_reply',         ['wiki']],
     ];
 
+    /**
+     * Категории, где ответ стоит на подборе (issue #149): цену и наличие
+     * называет КП или счёт, и черновик до них — обещание «уточним».
+     */
+    public const SELECTION_FIRST = ['kp_request', 'order', 'tender'];
+
+    /**
+     * Писать ли ответ при открытии карточки (issue #149).
+     *
+     * `now` — сразу; `wait` — после «Сформировать КП» / «Выставить счёт»;
+     * `none` — отвечать нечем или уже ответили; `off` — опция выключена.
+     *
+     * @return array{mode:string,why:string,reason:string}
+     */
+    public static function autoPlan(array $msg): array {
+        if ((string)Settings::get('MAIL_AUTO_REPLY', '1') !== '1') {
+            return ['mode' => 'off', 'why' => 'off', 'reason' => 'автоответ выключен в настройках'];
+        }
+        $cat = (string)($msg['category'] ?? '');
+        if (!isset(self::CATEGORIES[$cat])) $cat = 'other';
+        if (self::route($cat)[0] === null) {
+            return ['mode' => 'none', 'why' => 'no_prompt', 'reason' => 'на «' . self::label($cat) . '» не отвечают письмом'];
+        }
+        // После письма уже был наш ответ — писать второй незачем
+        $key = (string)($msg['thread_key'] ?? '');
+        if ($key !== '' && Db::val("SELECT 1 FROM mail_messages WHERE thread_key=? AND direction='out'
+                                      AND (date_at > ? OR (date_at = ? AND id > ?)) LIMIT 1",
+                                   [$key, (string)$msg['date_at'], (string)$msg['date_at'], (int)$msg['id']])) {
+            return ['mode' => 'none', 'why' => 'answered', 'reason' => 'на это письмо уже ответили'];
+        }
+        $rid = (int)($msg['request_id'] ?? 0);
+        if ($rid && in_array($cat, self::SELECTION_FIRST, true)
+            && Db::val("SELECT 1 FROM request_items WHERE request_id=? LIMIT 1", [$rid])
+            && !Db::val("SELECT 1 FROM proposals WHERE request_id=? LIMIT 1", [$rid])) {
+            return ['mode' => 'wait', 'why' => 'selection',
+                    'reason' => 'ответ соберётся после «Сформировать КП» или «Выставить счёт» — в нём будут подобранные цены'];
+        }
+        return ['mode' => 'now', 'why' => '', 'reason' => ''];
+    }
+
     public static function enabled(): bool {
         return (int)Settings::get('TRIAGE_ENABLED', 1) === 1;
     }
@@ -351,6 +391,8 @@ final class Triage {
         // Форма письма одна на все промпты ответа и держится сервисом, а не
         // моделью: обращение по имени и отчеству, дальше суть (модуль 041)
         $system .= LetterShape::instruction();
+        // Как менеджер правил прошлые черновики — «было → стало» (issue #149)
+        $system .= Learning::replyLessons($category);
 
         $text = LLM::chatText($system, self::userMessage($message, $ctx), 0.4);
         return LetterShape::apply($text, self::person($message, $ctx));

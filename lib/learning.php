@@ -229,6 +229,54 @@ TXT;
         );
     }
 
+    /**
+     * Правки ответов — в промпт ответа (issue #149).
+     *
+     * Каждое отправленное письмо лежит здесь в паре с черновиком модели
+     * (`kind = 'sent'`). Те, где менеджер текст ПОПРАВИЛ, — последние, своей
+     * категории первыми — идут модели примером «было → стало». Одинаковое
+     * «было» и «стало» ничему не учит и не берётся.
+     */
+    public static function replyLessons(string $category, int $limit = -1): string {
+        $limit = $limit >= 0 ? $limit : max(0, (int)Settings::get('MAIL_REPLY_LEARN_SAMPLES', 3));
+        if ($limit === 0) return '';
+        $rows = Db::all("SELECT subject, auto_answer, correct_answer, context_json FROM learning_samples
+                         WHERE kind='sent' AND TRIM(COALESCE(auto_answer, '')) <> ''
+                         ORDER BY id DESC LIMIT ?", [$limit * 10]);
+        $norm = fn(string $t) => mb_strtolower(preg_replace('/\s+/u', ' ', trim($t)));
+        $own = $other = [];
+        foreach ($rows as $r) {
+            if ($norm((string)$r['auto_answer']) === $norm((string)$r['correct_answer'])) continue;
+            $ctx = json_decode((string)($r['context_json'] ?? ''), true) ?: [];
+            if (($ctx['category'] ?? null) === $category) $own[] = $r; else $other[] = $r;
+        }
+        $pick = array_slice(array_merge($own, $other), 0, $limit);
+        if (!$pick) return '';
+
+        $clip = fn(string $t) => mb_strlen($t = trim($t)) > 700 ? mb_substr($t, 0, 700) . ' […]' : $t;
+        $examples = '';
+        foreach ($pick as $r) {
+            [$was, $sent] = self::dropCommonTail((string)$r['auto_answer'], (string)$r['correct_answer']);
+            $examples .= "\n---\n"
+                . (trim((string)$r['subject']) !== '' ? 'Тема: ' . trim((string)$r['subject']) . "\n" : '')
+                . "Черновик модели:\n" . $clip($was) . "\n"
+                . "Отправил менеджер:\n" . $clip($sent) . "\n";
+        }
+        require_once __DIR__ . '/prompts.php';
+        return "\n\n" . trim(str_replace('{{examples}}', $examples, Prompts::text('reply_lessons')));
+    }
+
+    /** Одинаковый хвост двух текстов — подпись — примером не служит: убрать его у обоих. */
+    public static function dropCommonTail(string $a, string $b): array {
+        $la = preg_split('/\R/u', rtrim($a));
+        $lb = preg_split('/\R/u', rtrim($b));
+        $norm = fn(string $t) => mb_strtolower(preg_replace('/\s+/u', ' ', trim($t)));
+        while (count($la) > 1 && count($lb) > 1 && $norm(end($la)) === $norm(end($lb))) {
+            array_pop($la); array_pop($lb);
+        }
+        return [rtrim(implode("\n", $la)), rtrim(implode("\n", $lb))];
+    }
+
     // ------------------------------------------------------------- выгрузка
 
     /** Куда уходит архив: `GRAPH/RAW/NEW` репозитория вики. */

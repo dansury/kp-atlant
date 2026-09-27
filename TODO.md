@@ -213,3 +213,15 @@ not have.
   «как в прошлых КП».
 - «Вес» of products: the next МойСклад sync writes `products_cache.weight`;
   until then weights come from descriptions only.
+
+## Module 068 (issues #149–#150) — needs a live system
+- Reserve days skip Saturday and Sunday only; Russian public holidays (production
+  calendar) are not counted out. If a holiday week matters, add the calendar.
+- The screenshot attached to #149 (the settings layout) could not be opened from the
+  build container (private attachment, HTTP 403); the tab follows the text of the
+  issue — compare it with the screenshot and adjust the order if needed.
+- Auto-reply on open costs one model call per unanswered letter (cached afterwards in
+  `model_draft_text`); watch the LLM spend for a week and switch `MAIL_AUTO_REPLY` off
+  if it is too much.
+- Graphify: the CLI is not installed in the build container; re-run it on the next
+  machine that has it.
