@@ -98,6 +98,12 @@ final class Settings {
         'KNOWLEDGE_SYNC_TTL_SEC' => ['knowledge', 'Проверять обновления не чаще, сек', 'int', false, 600, '0 — проверять версию репозитория перед каждой генерацией'],
         'KNOWLEDGE_TIMEOUT_SEC'  => ['knowledge', 'Таймаут запроса к GitHub, сек', 'int', false, 20, 'Сколько ждать ответ GitHub. Не дождались — берётся последняя скачанная копия вики'],
         'KNOWLEDGE_TASKS'        => ['knowledge', 'Где применять', 'text', false, 'mail_reply,reply_kp,reply_product,reply_availability,reply_order_status,reply_delivery,reply_edo,reply_closing_docs,reply_contract,reply_tender,reply_gov_order,reply_return,reply_docs,reply_wholesale,reply_complaint,cover_letter,followup,normalize_names', 'Ключи задач через запятую: mail_reply, cover_letter, followup, normalize_names'],
+        'KNOWLEDGE_REPLY_PAGES'  => ['knowledge', 'Страницы вики для ответов на письма', 'textarea', false,
+            "*: Вопросы и ответы из почты\n"
+            . "reply_kp, reply_wholesale, reply_contract, reply_edo, reply_closing_docs, reply_tender, reply_gov_order, reply_docs: Опт и работа с юрлицами\n"
+            . "reply_return, reply_complaint: Гарантия, обмен и возврат\n"
+            . "reply_delivery, reply_order_status: Доставка и оплата",
+            'По строке на правило: «задача, задача: Страница; Страница». * — все ответы на письма. Страница — заголовок «# » или имя файла без .md. Эти страницы читаются первыми: берутся их разделы, где есть хоть одно слово письма'],
         'KNOWLEDGE_MAX_CHARS'    => ['knowledge', 'Максимум символов вики в промпте', 'int', false, 6000, 'Бюджет для ответа на письмо; у остальных задач — доля от него'],
         'KNOWLEDGE_MIN_HITS'     => ['knowledge', 'Минимум совпавших терминов', 'int', false, 2, 'Ниже порога раздел вики не подмешивается — «незачем»'],
         'KNOWLEDGE_VECTORS'      => ['knowledge', 'Векторный поиск по базе знаний', 'bool', false, 1, 'Разделы вики тоже векторизуются эмбеддингами Yandex: к словесному подбору добавляются разделы, подходящие по смыслу. Без ключа Yandex подбор молча остаётся словесным'],

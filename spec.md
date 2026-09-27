@@ -67,6 +67,7 @@
 | The interface always loads: code from the network in the service worker, a boot watchdog in `index.php` (one purge + reload, then a visible reason), `App.init()` login only on 401 and a timeout, atomic deploy copy with unchanged files left alone, the auto-deploy check in the background poll, ticket files on their own orphan branch, `support/` closed | `specs/066-interface-always-loads/spec.md` | Implemented |
 | Issues #134–#146: a tap on the text opens a letter, «✓ Прочитано» by hand, the card lands on the last letter, letters stay white under Chrome's forced dark, «фото в КП» explains itself, free stock next to every product, the whole name of a position, a search that narrows (only the modifications typed), the matcher remembers what was sold and never answers with an accessory, СДЭК delivery calculator (API or a rate), fewer buttons on a phone, the update is announced | `specs/067-issues-134-146/spec.md` | Implemented |
 | Issues #149–#150: the invoice's order holds stock 3 business days and the letter says so, a reminder when unpaid; the reply writes itself on open (after «Сформировать КП» / «Выставить счёт» when positions must be matched first), reply edits go into the prompt, the wiki's GitHub source, sync and export folder on one tab, the support screenshot survives the draft | `specs/068-issues-149-150/spec.md` | Implemented |
+| The wiki answers letters: reply pages per category (`KNOWLEDGE_REPLY_PAGES`, read first, half the budget), wiki prices/VAT/terms are dated history (prompt `knowledge_block`), missing pages shown red | `specs/069-wiki-reply-pages/spec.md` | Implemented |
 
 ## Research
 | Вопрос | Файл |
@@ -117,6 +118,7 @@
 | Модуль 055: поиск без учёта регистра и «ё», по компании, ИНН, телефону, товару; индекс триггерами | `php tests/module_055.php` |
 | Модуль 056: карточка сама переходит в «КП отправлено» / «Ждём оплату» при отправке, только вперёд | `php tests/module_056.php` |
 | Module 057: send delay (queue, claim, cancel, send now), per-manager delay, fold controls, МойСклад sync report | `php tests/module_057.php` |
+| Module 069: reply pages per category, pinned sections first, dated-facts block, status of missing pages | `php tests/module_069.php` |
 | Module 058: range breakdown by the characteristics the price depends on, add-ons only for their host product, add-on stock from modifications, no «Ед. изм.» | `php tests/module_058.php` |
 | Module 059: WebM→Ogg remux, SpeechKit transcription, «под заказ» by hand + variant stock (#86), СДЭК track on all cards (#88), UI: 🎤, full-page «Написать», screenshot paste, admin tickets, КП strikethrough | `php tests/module_059.php` |
 | Module 061: search lock, log text/export/ticket file, issue image links, card notices, shipments into the draft, column paging and search, unread counter, SpeechKit settings, UI by source | `php tests/module_061.php` |
