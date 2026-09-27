@@ -115,6 +115,14 @@ final class Triage {
     }
 
     /** [prompt key, sources] for a drafted answer; prompt null = мы не отвечаем. */
+    /** The first category answered by this reply prompt — the preview drafts in it (module 069). */
+    public static function categoryOf(string $promptKey): string {
+        foreach (self::CATEGORIES as $key => $c) {
+            if ($c[2] === $promptKey) return $key;
+        }
+        return 'other';
+    }
+
     public static function route(string $key): array {
         $c = self::CATEGORIES[$key] ?? self::CATEGORIES['other'];
         return [$c[2], $c[3]];

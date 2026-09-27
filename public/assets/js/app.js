@@ -7822,6 +7822,7 @@ const App = {
         'tov':          ['Tone of Voice', 'Как мы разговариваем с клиентом: обращение, длина фраз, что обещаем и чего не обещаем. Подмешивается в каждый ответ. Это НЕ база знаний: факты о товаре живут в вики, здесь — только манера речи.'],
         'stores':       ['Склады для остатков', 'Отметьте склады, с которых вы реально отгружаете. Остаток считается только по ним: остаток витрины или брака, попавший в КП, превращается в обещание, которого не выполнить. Ничего не отмечено — считаем по всем складам.'],
         'learning':     ['Правки и обучение', 'Всё, что человек поправил за машиной: категория письма, текст ответа, забракованный подбор. Свежие правки подмешиваются в промпты примерами, а накопленное выгружается архивом в вики компании.'],
+        'knowledge-reply': ['Ответы на письма', 'Какие страницы вики ответ читает первым — по категории письма. Строка: «задачи: Страницы», например «reply_return, reply_complaint: Гарантия, обмен и возврат». * — все ответы. Страница — её заголовок «# » или имя файла без .md из папки GRAPH/wiki. Переименовали страницу в вики — поправьте и здесь: «Где используется» покажет её красным.'],
         'learning-export': ['Выгрузка правок', 'Архив со всеми новыми правками уходит файлом в репозиторий вики. После удачной выгрузки они помечаются выгруженными, и следующий архив собирается только из новых — повторов не будет.'],
         'logo':         ['Логотипы', 'Три разных знака: в шапке КП, иконка приложения на телефоне и значок вкладки браузера. Файлы лежат вне репозитория, поэтому обновление кода их не стирает. Для КП лучше PNG без прозрачного фона — прозрачность на некоторых серверах не печатается.'],
         'catalog':      ['Каталог товаров', 'Копия номенклатуры МойСклад: названия, артикулы, цены, остатки и модификации. Из неё собираются КП — чтобы документ не зависел от того, отвечает ли сейчас МойСклад. Если API недоступен, каталог можно загрузить из Excel-выгрузки.'],
@@ -12265,7 +12266,9 @@ const App = {
                     <p class="muted">Вики подмешивается только в эти генерации и только теми разделами,
                        которые относятся к тексту. Список задач — настройка KNOWLEDGE_TASKS.</p>
                     ${d.tasks.map(t => `<p>${t.enabled ? '<span class="ok">вкл</span>' : '<span class="muted">выкл</span>'}
-                        · ${this.esc(t.label)} <code>${t.key}</code> · бюджет ${t.budget} символов</p>`).join('')}
+                        · ${this.esc(t.label)} <code>${t.key}</code> · бюджет ${t.budget} символов
+                        ${(t.pages || []).length ? '<br><span class="muted">сначала читает:</span> ' + t.pages.map(p => p.found !== false
+                            ? this.esc(p.page) : `<span class="no">${this.esc(p.page)} — нет в вики, переименована?</span>`).join(' · ') : ''}</p>`).join('')}
                 </div>
 
                 <div class="card" id="kbVectorCard"><div class="loading">Проверяем векторный индекс...</div></div>
@@ -12308,6 +12311,7 @@ const App = {
      */
     KB_SOURCE_KEYS: ['KNOWLEDGE_ENABLED', 'KNOWLEDGE_REPO', 'KNOWLEDGE_BRANCH', 'KNOWLEDGE_PATH',
                      'GITHUB_TOKEN', 'KNOWLEDGE_SYNC_TTL_SEC'],
+    KB_REPLY_KEYS: ['KNOWLEDGE_REPLY_PAGES'],
     KB_EXPORT_KEYS: ['LEARNING_EXPORT_REPO', 'LEARNING_EXPORT_BRANCH', 'LEARNING_EXPORT_PATH'],
 
     async loadKnowledgeSetup() {
@@ -12319,12 +12323,14 @@ const App = {
                 this.api('admin.php?action=learning&page=1').catch(() => ({})),
             ]);
             const pick = keys => keys.map(k => (s.items || []).find(i => i.key === k)).filter(Boolean);
-            this.settingsSpec = pick([...this.KB_SOURCE_KEYS, ...this.KB_EXPORT_KEYS]);
+            this.settingsSpec = pick([...this.KB_SOURCE_KEYS, ...this.KB_REPLY_KEYS, ...this.KB_EXPORT_KEYS]);
             const pending = Number(l.pending || 0);
             card.innerHTML = `
                 <div class="card__title">Подключение к GitHub</div>
                 <h4>Источник вики</h4>
                 ${pick(this.KB_SOURCE_KEYS).map(it => this.settingRow(it)).join('')}
+                <h4 style="margin-top:14px">Ответы на письма${this.hint('knowledge-reply')}</h4>
+                ${pick(this.KB_REPLY_KEYS).map(it => this.settingRow(it)).join('')}
                 <h4 style="margin-top:14px">Пополнение базы правками
                     ${this.hint('learning-export', 'Архив со всеми новыми правками уходит файлом в выбранную папку репозитория. После удачной выгрузки правки помечаются выгруженными, и следующий архив собирается только из новых.')}</h4>
                 ${pick(this.KB_EXPORT_KEYS).map(it => this.settingRow(it)).join('')}
@@ -12462,6 +12468,7 @@ const App = {
                 ? d.items.map(i => `<p>${this.esc(i.title)}
                     <span class="muted">· ${i.chars} симв. · ${i.source === 'vector'
                         ? `по смыслу, близость ${i.score}`
+                        : i.source === 'pinned' ? `закреплена за задачей, совпало слов: ${i.hits}`
                         : `совпало терминов: ${i.hits} · вес ${i.score}`}</span></p>`).join('')
                 : '<p class="muted">Ничего подходящего — вики в этот промпт не попадёт.</p>';
 

@@ -88,25 +88,24 @@ final class Knowledge {
         if (!self::taskEnabled($task)) return '';
         try {
             self::ensureFresh();          // never throws — a stale copy still answers
-            $picked = self::search($query, self::budget($task));
+            $picked = self::search($query, self::budget($task), $task);
         } catch (Throwable $e) {
             Logger::exception('knowledge', $e, ['task' => $task]);
             return '';
         }
         if (!$picked) return '';
 
-        $out = "===== БАЗА ЗНАНИЙ ATLANT ARMOUR =====\n"
-             . "Проверенные факты о компании и товарах. Используй их как источник истины.\n"
-             . "Если нужного факта здесь нет — не выдумывай, напиши, что уточнишь.\n\n";
+        $sections = '';
         foreach ($picked as $s) {
-            $out .= "--- {$s['title']} ---\n" . $s['text'] . "\n\n";
+            $sections .= "--- {$s['title']} ---\n" . $s['text'] . "\n\n";
         }
-        return rtrim($out) . "\n===== КОНЕЦ БАЗЫ ЗНАНИЙ =====";
+        // The wrapper is a prompt (module 069): it says wiki prices are dated history
+        return trim(str_replace('{{sections}}', rtrim($sections), Prompts::text('knowledge_block')));
     }
 
     /** Admin panel: what would be injected for this query. */
     public static function preview(string $query, string $task): array {
-        $picked = self::search($query, self::budget($task));
+        $picked = self::search($query, self::budget($task), $task);
         return array_map(fn($s) => [
             'title'  => $s['title'],
             'path'   => $s['path'],
@@ -141,6 +140,9 @@ final class Knowledge {
                 'label'   => self::TASKS[$t][0],
                 'enabled' => self::taskEnabled($t),
                 'budget'  => self::budget($t),
+                // null = nothing downloaded yet: a missing copy is not a renamed page
+                'pages'   => array_map(fn($p) => ['page' => $p, 'found' => $docs ? self::docsOf([$p]) !== [] : null],
+                                       self::replyPages($t)),
             ], array_keys(self::TASKS)),
             'docs'       => $docs,
             'docs_count' => count($docs),
@@ -346,9 +348,110 @@ final class Knowledge {
      * shares at least KNOWLEDGE_MIN_HITS distinctive terms with the query, so an
      * off-topic letter gets no knowledge block at all.
      */
-    public static function search(string $query, int $budget): array {
-        $picked = self::searchLexical($query, $budget);
+    public static function search(string $query, int $budget, string $task = ''): array {
+        $pinned = self::searchPinned($query, intdiv($budget, 2), $task);
+        $left = $budget - array_sum(array_map(fn($p) => mb_strlen($p['text']), $pinned));
+        $seen = array_column($pinned, 'title');
+        $rest = array_values(array_filter(self::searchLexical($query, $budget),
+                                          fn($p) => !in_array($p['title'], $seen, true)));
+        $picked = $pinned;
+        foreach ($rest as $p) {                            // the word pick fills what is left
+            if ($left < 400) break;
+            $p['text'] = self::clip($p['text'], min($left, 2500));
+            $left -= mb_strlen($p['text']);
+            $picked[] = $p;
+        }
         return self::withVectors($query, $picked, $budget);
+    }
+
+    /**
+     * Wiki pages a reply task reads first (module 069), from KNOWLEDGE_REPLY_PAGES:
+     * `task[, task]: Page[; Page]`, `*` = every reply task. Titles or file names.
+     */
+    public static function replyPages(string $task): array {
+        if ($task === '') return [];
+        $isReply = $task === 'mail_reply' || str_starts_with($task, 'reply_');
+        $named = $common = [];
+        foreach (preg_split('/\R/u', (string)Settings::get('KNOWLEDGE_REPLY_PAGES', '')) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === '' || $line[0] === '#' || !str_contains($line, ':')) continue;
+            [$keys, $pages] = array_map('trim', explode(':', $line, 2));
+            $keys = array_map('trim', explode(',', $keys));
+            // A page named for this task outranks a page every reply reads
+            if (in_array($task, $keys, true)) $list = &$named;
+            elseif (in_array('*', $keys, true) && $isReply) $list = &$common;
+            else continue;
+            foreach (explode(';', $pages) as $page) {
+                $page = trim($page);
+                if ($page !== '') $list[] = $page;
+            }
+            unset($list);
+        }
+        return array_values(array_unique([...$named, ...$common]));
+    }
+
+    /** Paths of downloaded docs whose `# ` title or file name is one of $pages. */
+    private static function docsOf(array $pages): array {
+        $want = array_map(fn($p) => mb_strtolower(preg_replace('/\.md$/iu', '', trim($p))), $pages);
+        $out = [];
+        foreach (Db::all("SELECT path, title FROM knowledge_docs") as $d) {
+            $name = mb_strtolower(preg_replace('/\.md$/iu', '', basename((string)$d['path'])));
+            if (in_array(mb_strtolower(trim((string)$d['title'])), $want, true) || in_array($name, $want, true)) {
+                $out[] = (string)$d['path'];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Sections of the task's reply pages that share at least one term with the
+     * letter. The category already says the page is on topic; the words only pick
+     * the section — a page with no such section adds nothing.
+     */
+    private static function searchPinned(string $query, int $budget, string $task): array {
+        $pages = self::replyPages($task);
+        if (!$pages || $budget < 400) return [];
+        $qStems = self::stems(mb_substr(trim($query), 0, 6000));
+        if (!$qStems) return [];
+
+        // Per page, in the order of the setting: its sections that share a term
+        $byPage = [];
+        $sections = self::sections();
+        foreach ($pages as $page) {
+            $paths = self::docsOf([$page]);
+            $rows = [];
+            foreach ($sections as $s) {
+                if (!in_array($s['path'], $paths, true)) continue;
+                $hits = count(array_intersect_key($qStems, $s['stems']));
+                if ($hits >= 1) $rows[] = ['s' => $s, 'hits' => $hits];
+            }
+            usort($rows, fn($a, $b) => $b['hits'] <=> $a['hits']);
+            if ($rows) $byPage[] = $rows;
+        }
+        if (!$byPage) return [];
+
+        // Round robin: the best section of every page before the second of any —
+        // one long Q&A section must not crowd the category's own page out
+        $out = [];
+        $seen = [];
+        $left = $budget;
+        $first = max(400, intdiv($budget, count($byPage)));
+        for ($round = 0; $left >= 400; $round++) {
+            $took = false;
+            foreach ($byPage as $rows) {
+                if ($left < 400) break;
+                $row = $rows[$round] ?? null;
+                if (!$row || isset($seen[$row['s']['title']])) continue;
+                $text = self::clip($row['s']['text'], min($left, 2500, $round === 0 ? $first : 2500));
+                $left -= mb_strlen($text);
+                $seen[$row['s']['title']] = true;
+                $took = true;
+                $out[] = ['title' => $row['s']['title'], 'path' => $row['s']['path'], 'text' => $text,
+                          'score' => (float)$row['hits'], 'hits' => $row['hits'], 'source' => 'pinned'];
+            }
+            if (!$took) break;
+        }
+        return $out;
     }
 
     /**

@@ -49,8 +49,9 @@ the cached copy stays in use.
 Documents are split into `##` sections. Query and sections are reduced to 6-char stems
 (crude but enough for Russian forms), scored by idf-weighted overlap with a x2 boost for a hit
 in the page title, tags or heading. The best sections fill `KNOWLEDGE_MAX_CHARS × task share`,
-each clipped to 2500 characters. The block is wrapped in
-`===== БАЗА ЗНАНИЙ ATLANT ARMOUR =====` with an explicit "do not invent what is missing" rule.
+each clipped to 2500 characters. The block is wrapped by prompt `knowledge_block`
+(`===== БАЗА ЗНАНИЙ ATLANT ARMOUR =====`, «do not invent what is missing», wiki prices are dated
+history). A reply task reads its own pages first — `KNOWLEDGE_REPLY_PAGES`, module 069.
 
 ## Prompts
 `cover_letter`, `mail_reply`, `followup`, `normalize_names` gained a `{{knowledge}}` placeholder,

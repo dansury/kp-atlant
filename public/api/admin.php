@@ -646,7 +646,7 @@ try {
                 try {
                     $out['answer'] = Triage::draft(
                         ['subject' => (string)($input['subject'] ?? 'Проверка подбора'), 'body_text' => $query],
-                        (string)($input['category'] ?? 'other'),
+                        (string)($input['category'] ?? '') ?: Triage::categoryOf($task),
                         ['email_rules' => (string)(Db::val("SELECT content FROM email_rules ORDER BY id DESC LIMIT 1") ?: ''),
                          'tov'         => Tov::read()]
                     );
