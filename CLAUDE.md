@@ -217,7 +217,9 @@ place a logo appears: the КП, the app icon and the tab favicon are THREE kinds
 through «Настройки → Логотипы» and all stored in `storage/logo/`, outside the repository,
 because a deploy overwrites `public/assets/`. The app icon and the favicon take an UPLOADED mark
 before the bundled one — their own, then each other's, then the КП logo (`Branding::FALLBACK`); the
-КП never borrows a square app mark. `PdfGenerator::bundledLogos()` reads `Branding`
+КП never borrows a square app mark. An app icon is OPAQUE and full-bleed (`Branding::icon()`: trim
+the picture's own margins, fill with its edge colour): a launcher paints transparency as a white
+plate, and a logo fitted into a transparent square reached the phone inside a white frame. `PdfGenerator::bundledLogos()` reads `Branding`
 and is the one place that decides what the document prints — never write a second list of
 paths. `api/branding.php` serves the picture WITHOUT auth on purpose: the browser asks for the
 favicon and the manifest icons before anyone has logged in. A КП that prints without a logo

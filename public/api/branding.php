@@ -50,7 +50,7 @@ switch ($action) {
         requireAuth();
         // «Загружен» и «печатается» — не одно и то же: mPDF без GD выбрасывает
         // прозрачный PNG молча, и КП уходило клиенту без знака (модуль 022)
-        jsonData(['items' => Branding::describe(), 'kp_warning' => Branding::documentWarning('kp')] + Branding::live());
+        jsonData(['items' => Branding::describe(), 'kp_warning' => Branding::documentWarning('kp'), 'icon_warning' => Branding::iconWarning()] + Branding::live());
 
     case 'upload':
         $admin = requireAdmin();

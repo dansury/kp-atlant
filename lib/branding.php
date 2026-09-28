@@ -117,6 +117,7 @@ final class Branding {
     /** Общая версия всех знаков — ею помечаются адреса в `<head>`. */
     public static function stamp(): string {
         $parts = array_map(fn($kind) => self::version($kind), self::KINDS);
+        $parts[] = 'icon' . self::ICON_REV;   // иконка перерисована — адрес новый
         return substr(md5(implode('-', $parts)), 0, 8);
     }
 
@@ -233,14 +234,18 @@ final class Branding {
         Logger::info('settings', 'Логотип сброшен к встроенному: ' . $kind);
     }
 
+    /** Меняется вместе с правилами рисования иконки: старый кэш с рамкой не отдаётся. */
+    public const ICON_REV = 2;
+
     /**
-     * Квадратная иконка нужного размера для манифеста PWA.
+     * Квадратная иконка нужного размера для манифеста PWA (модуль 021).
      *
-     * Логотип магазина — широкий, а иконка на телефоне квадратная: картинка
-     * вписывается в квадрат целиком (никогда не обрезается) и ставится на
-     * фон манифеста. Результат кладётся рядом, в `storage/logo/cache/`, —
-     * пересчитывать его на каждый запрос значка вкладки незачем.
-     * Без расширения GD отдаётся исходный файл: браузер отмасштабирует сам.
+     * Иконка НЕПРОЗРАЧНАЯ и без рамки: прозрачное лаунчер закрашивает своей
+     * белой подложкой, и любой вписанный знак приезжал на телефон в белой
+     * рамке. Поэтому: срезаются собственные однотонные поля картинки,
+     * квадрат заливается цветом её края, знак — во весь квадрат (`any`) или
+     * в безопасную зону 80% (`maskable`). Кэш — в `storage/logo/cache/`.
+     * Без GD отдаётся исходный файл (панель предупреждает: `iconWarning()`).
      */
     public static function icon(int $size, bool $maskable = false): string {
         $source = self::resolve('app');
@@ -250,31 +255,130 @@ final class Branding {
 
         $cacheDir = self::dir() . '/cache';
         if (!is_dir($cacheDir)) @mkdir($cacheDir, 0755, true);
-        $cache = $cacheDir . '/icon-' . $size . ($maskable ? '-m' : '') . '-' . self::version('app') . '.png';
+        $cache = $cacheDir . '/icon' . self::ICON_REV . '-' . $size . ($maskable ? '-m' : '') . '-' . self::version('app') . '.png';
         if (is_file($cache)) return $cache;
 
         $src = @imagecreatefromstring((string)file_get_contents($source));
         if (!$src) return $source;
+        if (!imageistruecolor($src)) imagepalettetotruecolor($src);
+
+        [$bx, $by, $bw, $bh, $cut, $clear] = self::trimBox($src);
+        [$edge, $share] = self::edgeColor($src, $bx, $by, $bw, $bh);
+
+        // Однотонный край (плашка, фон) — им и заливаем, знак во весь квадрат.
+        // Прозрачное поле — автор фона не хотел: белая заливка с воздухом.
+        // Край режет рисунок (срезали поле вокруг логотипа) — заливаем цветом
+        // срезанного поля, воздух того же цвета
+        if (!$clear && $edge !== null && $share >= 0.6) {
+            $fill = $edge;
+            // Край того же цвета, что срезанное поле, — это воздух вокруг знака,
+            // а не плашка: возвращаем его, того же цвета
+            $scale = ($cut !== null && self::near([...$edge, 0], [...$cut, 0], 40)) ? 0.88 : 1.0;
+        } else {
+            $fill = $cut ?? [255, 255, 255];
+            $scale = 0.88;
+        }
+        if ($maskable) $scale = min($scale, 0.8);
 
         $canvas = imagecreatetruecolor($size, $size);
-        imagealphablending($canvas, false);
-        imagesavealpha($canvas, true);
-        imagefill($canvas, 0, 0, imagecolorallocatealpha($canvas, 0, 0, 0, 127));
-        imagealphablending($canvas, true);
+        imagefill($canvas, 0, 0, imagecolorallocate($canvas, $fill[0], $fill[1], $fill[2]));
+        imagealphablending($canvas, true);   // прозрачное в знаке ложится на заливку
 
-        // Maskable: система обрезает иконку по своей маске, поэтому знак живёт
-        // в безопасной зоне — 80% квадрата, остальное поля
-        $scale = $maskable ? 0.8 : 0.92;
-        $sw = imagesx($src);
-        $sh = imagesy($src);
-        $ratio = min($size * $scale / $sw, $size * $scale / $sh);
-        $dw = max(1, (int)round($sw * $ratio));
-        $dh = max(1, (int)round($sh * $ratio));
-        imagecopyresampled($canvas, $src, (int)(($size - $dw) / 2), (int)(($size - $dh) / 2), 0, 0, $dw, $dh, $sw, $sh);
+        $ratio = min($size * $scale / $bw, $size * $scale / $bh);
+        $dw = max(1, (int)round($bw * $ratio));
+        $dh = max(1, (int)round($bh * $ratio));
+        imagecopyresampled($canvas, $src, (int)(($size - $dw) / 2), (int)(($size - $dh) / 2), $bx, $by, $dw, $dh, $bw, $bh);
 
         imagepng($canvas, $cache);
         unset($canvas, $src);   // imagedestroy() deprecated с PHP 8.5 и бесполезен с 8.0
         return is_file($cache) ? $cache : $source;
+    }
+
+    /** Пиксель как [r, g, b, a]; a — GD-шные 0 (непрозрачно) … 127 (прозрачно). */
+    private static function px(\GdImage $im, int $x, int $y): array {
+        $c = imagecolorat($im, $x, $y);
+        return [($c >> 16) & 0xFF, ($c >> 8) & 0xFF, $c & 0xFF, ($c >> 24) & 0x7F];
+    }
+
+    /** Один цвет с поправкой на шум JPEG; все почти прозрачные — один цвет. */
+    private static function near(array $p, array $q, int $tol = 28): bool {
+        if ($p[3] >= 120 && $q[3] >= 120) return true;
+        return abs($p[0] - $q[0]) <= $tol && abs($p[1] - $q[1]) <= $tol
+            && abs($p[2] - $q[2]) <= $tol && abs($p[3] - $q[3]) <= 20;
+    }
+
+    /**
+     * Рамка картинки без её собственных однотонных полей — полосы скриншота,
+     * пустое поле вокруг логотипа. Один слой: цвет угла, строки и столбцы,
+     * целиком (98% точек) этого цвета.
+     * @return array{0:int,1:int,2:int,3:int,4:?array,5:bool} x, y, w, h,
+     *         срезанный цвет [r,g,b] (null — ничего не срезано или срезана
+     *         прозрачность) и «поле было прозрачным»
+     */
+    public static function trimBox(\GdImage $im): array {
+        $w = imagesx($im);
+        $h = imagesy($im);
+        $ref = self::px($im, 0, 0);
+        $line = function (bool $row, int $i, int $from, int $to) use ($im, $ref): bool {
+            $step = max(1, intdiv($to - $from, 160));
+            $n = $ok = 0;
+            for ($j = $from; $j < $to; $j += $step) {
+                $n++;
+                if (self::near($row ? self::px($im, $j, $i) : self::px($im, $i, $j), $ref)) $ok++;
+            }
+            return $n > 0 && $ok / $n >= 0.98;
+        };
+
+        $top = 0;
+        while ($top < $h - 1 && $line(true, $top, 0, $w)) $top++;
+        $bottom = $h - 1;
+        while ($bottom > $top && $line(true, $bottom, 0, $w)) $bottom--;
+        $left = 0;
+        while ($left < $w - 1 && $line(false, $left, $top, $bottom + 1)) $left++;
+        $right = $w - 1;
+        while ($right > $left && $line(false, $right, $top, $bottom + 1)) $right--;
+
+        // Картинка одного цвета целиком — резать нечего
+        if ($right - $left < 2 || $bottom - $top < 2) return [0, 0, $w, $h, null, false];
+        $trimmed = $top > 0 || $left > 0 || $bottom < $h - 1 || $right < $w - 1;
+        $clear = $trimmed && $ref[3] >= 120;
+        $cut = ($trimmed && !$clear) ? [$ref[0], $ref[1], $ref[2]] : null;
+        return [$left, $top, $right - $left + 1, $bottom - $top + 1, $cut, $clear];
+    }
+
+    /**
+     * Самый частый цвет по краю рамки и его доля: [[r,g,b]|null, share].
+     * null — край прозрачный.
+     */
+    public static function edgeColor(\GdImage $im, int $x, int $y, int $w, int $h): array {
+        $pts = [];
+        $step = max(1, intdiv(max($w, $h), 200));
+        for ($i = 0; $i < $w; $i += $step) { $pts[] = [$x + $i, $y]; $pts[] = [$x + $i, $y + $h - 1]; }
+        for ($j = 0; $j < $h; $j += $step) { $pts[] = [$x, $y + $j]; $pts[] = [$x + $w - 1, $y + $j]; }
+
+        $buckets = [];
+        foreach ($pts as [$px, $py]) {
+            $p = self::px($im, $px, $py);
+            $key = $p[3] >= 120 ? 'clear' : (($p[0] >> 4) . '.' . ($p[1] >> 4) . '.' . ($p[2] >> 4));
+            $buckets[$key][] = $p;
+        }
+        uasort($buckets, fn($a, $b) => count($b) <=> count($a));
+        $key = array_key_first($buckets);
+        $share = count($buckets[$key]) / max(1, count($pts));
+        if ($key === 'clear') return [null, $share];
+
+        // Среднее по корзине — ровный цвет, а не её угол
+        $sum = [0, 0, 0];
+        foreach ($buckets[$key] as $p) { $sum[0] += $p[0]; $sum[1] += $p[1]; $sum[2] += $p[2]; }
+        $n = count($buckets[$key]);
+        return [[intdiv($sum[0], $n), intdiv($sum[1], $n), intdiv($sum[2], $n)], $share];
+    }
+
+    /** Почему иконка приложения может прийти с рамкой. '' — всё хорошо. */
+    public static function iconWarning(): string {
+        if (function_exists('imagecreatetruecolor')) return '';
+        return 'На сервере нет расширения GD: иконка приложения отдаётся как есть, без подгонки под квадрат — '
+             . 'телефон может показать её в белой рамке. Загрузите квадратный непрозрачный PNG или JPG.';
     }
 
     private static function clearCache(): void {

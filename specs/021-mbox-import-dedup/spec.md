@@ -157,6 +157,19 @@ status-bar `badge-96.png` stays bundled, because Android paints a badge as an al
 opaque logo would be a blank square. Square manifest icons (192/512/maskable) are drawn from the
 `app` chain through GD and cached in `storage/logo/cache/`; without GD the source file is served.
 
+An app icon is OPAQUE and has no frame. A launcher paints whatever is transparent in an icon as
+its own white plate, so a logo fitted into a transparent square arrives on the phone inside a
+white rim — whatever was uploaded. `Branding::icon()` therefore:
+1. trims the picture's own uniform margins (`Branding::trimBox()`: rows and columns that are all
+   the corner colour — the letterbox bands of a screenshot, the empty field around a logo);
+2. fills the square with the picture's EDGE colour (`Branding::edgeColor()`, the most frequent
+   colour of the trimmed border; a transparent border falls back to white);
+3. scales the picture to 100% of the square for `any` and to the 80% safe zone for `maskable`
+   (the system cuts the rest by its own mask), both on that fill — never a transparent pixel.
+The cache file name carries `ICON_REV`, so a change of this drawing rebuilds every cached icon.
+Without GD the panel says so (`icon_warning`): the source is served as is, and a non-square or
+transparent one keeps its rim.
+
 `PdfGenerator::bundledLogos()` is the one place that decides what the КП prints and it reads
 the same `Branding`: the uploaded logo, then the bundled one. There must be no second list of paths.
 
