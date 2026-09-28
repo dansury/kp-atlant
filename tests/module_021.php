@@ -312,6 +312,41 @@ ok('и значок вкладки берёт его раньше логотип
 ok('КП чужой квадратный знак не берёт', Branding::resolve('kp') === Branding::uploaded('kp'));
 if (!$ownApp) Branding::remove('app');
 
+// Иконка приложения без рамки: полосы скриншота срезаны, фон — цвет плашки
+$shot = $sandbox . '/shot.jpg';
+$im = imagecreatetruecolor(300, 330);
+imagefill($im, 0, 0, 0x000000);
+imagefilledrectangle($im, 0, 55, 299, 274, 0x333333);
+imagefilledellipse($im, 150, 165, 180, 180, 0xffffff);
+imagejpeg($im, $shot, 95);
+unset($im);
+$before = Branding::uploaded('app');
+if ($before === null) {
+    Branding::store('app', ['tmp_name' => $shot, 'name' => 'shot.jpg'], ['move' => false]);
+    foreach ([false, true] as $mask) {
+        $ic = imagecreatefrompng(Branding::icon(192, $mask));
+        $corner = imagecolorat($ic, 0, 0);
+        $alpha = ($corner >> 24) & 0x7F;
+        $r = ($corner >> 16) & 0xFF;
+        ok('иконка' . ($mask ? ' maskable' : '') . ' — угол цвета плашки, не белый и не прозрачный',
+           $alpha === 0 && abs($r - 0x33) <= 12, sprintf('%08x', $corner));
+    }
+    // Прозрачное поле вокруг широкого знака — белая подложка, но непрозрачная
+    $wide = $sandbox . '/wide.png';
+    $im = imagecreatetruecolor(600, 200);
+    imagealphablending($im, false);
+    imagesavealpha($im, true);
+    imagefill($im, 0, 0, imagecolorallocatealpha($im, 0, 0, 0, 127));
+    imagefilledrectangle($im, 100, 70, 500, 130, imagecolorallocate($im, 200, 20, 20));
+    imagepng($im, $wide);
+    unset($im);
+    Branding::store('app', ['tmp_name' => $wide, 'name' => 'wide.png'], ['move' => false]);
+    $ic = imagecreatefrompng(Branding::icon(192));
+    ok('прозрачный знак — на непрозрачной белой заливке, а не залит своим цветом',
+       (imagecolorat($ic, 0, 0) & 0x7FFFFFFF) === 0xFFFFFF, sprintf('%08x', imagecolorat($ic, 0, 0)));
+    Branding::remove('app');
+}
+
 Branding::remove('kp');
 ok('после сброса возвращается встроенный знак', Branding::uploaded('kp') === null);
 ok('и путь в юрлице очищен',
