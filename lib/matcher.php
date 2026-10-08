@@ -449,6 +449,9 @@ class ProductMatcher {
 
         $scored = [];
         foreach ($products as $p) {
+            // A named model's revision is identity, not a fuzzy word ending.
+            // In particular, containment must not call Proton-2 an exact Proton.
+            if (self::modelConflict($query, $p['name'])) continue;
             // «Переходники для наушников» — не наушники (issue #142): принадлежность
             // к тому, что просит клиент, не отвечает на его запрос ни товаром, ни аналогом
             if (self::isAccessory($p['base_text'], $queryWords, $head)) continue;
@@ -644,7 +647,9 @@ class ProductMatcher {
         $norm = self::denoise(self::normalize(Variants::stripSize($phrase)));
         $keys = [];
         foreach (self::keyWords($norm) as $w) {
-            $keys[mb_substr($w, 0, max(4, min(6, mb_strlen($w) - 1)))] = true;
+            $key = preg_match('/\p{L}\d/u', $w) ? $w
+                : mb_substr($w, 0, max(4, min(6, mb_strlen($w) - 1)));
+            $keys[$key] = true;
         }
         $keys = array_keys($keys);
         sort($keys, SORT_STRING);
@@ -753,6 +758,23 @@ class ProductMatcher {
         return false;
     }
 
+    /** Reject substitutions between an unnumbered model and its numbered revisions. */
+    public static function modelConflict(string $query, string $candidate): bool {
+        $base = fn($s) => self::normalize((string)preg_replace('/\([^)]*\)/u', ' ', $s));
+        $q = $base($query);
+        $c = $base($candidate);
+        $qm = self::markers($q);
+        $cm = self::markers($c);
+        if (self::markerConflict($qm, $c)) return true;
+        foreach ([[$qm, $c], [$cm, $q]] as [$markers, $other]) {
+            $words = array_flip(explode(' ', $other));
+            foreach ($markers as $prefix => $values) {
+                if (mb_strlen($prefix) >= 3 && isset($words[$prefix])) return true;
+            }
+        }
+        return false;
+    }
+
     /** Слова и метки («бр3») текста — то, из чего состоит название. */
     private static function keyWords(string $normalized): array {
         $out = array_flip(self::contentWords($normalized));
@@ -831,7 +853,7 @@ class ProductMatcher {
     private static function normalize(string $s): string {
         $s = mb_strtolower($s);
         // «БР-3» — та же метка, что «Бр3» (модуль 040)
-        $s = preg_replace('/(?<=\p{L})-(?=\d)/u', '', $s);
+        $s = preg_replace('/(?<=\p{L})[-–—‑](?=\d)/u', '', $s);
         $s = preg_replace('/[\s\-\"\'«»(),;:.\/\\\[\]]+/u', ' ', $s);
         $s = preg_replace('/\b(шт|штук|штуки|ед|компл)\b\.?/u', '', $s);
         return trim(preg_replace('/\s+/u', ' ', $s));

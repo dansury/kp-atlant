@@ -225,3 +225,11 @@ not have.
   if it is too much.
 - Graphify: the CLI is not installed in the build container; re-run it on the next
   machine that has it.
+
+## Open issues #156–#182 audit
+- Full requirement-by-requirement audit: `docs/issue-audit-2026-10-08.md`.
+- #177 is implemented in the existing code. #182 is fixed by the
+  model identity guard and regression tests; rematch the previously saved
+  row on the live request after deployment.
+- Other issues in that audit remain open: partial/absent implementations and
+  live-only reproductions must be finished before closing them.

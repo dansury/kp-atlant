@@ -102,6 +102,17 @@ table of what those lines mean in our catalog — `request_items`.
 - `MoySklad::refreshProductCache()` before a KP is now best-effort: with a dead token the
   catalog imported from Excel still stands.
 
+### Model identity
+
+Numbered model names are distinct catalog identities: `Протон`, `Протон-2`
+and `Протон-3` must not match each other, even when all other words match
+or vectors score highly. A number attached to a named model (including a
+hyphenated number) is preserved in the match-memory key. Parenthetical size
+and colour characteristics do not change model identity. Historical memory
+entries pointing at a conflicting model are ignored. Manual selection and
+explicit product links remain available. Existing saved request rows are preserved;
+use the rematch action to update an old automatic selection.
+
 ### Matching bug fixed on the way
 
 `ProductMatcher::normalize()` ran `preg_replace('/[\s\-"\'«»()\[\]]+/', …)` **without `/u`**.
