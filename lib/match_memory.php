@@ -62,7 +62,7 @@ final class MatchMemory {
              JOIN products_cache p ON p.moysklad_id = m.moysklad_id
              WHERE m.phrase_key = ? AND COALESCE(p.is_archived, 0) = 0
              ORDER BY m.last_at DESC, m.hits DESC, m.id DESC LIMIT 1", [$key]);
-        if (!$row) return null;
+        if (!$row || ProductMatcher::modelConflict($phrase, $row['product_name'])) return null;
         $row['hits'] = (int)$row['hits'];
         return $row;
     }
